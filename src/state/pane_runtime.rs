@@ -21,6 +21,12 @@ pub struct PaneRuntimeState {
     /// Used by `refresh_task_progress` to skip the (potentially expensive)
     /// re-parse when the log has not been touched since the previous tick.
     pub task_progress_log_mtime: Option<std::time::SystemTime>,
+    /// Consecutive port-scan sweeps that found no live agent process in
+    /// this pane's tree. Tmux metadata teardown only fires after
+    /// `REQUIRED_DEAD_SCANS` misses in a row (see `refresh_port_data`),
+    /// so one missed scan cannot destroy live state; any scan that
+    /// finds the agent resets the count to zero.
+    pub dead_scan_streak: u32,
 }
 
 #[derive(Debug, Clone)]

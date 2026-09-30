@@ -176,6 +176,8 @@ TUI main loop (app::run in app.rs; submodules app/{setup,workers,input,render})
     → refresh_task_progress()        ← updates PaneRuntimeState.task_progress
     → refresh_port_data()            ← updates PaneRuntimeState.ports
     → scan_session_process_snapshot() ← detects dead panes and clears stale tmux metadata
+                                          (teardown requires two consecutive dead scans;
+                                           `dead_scan_streak` tracks the miss count)
                         ↓
   → git_rx.try_recv()                ← receives GitData from background thread
   → notices popup render/copy state  ← derived from AppState plugin fields
@@ -244,6 +246,7 @@ struct PaneRuntimeState {
     inactive_since: Option<u64>,
     tab_pref: Option<BottomTab>,
     task_progress_log_mtime: Option<SystemTime>,
+    dead_scan_streak: u32,
 }
 
 /// Wraps `PaneRuntimeState` per pane plus the set of pane IDs that

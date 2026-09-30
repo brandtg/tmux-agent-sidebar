@@ -130,10 +130,14 @@ pub(crate) fn process_matches_agent(info: &ProcessInfo, agent_name: &str) -> boo
         return true;
     }
 
-    let Some(command) = info.args.split_whitespace().next() else {
-        return false;
-    };
-    command_basename(command.trim_matches('"')) == agent_name
+    // Wrapper installs name the runtime at args0, not the agent:
+    // `npx claude` runs under node, `node .../claude` and bun shims put
+    // the agent binary deeper in argv. Match any argv token so these
+    // live panes are not misread as "agent dead" by the port-scan
+    // sweep (which would wipe their metadata mid-session).
+    info.args
+        .split_whitespace()
+        .any(|token| command_basename(token.trim_matches('"')) == agent_name)
 }
 
 #[cfg(test)]
@@ -199,5 +203,59 @@ mod tests {
             },
             "opencode",
         ));
+    }
+
+    #[test]
+    fn process_matches_agent_matches_agent_basename_anywhere_in_argv() {
+        // npx shim: the runtime owns comm/args0, the agent name only
+        // appears as a later argv token.
+        assert!(process_matches_agent(
+            &ProcessInfo {
+                comm: "node".to_string(),
+                args: "npx claude --continue".to_string(),
+            },
+            "claude",
+        ));
+        // npx's cli entry: node running npx-cli.js with the package name.
+        assert!(process_matches_agent(
+            &ProcessInfo {
+                comm: "node".to_string(),
+                args: "/usr/local/bin/node /path/to/npx-cli.js claude".to_string(),
+            },
+            "claude",
+        ));
+        // Direct node invocation of the installed binary.
+        assert!(process_matches_agent(
+            &ProcessInfo {
+                comm: "node".to_string(),
+                args: "node /home/u/.npm/_npx/abc/bin/claude --model opus".to_string(),
+            },
+            "claude",
+        ));
+        // Bun shim.
+        assert!(process_matches_agent(
+            &ProcessInfo {
+                comm: "bun".to_string(),
+                args: "bun /usr/local/bin/claude".to_string(),
+            },
+            "claude",
+        ));
+        // A basename glued to other characters must not match.
+        assert!(!process_matches_agent(
+            &ProcessInfo {
+                comm: "node".to_string(),
+                args: "node /path/to/not-claude".to_string(),
+            },
+            "claude",
+        ));
+    }
+
+    #[test]
+    fn tree_has_agent_matches_wrapper_installed_agent() {
+        let snapshot = ProcessSnapshot::from_ps_output(
+            "100 1 zsh zsh -c npx claude\n101 100 node node /path/to/npx-cli.js claude\n",
+        );
+
+        assert!(snapshot.tree_has_agent(&[100], &AgentType::Claude));
     }
 }
