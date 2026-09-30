@@ -93,6 +93,10 @@ pub const SIDEBAR_PID: &str = "@sidebar_pid";
 pub const SIDEBAR_WIDTH: &str = "@sidebar_width";
 pub const SIDEBAR_POSITION: &str = "@sidebar_position";
 pub const SIDEBAR_FILTER: &str = "@sidebar_filter";
+/// Status filter view a newly opened sidebar lands on (`all` / `running` /
+/// `background` / `waiting` / `idle` / `error`). Read once at startup;
+/// unset or unrecognized values fall back to `all`.
+pub const SIDEBAR_DEFAULT_VIEW: &str = "@sidebar_default_view";
 pub const SIDEBAR_CURSOR: &str = "@sidebar_cursor";
 pub const SIDEBAR_REPO_FILTER: &str = "@sidebar_repo_filter";
 pub const SIDEBAR_BOTTOM_HEIGHT: &str = "@sidebar_bottom_height";

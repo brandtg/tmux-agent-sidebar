@@ -122,6 +122,41 @@ impl GlobalState {
         self.apply_all(&opts);
     }
 
+    /// Parse `@sidebar_default_view` into the status filter a newly opened
+    /// sidebar lands on. Accepts the same labels as [`StatusFilter::as_str`],
+    /// case-insensitively; unset or unrecognized values fall back to `all`,
+    /// the first view.
+    pub fn default_view_from_options(opts: &HashMap<String, String>) -> StatusFilter {
+        opts.get(tmux::SIDEBAR_DEFAULT_VIEW)
+            .map(|s| StatusFilter::from_label(s.trim().to_ascii_lowercase().as_str()))
+            .unwrap_or(StatusFilter::All)
+    }
+
+    /// Land on the configured default view instead of the last-used filter.
+    ///
+    /// `@sidebar_filter` persists the most recent filter across sidebar
+    /// instances, so a freshly opened sidebar would otherwise resume
+    /// whatever filter some other window set earlier — a random-looking
+    /// landing view. Called once at startup, after `load_from_tmux`.
+    ///
+    /// Only `status_filter` is overridden: `apply_all` has already pointed
+    /// `last_saved_filter` at the persisted value, so the window-refocus
+    /// reload in the main loop does not restore the stale filter over the
+    /// default, while filter changes from other open sidebars still sync
+    /// in. The default is never written back to tmux here — opening a
+    /// sidebar must not yank the view out from under already-open ones.
+    pub fn apply_default_view(&mut self, opts: &HashMap<String, String>) {
+        self.status_filter = Self::default_view_from_options(opts);
+    }
+
+    /// Startup variant of [`GlobalState::apply_default_view`] that reads
+    /// tmux directly. The refocus reload path deliberately keeps the plain
+    /// shared-sync behavior, so this must only be called during setup.
+    pub fn apply_default_view_from_tmux(&mut self) {
+        let opts = tmux::get_all_global_options();
+        self.apply_default_view(&opts);
+    }
+
     /// Apply all global options from tmux (filter, cursor, repo filter).
     pub fn apply_all(&mut self, opts: &HashMap<String, String>) {
         if let Some(filter_str) = opts.get(tmux::SIDEBAR_FILTER) {

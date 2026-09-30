@@ -856,6 +856,100 @@ fn window_activation_syncs_all_fields() {
     assert_eq!(g.repo_filter, RepoFilter::Repo("my-app".into()));
 }
 
+// ─── default view (startup landing filter) tests ────────────────────
+// At startup the sidebar lands on `@sidebar_default_view` instead of the
+// last-used `@sidebar_filter`, which may have been set by another window's
+// sidebar long ago. The override runs after apply_all and must not break
+// the refocus/cross-instance sync that reads `@sidebar_filter` afterwards.
+
+#[test]
+fn default_view_unset_lands_on_first_view_not_persisted_filter() {
+    let mut g = make_global();
+
+    // Startup sync adopts the stale persisted filter...
+    let opts = make_opts(&[(tmux::SIDEBAR_FILTER, "error")]);
+    g.apply_all(&opts);
+    assert_eq!(g.status_filter, StatusFilter::Error);
+
+    // ...then the default-view override lands on All (the first view).
+    g.apply_default_view(&std::collections::HashMap::new());
+    assert_eq!(
+        g.status_filter,
+        StatusFilter::All,
+        "a new sidebar must land on the first view, not the persisted filter"
+    );
+
+    // Refocus reload reads the same stale tmux value — last_saved_filter
+    // points at it, so the default view survives.
+    g.apply_all(&opts);
+    assert_eq!(
+        g.status_filter,
+        StatusFilter::All,
+        "refocus reload must not restore the stale persisted filter"
+    );
+}
+
+#[test]
+fn default_view_configured_lands_on_that_view() {
+    let mut g = make_global();
+
+    let opts = make_opts(&[
+        (tmux::SIDEBAR_FILTER, "error"),
+        (tmux::SIDEBAR_DEFAULT_VIEW, "waiting"),
+    ]);
+    g.apply_all(&opts);
+    g.apply_default_view(&opts);
+
+    assert_eq!(g.status_filter, StatusFilter::Waiting);
+
+    // Refocus reload keeps the configured default view.
+    let persisted = make_opts(&[(tmux::SIDEBAR_FILTER, "error")]);
+    g.apply_all(&persisted);
+    assert_eq!(g.status_filter, StatusFilter::Waiting);
+}
+
+#[test]
+fn default_view_unknown_value_falls_back_to_all() {
+    let mut g = make_global();
+    g.apply_all(&make_opts(&[(tmux::SIDEBAR_FILTER, "error")]));
+
+    let opts = make_opts(&[(tmux::SIDEBAR_DEFAULT_VIEW, "bogus")]);
+    g.apply_default_view(&opts);
+
+    assert_eq!(g.status_filter, StatusFilter::All);
+}
+
+#[test]
+fn default_view_is_case_insensitive() {
+    let mut g = make_global();
+
+    let opts = make_opts(&[(tmux::SIDEBAR_DEFAULT_VIEW, "  Running ")]);
+    g.apply_default_view(&opts);
+
+    assert_eq!(g.status_filter, StatusFilter::Running);
+}
+
+#[test]
+fn default_view_does_not_break_cross_instance_sync() {
+    let mut g = make_global();
+
+    // Startup: stale persisted "running", default view All.
+    let opts = make_opts(&[(tmux::SIDEBAR_FILTER, "running")]);
+    g.apply_all(&opts);
+    g.apply_default_view(&opts);
+    assert_eq!(g.status_filter, StatusFilter::All);
+
+    // Another open sidebar switches to Waiting and writes tmux; this
+    // instance's refocus reload must still pick that up.
+    g.apply_all(&make_opts(&[(tmux::SIDEBAR_FILTER, "waiting")]));
+
+    assert_eq!(
+        g.status_filter,
+        StatusFilter::Waiting,
+        "filter changes from other sidebars must still sync in after the default-view override"
+    );
+}
+
 // ─── Spawn / Remove Popup State ───────────────────────────────────
 
 fn spawn_state_with_repo() -> AppState {
