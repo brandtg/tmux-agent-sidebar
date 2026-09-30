@@ -1,8 +1,14 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::Path;
 use std::process::Command;
+use std::time::Duration;
 
+use crate::subprocess;
 use crate::tmux::AgentType;
+
+/// Deadline for the full-process `ps` scan; it runs on the TUI event loop
+/// every refresh tick and must never hang there.
+const PS_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[derive(Debug, Clone)]
 pub(crate) struct ProcessInfo {
@@ -18,10 +24,9 @@ pub(crate) struct ProcessSnapshot {
 
 impl ProcessSnapshot {
     pub(crate) fn scan() -> Option<Self> {
-        let output = Command::new("ps")
-            .args(["-eo", "pid=,ppid=,comm=,args="])
-            .output()
-            .ok()?;
+        let mut command = Command::new("ps");
+        command.args(["-eo", "pid=,ppid=,comm=,args="]);
+        let output = subprocess::run_with_timeout(&mut command, PS_TIMEOUT).ok()?;
         if !output.status.success() {
             return None;
         }

@@ -87,6 +87,21 @@ cargo build --release
 
 Toggle the sidebar off → on to pick up the new binary.
 
+### Build, test, and lint
+
+Run these from the repo root — no extra setup needed beyond having Rust installed (`rustup`):
+
+```sh
+cargo build --release    # build the binary tmux loads (release profile: strip + lto)
+cargo test               # run the full test suite (unit + UI snapshot tests)
+cargo test run_with_timeout  # run a subset — any test whose name contains that string
+cargo clippy             # lint; CI treats warnings as noise, but keep it clean
+cargo fmt                # auto-format all source
+cargo fmt --check        # verify formatting only (what CI runs); exits non-zero if dirty
+```
+
+CI runs `cargo test`, `cargo clippy`, and `cargo fmt --check` on every push/PR, so run all three before committing — always `cargo fmt` first. UI tests use [insta](https://insta.rs/) inline snapshots; if an intentional UI change breaks a snapshot, review the diff and accept it with `cargo insta accept`.
+
 ### Picking up local builds for the Claude Code plugin
 
 If you also installed this as a Claude Code plugin (`/plugin`), its install path

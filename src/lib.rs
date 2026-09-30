@@ -11,6 +11,7 @@ pub mod port;
 pub(crate) mod process;
 pub mod session;
 pub mod state;
+pub(crate) mod subprocess;
 pub mod time;
 pub mod tmux;
 pub mod tool_name;

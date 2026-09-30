@@ -1,4 +1,4 @@
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use super::AppState;
 use crate::cli::plugin_state::ClaudePluginStatus;
@@ -165,10 +165,10 @@ impl AppState {
         let clip_ok = arboard::Clipboard::new()
             .and_then(|mut c| c.set_text(prompt.clone()))
             .is_ok();
-        let tmux_ok = std::process::Command::new("tmux")
-            .args(["set-buffer", &prompt])
-            .status()
-            .map(|s| s.success())
+        let mut command = std::process::Command::new("tmux");
+        command.args(["set-buffer", &prompt]);
+        let tmux_ok = crate::subprocess::run_with_timeout(&mut command, Duration::from_secs(3))
+            .map(|output| output.status.success())
             .unwrap_or(false);
         // OSC 52 is queued regardless — it reaches the upstream terminal
         // even when the local sinks above fail (SSH case). But we do not

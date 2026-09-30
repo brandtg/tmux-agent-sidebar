@@ -1,7 +1,16 @@
 use std::process::Command;
+use std::time::Duration;
+
+use crate::subprocess;
+
+/// Deadline for tmux IPC; every render-path query (list-panes,
+/// display-message, ...) goes through here and must never hang the loop.
+const TMUX_TIMEOUT: Duration = Duration::from_secs(3);
 
 pub fn run_tmux(args: &[&str]) -> Option<String> {
-    let output = Command::new("tmux").args(args).output().ok()?;
+    let mut command = Command::new("tmux");
+    command.args(args);
+    let output = subprocess::run_with_timeout(&mut command, TMUX_TIMEOUT).ok()?;
     if output.status.success() {
         Some(String::from_utf8_lossy(&output.stdout).to_string())
     } else {
@@ -13,10 +22,9 @@ pub fn run_tmux(args: &[&str]) -> Option<String> {
 /// Used by the spawn/remove flow so the UI can surface a meaningful error message
 /// instead of a silent fallthrough.
 pub fn run_tmux_capture(args: &[&str]) -> Result<String, String> {
-    let output = Command::new("tmux")
-        .args(args)
-        .output()
-        .map_err(|e| format!("failed to spawn tmux: {e}"))?;
+    let mut command = Command::new("tmux");
+    command.args(args);
+    let output = subprocess::run_with_timeout(&mut command, TMUX_TIMEOUT)?;
     if output.status.success() {
         Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
     } else {

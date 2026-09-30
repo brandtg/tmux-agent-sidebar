@@ -1,10 +1,17 @@
 use std::process::Command;
 use std::time::{Duration, Instant};
 
+use crate::subprocess;
+
 /// How long a PR lookup stays fresh before `PrCache` refetches it. PR numbers
 /// change only on branch switches (already keyed) or when a new PR is created
 /// for the current branch — the TTL bounds the latency of that second case.
 pub const PR_CACHE_TTL: Duration = Duration::from_secs(300);
+
+/// Deadline for every git subprocess; a hung git (stale NFS mount, blocked
+/// index.lock, credential prompt) must not stall the TUI event loop or the
+/// git polling thread beyond this.
+const GIT_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// A file entry with its status indicator, name, and per-file diff stats.
 #[derive(Debug, Clone, PartialEq)]
@@ -84,43 +91,17 @@ pub fn fetch_git_data(path: &str) -> GitData {
 /// times out. Bounded by a 5s deadline so a hung `gh` cannot stall the git
 /// polling thread.
 pub fn fetch_pr_number(path: &str) -> Option<String> {
-    let mut child = Command::new("gh")
+    let mut command = Command::new("gh");
+    command
         .env("GIT_OPTIONAL_LOCKS", "0")
         .args(["pr", "view", "--json", "number", "-q", ".number"])
-        .current_dir(path)
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null())
-        .stdin(std::process::Stdio::null())
-        .spawn()
-        .ok()?;
-    let deadline = Instant::now() + Duration::from_secs(5);
-    loop {
-        match child.try_wait() {
-            Ok(Some(status)) => {
-                if status.success()
-                    && let Some(stdout) = child.stdout.take()
-                {
-                    use std::io::Read;
-                    let mut buf = String::new();
-                    let mut reader = stdout;
-                    let _ = reader.read_to_string(&mut buf);
-                    let num = buf.trim().to_string();
-                    if !num.is_empty() {
-                        return Some(num);
-                    }
-                }
-                return None;
-            }
-            Ok(None) => {
-                if Instant::now() >= deadline {
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    return None;
-                }
-                std::thread::sleep(Duration::from_millis(100));
-            }
-            Err(_) => return None,
-        }
+        .current_dir(path);
+    let output = subprocess::run_with_timeout(&mut command, GIT_TIMEOUT).ok()?;
+    if output.status.success() {
+        let num = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        (!num.is_empty()).then_some(num)
+    } else {
+        None
     }
 }
 
@@ -288,11 +269,9 @@ fn normalize_git_path(path: &str) -> String {
 pub(crate) fn run_git(path: &str, args: &[&str]) -> Option<String> {
     let mut cmd_args = vec!["-C", path];
     cmd_args.extend_from_slice(args);
-    let output = Command::new("git")
-        .env("GIT_OPTIONAL_LOCKS", "0")
-        .args(&cmd_args)
-        .output()
-        .ok()?;
+    let mut command = Command::new("git");
+    command.env("GIT_OPTIONAL_LOCKS", "0").args(&cmd_args);
+    let output = subprocess::run_with_timeout(&mut command, GIT_TIMEOUT).ok()?;
     if output.status.success() {
         let s = String::from_utf8_lossy(&output.stdout).trim().to_string();
         if s.is_empty() { None } else { Some(s) }
@@ -306,11 +285,9 @@ pub(crate) fn run_git(path: &str, args: &[&str]) -> Option<String> {
 pub fn run_git_capture(path: &str, args: &[&str]) -> Result<String, String> {
     let mut cmd_args = vec!["-C", path];
     cmd_args.extend_from_slice(args);
-    let output = Command::new("git")
-        .env("GIT_OPTIONAL_LOCKS", "0")
-        .args(&cmd_args)
-        .output()
-        .map_err(|e| format!("failed to spawn git: {e}"))?;
+    let mut command = Command::new("git");
+    command.env("GIT_OPTIONAL_LOCKS", "0").args(&cmd_args);
+    let output = subprocess::run_with_timeout(&mut command, GIT_TIMEOUT)?;
     if output.status.success() {
         Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
     } else {

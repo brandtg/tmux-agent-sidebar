@@ -1,9 +1,8 @@
 use std::collections::{HashMap, HashSet};
 use std::process::Command;
-use std::process::Stdio;
-use std::thread::sleep;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
+use crate::subprocess;
 use crate::time::now_epoch_secs;
 use crate::tmux;
 
@@ -241,25 +240,19 @@ fn send_desktop_notification(title: &str, body: &str) -> Result<(), String> {
             escape_applescript(title)
         );
         let mut command = Command::new("osascript");
-        command
-            .args(["-e", &script])
-            .stdout(Stdio::null())
-            .stderr(Stdio::null());
+        command.args(["-e", &script]);
         run_notification_command(&mut command, "osascript", DESKTOP_NOTIFICATION_TIMEOUT)
     }
 
     #[cfg(target_os = "linux")]
     {
         let mut command = Command::new("notify-send");
-        command
-            .args([
-                "--app-name=tmux-agent-sidebar",
-                "--urgency=normal",
-                title,
-                body,
-            ])
-            .stdout(Stdio::null())
-            .stderr(Stdio::null());
+        command.args([
+            "--app-name=tmux-agent-sidebar",
+            "--urgency=normal",
+            title,
+            body,
+        ]);
         run_notification_command(&mut command, "notify-send", DESKTOP_NOTIFICATION_TIMEOUT)
     }
 
@@ -280,10 +273,7 @@ fn notification_backend_available() -> bool {
     #[cfg(target_os = "macos")]
     {
         let mut command = Command::new("osascript");
-        command
-            .args(["-e", "return 0"])
-            .stdout(Stdio::null())
-            .stderr(Stdio::null());
+        command.args(["-e", "return 0"]);
         run_notification_command(
             &mut command,
             "osascript",
@@ -295,16 +285,13 @@ fn notification_backend_available() -> bool {
     #[cfg(target_os = "linux")]
     {
         let mut command = Command::new("notify-send");
-        command
-            .arg("--version")
-            .stdout(Stdio::null())
-            .stderr(Stdio::null());
-        return run_notification_command(
+        command.arg("--version");
+        run_notification_command(
             &mut command,
             "notify-send",
             DESKTOP_NOTIFICATION_PROBE_TIMEOUT,
         )
-        .is_ok();
+        .is_ok()
     }
 
     #[cfg(target_os = "windows")]
@@ -331,30 +318,14 @@ fn run_notification_command(
     command_name: &str,
     timeout: Duration,
 ) -> Result<(), String> {
-    let mut child = command
-        .spawn()
-        .map_err(|err| format!("failed to spawn {command_name}: {err}"))?;
-    let start = Instant::now();
-
-    loop {
-        match child.try_wait() {
-            Ok(Some(status)) if status.success() => return Ok(()),
-            Ok(Some(status)) => {
-                return Err(format!("{command_name} exited with status {status}"));
-            }
-            Ok(None) => {
-                if start.elapsed() >= timeout {
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    return Err(format!(
-                        "{command_name} timed out after {}s",
-                        timeout.as_secs()
-                    ));
-                }
-                sleep(Duration::from_millis(25));
-            }
-            Err(err) => return Err(format!("failed to wait on {command_name}: {err}")),
-        }
+    let output = subprocess::run_with_timeout(command, timeout)?;
+    if output.status.success() {
+        Ok(())
+    } else {
+        Err(format!(
+            "{command_name} exited with status {}",
+            output.status
+        ))
     }
 }
 

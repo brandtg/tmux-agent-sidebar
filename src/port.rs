@@ -1,8 +1,14 @@
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::process::Command;
+use std::time::Duration;
 
 use crate::process::{ProcessSnapshot, command_basename};
+use crate::subprocess;
 use crate::tmux::SessionInfo;
+
+/// Deadline for the `lsof` listening-port probe; it runs on the TUI event
+/// loop (every 10s) and must never hang there.
+const SUBPROCESS_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[derive(Debug, Default, Clone)]
 pub struct PaneProcessSnapshot {
@@ -12,7 +18,9 @@ pub struct PaneProcessSnapshot {
 }
 
 fn run_command(cmd: &str, args: &[&str]) -> Option<String> {
-    let output = Command::new(cmd).args(args).output().ok()?;
+    let mut command = Command::new(cmd);
+    command.args(args);
+    let output = subprocess::run_with_timeout(&mut command, SUBPROCESS_TIMEOUT).ok()?;
     if output.status.success() {
         Some(String::from_utf8_lossy(&output.stdout).to_string())
     } else {
