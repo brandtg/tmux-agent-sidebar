@@ -134,6 +134,7 @@ pub const SIDEBAR_COLOR_SECTION_TITLE: &str = "@sidebar_color_section_title";
 pub const SIDEBAR_COLOR_ACTIVITY_TIMESTAMP: &str = "@sidebar_color_activity_timestamp";
 pub const SIDEBAR_COLOR_RESPONSE_ARROW: &str = "@sidebar_color_response_arrow";
 
+pub const SIDEBAR_ICON_SET: &str = "@sidebar_icon_set";
 pub const SIDEBAR_ICON_ALL: &str = "@sidebar_icon_all";
 pub const SIDEBAR_ICON_RUNNING: &str = "@sidebar_icon_running";
 pub const SIDEBAR_ICON_BACKGROUND: &str = "@sidebar_icon_background";

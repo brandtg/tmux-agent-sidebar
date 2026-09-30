@@ -97,6 +97,18 @@ Most options must be set **before** loading the plugin in your `tmux.conf`. Colo
 
 Any Unicode glyph works. Make sure the glyphs render in your terminal font.
 
+Some fonts draw the default geometric shapes (`●` `◎` `◐`) wider than one
+cell, so they bleed into the neighboring column (Berkeley Mono + Nerd Fonts
+in Alacritty is a common case). Set `@sidebar_icon_set` to swap the whole
+palette at once:
+
+| Value   | Icons                                                                                          |
+| ------- | ---------------------------------------------------------------------------------------------- |
+| `nerd`  | Nerd Fonts glyphs (`nf-fa-bars`, `nf-fa-circle`, `nf-fa-circle-o-notch`, `nf-fa-adjust`, `nf-fa-circle-o`, `nf-fa-times`, `nf-fa-circle-thin`) — fitted to the cell by the patched font, so they don't overflow |
+| `ascii` | Plain ASCII (`=` `*` `+` `~` `-` `x` `.`) — renders identically in every font                   |
+
+Per-icon options below always win over the preset.
+
 | Option                  | Default | Meaning                      |
 | ----------------------- | ------- | ---------------------------- |
 | `@sidebar_icon_all`     | `≡`     | Status filter bar "all" icon |
@@ -124,6 +136,7 @@ set -g @sidebar_color_agent_claude "#d97757"
 set -g @sidebar_color_agent_opencode 39
 
 # Icons
+set -g @sidebar_icon_set nerd
 set -g @sidebar_icon_running '▶'
 set -g @sidebar_icon_error   '⚠'
 

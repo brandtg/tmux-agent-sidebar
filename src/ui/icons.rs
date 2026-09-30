@@ -29,14 +29,44 @@ impl Default for StatusIcons {
 }
 
 impl StatusIcons {
-    /// Load status icons from tmux @sidebar_icon_* variables, falling back to defaults.
+    fn preset(set: &str) -> Option<Self> {
+        match set {
+            "nerd" => Some(Self {
+                all: "\u{f0c9}".into(),
+                running: "\u{f111}".into(),
+                background: "\u{f1ce}".into(),
+                waiting: "\u{f042}".into(),
+                idle: "\u{f10c}".into(),
+                error: "\u{f00d}".into(),
+                unknown: "\u{f1db}".into(),
+            }),
+            "ascii" => Some(Self {
+                all: "=".into(),
+                running: "*".into(),
+                background: "+".into(),
+                waiting: "~".into(),
+                idle: "-".into(),
+                error: "x".into(),
+                unknown: ".".into(),
+            }),
+            _ => None,
+        }
+    }
+
+    /// Load status icons from tmux @sidebar_icon_set (preset) and
+    /// @sidebar_icon_* variables, falling back to defaults.
     pub fn from_tmux() -> Self {
         let all_opts = tmux::get_all_global_options();
         Self::from_options(&all_opts)
     }
 
     pub fn from_options(all_opts: &HashMap<String, String>) -> Self {
-        let mut icons = Self::default();
+        let mut icons = all_opts
+            .get(tmux::SIDEBAR_ICON_SET)
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+            .and_then(Self::preset)
+            .unwrap_or_default();
 
         let read = |var: &str, fallback: &str| -> String {
             all_opts
@@ -104,5 +134,56 @@ mod tests {
         assert_eq!(icons.status_icon(&PaneStatus::Background), "⊙");
         assert_eq!(icons.status_icon(&PaneStatus::Unknown), "∎");
         assert_eq!(icons.status_icon(&PaneStatus::Waiting), "◐");
+    }
+
+    #[test]
+    fn nerd_preset_applies_nerd_font_glyphs() {
+        let mut opts = HashMap::new();
+        opts.insert(tmux::SIDEBAR_ICON_SET.into(), "nerd".into());
+
+        let icons = StatusIcons::from_options(&opts);
+        assert_eq!(icons.all_icon(), "\u{f0c9}");
+        assert_eq!(icons.status_icon(&PaneStatus::Running), "\u{f111}");
+        assert_eq!(icons.status_icon(&PaneStatus::Background), "\u{f1ce}");
+        assert_eq!(icons.status_icon(&PaneStatus::Waiting), "\u{f042}");
+        assert_eq!(icons.status_icon(&PaneStatus::Idle), "\u{f10c}");
+        assert_eq!(icons.status_icon(&PaneStatus::Error), "\u{f00d}");
+        assert_eq!(icons.status_icon(&PaneStatus::Unknown), "\u{f1db}");
+    }
+
+    #[test]
+    fn ascii_preset_applies_ascii_glyphs() {
+        let mut opts = HashMap::new();
+        opts.insert(tmux::SIDEBAR_ICON_SET.into(), "ascii".into());
+
+        let icons = StatusIcons::from_options(&opts);
+        assert_eq!(icons.all_icon(), "=");
+        assert_eq!(icons.status_icon(&PaneStatus::Running), "*");
+        assert_eq!(icons.status_icon(&PaneStatus::Background), "+");
+        assert_eq!(icons.status_icon(&PaneStatus::Waiting), "~");
+        assert_eq!(icons.status_icon(&PaneStatus::Idle), "-");
+        assert_eq!(icons.status_icon(&PaneStatus::Error), "x");
+        assert_eq!(icons.status_icon(&PaneStatus::Unknown), ".");
+    }
+
+    #[test]
+    fn unknown_icon_set_falls_back_to_defaults() {
+        let mut opts = HashMap::new();
+        opts.insert(tmux::SIDEBAR_ICON_SET.into(), "bogus".into());
+
+        let icons = StatusIcons::from_options(&opts);
+        assert_eq!(icons.all_icon(), "≡");
+        assert_eq!(icons.status_icon(&PaneStatus::Running), "●");
+    }
+
+    #[test]
+    fn per_icon_overrides_take_precedence_over_preset() {
+        let mut opts = HashMap::new();
+        opts.insert(tmux::SIDEBAR_ICON_SET.into(), "nerd".into());
+        opts.insert(tmux::SIDEBAR_ICON_RUNNING.into(), "◉".into());
+
+        let icons = StatusIcons::from_options(&opts);
+        assert_eq!(icons.status_icon(&PaneStatus::Running), "◉");
+        assert_eq!(icons.status_icon(&PaneStatus::Idle), "\u{f10c}");
     }
 }
