@@ -112,12 +112,14 @@ export const TmuxAgentSidebar = async ({ directory }) => {
           // the UserMessage parts. When both fire, the empty-prompt call
           // here is a no-op for @pane_prompt (handler guard) but still
           // advances status to "running" for cases where chat.message is
-          // delayed or missing (e.g. retry → busy).
+          // delayed or missing (e.g. retry → busy). `idle` needs no mapping:
+          // opencode publishes `session.idle` alongside every
+          // `session.status {idle}`, and that event already routes to
+          // `stop` — handling both would fire the stop hook twice per
+          // turn end.
           const statusType = props.status?.type;
           if (statusType === "busy") {
             hook("user-prompt-submit", { cwd, session_id, prompt: "" });
-          } else if (statusType === "idle") {
-            hook("stop", { cwd, session_id, last_message: "" });
           }
           return;
         }

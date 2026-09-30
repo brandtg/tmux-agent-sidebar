@@ -11,9 +11,9 @@ surface is similar to Codex but with a different event source.
 ### Status and prompts
 
 - Live status from `session.created` / `session.status` / `session.idle`
-- Prompt text from `session.status=active`
+- Prompt text from `chat.message`
 - Response preview (`▷ ...`) from `stop`
-- Elapsed time since the last prompt
+- Elapsed time for the current turn: starts at the last user prompt and keeps counting across responses, retries, and permission waits until OpenCode goes idle
 
 ### Attention cues
 

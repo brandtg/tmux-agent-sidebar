@@ -29,7 +29,15 @@ pub(in crate::cli::hook) fn on_user_prompt_submit(
         tmux::set_pane_option(pane, tmux::PANE_PROMPT, &p);
         tmux::set_pane_option(pane, tmux::PANE_PROMPT_SOURCE, "user");
     }
-    tmux::set_pane_option(pane, tmux::PANE_STARTED_AT, &now_epoch_secs().to_string());
+    // Only a real user turn restarts the run clock. Synthetic empty-prompt
+    // submissions — OpenCode fires one per assistant response via
+    // `session.status busy` — must keep an existing clock running, or the
+    // elapsed timer resets on every response instead of spanning the turn.
+    // An empty prompt still stamps a missing clock so recovery paths
+    // (retry → busy with no chat.message) start timing.
+    if !prompt.is_empty() || tmux::get_pane_option_value(pane, tmux::PANE_STARTED_AT).is_empty() {
+        tmux::set_pane_option(pane, tmux::PANE_STARTED_AT, &now_epoch_secs().to_string());
+    }
     tmux::unset_pane_option(pane, tmux::PANE_WAIT_REASON);
     0
 }
@@ -225,6 +233,84 @@ mod tests {
             Some("npm run dev"),
             "bg command must survive a new user turn — the shell is still running",
         );
+    }
+
+    #[test]
+    fn on_user_prompt_submit_empty_prompt_preserves_running_clock() {
+        // OpenCode fires a synthetic empty-prompt submission on every
+        // assistant response (session.status busy). The run clock must
+        // span the whole turn, not restart per response.
+        let _guard = tmux::test_mock::install();
+        let pane = "%PROMPT_KEEP_CLOCK";
+        tmux::test_mock::set(pane, tmux::PANE_STATUS, "running");
+        tmux::test_mock::set(pane, tmux::PANE_STARTED_AT, "1700000000");
+        let ctx = AgentContext {
+            agent: "opencode",
+            cwd: "/repo",
+            permission_mode: "default",
+            worktree: &None,
+            session_id: &None,
+        };
+        let exit = on_user_prompt_submit(pane, &ctx, "");
+        assert_eq!(exit, 0);
+        assert_eq!(
+            tmux::test_mock::get(pane, tmux::PANE_STARTED_AT).as_deref(),
+            Some("1700000000"),
+            "empty-prompt submission must not restart an existing run clock"
+        );
+        assert_eq!(
+            tmux::test_mock::get(pane, tmux::PANE_STATUS).as_deref(),
+            Some("running")
+        );
+    }
+
+    #[test]
+    fn on_user_prompt_submit_empty_prompt_stamps_missing_clock() {
+        // Recovery path: retry → busy with no chat.message seen, so no
+        // clock exists yet — stamp one.
+        let _guard = tmux::test_mock::install();
+        let pane = "%PROMPT_RECOVER_CLOCK";
+        let ctx = AgentContext {
+            agent: "opencode",
+            cwd: "/repo",
+            permission_mode: "default",
+            worktree: &None,
+            session_id: &None,
+        };
+        let exit = on_user_prompt_submit(pane, &ctx, "");
+        assert_eq!(exit, 0);
+        assert!(tmux::test_mock::contains(pane, tmux::PANE_STARTED_AT));
+        assert_eq!(
+            tmux::test_mock::get(pane, tmux::PANE_STATUS).as_deref(),
+            Some("running")
+        );
+    }
+
+    #[test]
+    fn on_user_prompt_submit_real_prompt_restarts_running_clock() {
+        // A genuine user message (chat.message / Claude UserPromptSubmit)
+        // restarts the clock even while one is already running — a queued
+        // prompt starts a new turn.
+        let _guard = tmux::test_mock::install();
+        let pane = "%PROMPT_RESTART_CLOCK";
+        tmux::test_mock::set(pane, tmux::PANE_STATUS, "running");
+        tmux::test_mock::set(pane, tmux::PANE_STARTED_AT, "1700000000");
+        let ctx = AgentContext {
+            agent: "opencode",
+            cwd: "/repo",
+            permission_mode: "default",
+            worktree: &None,
+            session_id: &None,
+        };
+        let exit = on_user_prompt_submit(pane, &ctx, "follow-up prompt");
+        assert_eq!(exit, 0);
+        let stamped = tmux::test_mock::get(pane, tmux::PANE_STARTED_AT);
+        assert_ne!(
+            stamped.as_deref(),
+            Some("1700000000"),
+            "real prompt must restart the run clock"
+        );
+        assert!(stamped.is_some());
     }
 
     #[test]
