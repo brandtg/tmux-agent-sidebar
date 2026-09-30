@@ -177,12 +177,12 @@ impl AppState {
     /// Returns whether the sidebar's window is the active tmux window.
     pub fn refresh(&mut self) -> bool {
         self.refresh_now();
-        // Inside a popup the pseudo-pane id in `TMUX_PANE` is not
-        // addressable by `display-message`, so `get_sidebar_pane_info`
-        // would always report unfocused/inactive. A popup always holds
-        // keyboard focus while open, and reporting inactive would trip
-        // the per-tick global-option reload in the event loop after two
-        // ticks, so both are forced true in popup mode.
+        // Inside a popup `TMUX_PANE` is the window's active pane at
+        // popup-open time, not the sidebar itself, and the popup always
+        // holds keyboard focus while open — so `get_sidebar_pane_info`'s
+        // focus/active report is not meaningful here. Reporting inactive
+        // would trip the per-tick global-option reload in the event loop
+        // after two ticks, so both are forced true in popup mode.
         let (focused, window_active, _, _) = if self.popup_mode {
             (true, true, 0, 0)
         } else {

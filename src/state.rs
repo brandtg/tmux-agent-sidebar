@@ -137,10 +137,11 @@ pub struct AppState {
     /// from the `@sidebar_pet` tmux option. Defaults to `false`.
     pub pet_enabled: bool,
     /// Running inside a tmux popup on a narrow (mobile) viewport. Set by
-    /// the `toggle` subcommand via `SIDEBAR_POPUP=1`. The popup's
-    /// pseudo-pane is not addressable by `display-message`, so popup mode
-    /// also forces window-active/focused semantics and hides the bottom
-    /// panel (activity/git tabs) to keep the compact viewport readable.
+    /// the `toggle` subcommand via `SIDEBAR_POPUP=1`. The popup anchors to
+    /// the window's active pane but always holds keyboard focus itself, so
+    /// popup mode also forces window-active/focused semantics and hides
+    /// the bottom panel (activity/git tabs) to keep the compact viewport
+    /// readable.
     pub popup_mode: bool,
 }
 

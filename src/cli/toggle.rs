@@ -313,13 +313,21 @@ fn should_use_popup(max_width_setting: &str, window_width: u32) -> bool {
 /// re-invocation as a "modify" and ignores the command, so the toggle
 /// key is a no-op while the popup is up (verified on tmux 3.7c, where
 /// `-C` also suppresses the new command when no popup exists).
-fn open_popup(window_id: &str, start_directory: &str) -> i32 {
-    let self_bin = std::env::current_exe()
-        .ok()
-        .and_then(|p| p.to_str().map(|s| s.to_string()))
-        .unwrap_or_else(|| "tmux-agent-sidebar".to_string());
-
-    let opened = tmux::run_tmux(&[
+/// Build the `display-popup` argv for the mobile popup sidebar. When
+/// `active_pane` is non-empty, `TMUX_PANE` is pinned to it: tmux does not
+/// set `TMUX_PANE` for popup children at all (a popup has no real pane;
+/// verified on tmux 3.7c), so without the override the TUI's startup guard
+/// in `main.rs` exits 1 immediately and `-E` tears the popup down before it
+/// is ever drawn. Anchoring to the window's active pane also lets
+/// pane-addressed queries (focus tracking, git polling, worktree spawn)
+/// resolve inside the popup.
+fn popup_command(
+    window_id: &str,
+    start_directory: &str,
+    self_bin: &str,
+    active_pane: &str,
+) -> Vec<String> {
+    let mut args: Vec<String> = [
         "display-popup",
         "-E",
         "-w",
@@ -330,11 +338,31 @@ fn open_popup(window_id: &str, start_directory: &str) -> i32 {
         start_directory,
         "-e",
         "SIDEBAR_POPUP=1",
-        "-t",
-        window_id,
-        &self_bin,
-    ])
-    .is_some();
+    ]
+    .iter()
+    .copied()
+    .map(String::from)
+    .collect();
+    if !active_pane.is_empty() {
+        args.push("-e".to_string());
+        args.push(format!("TMUX_PANE={active_pane}"));
+    }
+    args.push("-t".to_string());
+    args.push(window_id.to_string());
+    args.push(self_bin.to_string());
+    args
+}
+
+fn open_popup(window_id: &str, start_directory: &str) -> i32 {
+    let self_bin = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.to_str().map(|s| s.to_string()))
+        .unwrap_or_else(|| "tmux-agent-sidebar".to_string());
+
+    let active_pane = tmux::display_message(window_id, "#{pane_id}");
+    let args = popup_command(window_id, start_directory, &self_bin, &active_pane);
+    let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
+    let opened = tmux::run_tmux(&arg_refs).is_some();
 
     if opened { 0 } else { 1 }
 }
@@ -573,6 +601,49 @@ mod tests {
         // A failed `#{window_width}` query must not silently switch the
         // user's desktop sidebar into popup mode.
         assert!(!should_use_popup("", 0));
+    }
+
+    #[test]
+    fn popup_command_pins_active_pane_as_tmux_pane() {
+        // Without this override the popup'd TUI never starts: display-popup
+        // leaves TMUX_PANE unset, so main.rs's startup guard exits 1 and -E
+        // closes the popup instantly (the "mobile toggle flashes and exits 1"
+        // regression).
+        let args = popup_command("@5", "~", "/bin/tmux-agent-sidebar", "%9");
+        let expected = [
+            "display-popup",
+            "-E",
+            "-w",
+            "90%",
+            "-h",
+            "90%",
+            "-d",
+            "~",
+            "-e",
+            "SIDEBAR_POPUP=1",
+            "-e",
+            "TMUX_PANE=%9",
+            "-t",
+            "@5",
+            "/bin/tmux-agent-sidebar",
+        ];
+        assert_eq!(args, expected);
+    }
+
+    #[test]
+    fn popup_command_skips_tmux_pane_when_unresolved() {
+        // Pane resolution failing means the window is already gone; the
+        // launch itself will fail on the target, so do not pass a bogus
+        // empty TMUX_PANE=.
+        let args = popup_command("@5", "~", "/bin/tmux-agent-sidebar", "");
+        assert!(
+            !args.iter().any(|arg| arg.starts_with("TMUX_PANE=")),
+            "unexpected TMUX_PANE override: {args:?}"
+        );
+        assert_eq!(
+            args.last().map(String::as_str),
+            Some("/bin/tmux-agent-sidebar")
+        );
     }
 
     // ─── should_kill_window ───────────────────────────────────────────
