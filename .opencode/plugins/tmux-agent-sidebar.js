@@ -94,6 +94,15 @@ export const TmuxAgentSidebar = async ({ directory }) => {
       switch (event.type) {
         case "session.created":
           hook("session-start", { cwd, session_id, source: "startup" });
+          hook("session-title", { cwd, session_id, title: props.info?.title ?? "" });
+          return;
+
+        // The session doc (including its title) changes outside of
+        // session.created — opencode auto-titles from the first
+        // exchange and applies manual renames later. Forward the
+        // current title on every update so the sidebar tracks it.
+        case "session.updated":
+          hook("session-title", { cwd, session_id, title: props.info?.title ?? "" });
           return;
 
         case "session.status": {

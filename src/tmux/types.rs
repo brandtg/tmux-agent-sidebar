@@ -20,6 +20,10 @@ pub struct PaneInfo {
     pub pane_pid: Option<u32>,
     pub worktree: WorktreeMetadata,
     pub session_id: Option<String>,
+    /// Row title. Two sources: `@pane_session_title` (hook-provided,
+    /// e.g. opencode) parsed straight from tmux, or the `session_id →
+    /// name` map (Claude `/rename` labels) applied each tick by
+    /// `refresh_session_names`, which leaves hook-provided titles alone.
     pub session_name: String,
     /// `true` when the window this pane lives in was created by the
     /// sidebar's spawn flow (via the `@agent-sidebar-spawned` window

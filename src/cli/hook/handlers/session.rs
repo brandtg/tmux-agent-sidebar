@@ -46,6 +46,38 @@ pub(in crate::cli::hook) fn on_session_start(
     0
 }
 
+pub(in crate::cli::hook) fn on_session_title(
+    pane: &str,
+    title: &str,
+    session_id: Option<&str>,
+) -> i32 {
+    // Subagents share the parent's `$TMUX_PANE`; a child's session-title
+    // event must not overwrite the parent pane's title.
+    if !pane_writes_allowed(pane) {
+        return 0;
+    }
+    let Some(sid) = session_id.filter(|sid| !sid.is_empty()) else {
+        return 0;
+    };
+    // Accept when the pane already tracks this session, or when no
+    // session has claimed the pane yet — the shim emits the title and the
+    // location-setting events as two unordered spawns, so the title may
+    // land before `@pane_session_id` exists. A title belonging to a
+    // DIFFERENT session than the tracked one is dropped; the pane switch
+    // path (`sync_pane_location`) clears the stale option when it writes
+    // the new id, and the next `session.updated` delivers the new title.
+    let tracked = tmux::get_pane_option_value(pane, tmux::PANE_SESSION_ID);
+    if !tracked.is_empty() && tracked != sid {
+        return 0;
+    }
+    if title.is_empty() {
+        tmux::unset_pane_option(pane, tmux::PANE_SESSION_TITLE);
+    } else {
+        tmux::set_pane_option(pane, tmux::PANE_SESSION_TITLE, title);
+    }
+    0
+}
+
 pub(in crate::cli::hook) fn on_session_end(
     pane: &str,
     agent_name: &str,
@@ -358,5 +390,96 @@ mod tests {
                 "stamp must record the session-end fingerprint, got {raw}"
             );
         }
+    }
+
+    #[test]
+    fn on_session_title_sets_option_for_tracked_session() {
+        let _guard = tmux::test_mock::install();
+        let pane = "%TITLE_MATCH";
+        tmux::test_mock::set(pane, tmux::PANE_SESSION_ID, "ses-1");
+
+        let exit = on_session_title(pane, "Fix the login flow", Some("ses-1"));
+
+        assert_eq!(exit, 0);
+        assert_eq!(
+            tmux::test_mock::get(pane, tmux::PANE_SESSION_TITLE).as_deref(),
+            Some("Fix the login flow")
+        );
+    }
+
+    #[test]
+    fn on_session_title_accepts_when_no_session_tracked_yet() {
+        // The shim emits session-start and session-title as two
+        // unordered spawns; on a fresh pane the title can land before
+        // @pane_session_id exists and must not be dropped.
+        let _guard = tmux::test_mock::install();
+        let pane = "%TITLE_RACE";
+
+        let exit = on_session_title(pane, "New session", Some("ses-1"));
+
+        assert_eq!(exit, 0);
+        assert_eq!(
+            tmux::test_mock::get(pane, tmux::PANE_SESSION_TITLE).as_deref(),
+            Some("New session")
+        );
+    }
+
+    #[test]
+    fn on_session_title_drops_foreign_session() {
+        // The pane is already tracking ses-1; a title for ses-2 must
+        // not latch onto it.
+        let _guard = tmux::test_mock::install();
+        let pane = "%TITLE_FOREIGN";
+        tmux::test_mock::set(pane, tmux::PANE_SESSION_ID, "ses-1");
+        tmux::test_mock::set(pane, tmux::PANE_SESSION_TITLE, "old title");
+
+        let exit = on_session_title(pane, "other session", Some("ses-2"));
+
+        assert_eq!(exit, 0);
+        assert_eq!(
+            tmux::test_mock::get(pane, tmux::PANE_SESSION_TITLE).as_deref(),
+            Some("old title"),
+            "a title from another session must not overwrite the current one"
+        );
+    }
+
+    #[test]
+    fn on_session_title_skipped_while_subagents_active() {
+        let _guard = tmux::test_mock::install();
+        let pane = "%TITLE_SUBAGENT";
+        tmux::test_mock::set(pane, tmux::PANE_SESSION_ID, "ses-1");
+        tmux::test_mock::set(pane, tmux::PANE_SUBAGENTS, "Explore:sub-1");
+
+        let exit = on_session_title(pane, "child title", Some("ses-1"));
+
+        assert_eq!(exit, 0);
+        assert!(
+            !tmux::test_mock::contains(pane, tmux::PANE_SESSION_TITLE),
+            "child session-title events must not write the parent pane's title"
+        );
+    }
+
+    #[test]
+    fn on_session_title_without_session_id_is_dropped() {
+        let _guard = tmux::test_mock::install();
+        let pane = "%TITLE_NO_SID";
+
+        let exit = on_session_title(pane, "orphan", None);
+
+        assert_eq!(exit, 0);
+        assert!(!tmux::test_mock::contains(pane, tmux::PANE_SESSION_TITLE));
+    }
+
+    #[test]
+    fn on_session_title_empty_clears_option() {
+        let _guard = tmux::test_mock::install();
+        let pane = "%TITLE_EMPTY";
+        tmux::test_mock::set(pane, tmux::PANE_SESSION_ID, "ses-1");
+        tmux::test_mock::set(pane, tmux::PANE_SESSION_TITLE, "stale");
+
+        let exit = on_session_title(pane, "", Some("ses-1"));
+
+        assert_eq!(exit, 0);
+        assert!(!tmux::test_mock::contains(pane, tmux::PANE_SESSION_TITLE));
     }
 }

@@ -47,6 +47,7 @@ Pane options written to tmux:
 | `@pane_worktree_name` | SessionStart | Worktree name (if applicable) |
 | `@pane_worktree_branch` | SessionStart | Worktree branch (if applicable) |
 | `@pane_session_id` | SessionStart, UserPromptSubmit, Notification, Stop, StopFailure, PermissionDenied, CwdChanged | Agent-reported session id (skipped when subagents are active) |
+| `@pane_session_title` | opencode `session.created` / `session.updated` (via the plugin shim) | Agent session title. Parsed straight into `PaneInfo.session_name` and rendered as the row title; takes precedence over the `/rename` name map, which only covers Claude Code. Cleared when the pane switches sessions or its metadata is torn down. |
 
 In-memory per-pane runtime state. Every field lives inside
 `PaneRuntimeState` so the whole record is dropped together when its

@@ -29,6 +29,16 @@ pub enum AgentEvent {
         agent_id: Option<String>,
         session_id: Option<String>,
     },
+    /// Agent-reported session title (opencode `session.created` /
+    /// `session.updated`). Written to `@pane_session_title` and rendered
+    /// as the row title. Carries only identity fields — it must never
+    /// mutate status or attention.
+    SessionTitle {
+        agent: String,
+        cwd: String,
+        session_id: Option<String>,
+        title: String,
+    },
     SessionEnd {
         end_reason: String,
     },
@@ -126,6 +136,7 @@ impl AgentEvent {
     pub fn kind(&self) -> AgentEventKind {
         match self {
             Self::SessionStart { .. } => AgentEventKind::SessionStart,
+            Self::SessionTitle { .. } => AgentEventKind::SessionTitle,
             Self::SessionEnd { .. } => AgentEventKind::SessionEnd,
             Self::UserPromptSubmit { .. } => AgentEventKind::UserPromptSubmit,
             Self::Notification { .. } => AgentEventKind::Notification,

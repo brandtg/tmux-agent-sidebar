@@ -5,6 +5,7 @@
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum AgentEventKind {
     SessionStart,
+    SessionTitle,
     SessionEnd,
     UserPromptSubmit,
     Notification,
@@ -28,6 +29,7 @@ impl AgentEventKind {
     /// `all_contains_every_variant` test below.
     pub const ALL: &'static [Self] = &[
         Self::SessionStart,
+        Self::SessionTitle,
         Self::SessionEnd,
         Self::UserPromptSubmit,
         Self::Notification,
@@ -51,6 +53,7 @@ impl AgentEventKind {
     pub const fn external_name(self) -> &'static str {
         match self {
             Self::SessionStart => "session-start",
+            Self::SessionTitle => "session-title",
             Self::SessionEnd => "session-end",
             Self::UserPromptSubmit => "user-prompt-submit",
             Self::Notification => "notification",
@@ -89,6 +92,7 @@ mod tests {
         for kind in AgentEventKind::ALL {
             match kind {
                 AgentEventKind::SessionStart
+                | AgentEventKind::SessionTitle
                 | AgentEventKind::SessionEnd
                 | AgentEventKind::UserPromptSubmit
                 | AgentEventKind::Notification
@@ -106,7 +110,7 @@ mod tests {
                 | AgentEventKind::WorktreeRemove => {}
             }
         }
-        assert_eq!(AgentEventKind::ALL.len(), 16);
+        assert_eq!(AgentEventKind::ALL.len(), 17);
     }
 
     #[test]

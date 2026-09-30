@@ -7,8 +7,8 @@ use super::commands::run_tmux;
 use super::options::{
     PANE_AGENT, PANE_ATTENTION, PANE_BG_CMD, PANE_CWD, PANE_NAME, PANE_PENDING_SESSION_END,
     PANE_PENDING_WORKTREE_REMOVE, PANE_PERMISSION_MODE, PANE_PROMPT, PANE_PROMPT_SOURCE, PANE_ROLE,
-    PANE_SESSION_ID, PANE_STARTED_AT, PANE_STATUS, PANE_SUBAGENTS, PANE_WAIT_REASON,
-    PANE_WORKTREE_BRANCH, PANE_WORKTREE_NAME, unset_pane_option,
+    PANE_SESSION_ID, PANE_SESSION_TITLE, PANE_STARTED_AT, PANE_STATUS, PANE_SUBAGENTS,
+    PANE_WAIT_REASON, PANE_WORKTREE_BRANCH, PANE_WORKTREE_NAME, unset_pane_option,
 };
 use super::types::{
     AgentType, CODEX_AGENT, PaneInfo, PaneStatus, PermissionMode, SessionInfo, WindowInfo,
@@ -28,7 +28,7 @@ mod session_line_field {
     /// Index where the per-pane field suffix consumed by `parse_pane_line` begins.
     pub const PANE_LINE_OFFSET: usize = 6;
     /// Minimum number of fields a valid `pane_format()` line must contain.
-    pub const MIN_FIELDS: usize = 28;
+    pub const MIN_FIELDS: usize = 29;
 }
 
 // Indices into the pane-line suffix that `parse_pane_line` operates on.
@@ -57,9 +57,10 @@ pub(super) mod pane_line_field {
     pub const SESSION_ID: usize = 19; // absolute 25 (@pane_session_id)
     pub const SIDEBAR_SPAWNED: usize = 20; // absolute 26 (@agent-sidebar-spawned)
     pub const BG_CMD: usize = 21; // absolute 27 (@pane_bg_cmd)
+    pub const SESSION_TITLE: usize = 22; // absolute 28 (@pane_session_title)
     /// Minimum number of fields the pane-line suffix must contain.
     /// Equals `session_line_field::MIN_FIELDS - PANE_LINE_OFFSET`.
-    pub const MIN_FIELDS: usize = 22;
+    pub const MIN_FIELDS: usize = 23;
 }
 
 /// Build the tmux `list-panes -F` format used by [`query_sessions`].
@@ -95,6 +96,7 @@ fn pane_format() -> String {
         q(PANE_SESSION_ID),
         q(SPAWNED_OPTION),
         q(PANE_BG_CMD),
+        q(PANE_SESSION_TITLE),
     ]
     .join("|")
 }
@@ -337,7 +339,9 @@ fn parse_pane_fields_with_processes(
             branch: parts[pane_line_field::WORKTREE_BRANCH].to_string(),
         },
         session_id,
-        session_name: String::new(),
+        // `@pane_session_title` (opencode) lands here directly; Claude's
+        // `/rename` labels are applied later from the polled name map.
+        session_name: parts[pane_line_field::SESSION_TITLE].to_string(),
         sidebar_spawned: parts[pane_line_field::SIDEBAR_SPAWNED] == "1",
         bg_shell_cmd: {
             let raw = &parts[pane_line_field::BG_CMD];
@@ -370,6 +374,7 @@ fn clear_agent_pane_state(pane_id: &str) {
         PANE_WORKTREE_NAME,
         PANE_WORKTREE_BRANCH,
         PANE_SESSION_ID,
+        PANE_SESSION_TITLE,
         PANE_PENDING_SESSION_END,
         PANE_PENDING_WORKTREE_REMOVE,
         PANE_STARTED_AT,
@@ -793,6 +798,7 @@ mod tests {
             "",                   // 19: @pane_session_id
             "",                   // 20: @agent-sidebar-spawned
             "",                   // 21: @pane_bg_cmd
+            "",                   // 22: @pane_session_title
         ]
     }
 
@@ -860,11 +866,11 @@ mod tests {
             "15 fields should be rejected"
         );
 
-        // 21 fields — still rejected (need 22 including @pane_bg_cmd).
-        let fields_21 = "1|running||claude|name|/path|fish||%1|prompt|user|1700000000||12345|Explore|/cwd|auto||||";
+        // 22 fields — still rejected (need 23 including @pane_session_title).
+        let fields_22 = "1|running||claude|name|/path|fish||%1|prompt|user|1700000000||12345|Explore|/cwd|auto|||||";
         assert!(
-            parse_pane_line(fields_21).is_none(),
-            "21 fields should be rejected"
+            parse_pane_line(fields_22).is_none(),
+            "22 fields should be rejected"
         );
     }
 
@@ -885,6 +891,21 @@ mod tests {
             pane.bg_shell_cmd.is_none(),
             "empty @pane_bg_cmd should parse as None"
         );
+    }
+
+    #[test]
+    fn parse_pane_line_reads_session_title_field() {
+        let mut fields = full_fields();
+        fields[pane_line_field::SESSION_TITLE] = "Fix the login flow";
+        let pane = parse_pane_line(&make_pane_line(&fields)).unwrap();
+        assert_eq!(
+            pane.session_name, "Fix the login flow",
+            "@pane_session_title should surface as the row title"
+        );
+
+        fields[pane_line_field::SESSION_TITLE] = "";
+        let pane = parse_pane_line(&make_pane_line(&fields)).unwrap();
+        assert!(pane.session_name.is_empty());
     }
 
     #[test]
@@ -1249,9 +1270,10 @@ mod tests {
         // 17:@pane_started_at|18:@pane_wait_reason|19:pane_pid|
         // 20:@pane_subagents|21:@pane_cwd|22:@pane_permission_mode|
         // 23:@pane_worktree_name|24:@pane_worktree_branch|
-        // 25:@pane_session_id|26:@agent-sidebar-spawned|27:@pane_bg_cmd
-        // 28 total fields (MIN_FIELDS = 28)
-        let mut fields: Vec<&str> = vec![""; 28];
+        // 25:@pane_session_id|26:@agent-sidebar-spawned|27:@pane_bg_cmd|
+        // 28:@pane_session_title
+        // 29 total fields (MIN_FIELDS = 29)
+        let mut fields: Vec<&str> = vec![""; 29];
         fields[0] = session_name;
         fields[1] = "@0"; // window_id
         fields[3] = "win"; // window_name

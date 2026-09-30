@@ -54,6 +54,9 @@ fn handle_event(pane: &str, agent_name: &str, event: AgentEvent) -> i32 {
             &context::make_ctx(&agent, &cwd, &permission_mode, &worktree, &session_id),
             &source,
         ),
+        AgentEvent::SessionTitle {
+            session_id, title, ..
+        } => handlers::on_session_title(pane, &title, session_id.as_deref()),
         AgentEvent::SessionEnd { end_reason } => {
             let notifications = notification_settings();
             handlers::on_session_end(pane, agent_name, &end_reason, &notifications)

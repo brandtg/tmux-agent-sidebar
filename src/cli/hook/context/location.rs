@@ -63,8 +63,20 @@ pub(in crate::cli::hook) fn sync_pane_location(
         return;
     }
     match session_id.as_deref() {
-        Some(sid) if !sid.is_empty() => tmux::set_pane_option(pane, tmux::PANE_SESSION_ID, sid),
-        _ => tmux::unset_pane_option(pane, tmux::PANE_SESSION_ID),
+        Some(sid) if !sid.is_empty() => {
+            // Pane switched sessions: drop the previous session's title so
+            // it cannot outlive the session that set it. The replacement
+            // arrives via a later session-title event.
+            let prev = tmux::get_pane_option_value(pane, tmux::PANE_SESSION_ID);
+            if !prev.is_empty() && prev != sid {
+                tmux::unset_pane_option(pane, tmux::PANE_SESSION_TITLE);
+            }
+            tmux::set_pane_option(pane, tmux::PANE_SESSION_ID, sid);
+        }
+        _ => {
+            tmux::unset_pane_option(pane, tmux::PANE_SESSION_ID);
+            tmux::unset_pane_option(pane, tmux::PANE_SESSION_TITLE);
+        }
     }
     if !cwd.is_empty() {
         let effective_cwd = resolve_cwd(cwd, worktree);

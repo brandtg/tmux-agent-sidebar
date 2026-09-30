@@ -70,6 +70,12 @@ impl EventAdapter for OpenCodeAdapter {
                 agent_id: None,
                 session_id: optional_str(input, "session_id"),
             }),
+            "session-title" => Some(AgentEvent::SessionTitle {
+                agent: OPENCODE_AGENT.into(),
+                cwd: json_str(input, "cwd").into(),
+                session_id: optional_str(input, "session_id"),
+                title: json_str(input, "title").into(),
+            }),
             "user-prompt-submit" => Some(AgentEvent::UserPromptSubmit {
                 agent: OPENCODE_AGENT.into(),
                 cwd: json_str(input, "cwd").into(),
@@ -151,6 +157,30 @@ mod tests {
                 worktree: None,
                 agent_id: None,
                 session_id: Some("ses-1".into()),
+            }
+        );
+    }
+
+    #[test]
+    fn session_title() {
+        let adapter = OpenCodeAdapter;
+        let event = adapter
+            .parse(
+                "session-title",
+                &json!({
+                    "cwd": "/tmp",
+                    "session_id": "ses-1",
+                    "title": "Fix the login flow"
+                }),
+            )
+            .unwrap();
+        assert_eq!(
+            event,
+            AgentEvent::SessionTitle {
+                agent: OPENCODE_AGENT.into(),
+                cwd: "/tmp".into(),
+                session_id: Some("ses-1".into()),
+                title: "Fix the login flow".into(),
             }
         );
     }

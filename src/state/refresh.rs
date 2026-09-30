@@ -177,9 +177,17 @@ impl AppState {
     /// sidebar can render `/rename`-assigned labels. The map itself is
     /// refreshed off-thread by `session_poll_loop` in `main.rs`; this
     /// function only consumes the cached snapshot.
+    ///
+    /// A pane whose `session_name` is already non-empty carries a
+    /// hook-provided title (`@pane_session_title`, e.g. opencode) that
+    /// the tmux parse filled in; it outranks the map, which only covers
+    /// Claude Code, so it is left untouched.
     fn refresh_session_names(&mut self) {
         for group in &mut self.repo_groups {
             for (pane, _) in &mut group.panes {
+                if !pane.session_name.is_empty() {
+                    continue;
+                }
                 if let Some(sid) = &pane.session_id
                     && let Some(name) = self.sessions.names.get(sid)
                 {
@@ -873,20 +881,37 @@ mod tests {
     }
 
     #[test]
-    fn refresh_session_names_clears_stale_label_when_session_id_missing() {
-        // Pane already has a label from a previous tick, but its
-        // session_id no longer appears in the cached map (e.g. the
-        // session JSON file was deleted). The label must be cleared so
-        // the UI does not show a name for a session that is gone.
+    fn refresh_session_names_leaves_label_empty_when_session_id_missing() {
+        // Pane's session_id does not appear in the cached map (e.g. the
+        // session JSON file was deleted). Starting from the empty slate
+        // a fresh tmux parse produces, the label must stay empty so the
+        // UI does not show a name for a session that is gone.
         let mut state = state_with_panes(vec![pane_with_session("%1", "sess-gone")]);
-        state.repo_groups[0].panes[0].0.session_name = "old-label".into();
         // session_names is empty — no entry for sess-gone.
 
         state.refresh_session_names();
 
         assert!(
             state.repo_groups[0].panes[0].0.session_name.is_empty(),
-            "stale session_name must be cleared when the cache no longer has it"
+            "session_name must stay empty when the cache has no entry"
+        );
+    }
+
+    #[test]
+    fn refresh_session_names_preserves_hook_provided_title() {
+        // A non-empty session_name after the tmux parse is a
+        // hook-provided title (`@pane_session_title`, e.g. opencode).
+        // The `/rename` map must not overwrite or clear it, even when
+        // the map has no entry for the pane's session.
+        let mut state = state_with_panes(vec![pane_with_session("%1", "ses-opencode")]);
+        state.repo_groups[0].panes[0].0.session_name = "Fix the login flow".into();
+        // session_names is empty — the map only covers Claude.
+
+        state.refresh_session_names();
+
+        assert_eq!(
+            state.repo_groups[0].panes[0].0.session_name, "Fix the login flow",
+            "hook-provided titles must survive the map application"
         );
     }
 
@@ -969,20 +994,19 @@ mod tests {
     }
 
     #[test]
-    fn refresh_session_names_clears_label_for_pane_with_no_session_id() {
-        // Pane has a session_name set but no session_id (e.g. a
-        // non-Claude agent or a pane that has not reported one yet).
-        // The function must not preserve a label that no longer ties
-        // to a known session.
+    fn refresh_session_names_preserves_hook_title_for_pane_with_no_session_id() {
+        // Hook-provided titles are self-contained: the pane's tmux
+        // option was written by the same hook flow that owns the
+        // session id, so a missing session_id must not strip the title.
         let mut state = state_with_panes(vec![test_pane("%1")]);
         state.repo_groups[0].panes[0].0.session_name = "stray".into();
         state.sessions.names.insert("sess-a".into(), "alpha".into());
 
         state.refresh_session_names();
 
-        assert!(
-            state.repo_groups[0].panes[0].0.session_name.is_empty(),
-            "pane without session_id must end up with an empty session_name"
+        assert_eq!(
+            state.repo_groups[0].panes[0].0.session_name, "stray",
+            "hook-provided titles must not depend on the session_id map"
         );
     }
 }
