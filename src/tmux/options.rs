@@ -15,8 +15,10 @@ pub const PANE_AGENT: &str = "@pane_agent";
 /// Optional human-readable pane label. Currently queried to preserve
 /// the `list-panes` field layout, but not rendered.
 pub const PANE_NAME: &str = "@pane_name";
-/// Visual attention flag (`notification` / `clear`) that lights up
-/// the row when a hook wants the user's eye.
+/// Visual attention flag that lights up the row when a hook wants the
+/// user's eye: `notification` (waiting / permission / teammate idle)
+/// or `done` (finished turn the user hasn't looked at yet). The
+/// sidebar clears it when the user focuses the pane.
 pub const PANE_ATTENTION: &str = "@pane_attention";
 /// Hook-reported working directory, preferred over tmux's
 /// `pane_current_path` for repo grouping.

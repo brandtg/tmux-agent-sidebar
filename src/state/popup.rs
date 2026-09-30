@@ -472,14 +472,16 @@ mod tests {
     use super::super::{NoticesCopyTarget, RepoFilter};
     use super::*;
     use crate::group::{PaneGitInfo, RepoGroup};
-    use crate::tmux::{AgentType, PaneInfo, PaneStatus, PermissionMode, WorktreeMetadata};
+    use crate::tmux::{
+        AgentType, PaneAttention, PaneInfo, PaneStatus, PermissionMode, WorktreeMetadata,
+    };
 
     fn test_pane(id: &str) -> PaneInfo {
         PaneInfo {
             pane_id: id.into(),
             pane_active: false,
             status: PaneStatus::Running,
-            attention: false,
+            attention: PaneAttention::None,
             agent: AgentType::Claude,
             path: "/tmp".into(),
             current_command: String::new(),

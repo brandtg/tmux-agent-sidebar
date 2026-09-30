@@ -22,7 +22,7 @@ tmux show -t "$pane_id" -pv @pane_agent
 | Key                        | Value                                                              |
 | -------------------------- | ------------------------------------------------------------------ |
 | `@pane_status`             | `running` / `background` / `waiting` / `idle` / `error` / empty    |
-| `@pane_attention`          | `1` while the pane is flagged for attention, otherwise empty        |
+| `@pane_attention`          | `notification` while a hook wants attention (waiting / permission), `done` while a finished turn is unseen; empty otherwise. The sidebar clears it when you focus the pane. |
 | `@pane_agent`              | `claude` / `codex` / `opencode` / empty                             |
 | `@pane_name`               | Friendly agent/session name (from `/rename` on Claude)              |
 | `@pane_role`               | `sidebar` for the sidebar pane itself; empty for agent panes        |

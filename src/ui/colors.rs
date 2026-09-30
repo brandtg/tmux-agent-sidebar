@@ -1,6 +1,6 @@
 use ratatui::style::Color;
 
-use crate::tmux::{self, AgentType, PaneStatus};
+use crate::tmux::{self, AgentType, PaneAttention, PaneStatus};
 
 /// Runtime color theme, loaded from tmux @sidebar_color_* variables on startup.
 /// Overrides may be xterm-256 indexes or six-digit RGB hex values.
@@ -146,10 +146,7 @@ impl ColorTheme {
         theme
     }
 
-    pub fn status_color(&self, status: &PaneStatus, attention: bool) -> Color {
-        if attention {
-            return self.status_waiting;
-        }
+    pub fn status_color(&self, status: &PaneStatus) -> Color {
         match status {
             PaneStatus::Running => self.status_running,
             PaneStatus::Background => self.status_running,
@@ -157,6 +154,21 @@ impl ColorTheme {
             PaneStatus::Idle => self.status_idle,
             PaneStatus::Error => self.status_error,
             PaneStatus::Unknown => self.status_unknown,
+        }
+    }
+
+    /// Icon color for an attention flag, or `None` when the pane has
+    /// no flag and should fall back to `status_color`. `Done` breathes
+    /// green on the 200ms spinner tick so an unseen finished turn reads
+    /// as "flashing, come look" until the pane is focused.
+    pub fn attention_color(&self, attention: PaneAttention, spinner_frame: usize) -> Option<Color> {
+        match attention {
+            PaneAttention::None => None,
+            PaneAttention::Notification => Some(self.status_waiting),
+            PaneAttention::Done => {
+                let idx = crate::DONE_PULSE[spinner_frame % crate::DONE_PULSE.len()];
+                Some(Color::Indexed(idx))
+            }
         }
     }
 
@@ -195,20 +207,31 @@ mod tests {
     use ratatui::style::Color;
 
     #[test]
-    fn status_color_attention_overrides() {
+    fn attention_color_none_is_transparent() {
         let theme = ColorTheme::default();
-        // attention=true should always return status_waiting regardless of status
+        assert_eq!(theme.attention_color(PaneAttention::None, 0), None);
+    }
+
+    #[test]
+    fn attention_color_notification_is_waiting() {
+        let theme = ColorTheme::default();
         assert_eq!(
-            theme.status_color(&PaneStatus::Idle, true),
-            theme.status_waiting
+            theme.attention_color(PaneAttention::Notification, 3),
+            Some(theme.status_waiting)
         );
+    }
+
+    #[test]
+    fn attention_color_done_cycles_green_pulse() {
+        let theme = ColorTheme::default();
+        let first = theme.attention_color(PaneAttention::Done, 0).unwrap();
+        let peak = theme.attention_color(PaneAttention::Done, 3).unwrap();
+        assert_eq!(first, Color::Indexed(22), "pulse starts dark");
+        assert_eq!(peak, Color::Indexed(114), "pulse peaks at running green");
+        // The cycle repeats once past the end of the table.
         assert_eq!(
-            theme.status_color(&PaneStatus::Running, true),
-            theme.status_waiting
-        );
-        assert_eq!(
-            theme.status_color(&PaneStatus::Error, true),
-            theme.status_waiting
+            theme.attention_color(PaneAttention::Done, 6).unwrap(),
+            first
         );
     }
 
@@ -216,23 +239,17 @@ mod tests {
     fn status_color_normal() {
         let theme = ColorTheme::default();
         assert_eq!(
-            theme.status_color(&PaneStatus::Running, false),
+            theme.status_color(&PaneStatus::Running),
             Color::Indexed(114)
         );
         assert_eq!(
-            theme.status_color(&PaneStatus::Waiting, false),
+            theme.status_color(&PaneStatus::Waiting),
             Color::Indexed(221)
         );
+        assert_eq!(theme.status_color(&PaneStatus::Idle), Color::Indexed(110));
+        assert_eq!(theme.status_color(&PaneStatus::Error), Color::Indexed(167));
         assert_eq!(
-            theme.status_color(&PaneStatus::Idle, false),
-            Color::Indexed(110)
-        );
-        assert_eq!(
-            theme.status_color(&PaneStatus::Error, false),
-            Color::Indexed(167)
-        );
-        assert_eq!(
-            theme.status_color(&PaneStatus::Unknown, false),
+            theme.status_color(&PaneStatus::Unknown),
             Color::Indexed(244)
         );
     }

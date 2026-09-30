@@ -2,12 +2,39 @@ pub const CLAUDE_AGENT: &str = "claude";
 pub const CODEX_AGENT: &str = "codex";
 pub const OPENCODE_AGENT: &str = "opencode";
 
+/// Visual attention state stored in `@pane_attention`. `Notification`
+/// means a hook wants the user's eye right now (waiting / permission /
+/// teammate idle); `Done` means the agent finished its turn and the
+/// user has not looked at the output yet. Both clear when the user
+/// focuses the pane (sidebar-side) or on the next lifecycle hook.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum PaneAttention {
+    #[default]
+    None,
+    Notification,
+    Done,
+}
+
+impl PaneAttention {
+    /// Parse the `@pane_attention` value written by hooks. Any
+    /// non-empty unknown value still counts as attention (legacy
+    /// `notification` semantics), so an older hook string can never
+    /// silently drop a flag.
+    pub fn from_label(s: &str) -> Self {
+        match s {
+            "done" => Self::Done,
+            "" => Self::None,
+            _ => Self::Notification,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct PaneInfo {
     pub pane_id: String,
     pub pane_active: bool,
     pub status: PaneStatus,
-    pub attention: bool,
+    pub attention: PaneAttention,
     pub agent: AgentType,
     pub path: String,
     pub current_command: String,
@@ -197,6 +224,22 @@ mod tests {
         assert_eq!(PaneStatus::Idle.icon(), "○");
         assert_eq!(PaneStatus::Error.icon(), "✕");
         assert_eq!(PaneStatus::Unknown.icon(), "·");
+    }
+
+    #[test]
+    fn pane_attention_from_label_all_values() {
+        assert_eq!(PaneAttention::from_label(""), PaneAttention::None);
+        assert_eq!(
+            PaneAttention::from_label("notification"),
+            PaneAttention::Notification
+        );
+        assert_eq!(PaneAttention::from_label("done"), PaneAttention::Done);
+        // Unknown non-empty values keep the legacy "any flag = attention"
+        // contract instead of silently dropping the indicator.
+        assert_eq!(
+            PaneAttention::from_label("something-else"),
+            PaneAttention::Notification
+        );
     }
 
     #[test]

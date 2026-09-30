@@ -201,7 +201,9 @@ mod tests {
     use super::*;
     use crate::activity::{TaskProgress, TaskStatus};
     use crate::group::{PaneGitInfo, RepoGroup};
-    use crate::tmux::{AgentType, PaneInfo, PaneStatus, PermissionMode, WorktreeMetadata};
+    use crate::tmux::{
+        AgentType, PaneAttention, PaneInfo, PaneStatus, PermissionMode, WorktreeMetadata,
+    };
     use std::fs;
 
     /// Reset filter click debounce so the next `handle_filter_click` is not ignored.
@@ -215,7 +217,7 @@ mod tests {
             pane_id: id.into(),
             pane_active: false,
             status: PaneStatus::Running,
-            attention: false,
+            attention: PaneAttention::None,
             agent: AgentType::Claude,
             path: "/tmp".into(),
             current_command: String::new(),

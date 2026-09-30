@@ -8,7 +8,7 @@ use tmux_agent_sidebar::state::{
     AppState, BottomTab, Focus, GlobalState, PopupState, RepoFilter, RowTarget, StatusFilter,
 };
 use tmux_agent_sidebar::tmux::{
-    self, AgentType, PaneInfo, PaneStatus, SessionInfo, WindowInfo, WorktreeMetadata,
+    self, AgentType, PaneAttention, PaneInfo, PaneStatus, SessionInfo, WindowInfo, WorktreeMetadata,
 };
 use tmux_agent_sidebar::worktree;
 
@@ -104,7 +104,7 @@ fn test_line_to_row_two_agents() {
         pane_id: "%1".into(),
         pane_active: true,
         status: PaneStatus::Running,
-        attention: false,
+        attention: PaneAttention::None,
         agent: AgentType::Claude,
         path: "/home/user/project".into(),
         current_command: String::new(),
@@ -125,7 +125,7 @@ fn test_line_to_row_two_agents() {
         pane_id: "%2".into(),
         pane_active: false,
         status: PaneStatus::Idle,
-        attention: false,
+        attention: PaneAttention::None,
         agent: AgentType::Codex,
         path: "/home/user/project".into(),
         current_command: String::new(),

@@ -19,8 +19,9 @@ pub(super) fn status_row(
     let theme = ctx.theme;
 
     let (icon, pulse_color) = running_icon_for(&pane.status, spinner_frame, icons);
-    let icon_color =
-        pulse_color.unwrap_or_else(|| theme.status_color(&pane.status, pane.attention));
+    let icon_color = pulse_color
+        .or_else(|| theme.attention_color(pane.attention, spinner_frame))
+        .unwrap_or_else(|| theme.status_color(&pane.status));
     let title_raw: &str = if pane.session_name.is_empty() {
         pane.agent.label()
     } else {

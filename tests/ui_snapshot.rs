@@ -6,7 +6,8 @@ use tmux_agent_sidebar::activity::{ActivityEntry, TaskProgress, TaskStatus};
 use tmux_agent_sidebar::group::{PaneGitInfo, RepoGroup};
 use tmux_agent_sidebar::state::{Focus, PopupState, RepoFilter, StatusFilter};
 use tmux_agent_sidebar::tmux::{
-    AgentType, PaneInfo, PaneStatus, PermissionMode, SessionInfo, WindowInfo, WorktreeMetadata,
+    AgentType, PaneAttention, PaneInfo, PaneStatus, PermissionMode, SessionInfo, WindowInfo,
+    WorktreeMetadata,
 };
 
 // ─── UI Snapshot Tests ─────────────────────────────────────────────
@@ -14,6 +15,39 @@ use tmux_agent_sidebar::tmux::{
 #[test]
 fn snapshot_single_agent_idle_ui() {
     let pane = make_pane(AgentType::Claude, PaneStatus::Idle);
+    let mut state = make_state(vec![SessionInfo {
+        session_name: "main".into(),
+        windows: vec![WindowInfo {
+            window_id: "@1".into(),
+            window_name: "project".into(),
+            window_active: true,
+            auto_rename: false,
+            panes: vec![pane.clone()],
+        }],
+    }]);
+    state.repo_groups = vec![make_repo_group("project", vec![pane])];
+    state.rebuild_row_targets();
+
+    let output = render_to_string(&mut state, 28, 25);
+    insta::assert_snapshot!(output, @r"
+     ≡1  ●0  ◎0  ◐0  ○1  ✕0
+    ⓘ                        — ▾
+    ┃ ○ claude
+        Waiting for prompt…
+    ╭ Activity │ Git ──────────╮
+    │      No activity yet     │
+    ╰──────────────────────────╯
+    ");
+}
+
+// The done-unseen indicator is purely a color pulse on the status icon
+// (asserted in color_tests), so this snapshot locks the text layout:
+// a finished, unseen pane must render exactly like an idle one apart
+// from the glyph color.
+#[test]
+fn snapshot_done_unseen_pane_matches_idle_layout() {
+    let mut pane = make_pane(AgentType::Claude, PaneStatus::Idle);
+    pane.attention = PaneAttention::Done;
     let mut state = make_state(vec![SessionInfo {
         session_name: "main".into(),
         windows: vec![WindowInfo {
@@ -327,7 +361,7 @@ fn snapshot_two_agents_same_window_ui() {
         pane_id: "%1".into(),
         pane_active: true,
         status: PaneStatus::Running,
-        attention: false,
+        attention: PaneAttention::None,
         agent: AgentType::Claude,
         path: "/home/user/project".into(),
         current_command: String::new(),
@@ -348,7 +382,7 @@ fn snapshot_two_agents_same_window_ui() {
         pane_id: "%2".into(),
         pane_active: false,
         status: PaneStatus::Idle,
-        attention: false,
+        attention: PaneAttention::None,
         agent: AgentType::Codex,
         path: "/home/user/project".into(),
         current_command: String::new(),

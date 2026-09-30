@@ -254,14 +254,14 @@ mod tests {
     // ─── AppState status_counts / repo_names ─────────────────────────
 
     use crate::group::{PaneGitInfo, RepoGroup};
-    use crate::tmux::{AgentType, PaneInfo, PermissionMode, WorktreeMetadata};
+    use crate::tmux::{AgentType, PaneAttention, PaneInfo, PermissionMode, WorktreeMetadata};
 
     fn test_pane(id: &str, status: PaneStatus) -> PaneInfo {
         PaneInfo {
             pane_id: id.into(),
             pane_active: false,
             status,
-            attention: false,
+            attention: PaneAttention::None,
             agent: AgentType::Claude,
             path: "/tmp".into(),
             current_command: String::new(),

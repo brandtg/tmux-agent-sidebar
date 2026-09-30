@@ -20,4 +20,8 @@ pub mod worktree;
 
 pub const SPINNER_ICON: &str = "●";
 pub const SPINNER_PULSE: &[u8] = &[82, 78, 114, 150, 186, 150, 114, 78];
+/// Breathing green cycle for the "done and unseen" indicator: the idle
+/// glyph fades between near-black and the running green on the 200ms
+/// spinner tick until the user focuses the pane.
+pub const DONE_PULSE: &[u8] = &[22, 28, 34, 114, 34, 28];
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

@@ -42,7 +42,6 @@ pub(in crate::cli::hook) fn on_stop(
     notifications: &desktop_notification::DesktopNotificationSettings,
 ) -> i32 {
     set_agent_meta(pane, ctx);
-    set_attention(pane, "clear");
     if !last_message.is_empty() {
         let msg = sanitize_tmux_value(last_message);
         tmux::set_pane_option(pane, tmux::PANE_PROMPT, &msg);
@@ -62,6 +61,11 @@ pub(in crate::cli::hook) fn on_stop(
     }
     mark_task_reset(pane);
     set_status(pane, resolve_stop_status(bg_shell_live));
+    // Flag the finished turn for attention AFTER set_status, which
+    // clears attention for `idle`. The sidebar clears the flag when the
+    // user focuses the pane; a new prompt / activity clears it on the
+    // hook side.
+    set_attention(pane, "done");
 
     if !bg_shell_live {
         let run_id = notification_run_id(pane);
@@ -288,6 +292,37 @@ mod tests {
             Some("idle")
         );
         assert!(!tmux::test_mock::contains(pane, tmux::PANE_STARTED_AT));
+    }
+
+    #[test]
+    fn on_stop_flags_done_attention_for_unseen_turn() {
+        let _guard = tmux::test_mock::install();
+        let pane = "%STOP_DONE";
+        tmux::test_mock::set(pane, tmux::PANE_ATTENTION, "notification");
+        let ctx = AgentContext {
+            agent: "claude",
+            cwd: "/repo",
+            permission_mode: "default",
+            worktree: &None,
+            session_id: &None,
+        };
+
+        on_stop(
+            pane,
+            &ctx,
+            "all finished",
+            None,
+            &desktop_notification::DesktopNotificationSettings {
+                enabled: false,
+                events: Default::default(),
+            },
+        );
+
+        assert_eq!(
+            tmux::test_mock::get(pane, tmux::PANE_ATTENTION).as_deref(),
+            Some("done"),
+            "Stop must leave the pane flagged done-unseen; the sidebar clears it on focus",
+        );
     }
 
     #[test]

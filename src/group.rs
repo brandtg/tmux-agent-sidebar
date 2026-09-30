@@ -159,6 +159,7 @@ fn resolve_git_path(base: &str, git_path: &str) -> std::path::PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tmux::PaneAttention;
 
     #[test]
     fn resolve_git_info_returns_none_for_empty_path() {
@@ -213,7 +214,7 @@ mod tests {
             pane_id: id.into(),
             pane_active: false,
             status: crate::tmux::PaneStatus::Running,
-            attention: false,
+            attention: PaneAttention::None,
             agent: crate::tmux::AgentType::Claude,
             path: path.into(),
             current_command: String::new(),

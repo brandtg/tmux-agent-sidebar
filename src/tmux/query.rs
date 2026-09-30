@@ -11,8 +11,8 @@ use super::options::{
     PANE_WAIT_REASON, PANE_WORKTREE_BRANCH, PANE_WORKTREE_NAME, unset_pane_option,
 };
 use super::types::{
-    AgentType, CODEX_AGENT, PaneInfo, PaneStatus, PermissionMode, SessionInfo, WindowInfo,
-    WorktreeMetadata,
+    AgentType, CODEX_AGENT, PaneAttention, PaneInfo, PaneStatus, PermissionMode, SessionInfo,
+    WindowInfo, WorktreeMetadata,
 };
 use crate::worktree::SPAWNED_OPTION;
 
@@ -344,7 +344,7 @@ fn parse_pane_fields_with_processes(
     Some(PaneInfo {
         pane_active: parts[pane_line_field::PANE_ACTIVE] == "1",
         status,
-        attention: !parts[pane_line_field::PANE_ATTENTION].is_empty(),
+        attention: PaneAttention::from_label(&parts[pane_line_field::PANE_ATTENTION]),
         agent,
         path,
         current_command: parts[pane_line_field::PANE_CURRENT_COMMAND].to_string(),
@@ -614,7 +614,7 @@ mod tests {
             pane_id: id.into(),
             pane_active: false,
             status: PaneStatus::Idle,
-            attention: false,
+            attention: PaneAttention::None,
             agent: AgentType::Codex,
             path: "/tmp".into(),
             current_command: String::new(),
@@ -934,6 +934,22 @@ mod tests {
         let line = make_pane_line(&fields);
         let pane = parse_pane_line(&line).unwrap();
         assert!(pane.prompt_is_response);
+    }
+
+    #[test]
+    fn parse_pane_line_reads_attention_field() {
+        let mut fields = full_fields();
+        fields[2] = ""; // @pane_attention unset
+        let pane = parse_pane_line(&make_pane_line(&fields)).unwrap();
+        assert_eq!(pane.attention, PaneAttention::None);
+
+        fields[2] = "notification";
+        let pane = parse_pane_line(&make_pane_line(&fields)).unwrap();
+        assert_eq!(pane.attention, PaneAttention::Notification);
+
+        fields[2] = "done";
+        let pane = parse_pane_line(&make_pane_line(&fields)).unwrap();
+        assert_eq!(pane.attention, PaneAttention::Done);
     }
 
     #[test]
@@ -1274,7 +1290,7 @@ mod tests {
                     pane_id: "%1".into(),
                     pane_active: true,
                     status: PaneStatus::Running,
-                    attention: false,
+                    attention: PaneAttention::None,
                     agent: AgentType::Claude,
                     path: "/repo".into(),
                     current_command: String::new(),

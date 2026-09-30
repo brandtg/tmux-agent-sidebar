@@ -5,7 +5,9 @@ use ratatui::style::Color;
 use test_helpers::*;
 use tmux_agent_sidebar::activity::{ActivityEntry, TaskProgress, TaskStatus};
 use tmux_agent_sidebar::state::{BottomTab, Focus};
-use tmux_agent_sidebar::tmux::{AgentType, PaneStatus, PermissionMode, SessionInfo, WindowInfo};
+use tmux_agent_sidebar::tmux::{
+    AgentType, PaneAttention, PaneStatus, PermissionMode, SessionInfo, WindowInfo,
+};
 use tmux_agent_sidebar::ui::colors::ColorTheme;
 
 // ─── ColorTheme Default Values ──────────────────────────────────────
@@ -63,23 +65,17 @@ fn test_status_color_all_variants() {
     let theme = ColorTheme::default();
 
     assert_eq!(
-        theme.status_color(&PaneStatus::Running, false),
+        theme.status_color(&PaneStatus::Running),
         Color::Indexed(114)
     );
     assert_eq!(
-        theme.status_color(&PaneStatus::Waiting, false),
+        theme.status_color(&PaneStatus::Waiting),
         Color::Indexed(221)
     );
+    assert_eq!(theme.status_color(&PaneStatus::Idle), Color::Indexed(110));
+    assert_eq!(theme.status_color(&PaneStatus::Error), Color::Indexed(167));
     assert_eq!(
-        theme.status_color(&PaneStatus::Idle, false),
-        Color::Indexed(110)
-    );
-    assert_eq!(
-        theme.status_color(&PaneStatus::Error, false),
-        Color::Indexed(167)
-    );
-    assert_eq!(
-        theme.status_color(&PaneStatus::Unknown, false),
+        theme.status_color(&PaneStatus::Unknown),
         Color::Indexed(244)
     );
 }
@@ -88,21 +84,31 @@ fn test_status_color_all_variants() {
 fn test_status_color_attention_overrides_all() {
     let theme = ColorTheme::default();
 
-    // attention=true should always return status_waiting regardless of status
-    for status in &[
-        PaneStatus::Running,
-        PaneStatus::Waiting,
-        PaneStatus::Idle,
-        PaneStatus::Error,
-        PaneStatus::Unknown,
-    ] {
-        assert_eq!(
-            theme.status_color(status, true),
-            theme.status_waiting,
-            "attention=true should override {:?} to waiting color",
-            status
-        );
-    }
+    // Notification attention always renders in the waiting color.
+    assert_eq!(
+        theme.attention_color(PaneAttention::Notification, 3),
+        Some(theme.status_waiting),
+        "notification attention should render in the waiting color"
+    );
+    // Done attention breathes green instead, ending back at the start
+    // of the cycle.
+    assert_eq!(
+        theme.attention_color(PaneAttention::Done, 0),
+        Some(Color::Indexed(22)),
+        "done attention should start the pulse dark"
+    );
+    assert_eq!(
+        theme.attention_color(PaneAttention::Done, 3),
+        Some(Color::Indexed(114)),
+        "done attention should peak at the running green"
+    );
+    assert_eq!(
+        theme.attention_color(PaneAttention::Done, 6),
+        theme.attention_color(PaneAttention::Done, 0),
+        "done attention should wrap its pulse cycle"
+    );
+    // No flag → no attention color, caller falls back to status_color.
+    assert_eq!(theme.attention_color(PaneAttention::None, 2), None);
 }
 
 // ─── agent_color() for all AgentType variants ───────────────────────
@@ -1118,7 +1124,7 @@ fn test_idle_status_color_in_output() {
 fn test_unknown_status_color_in_output() {
     let theme = tmux_agent_sidebar::ui::colors::ColorTheme::default();
     assert_eq!(
-        theme.status_color(&PaneStatus::Unknown, false),
+        theme.status_color(&PaneStatus::Unknown),
         ratatui::style::Color::Indexed(244)
     );
 }

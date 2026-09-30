@@ -14,7 +14,7 @@ pub(super) fn render_filter_bar<'a>(state: &AppState) -> Line<'a> {
     let icons = &state.icons;
     let (all, running, background, waiting, idle, error) = state.status_counts();
 
-    let icon_for = |s: PaneStatus| (icons.status_icon(&s), theme.status_color(&s, false));
+    let icon_for = |s: PaneStatus| (icons.status_icon(&s), theme.status_color(&s));
     let items: Vec<(StatusFilter, (&str, ratatui::style::Color), usize)> = vec![
         (StatusFilter::All, (icons.all_icon(), theme.status_all), all),
         (
@@ -112,6 +112,7 @@ use crate::group::PaneGitInfo;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tmux::PaneAttention;
     use ratatui::style::Modifier;
 
     fn line_text(line: &Line<'_>) -> String {
@@ -233,7 +234,7 @@ mod tests {
             pane_id: "%2".into(),
             pane_active: true,
             status: PaneStatus::Running,
-            attention: false,
+            attention: PaneAttention::None,
             agent: crate::tmux::AgentType::Claude,
             path: String::new(),
             current_command: String::new(),
@@ -254,7 +255,7 @@ mod tests {
             pane_id: "%3".into(),
             pane_active: false,
             status: PaneStatus::Idle,
-            attention: false,
+            attention: PaneAttention::None,
             agent: crate::tmux::AgentType::Codex,
             path: String::new(),
             current_command: String::new(),

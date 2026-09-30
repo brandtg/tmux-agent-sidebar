@@ -99,7 +99,7 @@ pub(super) fn render_pane_lines_with_ports(
 mod tests {
     use super::*;
     use crate::group::PaneGitInfo;
-    use crate::tmux::{AgentType, PaneInfo, PermissionMode, WorktreeMetadata};
+    use crate::tmux::{AgentType, PaneAttention, PaneInfo, PermissionMode, WorktreeMetadata};
     use crate::ui::icons::StatusIcons;
     use crate::ui::text::display_width;
     use ratatui::style::{Color, Modifier};
@@ -118,7 +118,7 @@ mod tests {
             pane_id: "%1".into(),
             pane_active: false,
             status,
-            attention: false,
+            attention: PaneAttention::None,
             agent: AgentType::Codex,
             path: "/tmp/project".into(),
             current_command: String::new(),

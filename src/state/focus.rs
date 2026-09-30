@@ -146,14 +146,16 @@ mod tests {
 
     use crate::group::{PaneGitInfo, RepoGroup};
     use crate::state::layout::RowTarget;
-    use crate::tmux::{AgentType, PaneInfo, PaneStatus, PermissionMode, WorktreeMetadata};
+    use crate::tmux::{
+        AgentType, PaneAttention, PaneInfo, PaneStatus, PermissionMode, WorktreeMetadata,
+    };
 
     fn test_pane(id: &str) -> PaneInfo {
         PaneInfo {
             pane_id: id.into(),
             pane_active: false,
             status: PaneStatus::Running,
-            attention: false,
+            attention: PaneAttention::None,
             agent: AgentType::Claude,
             path: "/tmp".into(),
             current_command: String::new(),

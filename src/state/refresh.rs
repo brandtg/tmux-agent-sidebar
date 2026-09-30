@@ -4,7 +4,7 @@ use std::time::Duration;
 use crate::activity::{self, TaskProgress};
 use crate::cli::sanitize_tmux_value;
 use crate::process::ProcessSnapshot;
-use crate::tmux::{self, PaneStatus, SessionInfo};
+use crate::tmux::{self, PaneAttention, PaneStatus, SessionInfo};
 
 use super::AppState;
 
@@ -90,6 +90,37 @@ impl AppState {
         self.find_focused_pane();
     }
 
+    /// Focus counts as "seen": when the user is looking at an agent
+    /// pane, drop its `@pane_attention` flag (a pending notification or
+    /// an unseen finished turn) so the indicator only survives while the
+    /// output is genuinely unread. Skipped while the sidebar itself
+    /// holds focus — reading the list is not reading the output — and
+    /// the previously focused pane id is then stale by design.
+    fn mark_focused_pane_seen(&mut self) {
+        if self.focus_state.sidebar_focused {
+            return;
+        }
+        let Some(pane_id) = self.focus_state.focused_pane_id.clone() else {
+            return;
+        };
+        let flagged = self
+            .pane_by_id(&pane_id)
+            .is_some_and(|pane| pane.attention != PaneAttention::None);
+        if !flagged {
+            return;
+        }
+        tmux::unset_pane_option(&pane_id, tmux::PANE_ATTENTION);
+        if let Some(pane) = self
+            .repo_groups
+            .iter_mut()
+            .flat_map(|g| g.panes.iter_mut())
+            .map(|(pane, _)| pane)
+            .find(|pane| pane.pane_id == pane_id)
+        {
+            pane.attention = PaneAttention::None;
+        }
+    }
+
     fn clear_dead_agent_metadata(pane_id: &str) {
         for key in &[
             tmux::PANE_AGENT,
@@ -169,6 +200,7 @@ impl AppState {
         } else {
             self.apply_session_snapshot(focused, sessions);
         }
+        self.mark_focused_pane_seen();
         // `apply_session_snapshot` rebuilds `repo_groups` from a fresh tmux
         // query, and every freshly parsed `PaneInfo` carries an empty
         // `session_name`. Guarding the re-application on `dirty` therefore
@@ -478,7 +510,8 @@ fn is_cmd_token_byte(b: u8) -> bool {
 mod tests {
     use super::*;
     use crate::tmux::{
-        AgentType, PaneInfo, PaneStatus, PermissionMode, SessionInfo, WindowInfo, WorktreeMetadata,
+        AgentType, PaneAttention, PaneInfo, PaneStatus, PermissionMode, SessionInfo, WindowInfo,
+        WorktreeMetadata,
     };
 
     fn test_pane(id: &str) -> PaneInfo {
@@ -486,7 +519,7 @@ mod tests {
             pane_id: id.into(),
             pane_active: false,
             status: PaneStatus::Running,
-            attention: false,
+            attention: PaneAttention::None,
             agent: AgentType::Claude,
             path: "/tmp".into(),
             current_command: String::new(),
@@ -1018,5 +1051,113 @@ mod tests {
             state.repo_groups[0].panes[0].0.session_name, "stray",
             "hook-provided titles must not depend on the session_id map"
         );
+    }
+
+    // ─── mark_focused_pane_seen ─────────────────────────────────────
+
+    fn pane_with_attention(id: &str, attention: PaneAttention) -> PaneInfo {
+        let mut p = test_pane(id);
+        p.attention = attention;
+        p
+    }
+
+    #[test]
+    fn mark_focused_pane_seen_clears_done_flag_on_focus() {
+        let _guard = tmux::test_mock::install();
+        let pane_id = "%FOCUSED_DONE";
+        tmux::test_mock::set(pane_id, tmux::PANE_ATTENTION, "done");
+        let mut state = state_with_panes(vec![pane_with_attention(pane_id, PaneAttention::Done)]);
+        state.focus_state.sidebar_focused = false;
+        state.focus_state.focused_pane_id = Some(pane_id.into());
+
+        state.mark_focused_pane_seen();
+
+        assert!(
+            !tmux::test_mock::contains(pane_id, tmux::PANE_ATTENTION),
+            "focusing the pane must drop the done-unseen flag in tmux"
+        );
+        assert_eq!(
+            state.repo_groups[0].panes[0].0.attention,
+            PaneAttention::None,
+            "in-memory flag must clear so the same tick stops pulsing"
+        );
+    }
+
+    #[test]
+    fn mark_focused_pane_seen_clears_notification_flag_on_focus() {
+        let _guard = tmux::test_mock::install();
+        let pane_id = "%FOCUSED_WAITING";
+        tmux::test_mock::set(pane_id, tmux::PANE_ATTENTION, "notification");
+        let mut state = state_with_panes(vec![pane_with_attention(
+            pane_id,
+            PaneAttention::Notification,
+        )]);
+        state.focus_state.sidebar_focused = false;
+        state.focus_state.focused_pane_id = Some(pane_id.into());
+
+        state.mark_focused_pane_seen();
+
+        assert!(!tmux::test_mock::contains(pane_id, tmux::PANE_ATTENTION));
+        assert_eq!(
+            state.repo_groups[0].panes[0].0.attention,
+            PaneAttention::None
+        );
+    }
+
+    #[test]
+    fn mark_focused_pane_seen_skips_when_sidebar_holds_focus() {
+        let _guard = tmux::test_mock::install();
+        let pane_id = "%SIDEBAR_FOCUSED";
+        tmux::test_mock::set(pane_id, tmux::PANE_ATTENTION, "done");
+        let mut state = state_with_panes(vec![pane_with_attention(pane_id, PaneAttention::Done)]);
+        state.focus_state.sidebar_focused = true;
+        state.focus_state.focused_pane_id = Some(pane_id.into());
+
+        state.mark_focused_pane_seen();
+
+        assert!(
+            tmux::test_mock::contains(pane_id, tmux::PANE_ATTENTION),
+            "reading the sidebar list is not reading the output — flag must survive"
+        );
+        assert_eq!(
+            state.repo_groups[0].panes[0].0.attention,
+            PaneAttention::Done
+        );
+    }
+
+    #[test]
+    fn mark_focused_pane_seen_leaves_other_panes_flagged() {
+        let _guard = tmux::test_mock::install();
+        let flagged = "%UNSEEN_DONE";
+        tmux::test_mock::set(flagged, tmux::PANE_ATTENTION, "done");
+        let mut state = state_with_panes(vec![
+            pane_with_attention(flagged, PaneAttention::Done),
+            test_pane("%OTHER"),
+        ]);
+        state.focus_state.sidebar_focused = false;
+        state.focus_state.focused_pane_id = Some("%OTHER".into());
+
+        state.mark_focused_pane_seen();
+
+        assert!(
+            tmux::test_mock::contains(flagged, tmux::PANE_ATTENTION),
+            "focusing a different pane must not consume this pane's done flag"
+        );
+        assert_eq!(
+            state.repo_groups[0].panes[0].0.attention,
+            PaneAttention::Done
+        );
+    }
+
+    #[test]
+    fn mark_focused_pane_seen_ignores_unflagged_focused_pane() {
+        let _guard = tmux::test_mock::install();
+        let mut state = state_with_panes(vec![test_pane("%CLEAN")]);
+        state.focus_state.sidebar_focused = false;
+        state.focus_state.focused_pane_id = Some("%CLEAN".into());
+
+        state.mark_focused_pane_seen();
+
+        assert!(!tmux::test_mock::contains("%CLEAN", tmux::PANE_ATTENTION));
     }
 }
