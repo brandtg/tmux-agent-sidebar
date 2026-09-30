@@ -188,7 +188,18 @@ impl AppState {
         } else {
             tmux::get_sidebar_pane_info(&self.tmux_pane)
         };
-        let (mut sessions, mut process_snapshot) = tmux::query_sessions_with_process_snapshot();
+        let Some((mut sessions, mut process_snapshot)) =
+            tmux::query_sessions_with_process_snapshot()
+        else {
+            // A failed `list-panes` call is not evidence that no panes
+            // exist. Applying an empty snapshot here would prune every
+            // pane's runtime state, and `rebuild_row_targets` would reset
+            // the repo filter to All and persist that reset in a tmux
+            // global option — surviving restarts and propagating to every
+            // sidebar instance. Hold the last known-good snapshot instead
+            // and retry on the next tick.
+            return window_active;
+        };
         self.sweep_dead_bg_shells_if_due(&mut sessions, &mut process_snapshot);
         if let Some(process_snapshot) = self.refresh_port_data(&sessions, process_snapshot.as_ref())
         {
@@ -1180,6 +1191,40 @@ mod tests {
         assert_eq!(
             state.repo_groups[0].panes[0].0.session_name, "stray",
             "hook-provided titles must not depend on the session_id map"
+        );
+    }
+
+    // ─── refresh on tmux query failure ──────────────────────────────
+
+    #[test]
+    fn refresh_preserves_state_when_tmux_query_fails() {
+        // Regression: a failed `list-panes` call used to be applied as an
+        // empty snapshot, pruning all per-pane runtime state and letting
+        // `rebuild_row_targets` reset the repo filter to All — a reset
+        // that was then persisted in a tmux global option and survived
+        // restart. A transient failure must hold the previous snapshot.
+        let _tmux_down = crate::tmux::test_fail_tmux::install();
+        let mut state = state_with_panes(vec![test_pane("%1")]);
+        state.global.repo_filter = crate::state::RepoFilter::Repo("myrepo".into());
+        state.pane_state_mut("%1").ports = vec![3000];
+
+        let _ = state.refresh();
+
+        assert_eq!(
+            state.repo_groups.len(),
+            1,
+            "a failed query must not prune the previous snapshot's groups"
+        );
+        assert_eq!(state.repo_groups[0].panes[0].0.pane_id, "%1");
+        assert_eq!(
+            state.global.repo_filter,
+            crate::state::RepoFilter::Repo("myrepo".into()),
+            "a failed query must not reset the repo filter"
+        );
+        assert_eq!(
+            state.pane_state("%1").map(|s| s.ports.clone()),
+            Some(vec![3000]),
+            "a failed query must not wipe per-pane runtime state"
         );
     }
 

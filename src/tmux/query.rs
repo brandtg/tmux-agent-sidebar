@@ -114,21 +114,30 @@ type CodexPidEntry = (String, usize, u32);
 /// Query all sessions, windows, and panes in a single `tmux list-panes -a` call
 /// (plus one optional `ps` call for process-backed agent checks), instead of
 /// N+1 subprocess invocations.
+///
+/// A failed tmux invocation returns `None` so callers can distinguish "the
+/// query could not be answered" from "tmux answered: zero panes" — treating
+/// the two alike would let one transient failure wipe tracked pane state.
 pub fn query_sessions() -> Vec<SessionInfo> {
-    query_sessions_with_process_snapshot().0
+    query_sessions_with_process_snapshot().unwrap_or_default().0
 }
 
-pub(crate) fn query_sessions_with_process_snapshot() -> (Vec<SessionInfo>, Option<ProcessSnapshot>)
-{
+pub(crate) fn query_sessions_with_process_snapshot()
+-> Option<(Vec<SessionInfo>, Option<ProcessSnapshot>)> {
     let pane_format = pane_format();
-    let all_panes_output = match run_tmux(&["list-panes", "-a", "-F", &pane_format]) {
-        Some(s) => s,
-        None => return (vec![], None),
-    };
+    let all_panes_output = run_tmux(&["list-panes", "-a", "-F", &pane_format])?;
+    Some(build_sessions_from_output(&all_panes_output))
+}
 
-    let process_snapshot = process_snapshot_for_panes(&all_panes_output);
+/// Parse raw `list-panes` output into the session hierarchy plus process
+/// snapshot. An empty input is a legitimate "no panes" success here; the
+/// failure-vs-empty distinction happens in the caller.
+fn build_sessions_from_output(
+    all_panes_output: &str,
+) -> (Vec<SessionInfo>, Option<ProcessSnapshot>) {
+    let process_snapshot = process_snapshot_for_panes(all_panes_output);
     let (mut sessions_map, codex_pids) =
-        build_session_hierarchy(&all_panes_output, process_snapshot.as_ref());
+        build_session_hierarchy(all_panes_output, process_snapshot.as_ref());
     if !codex_pids.is_empty()
         && let Some(snapshot) = &process_snapshot
     {
@@ -1427,5 +1436,28 @@ mod tests {
             Some(0),
             "retained pane should be the zero-pid one"
         );
+    }
+
+    // ─── failure vs zero-panes ──────────────────────────────────────
+
+    #[test]
+    fn query_sessions_failure_is_not_zero_panes() {
+        // A failed `list-panes` call (server restarting, socket hiccup)
+        // must surface as `None` so the refresh loop can hold its last
+        // known-good snapshot instead of treating it as "no panes exist".
+        let _tmux_down = crate::tmux::test_fail_tmux::install();
+
+        assert!(query_sessions_with_process_snapshot().is_none());
+    }
+
+    #[test]
+    fn build_sessions_from_empty_output_is_success_with_zero_panes() {
+        // Empty output from a successful call is the legitimate
+        // "tmux answered: zero panes" case and must stay distinguishable
+        // from the failure case above.
+        let (sessions, process_snapshot) = build_sessions_from_output("");
+
+        assert!(sessions.is_empty());
+        assert!(process_snapshot.is_none());
     }
 }

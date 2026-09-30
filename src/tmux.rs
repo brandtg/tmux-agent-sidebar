@@ -43,4 +43,6 @@ pub use types::{
 };
 
 #[cfg(test)]
+pub use commands::test_fail_tmux;
+#[cfg(test)]
 pub use options::test_mock;
