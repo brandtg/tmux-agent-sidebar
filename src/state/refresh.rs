@@ -6,7 +6,7 @@ use crate::cli::sanitize_tmux_value;
 use crate::process::ProcessSnapshot;
 use crate::tmux::{self, PaneAttention, PaneStatus, SessionInfo};
 
-use super::AppState;
+use super::{AppState, PaneRuntimeMap};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum TaskProgressDecision {
@@ -192,10 +192,8 @@ impl AppState {
         self.sweep_dead_bg_shells_if_due(&mut sessions, &mut process_snapshot);
         if let Some(process_snapshot) = self.refresh_port_data(&sessions, process_snapshot.as_ref())
         {
-            let sessions = Self::filter_sessions_to_live_agent_panes(
-                sessions,
-                &process_snapshot.live_agent_panes,
-            );
+            let retain = self.panes_to_retain(&sessions, &process_snapshot.live_agent_panes);
+            let sessions = Self::filter_sessions_to_live_agent_panes(sessions, &retain);
             self.apply_session_snapshot(focused, sessions);
         } else {
             self.apply_session_snapshot(focused, sessions);
@@ -213,6 +211,33 @@ impl AppState {
         self.sessions.dirty = false;
         self.refresh_activity_data();
         window_active
+    }
+
+    /// Union of this scan's live agent panes and panes still inside the
+    /// dead-scan grace window (miss streak below the wipe threshold).
+    /// The row filter keeps the latter visible so one missed scan cannot
+    /// blink a live pane out of the list for the ~10s until the next
+    /// scan; only panes whose state was actually torn down (streak
+    /// reached [`REQUIRED_DEAD_SCANS`], entry removed) drop out here.
+    fn panes_to_retain(
+        &self,
+        sessions: &[SessionInfo],
+        live_agent_panes: &HashSet<String>,
+    ) -> HashSet<String> {
+        let mut retain = live_agent_panes.clone();
+        for session in sessions {
+            for window in &session.windows {
+                for pane in &window.panes {
+                    if self
+                        .pane_state(&pane.pane_id)
+                        .is_some_and(|state| state.dead_scan_streak > 0)
+                    {
+                        retain.insert(pane.pane_id.clone());
+                    }
+                }
+            }
+        }
+        retain
     }
 
     /// Apply the current `session_id → name` map to each pane so the
@@ -253,13 +278,9 @@ impl AppState {
         {
             let scanned = crate::port::scan_session_process_snapshot(sessions, process_snapshot)?;
             let mut updates: Vec<(String, Vec<u16>, Option<String>)> = Vec::new();
-            let mut dead_panes: Vec<String> = Vec::new();
             for session in sessions {
                 for window in &session.windows {
                     for pane in &window.panes {
-                        if !scanned.live_agent_panes.contains(&pane.pane_id) {
-                            dead_panes.push(pane.pane_id.clone());
-                        }
                         updates.push((
                             pane.pane_id.clone(),
                             scanned
@@ -277,6 +298,18 @@ impl AppState {
                 pane_state.ports = ports;
                 pane_state.command = command;
             }
+            // Wipe only after two consecutive scans missed the agent. A
+            // single scan can fail to see a live agent (ps timing,
+            // wrapper shim), and wiping on the first miss used to delete
+            // 14 `@pane_*` options plus the activity log every 10s while
+            // the agent was still running. Mirrors the guard
+            // `parse_pane_fields_with_processes` applies to Codex and
+            // OpenCode panes before their stale-state teardown.
+            let dead_panes = advance_dead_scan_streaks(
+                &mut self.pane_states,
+                sessions,
+                &scanned.live_agent_panes,
+            );
             for pane_id in dead_panes {
                 Self::clear_dead_agent_metadata(&pane_id);
                 self.clear_pane_state(&pane_id);
@@ -422,6 +455,40 @@ impl AppState {
         self.activity.entries = entries;
         self.activity.log_cache = current_mtime.map(|m| (pane_id.clone(), m));
     }
+}
+
+/// Consecutive dead scans required before the port-scan sweep tears down
+/// a pane's tmux metadata and activity log. Scans run every
+/// `PORT_REFRESH_INTERVAL`, so this is ~20s of confirmed absence; one
+/// missed scan only starts the streak.
+const REQUIRED_DEAD_SCANS: u32 = 2;
+
+/// Advance every pane's dead-scan streak against this scan's live set and
+/// return the pane ids whose streak reached [`REQUIRED_DEAD_SCANS`]. A
+/// pane found alive has its streak reset to zero, so only back-to-back
+/// misses confirm the agent is gone.
+fn advance_dead_scan_streaks(
+    pane_states: &mut PaneRuntimeMap,
+    sessions: &[SessionInfo],
+    live_agent_panes: &HashSet<String>,
+) -> Vec<String> {
+    let mut confirmed_dead = Vec::new();
+    for session in sessions {
+        for window in &session.windows {
+            for pane in &window.panes {
+                let state = pane_states.entry_mut(&pane.pane_id);
+                if live_agent_panes.contains(&pane.pane_id) {
+                    state.dead_scan_streak = 0;
+                } else {
+                    state.dead_scan_streak = state.dead_scan_streak.saturating_add(1);
+                    if state.dead_scan_streak >= REQUIRED_DEAD_SCANS {
+                        confirmed_dead.push(pane.pane_id.clone());
+                    }
+                }
+            }
+        }
+    }
+    confirmed_dead
 }
 
 pub(crate) fn sweep_dead_bg_shells(
@@ -874,6 +941,69 @@ mod tests {
         let filtered = AppState::filter_sessions_to_live_agent_panes(sessions, &live);
 
         assert!(filtered.is_empty());
+    }
+
+    // ─── dead-scan streak gate ──────────────────────────────────────
+
+    #[test]
+    fn advance_dead_scan_streaks_first_miss_does_not_confirm() {
+        let mut pane_states = PaneRuntimeMap::new();
+        let sessions = test_session(vec![test_pane("%1")]);
+
+        let dead = advance_dead_scan_streaks(&mut pane_states, &sessions, &HashSet::new());
+
+        assert!(dead.is_empty(), "one missed scan must not confirm death");
+        assert_eq!(pane_states.get("%1").unwrap().dead_scan_streak, 1);
+    }
+
+    #[test]
+    fn advance_dead_scan_streaks_second_consecutive_miss_confirms() {
+        let mut pane_states = PaneRuntimeMap::new();
+        let sessions = test_session(vec![test_pane("%1")]);
+
+        advance_dead_scan_streaks(&mut pane_states, &sessions, &HashSet::new());
+        let dead = advance_dead_scan_streaks(&mut pane_states, &sessions, &HashSet::new());
+
+        assert_eq!(dead, vec!["%1".to_string()]);
+    }
+
+    #[test]
+    fn advance_dead_scan_streaks_live_scan_resets_streak() {
+        let mut pane_states = PaneRuntimeMap::new();
+        let sessions = test_session(vec![test_pane("%1")]);
+        let live: HashSet<String> = HashSet::from(["%1".to_string()]);
+
+        advance_dead_scan_streaks(&mut pane_states, &sessions, &HashSet::new());
+        advance_dead_scan_streaks(&mut pane_states, &sessions, &live);
+        let dead = advance_dead_scan_streaks(&mut pane_states, &sessions, &HashSet::new());
+
+        assert!(
+            dead.is_empty(),
+            "a live scan in between must reset the streak"
+        );
+        assert_eq!(pane_states.get("%1").unwrap().dead_scan_streak, 1);
+    }
+
+    #[test]
+    fn panes_to_retain_keeps_grace_panes_drops_confirmed_dead() {
+        let mut state = state_with_panes(vec![test_pane("%1"), test_pane("%2"), test_pane("%3")]);
+        // %1 missed one scan (grace), %2 is live, %3 was wiped so its
+        // runtime entry — the streak counter with it — is gone.
+        state.pane_state_mut("%1").dead_scan_streak = 1;
+        let sessions = test_session(vec![test_pane("%1"), test_pane("%2"), test_pane("%3")]);
+        let live: HashSet<String> = HashSet::from(["%2".to_string()]);
+
+        let retain = state.panes_to_retain(&sessions, &live);
+
+        assert!(
+            retain.contains("%1"),
+            "a pane inside the grace window must stay visible until the second miss"
+        );
+        assert!(retain.contains("%2"));
+        assert!(
+            !retain.contains("%3"),
+            "a confirmed-dead pane (state torn down) must drop out of the list"
+        );
     }
 
     // ─── refresh_session_names ──────────────────────────────────────

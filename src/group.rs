@@ -160,6 +160,7 @@ fn resolve_git_path(base: &str, git_path: &str) -> std::path::PathBuf {
 mod tests {
     use super::*;
     use crate::tmux::PaneAttention;
+    use std::path::Path;
 
     #[test]
     fn resolve_git_info_returns_none_for_empty_path() {
@@ -171,26 +172,93 @@ mod tests {
 
     #[test]
     fn resolve_git_info_for_real_repo() {
-        // This test runs in the actual repo, so git commands work
+        // Smoke test against this checkout. Must hold in main checkouts
+        // and worktrees alike: repo_root intentionally resolves to the
+        // shared main-repo root, which differs from CARGO_MANIFEST_DIR
+        // when this crate itself is built in a linked worktree. The
+        // exact main-vs-worktree expectations live in the hermetic
+        // fixture tests below.
         let info = resolve_pane_git_info(env!("CARGO_MANIFEST_DIR"));
         assert!(info.repo_root.is_some(), "should detect git repo");
         assert!(info.branch.is_some(), "should detect branch");
-        let root = info.repo_root.unwrap();
-        let root = std::fs::canonicalize(&root).unwrap();
-        let manifest_dir = std::fs::canonicalize(env!("CARGO_MANIFEST_DIR")).unwrap();
-        assert_eq!(root, manifest_dir, "repo root should be manifest dir");
     }
 
     #[test]
     fn worktree_and_main_share_same_repo_root() {
-        // Both main and worktree should resolve to the same repo_root
-        // We can only test the main worktree here, but verify the logic is consistent
-        let info = resolve_pane_git_info(env!("CARGO_MANIFEST_DIR"));
+        // Linked worktrees must resolve to the main repo's root so panes
+        // from both checkouts collapse into one group, while the main
+        // checkout itself is not flagged as a worktree. Exercised on a
+        // hermetic fixture because CARGO_MANIFEST_DIR is only a main
+        // checkout in the primary clone — a worktree build would fail
+        // the !is_worktree assertion.
+        let (_tmp, main, worktree) = temp_repo_with_worktree();
+
+        let main_info = resolve_pane_git_info(main.to_str().unwrap());
         assert!(
-            !info.is_worktree,
+            !main_info.is_worktree,
             "main checkout should not be detected as worktree"
         );
-        assert!(info.repo_root.is_some());
+        assert!(main_info.branch.is_some());
+        let main_root =
+            std::fs::canonicalize(main_info.repo_root.expect("main repo root")).unwrap();
+
+        let wt_info = resolve_pane_git_info(worktree.to_str().unwrap());
+        assert!(wt_info.is_worktree, "linked worktree must be detected");
+        let wt_root =
+            std::fs::canonicalize(wt_info.repo_root.expect("worktree repo root")).unwrap();
+
+        assert_eq!(
+            wt_root, main_root,
+            "worktree and main must share the same repo root"
+        );
+    }
+
+    /// Build a hermetic git fixture: a main repo with one commit plus a
+    /// linked worktree, both inside one temp dir. Returns
+    /// `(temp_dir, main_repo_path, worktree_path)`; the temp dir cleans
+    /// itself up on drop.
+    fn temp_repo_with_worktree() -> (tempfile::TempDir, std::path::PathBuf, std::path::PathBuf) {
+        fn git_ok(dir: &Path, args: &[&str]) {
+            let output = std::process::Command::new("git")
+                .arg("-C")
+                .arg(dir)
+                .args(args)
+                .output()
+                .expect("spawn git");
+            assert!(
+                output.status.success(),
+                "git {args:?} failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+
+        let tmp = tempfile::tempdir().expect("temp dir");
+        let main = tmp.path().join("main-repo");
+        let worktree = tmp.path().join("linked-wt");
+
+        git_ok(tmp.path(), &["init", "-q", main.to_str().unwrap()]);
+        git_ok(
+            &main,
+            &[
+                "-c",
+                "user.name=test",
+                "-c",
+                "user.email=test@example.com",
+                "-c",
+                "commit.gpgsign=false",
+                "commit",
+                "--allow-empty",
+                "--no-verify",
+                "-m",
+                "init",
+            ],
+        );
+        git_ok(
+            &main,
+            &["worktree", "add", "-q", worktree.to_str().unwrap()],
+        );
+
+        (tmp, main, worktree)
     }
 
     // ─── resolve_git_path tests ─────────────────────────────────────
@@ -286,17 +354,18 @@ mod tests {
 
     #[test]
     fn group_panes_display_name_is_basename() {
-        let manifest_dir = env!("CARGO_MANIFEST_DIR");
-        let pane = test_pane("%1", manifest_dir);
+        // The group key is the repo root, so the display name is the
+        // main repo's basename. A hermetic fixture keeps the expected
+        // value stable: in a worktree checkout of this crate the
+        // manifest-dir basename is not the repo-root basename.
+        let (_tmp, main, _worktree) = temp_repo_with_worktree();
+        let pane = test_pane("%1", main.to_str().unwrap());
 
         let sessions = vec![test_session(vec![test_window(vec![pane], true)])];
         let groups = group_panes_by_repo(&sessions);
 
         assert_eq!(groups.len(), 1);
-        let expected_name = std::path::Path::new(manifest_dir)
-            .file_name()
-            .unwrap()
-            .to_string_lossy();
+        let expected_name = main.file_name().unwrap().to_string_lossy();
         assert_eq!(
             groups[0].name, expected_name,
             "display name should be repo basename"
