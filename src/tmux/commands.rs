@@ -8,6 +8,10 @@ use crate::subprocess;
 const TMUX_TIMEOUT: Duration = Duration::from_secs(3);
 
 pub fn run_tmux(args: &[&str]) -> Option<String> {
+    #[cfg(test)]
+    if test_fail_tmux::should_fail() {
+        return None;
+    }
     let mut command = Command::new("tmux");
     command.args(args);
     let output = subprocess::run_with_timeout(&mut command, TMUX_TIMEOUT).ok()?;
@@ -114,4 +118,35 @@ pub fn select_pane(pane_id: &str) {
         let _ = run_tmux(&["select-window", "-t", &window_id]);
     }
     let _ = run_tmux(&["select-pane", "-t", pane_id]);
+}
+
+/// Test-only seam that makes every `run_tmux` call fail for the current
+/// thread until the guard is dropped. Used to simulate a tmux server that
+/// is unreachable (restart, socket hiccup) without spawning a real tmux.
+#[cfg(test)]
+pub mod test_fail_tmux {
+    use std::cell::Cell;
+
+    thread_local! {
+        static FAIL: Cell<bool> = const { Cell::new(false) };
+    }
+
+    /// Make `run_tmux` return `None` for the current thread. Returns a
+    /// guard that restores real tmux execution on drop.
+    pub fn install() -> FailGuard {
+        FAIL.with(|f| f.set(true));
+        FailGuard
+    }
+
+    pub struct FailGuard;
+
+    impl Drop for FailGuard {
+        fn drop(&mut self) {
+            FAIL.with(|f| f.set(false));
+        }
+    }
+
+    pub(super) fn should_fail() -> bool {
+        FAIL.with(|f| f.get())
+    }
 }
