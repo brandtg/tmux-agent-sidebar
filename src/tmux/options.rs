@@ -94,6 +94,10 @@ pub const SIDEBAR_FILTER: &str = "@sidebar_filter";
 pub const SIDEBAR_CURSOR: &str = "@sidebar_cursor";
 pub const SIDEBAR_REPO_FILTER: &str = "@sidebar_repo_filter";
 pub const SIDEBAR_BOTTOM_HEIGHT: &str = "@sidebar_bottom_height";
+/// Windows narrower than this many columns open the sidebar as a tmux
+/// popup instead of a split pane (mobile viewports). `0` disables the
+/// popup path entirely. Read by the `toggle` subcommand.
+pub const SIDEBAR_POPUP_MAX_WIDTH: &str = "@sidebar_popup_max_width";
 pub const SIDEBAR_PET: &str = "@sidebar_pet";
 pub const SIDEBAR_NOTIFICATIONS: &str = "@sidebar_notifications";
 pub const SIDEBAR_NOTIFICATIONS_EVENTS: &str = "@sidebar_notifications_events";

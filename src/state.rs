@@ -136,6 +136,12 @@ pub struct AppState {
     /// Whether the pet animation is drawn and ticked. Loaded once at startup
     /// from the `@sidebar_pet` tmux option. Defaults to `false`.
     pub pet_enabled: bool,
+    /// Running inside a tmux popup on a narrow (mobile) viewport. Set by
+    /// the `toggle` subcommand via `SIDEBAR_POPUP=1`. The popup's
+    /// pseudo-pane is not addressable by `display-message`, so popup mode
+    /// also forces window-active/focused semantics and hides the bottom
+    /// panel (activity/git tabs) to keep the compact viewport readable.
+    pub popup_mode: bool,
 }
 
 impl AppState {
@@ -183,6 +189,7 @@ impl AppState {
             bottom_panel_height: crate::ui::BOTTOM_PANEL_HEIGHT,
             sessions: SessionNamesState::new(),
             pet_enabled: false,
+            popup_mode: false,
         };
         crate::state::pet::reseed_pet_idle_motion(&mut state);
         state

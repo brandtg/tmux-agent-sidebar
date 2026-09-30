@@ -16,6 +16,15 @@ pub(super) fn init_state(tmux_pane: String) -> AppState {
     state.icons = ui::icons::StatusIcons::from_tmux();
     state.bottom_panel_height = ui::bottom_panel_height_from_tmux();
     state.pet_enabled = ui::pet_enabled_from_tmux();
+    // The `toggle` subcommand launches the sidebar inside a tmux popup on
+    // narrow (mobile) viewports with `SIDEBAR_POPUP=1`. Popup mode hides
+    // the bottom panel (activity/git tabs) so the compact viewport stays
+    // readable; the pet band is hidden with it since it only renders
+    // between the pane list and the bottom panel.
+    state.popup_mode = std::env::var("SIDEBAR_POPUP").as_deref() == Ok("1");
+    if state.popup_mode {
+        state.bottom_panel_height = 0;
+    }
     state.global.load_from_tmux();
     state.refresh();
 

@@ -75,6 +75,28 @@ pub(crate) fn cmd_toggle(args: &[String]) -> i32 {
         return 0;
     }
 
+    // Mobile viewport: windows narrower than `@sidebar_popup_max_width`
+    // open as a tmux popup instead of a split pane. Auto-create stays a
+    // no-op here — an unprompted popup on every new window would be
+    // hostile, and `toggle-all` reuses `--create-only`, so narrow windows
+    // are skipped there too. Popups never touch pane layout, which also
+    // keeps the layout-recalculation path (implicated in tmux's
+    // evbuffer-underflow SIGSEGV during heavy pane output) out of the
+    // mobile flow entirely.
+    let window_width: u32 = tmux::display_message(window_id, "#{window_width}")
+        .parse()
+        .unwrap_or(0);
+    let popup_max_width = tmux::display_message(
+        window_id,
+        &format!("#{{{}}}", tmux::SIDEBAR_POPUP_MAX_WIDTH),
+    );
+    if should_use_popup(&popup_max_width, window_width) {
+        if create_only {
+            return 0;
+        }
+        return open_popup(window_id, pane_path);
+    }
+
     let pane_geometry_output = tmux::run_tmux(&[
         "list-panes",
         "-t",
@@ -251,6 +273,70 @@ fn split_window_flags(position: SidebarPosition) -> &'static str {
         SidebarPosition::Left => "-hfb",
         SidebarPosition::Right => "-hf",
     }
+}
+
+/// Parse the raw `@sidebar_popup_max_width` option value. Unset, empty,
+/// or invalid values fall back to the default of 100 columns; `0`
+/// explicitly disables popup mode so the split-pane sidebar is always
+/// used regardless of window width.
+fn popup_max_width_from_setting(setting: &str) -> u32 {
+    const DEFAULT_POPUP_MAX_WIDTH: u32 = 100;
+    setting
+        .trim()
+        .parse::<u32>()
+        .unwrap_or(DEFAULT_POPUP_MAX_WIDTH)
+}
+
+/// Decide between the popup and split-pane sidebar for a window.
+/// Popup mode applies when the window is strictly narrower than the
+/// configured maximum. A zero window width (query failure) or a zero
+/// configured maximum both keep the classic split-pane behaviour.
+fn should_use_popup(max_width_setting: &str, window_width: u32) -> bool {
+    let max_width = popup_max_width_from_setting(max_width_setting);
+    max_width > 0 && window_width > 0 && window_width < max_width
+}
+
+/// Open the sidebar as a tmux popup instead of a split pane. `-E`
+/// tears the popup down when the sidebar exits, and tmux's default
+/// Escape/C-c handling dismisses it earlier — either close kills the
+/// TUI process. `-e` flags the TUI so it hides the bottom panel and
+/// skips sidebar-pane-specific tmux queries that cannot resolve against
+/// the popup's pseudo-pane.
+///
+/// This call blocks until the popup is dismissed — `display-popup`'s
+/// invoking process owns the popup for its lifetime. That is the
+/// standard keybinding pattern (the `run-shell` worker runs async, so
+/// the client stays responsive), but it means invoking `toggle`
+/// directly from a shell waits interactively, like any popup program.
+///
+/// No `-C`: when a popup is already open on the client, tmux treats a
+/// re-invocation as a "modify" and ignores the command, so the toggle
+/// key is a no-op while the popup is up (verified on tmux 3.7c, where
+/// `-C` also suppresses the new command when no popup exists).
+fn open_popup(window_id: &str, start_directory: &str) -> i32 {
+    let self_bin = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.to_str().map(|s| s.to_string()))
+        .unwrap_or_else(|| "tmux-agent-sidebar".to_string());
+
+    let opened = tmux::run_tmux(&[
+        "display-popup",
+        "-E",
+        "-w",
+        "90%",
+        "-h",
+        "90%",
+        "-d",
+        start_directory,
+        "-e",
+        "SIDEBAR_POPUP=1",
+        "-t",
+        window_id,
+        &self_bin,
+    ])
+    .is_some();
+
+    if opened { 0 } else { 1 }
 }
 
 /// Decide whether `cmd_auto_close` should kill the window, given the raw
@@ -438,6 +524,55 @@ mod tests {
     fn split_window_flags_match_tmux_side_semantics() {
         assert_eq!(split_window_flags(SidebarPosition::Left), "-hfb");
         assert_eq!(split_window_flags(SidebarPosition::Right), "-hf");
+    }
+
+    // ─── popup mode (mobile viewport) ─────────────────────────────────
+
+    #[test]
+    fn popup_max_width_defaults_on_missing_or_invalid_setting() {
+        assert_eq!(popup_max_width_from_setting(""), 100);
+        assert_eq!(popup_max_width_from_setting("   "), 100);
+        assert_eq!(popup_max_width_from_setting("abc"), 100);
+        assert_eq!(popup_max_width_from_setting("-5"), 100);
+    }
+
+    #[test]
+    fn popup_max_width_parses_explicit_values() {
+        assert_eq!(popup_max_width_from_setting("120"), 120);
+        assert_eq!(popup_max_width_from_setting(" 80 "), 80);
+        // Explicit zero disables popup mode.
+        assert_eq!(popup_max_width_from_setting("0"), 0);
+    }
+
+    #[test]
+    fn should_use_popup_true_below_default_threshold() {
+        // Missing option → default 100 → narrow windows use the popup.
+        assert!(should_use_popup("", 80));
+        assert!(should_use_popup("", 99));
+    }
+
+    #[test]
+    fn should_use_popup_false_at_or_above_threshold() {
+        assert!(!should_use_popup("", 100));
+        assert!(!should_use_popup("", 120));
+    }
+
+    #[test]
+    fn should_use_popup_respects_custom_threshold() {
+        assert!(should_use_popup("60", 59));
+        assert!(!should_use_popup("60", 60));
+    }
+
+    #[test]
+    fn should_use_popup_zero_threshold_disables_popup_mode() {
+        assert!(!should_use_popup("0", 40));
+    }
+
+    #[test]
+    fn should_use_popup_zero_window_width_keeps_split_pane() {
+        // A failed `#{window_width}` query must not silently switch the
+        // user's desktop sidebar into popup mode.
+        assert!(!should_use_popup("", 0));
     }
 
     // ─── should_kill_window ───────────────────────────────────────────

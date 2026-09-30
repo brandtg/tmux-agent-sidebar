@@ -134,6 +134,41 @@ fn snapshot_version_banner_does_not_duplicate_in_scroll_area() {
     ");
 }
 
+// Popup mode (mobile viewport): the toggle subcommand launches the TUI
+// inside a tmux popup with SIDEBAR_POPUP=1, which hides the bottom panel
+// (activity/git tabs) so the compact viewport stays readable. This locks
+// down that the panel is absent even though the configured height would
+// normally render one.
+#[test]
+fn snapshot_popup_mode_hides_bottom_panel() {
+    let pane = make_pane(AgentType::Claude, PaneStatus::Idle);
+    let mut state = make_state(vec![SessionInfo {
+        session_name: "main".into(),
+        windows: vec![WindowInfo {
+            window_id: "@1".into(),
+            window_name: "project".into(),
+            window_active: true,
+            auto_rename: false,
+            panes: vec![pane.clone()],
+        }],
+    }]);
+    state.repo_groups = vec![make_repo_group("project", vec![pane])];
+    state.popup_mode = true;
+    // setup.rs zeroes this when SIDEBAR_POPUP=1; mirrored here so the
+    // snapshot reflects the real startup wiring.
+    state.bottom_panel_height = 0;
+    state.rebuild_row_targets();
+
+    let output = render_to_string(&mut state, 40, 20);
+    insta::assert_snapshot!(output, @r"
+     ≡1  ●0  ◎0  ◐0  ○1  ✕0
+    ⓘ                                    — ▾
+    project
+    ┃ ○ claude
+        Waiting for prompt…
+    ");
+}
+
 #[test]
 fn snapshot_single_agent_running_with_elapsed() {
     let mut pane = make_pane(AgentType::Claude, PaneStatus::Running);
