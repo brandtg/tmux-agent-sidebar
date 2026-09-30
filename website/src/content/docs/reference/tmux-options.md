@@ -14,6 +14,7 @@ Most options must be set **before** loading the plugin in your `tmux.conf`. Colo
 | `@sidebar_width`                 | `15%`   | Width in columns or as a percentage                                                     |
 | `@sidebar_position`              | `left`  | Sidebar placement (`left` or `right`)                                                   |
 | `@sidebar_bottom_height`         | `20`    | Bottom panel height in lines (set `0` to hide)                                          |
+| `@sidebar_default_view`          | `all`   | Status filter view the sidebar lands on when it opens (`all`, `running`, `background`, `waiting`, `idle`, `error`). Filter changes still sync across open sidebars but are not restored on reopen |
 | `@sidebar_auto_create`           | `on`    | Auto-create the sidebar on new windows (set `off` to disable)                           |
 | `@sidebar_auto_create_delay`     | `0`     | Seconds to defer auto-create after a window opens, so a declaratively-built window (e.g. tmuxinator's `select-layout`) finishes before the sidebar pane is injected; accepts fractional seconds. `0` keeps the create synchronous |
 | `@sidebar_popup_max_width`       | `100`   | Windows narrower than this many columns open the sidebar as a tmux popup instead of a split pane — for phones and small SSH viewports. The popup hides the activity/git bottom panel; auto-create and toggle-all skip narrow windows. Set `0` to always use a split pane |

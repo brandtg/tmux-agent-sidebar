@@ -26,6 +26,9 @@ pub(super) fn init_state(tmux_pane: String) -> AppState {
         state.bottom_panel_height = 0;
     }
     state.global.load_from_tmux();
+    // A new sidebar lands on `@sidebar_default_view` rather than the last
+    // filter some other window persisted; see GlobalState::apply_default_view.
+    state.global.apply_default_view_from_tmux();
     state.refresh();
 
     super::render::refresh_git_for_focused_pane(&mut state);
