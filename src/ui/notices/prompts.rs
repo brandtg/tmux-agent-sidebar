@@ -61,7 +61,7 @@ fn plugin_root_from_exe() -> Option<String> {
 
 /// Collapse an absolute path to a `~`-prefixed form when it lives
 /// under the user's home directory. Used to make the migration prompt
-/// portable across machines: `/Users/hiroppy/.tmux/plugins/...`
+/// portable across machines: `/Users/alice/.tmux/plugins/...`
 /// renders as `~/.tmux/plugins/...` so a screenshot or copy-paste
 /// from one user does not bake in another user's literal home path.
 fn tildify(path: &str) -> String {
@@ -110,7 +110,7 @@ fn build_claude_migration_prompt(plugin_root: Option<&str>) -> String {
          \"Run these two commands in this Claude Code session, then restart \
          Claude Code so the bundled hooks take effect:\n\
          /plugin marketplace add {marketplace_path}\n\
-         /plugin install tmux-agent-sidebar@hiroppy\""
+         /plugin install tmux-agent-sidebar@brandtg\""
     )
 }
 
@@ -153,7 +153,7 @@ mod tests {
             "claude prompt must surface the marketplace add command: {claude}"
         );
         assert!(
-            claude.contains("/plugin install tmux-agent-sidebar@hiroppy"),
+            claude.contains("/plugin install tmux-agent-sidebar@brandtg"),
             "claude prompt must surface the plugin install command keyed to \
              the bundled marketplace name: {claude}"
         );

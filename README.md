@@ -5,9 +5,9 @@
 <p align="center"><img src="website/src/assets/captures/hero.png" alt="tmux-agent-sidebar hero" /></p>
 
 <p align="center">
-  <a href="https://hiroppy.github.io/tmux-agent-sidebar/">Documentation</a> ·
-  <a href="https://hiroppy.github.io/tmux-agent-sidebar/getting-started/installation/">Getting Started</a> ·
-  <a href="https://hiroppy.github.io/tmux-agent-sidebar/features/agent-pane/">Features</a>
+  <a href="https://github.com/brandtg/tmux-agent-sidebar/tree/main/website/src/content/docs">Documentation</a> ·
+  <a href="https://github.com/brandtg/tmux-agent-sidebar/blob/main/website/src/content/docs/getting-started/installation.md">Getting Started</a> ·
+  <a href="https://github.com/brandtg/tmux-agent-sidebar/blob/main/website/src/content/docs/features/agent-pane.mdx">Features</a>
 </p>
 
 ## Features
@@ -26,7 +26,7 @@ OpenCode uses a small local plugin bridge instead of per-event hook config. The 
 ## Requirements
 
 - tmux 3.0+
-- [TPM](https://github.com/tmux-plugins/tpm) (or the manual install in [Installation](https://hiroppy.github.io/tmux-agent-sidebar/getting-started/installation/))
+- [TPM](https://github.com/tmux-plugins/tpm) (or the manual install in [Installation](https://github.com/brandtg/tmux-agent-sidebar/blob/main/website/src/content/docs/getting-started/installation.md))
 - [GitHub CLI](https://cli.github.com/) (optional — required only for PR numbers in the Git tab)
 
 ## Quick Start
@@ -36,7 +36,7 @@ OpenCode uses a small local plugin bridge instead of per-event hook config. The 
 Using [TPM](https://github.com/tmux-plugins/tpm):
 
 ```tmux
-set -g @plugin 'hiroppy/tmux-agent-sidebar'
+set -g @plugin 'brandtg/tmux-agent-sidebar'
 ```
 
 Reload tmux (`tmux source ~/.tmux.conf`), then press `prefix + I`. The install wizard downloads a pre-built binary or builds from source.
@@ -47,7 +47,7 @@ Reload tmux (`tmux source ~/.tmux.conf`), then press `prefix + I`. The install w
 
   ```sh
   /plugin marketplace add ~/.tmux/plugins/tmux-agent-sidebar
-  /plugin install tmux-agent-sidebar@hiroppy
+  /plugin install tmux-agent-sidebar@brandtg
   ```
 
 - **Codex** — open a Codex pane, press `prefix + e`, click the yellow `ⓘ` badge, copy the setup snippet, paste it into the Codex pane.
@@ -59,7 +59,7 @@ Reload tmux (`tmux source ~/.tmux.conf`), then press `prefix + I`. The install w
     ~/.config/opencode/plugins/tmux-agent-sidebar.js
   ```
 
-Full walkthroughs: [Claude Code setup](https://hiroppy.github.io/tmux-agent-sidebar/getting-started/claude-code/) · [Codex setup](https://hiroppy.github.io/tmux-agent-sidebar/getting-started/codex/) · [OpenCode setup](https://hiroppy.github.io/tmux-agent-sidebar/getting-started/opencode/)
+Full walkthroughs: [Claude Code setup](https://github.com/brandtg/tmux-agent-sidebar/blob/main/website/src/content/docs/getting-started/claude-code.md) · [Codex setup](https://github.com/brandtg/tmux-agent-sidebar/blob/main/website/src/content/docs/getting-started/codex.md) · [OpenCode setup](https://github.com/brandtg/tmux-agent-sidebar/blob/main/website/src/content/docs/getting-started/opencode.md)
 
 ### 3. Toggle the sidebar
 
@@ -67,13 +67,13 @@ Full walkthroughs: [Claude Code setup](https://hiroppy.github.io/tmux-agent-side
 
 ## Documentation
 
-The [documentation site](https://hiroppy.github.io/tmux-agent-sidebar/) covers every feature and option:
+The [documentation](https://github.com/brandtg/tmux-agent-sidebar/tree/main/website/src/content/docs) covers every feature and option:
 
-- [Agent pane breakdown](https://hiroppy.github.io/tmux-agent-sidebar/features/agent-pane/)
-- [Worktree lifecycle](https://hiroppy.github.io/tmux-agent-sidebar/features/worktree/)
-- [Activity log](https://hiroppy.github.io/tmux-agent-sidebar/features/activity-log/) · [Git tab](https://hiroppy.github.io/tmux-agent-sidebar/features/git-status/) · [Notifications](https://hiroppy.github.io/tmux-agent-sidebar/features/notifications/)
-- [Agent support matrix](https://hiroppy.github.io/tmux-agent-sidebar/agents/)
-- [Keybindings](https://hiroppy.github.io/tmux-agent-sidebar/reference/keybindings/) · [tmux options](https://hiroppy.github.io/tmux-agent-sidebar/reference/tmux-options/) · [Scripting](https://hiroppy.github.io/tmux-agent-sidebar/reference/scripting/)
+- [Agent pane breakdown](https://github.com/brandtg/tmux-agent-sidebar/blob/main/website/src/content/docs/features/agent-pane.mdx)
+- [Worktree lifecycle](https://github.com/brandtg/tmux-agent-sidebar/blob/main/website/src/content/docs/features/worktree.mdx)
+- [Activity log](https://github.com/brandtg/tmux-agent-sidebar/blob/main/website/src/content/docs/features/activity-log.mdx) · [Git tab](https://github.com/brandtg/tmux-agent-sidebar/blob/main/website/src/content/docs/features/git-status.mdx) · [Notifications](https://github.com/brandtg/tmux-agent-sidebar/blob/main/website/src/content/docs/features/notifications.mdx)
+- [Agent support matrix](https://github.com/brandtg/tmux-agent-sidebar/blob/main/website/src/content/docs/agents/index.md)
+- [Keybindings](https://github.com/brandtg/tmux-agent-sidebar/blob/main/website/src/content/docs/reference/keybindings.md) · [tmux options](https://github.com/brandtg/tmux-agent-sidebar/blob/main/website/src/content/docs/reference/tmux-options.md) · [Scripting](https://github.com/brandtg/tmux-agent-sidebar/blob/main/website/src/content/docs/reference/scripting.md)
 
 ## Development
 

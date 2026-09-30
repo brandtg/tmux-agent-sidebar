@@ -6,7 +6,7 @@
     "name": "Yuta Hiroto",
     "url": "https://github.com/hiroppy"
   },
-  "repository": "https://github.com/hiroppy/tmux-agent-sidebar",
+  "repository": "https://github.com/brandtg/tmux-agent-sidebar",
   "license": "MIT",
   "keywords": ["tmux", "agent", "monitoring", "tui", "sidebar"]
 }

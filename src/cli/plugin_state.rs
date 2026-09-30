@@ -316,7 +316,7 @@ mod tests {
             r#"{
                 "version": 2,
                 "plugins": {
-                    "tmux-agent-sidebar@hiroppy": [
+                    "tmux-agent-sidebar@brandtg": [
                         {"scope":"user","installPath":"/opt/claude-cache/tmux-agent-sidebar/0.5.0","version":"0.5.0"}
                     ]
                 }
@@ -370,7 +370,7 @@ mod tests {
         let path = unique_registry("empty-installs");
         write_registry(
             &path,
-            r#"{"version":2,"plugins":{"tmux-agent-sidebar@hiroppy":[]}}"#,
+            r#"{"version":2,"plugins":{"tmux-agent-sidebar@brandtg":[]}}"#,
         );
         assert_eq!(installed_plugin_install_path_from(&path), None);
     }
@@ -405,7 +405,7 @@ mod tests {
             r#"{
                 "version": 2,
                 "plugins": {
-                    "tmux-agent-sidebar@hiroppy": [
+                    "tmux-agent-sidebar@brandtg": [
                         {"scope":"user","installPath":""}
                     ]
                 }
@@ -422,7 +422,7 @@ mod tests {
             r#"{
                 "version": 2,
                 "plugins": {
-                    "tmux-agent-sidebar@hiroppy": [
+                    "tmux-agent-sidebar@brandtg": [
                         {"scope":"user","installPath":""},
                         {"scope":"project","installPath":"/project/0.6.0","version":"0.6.0"}
                     ]
@@ -549,7 +549,7 @@ mod tests {
         write_registry(
             &registry,
             &format!(
-                r#"{{"version":2,"plugins":{{"tmux-agent-sidebar@hiroppy":[{{"scope":"user","installPath":{:?}}}]}}}}"#,
+                r#"{{"version":2,"plugins":{{"tmux-agent-sidebar@brandtg":[{{"scope":"user","installPath":{:?}}}]}}}}"#,
                 root.to_string_lossy()
             ),
         );
@@ -571,7 +571,7 @@ mod tests {
         write_registry(
             &registry,
             &format!(
-                r#"{{"version":2,"plugins":{{"tmux-agent-sidebar@hiroppy":[{{"scope":"user","installPath":{:?}}}]}}}}"#,
+                r#"{{"version":2,"plugins":{{"tmux-agent-sidebar@brandtg":[{{"scope":"user","installPath":{:?}}}]}}}}"#,
                 root.to_string_lossy()
             ),
         );
