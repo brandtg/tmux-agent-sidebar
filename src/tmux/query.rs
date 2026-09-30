@@ -265,8 +265,30 @@ fn parse_pane_fields_with_processes(
         return None;
     }
 
-    let agent = AgentType::from_label(&parts[pane_line_field::AGENT])?;
     let current_command = parts[pane_line_field::PANE_CURRENT_COMMAND].as_str();
+    let (agent, status) = match AgentType::from_label(&parts[pane_line_field::AGENT]) {
+        Some(agent) => (
+            agent,
+            PaneStatus::from_label(&parts[pane_line_field::PANE_STATUS]),
+        ),
+        None => {
+            // No hook has claimed this pane yet. OpenCode fires no event
+            // when a session is resumed (session.created only fires for
+            // new sessions), so a resumed pane used to stay invisible
+            // until the first message. Fall back to the pane's foreground
+            // command so the row appears right away; hooks refine the
+            // state once they fire, and the row drops out on its own
+            // when the agent exits and the command reverts to the shell.
+            let agent = AgentType::from_label(current_command)?;
+            let raw_status = &parts[pane_line_field::PANE_STATUS];
+            let status = if raw_status.is_empty() {
+                PaneStatus::Idle
+            } else {
+                PaneStatus::from_label(raw_status)
+            };
+            (agent, status)
+        }
+    };
     let pane_pid: Option<u32> = parts[pane_line_field::PANE_PID].parse().ok();
 
     // Codex / OpenCode panes can leave stale tmux metadata behind after the
@@ -321,7 +343,7 @@ fn parse_pane_fields_with_processes(
 
     Some(PaneInfo {
         pane_active: parts[pane_line_field::PANE_ACTIVE] == "1",
-        status: PaneStatus::from_label(&parts[pane_line_field::PANE_STATUS]),
+        status,
         attention: !parts[pane_line_field::PANE_ATTENTION].is_empty(),
         agent,
         path,
@@ -826,6 +848,64 @@ mod tests {
         assert_eq!(pane.pane_pid, Some(12345));
         assert_eq!(pane.subagents, vec!["Explore", "Plan"]);
         assert_eq!(pane.permission_mode, PermissionMode::Auto);
+    }
+
+    #[test]
+    fn parse_pane_line_bootstraps_unregistered_agent_pane() {
+        // Resumed OpenCode sessions fire no hook until the first message,
+        // so @pane_agent is unset while the TUI runs. The foreground
+        // command keeps the row visible, with Idle as the truthful status.
+        let mut fields = full_fields();
+        fields[3] = ""; // @pane_agent unset
+        fields[1] = ""; // @pane_status unset
+        fields[6] = "opencode"; // pane_current_command
+        let pane =
+            parse_pane_line(&make_pane_line(&fields)).expect("opencode command should parse");
+        assert_eq!(pane.agent, AgentType::OpenCode);
+        assert_eq!(pane.status, PaneStatus::Idle);
+        assert_eq!(pane.permission_mode, PermissionMode::Default);
+    }
+
+    #[test]
+    fn parse_pane_line_bootstraps_unregistered_claude_pane() {
+        let mut fields = full_fields();
+        fields[3] = "";
+        fields[6] = "claude";
+        let pane = parse_pane_line(&make_pane_line(&fields)).expect("claude command should parse");
+        assert_eq!(pane.agent, AgentType::Claude);
+    }
+
+    #[test]
+    fn parse_pane_line_still_skips_unregistered_shell_panes() {
+        let mut fields = full_fields();
+        fields[3] = ""; // @pane_agent unset
+        fields[6] = "fish"; // plain shell — not an agent binary
+        assert!(parse_pane_line(&make_pane_line(&fields)).is_none());
+    }
+
+    #[test]
+    fn parse_pane_line_registered_pane_keeps_hook_status() {
+        // A hook-registered pane keeps its hook-written status even when
+        // the fallback path exists — bootstrap only applies when
+        // @pane_agent is missing. The shell-wrapped command needs a live
+        // process in the snapshot or the stale-teardown sweep clears it.
+        let _guard = test_mock::install();
+        let pane = "%OPENCODE_STATUS";
+        test_mock::set(pane, PANE_AGENT, "opencode");
+
+        let mut fields = full_fields();
+        fields[pane_line_field::PANE_ID] = pane;
+        fields[1] = "running";
+        fields[pane_line_field::AGENT] = "opencode";
+        fields[pane_line_field::PANE_CURRENT_COMMAND] = "fish";
+        fields[pane_line_field::PANE_PID] = "100";
+        let fields = field_strings(&fields);
+        let snapshot = process_snapshot("100 1 fish fish -c opencode\n101 100 opencode opencode\n");
+
+        let pane_info =
+            parse_pane_fields_with_processes(&fields, Some(&snapshot)).expect("should parse");
+        assert_eq!(pane_info.agent, AgentType::OpenCode);
+        assert_eq!(pane_info.status, PaneStatus::Running);
     }
 
     #[test]
