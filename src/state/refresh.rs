@@ -95,9 +95,14 @@ impl AppState {
     /// an unseen finished turn) so the indicator only survives while the
     /// output is genuinely unread. Skipped while the sidebar itself
     /// holds focus — reading the list is not reading the output — and
-    /// the previously focused pane id is then stale by design.
-    fn mark_focused_pane_seen(&mut self) {
-        if self.focus_state.sidebar_focused {
+    /// the previously focused pane id is then stale by design. Also
+    /// skipped while the sidebar's window is not the session's active
+    /// window: `find_active_pane` resolves within the sidebar's own
+    /// window, whose `pane_active` marker survives after the user moves
+    /// elsewhere, so consuming the flag then would swallow notifications
+    /// for a pane the user never looked at.
+    fn mark_focused_pane_seen(&mut self, sidebar_window_active: bool) {
+        if self.focus_state.sidebar_focused || !sidebar_window_active {
             return;
         }
         let Some(pane_id) = self.focus_state.focused_pane_id.clone() else {
@@ -209,7 +214,7 @@ impl AppState {
         } else {
             self.apply_session_snapshot(focused, sessions);
         }
-        self.mark_focused_pane_seen();
+        self.mark_focused_pane_seen(window_active);
         // `apply_session_snapshot` rebuilds `repo_groups` from a fresh tmux
         // query, and every freshly parsed `PaneInfo` carries an empty
         // `session_name`. Guarding the re-application on `dirty` therefore
@@ -1245,7 +1250,7 @@ mod tests {
         state.focus_state.sidebar_focused = false;
         state.focus_state.focused_pane_id = Some(pane_id.into());
 
-        state.mark_focused_pane_seen();
+        state.mark_focused_pane_seen(true);
 
         assert!(
             !tmux::test_mock::contains(pane_id, tmux::PANE_ATTENTION),
@@ -1270,7 +1275,7 @@ mod tests {
         state.focus_state.sidebar_focused = false;
         state.focus_state.focused_pane_id = Some(pane_id.into());
 
-        state.mark_focused_pane_seen();
+        state.mark_focused_pane_seen(true);
 
         assert!(!tmux::test_mock::contains(pane_id, tmux::PANE_ATTENTION));
         assert_eq!(
@@ -1288,7 +1293,7 @@ mod tests {
         state.focus_state.sidebar_focused = true;
         state.focus_state.focused_pane_id = Some(pane_id.into());
 
-        state.mark_focused_pane_seen();
+        state.mark_focused_pane_seen(true);
 
         assert!(
             tmux::test_mock::contains(pane_id, tmux::PANE_ATTENTION),
@@ -1312,7 +1317,7 @@ mod tests {
         state.focus_state.sidebar_focused = false;
         state.focus_state.focused_pane_id = Some("%OTHER".into());
 
-        state.mark_focused_pane_seen();
+        state.mark_focused_pane_seen(true);
 
         assert!(
             tmux::test_mock::contains(flagged, tmux::PANE_ATTENTION),
@@ -1331,8 +1336,37 @@ mod tests {
         state.focus_state.sidebar_focused = false;
         state.focus_state.focused_pane_id = Some("%CLEAN".into());
 
-        state.mark_focused_pane_seen();
+        state.mark_focused_pane_seen(true);
 
         assert!(!tmux::test_mock::contains("%CLEAN", tmux::PANE_ATTENTION));
+    }
+
+    #[test]
+    fn mark_focused_pane_seen_skips_when_sidebar_window_inactive() {
+        // Regression: `find_active_pane` resolves the active pane of the
+        // sidebar's own window, and that `pane_active` marker survives
+        // after the user switches to another window. Without the
+        // `window_active` gate, a permission-prompt flag on that leftover
+        // pane was consumed within a second while the user was elsewhere.
+        let _guard = tmux::test_mock::install();
+        let pane_id = "%AWAY_WINDOW";
+        tmux::test_mock::set(pane_id, tmux::PANE_ATTENTION, "notification");
+        let mut state = state_with_panes(vec![pane_with_attention(
+            pane_id,
+            PaneAttention::Notification,
+        )]);
+        state.focus_state.sidebar_focused = false;
+        state.focus_state.focused_pane_id = Some(pane_id.into());
+
+        state.mark_focused_pane_seen(false);
+
+        assert!(
+            tmux::test_mock::contains(pane_id, tmux::PANE_ATTENTION),
+            "the sidebar's window is not on screen — flag must survive"
+        );
+        assert_eq!(
+            state.repo_groups[0].panes[0].0.attention,
+            PaneAttention::Notification
+        );
     }
 }
