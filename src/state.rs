@@ -143,6 +143,11 @@ pub struct AppState {
     /// the bottom panel (activity/git tabs) to keep the compact viewport
     /// readable.
     pub popup_mode: bool,
+    /// Set when the user presses `q` anywhere in the TUI. The event loop
+    /// checks this after draining input and exits; `display-popup -E`
+    /// tears the popup down when the process exits, and the pane-mode
+    /// sidebar pane closes with the process.
+    pub quit_requested: bool,
 }
 
 impl AppState {
@@ -191,6 +196,7 @@ impl AppState {
             sessions: SessionNamesState::new(),
             pet_enabled: false,
             popup_mode: false,
+            quit_requested: false,
         };
         crate::state::pet::reseed_pet_idle_motion(&mut state);
         state

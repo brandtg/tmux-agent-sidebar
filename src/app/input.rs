@@ -114,6 +114,7 @@ pub(super) fn handle_key_event(
                 state.focus_state.focus = Focus::Panes;
             }
         }
+        KeyCode::Char('q') => state.quit_requested = true,
         KeyCode::Char('j') | KeyCode::Down => pane_nav_down(state),
         KeyCode::Char('n') if ctrl => pane_nav_down(state),
         KeyCode::Char('k') | KeyCode::Up => pane_nav_up(state),
@@ -225,7 +226,7 @@ fn repo_popup_nav_up(state: &mut AppState) {
 mod tests {
     use super::*;
     use crate::group::RepoGroup;
-    use crate::state::RowTarget;
+    use crate::state::{PopupState, RowTarget, SpawnField};
 
     fn key(code: KeyCode) -> KeyEvent {
         KeyEvent::new(code, KeyModifiers::NONE)
@@ -327,6 +328,42 @@ mod tests {
         let flag = AtomicBool::new(false);
         handle_key_event(key(KeyCode::Char('p')), &mut state, &flag);
         assert_eq!(state.global.selected_pane_row, 1);
+    }
+
+    #[test]
+    fn q_requests_quit_from_panes_focus() {
+        // `q` must tear the TUI down from any non-modal focus: the event
+        // loop breaks on `quit_requested`, which closes a popup (via
+        // `display-popup -E`) or ends the pane-mode sidebar.
+        let mut state = state_with_three_panes();
+        let flag = AtomicBool::new(false);
+        handle_key_event(key(KeyCode::Char('q')), &mut state, &flag);
+        assert!(state.quit_requested);
+    }
+
+    #[test]
+    fn q_types_into_spawn_input_without_requesting_quit() {
+        // The spawn modal owns plain characters — typing `q` into the
+        // worktree task field must not tear down the whole sidebar.
+        let mut state = state_with_three_panes();
+        state.popup = PopupState::SpawnInput {
+            input: String::new(),
+            target_repo: "repo-a".into(),
+            target_repo_root: "/tmp/repo-a".into(),
+            agent_idx: 0,
+            mode_idx: 0,
+            field: SpawnField::Task,
+            anchor_y: None,
+            error: None,
+            area: None,
+        };
+        let flag = AtomicBool::new(false);
+        handle_key_event(key(KeyCode::Char('q')), &mut state, &flag);
+        assert!(!state.quit_requested);
+        assert!(state.is_spawn_input_open());
+        if let PopupState::SpawnInput { input, .. } = &state.popup {
+            assert_eq!(input, "q");
+        }
     }
 
     #[test]

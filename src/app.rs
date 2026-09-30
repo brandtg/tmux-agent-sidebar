@@ -18,8 +18,10 @@ mod render;
 mod setup;
 mod workers;
 
-/// Run the TUI event loop. Returns when the loop exits (currently only on
-/// fatal I/O error, since the loop is `loop { ... }`).
+/// Run the TUI event loop. Returns when the loop exits — on a fatal I/O
+/// error, or when the user presses `q` (`state.quit_requested`), which
+/// tears down a popup via `display-popup -E` and closes the pane-mode
+/// sidebar's pane.
 ///
 /// `needs_refresh` is the process-wide SIGUSR1 flag owned by `main.rs` — the
 /// signal handler must reference a static visible at signal-handler time,
@@ -72,6 +74,9 @@ pub fn run(
                     break;
                 }
             }
+        }
+        if state.quit_requested {
+            break Ok(());
         }
 
         if last_spinner.elapsed() >= spinner_interval {
