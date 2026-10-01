@@ -106,6 +106,16 @@ pub const SIDEBAR_FILTER: &str = "@sidebar_filter";
 pub const SIDEBAR_DEFAULT_VIEW: &str = "@sidebar_default_view";
 pub const SIDEBAR_CURSOR: &str = "@sidebar_cursor";
 pub const SIDEBAR_REPO_FILTER: &str = "@sidebar_repo_filter";
+/// Live compact-view flag (`1`/`0`). Written whenever a sidebar toggles
+/// compact mode so every open sidebar instance renders the same density.
+/// Synced across sidebars like [`SIDEBAR_FILTER`] but deliberately not
+/// restored on reopen — a new sidebar lands on
+/// [`SIDEBAR_DEFAULT_COMPACT_VIEW`] instead.
+pub const SIDEBAR_COMPACT: &str = "@sidebar_compact";
+/// Compact-view mode a newly opened sidebar lands on (`on` / `off`,
+/// default `off`). Read once at startup; the live [`SIDEBAR_COMPACT`]
+/// value is never restored on reopen.
+pub const SIDEBAR_DEFAULT_COMPACT_VIEW: &str = "@sidebar_default_compact_view";
 pub const SIDEBAR_BOTTOM_HEIGHT: &str = "@sidebar_bottom_height";
 /// Windows narrower than this many columns open the sidebar as a tmux
 /// popup instead of a split pane (mobile viewports). `0` disables the

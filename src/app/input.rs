@@ -153,6 +153,14 @@ pub(super) fn handle_key_event(
                 state.open_remove_confirm();
             }
         }
+        KeyCode::Char('c') => {
+            state.global.toggle_compact();
+            state.set_flash(if state.global.compact {
+                "Compact view: on"
+            } else {
+                "Compact view: off"
+            });
+        }
         KeyCode::Enter => {
             if state.focus_state.focus == Focus::Panes {
                 state.activate_selected_pane();
@@ -396,5 +404,46 @@ mod tests {
         // Below 0 the popup nav helper is a no-op.
         handle_key_event(ctrl_key('p'), &mut state, &flag);
         assert_eq!(state.repo_popup_selected(), 0);
+    }
+
+    #[test]
+    fn c_toggles_compact_and_sets_flash() {
+        // `c` is global (any non-modal focus) so the toggle works from the
+        // activity log or filter bar too, not just Panes focus.
+        let mut state = state_with_three_panes();
+        let flag = AtomicBool::new(false);
+        assert!(!state.global.compact);
+
+        handle_key_event(key(KeyCode::Char('c')), &mut state, &flag);
+        assert!(state.global.compact);
+        assert_eq!(
+            state.flash.as_ref().map(|(text, _)| text.as_str()),
+            Some("Compact view: on")
+        );
+
+        handle_key_event(key(KeyCode::Char('c')), &mut state, &flag);
+        assert!(!state.global.compact);
+        assert_eq!(
+            state.flash.as_ref().map(|(text, _)| text.as_str()),
+            Some("Compact view: off")
+        );
+    }
+
+    #[test]
+    fn c_inside_remove_confirm_does_not_toggle_compact() {
+        // The remove-confirm popup owns `c` ("close window only"); the
+        // popup arm runs first, so compact mode must be untouched.
+        let mut state = state_with_three_panes();
+        state.popup = PopupState::RemoveConfirm {
+            pane_id: "%1".into(),
+            branch: "agent/x".into(),
+            warning: Vec::new(),
+            error: None,
+            area: None,
+        };
+        let flag = AtomicBool::new(false);
+        handle_key_event(key(KeyCode::Char('c')), &mut state, &flag);
+        assert!(!state.global.compact, "popup must swallow the key");
+        assert!(state.flash.is_none(), "no toggle feedback expected");
     }
 }

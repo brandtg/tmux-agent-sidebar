@@ -1,8 +1,12 @@
-use ratatui::{style::Style, text::Line};
+use ratatui::{
+    style::Style,
+    text::{Line, Span},
+};
 
 use crate::tmux::PaneStatus;
 use crate::ui::colors::ColorTheme;
 use crate::ui::icons::StatusIcons;
+use crate::ui::text::{display_width, elapsed_label, truncate_to_width};
 
 mod body;
 mod branch;
@@ -15,9 +19,7 @@ use body::{
 };
 use branch::branch_ports_row;
 use ctx::{RowCtx, SELECTION_MARKER};
-#[cfg(test)]
-use status::running_icon_for;
-use status::status_row;
+use status::{permission_badge_color, running_icon_for, status_row};
 
 pub(super) use branch::sidebar_remove_marker_col;
 
@@ -93,6 +95,149 @@ pub(super) fn render_pane_lines_with_ports(
         out.push(idle_hint_row(ctx));
     }
     out
+}
+
+/// One line per pane, used when compact mode is on.
+///
+/// Density rules, in priority order: the status icon, the session title,
+/// and the elapsed counter always render; the permission badge and
+/// subagent count render when space remains; the branch fills whatever
+/// room is left and is dropped first in narrow sidebars (the session
+/// name outranks it, and the full branch/ports row is a detail-only
+/// affordance). Wait reasons collapse into the status icon's color — the
+/// colored glyph alone is enough in compact mode.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn compact_row(
+    pane: &crate::tmux::PaneInfo,
+    git_info: &crate::group::PaneGitInfo,
+    selected: bool,
+    active: bool,
+    width: usize,
+    icons: &StatusIcons,
+    theme: &ColorTheme,
+    spinner_frame: usize,
+    now: u64,
+) -> Vec<Line<'static>> {
+    let bg = if selected {
+        Some(theme.selection_bg)
+    } else {
+        None
+    };
+    let apply_bg = |style: Style| match bg {
+        Some(c) => style.bg(c),
+        None => style,
+    };
+    let ctx = RowCtx {
+        marker_char: if active { SELECTION_MARKER } else { " " },
+        marker_style: if active {
+            apply_bg(Style::default().fg(theme.accent))
+        } else {
+            apply_bg(Style::default())
+        },
+        inner_width: width.saturating_sub(2),
+        theme,
+        bg,
+        active,
+    };
+
+    let (icon, pulse_color) = running_icon_for(&pane.status, spinner_frame, icons);
+    let icon_color = pulse_color
+        .or_else(|| theme.attention_color(pane.attention, spinner_frame))
+        .unwrap_or_else(|| theme.status_color(&pane.status));
+    let title_raw: &str = if pane.session_name.is_empty() {
+        pane.agent.label()
+    } else {
+        &pane.session_name
+    };
+    let badge = pane.permission_mode.badge();
+    let elapsed = elapsed_label(pane.started_at, now);
+
+    // The trailing `×` remove affordance for sidebar-spawned worktrees
+    // pins to the rightmost column exactly like the full branch row, so
+    // the `sidebar_remove_marker_col` click-target math stays valid.
+    let remove_marker =
+        sidebar_remove_marker_col(git_info, None, pane.sidebar_spawned, ctx.inner_width).is_some();
+
+    let mut right_width = display_width(&elapsed);
+    if remove_marker {
+        right_width += 2; // " ×"
+    }
+
+    let icon_w = display_width(icon);
+    let title_budget = ctx.inner_width.saturating_sub(icon_w + 1 + right_width);
+    let title = truncate_to_width(title_raw, title_budget);
+
+    let mut left_spans: Vec<Span<'static>> = Vec::with_capacity(5);
+    let mut left_width = icon_w + 1 + display_width(&title);
+    left_spans.push(Span::styled(
+        icon.to_string(),
+        ctx.apply_bg(Style::default().fg(icon_color)),
+    ));
+    left_spans.push(Span::styled(
+        format!(" {}", title),
+        ctx.apply_bg(Style::default().fg(theme.agent_color(&pane.agent))),
+    ));
+
+    // Extras render only when they fit, so a narrow sidebar degrades to
+    // icon + title + elapsed instead of truncating the title away.
+    let mut leftover = ctx.inner_width.saturating_sub(left_width + right_width);
+    if !badge.is_empty() {
+        let w = 1 + display_width(badge);
+        if leftover >= w {
+            left_spans.push(Span::styled(
+                format!(" {}", badge),
+                ctx.apply_bg(
+                    Style::default().fg(permission_badge_color(&pane.permission_mode, theme)),
+                ),
+            ));
+            left_width += w;
+            leftover -= w;
+        }
+    }
+    let subagent_count = pane.subagents.len();
+    if subagent_count > 0 {
+        let text = format!(" +{}", subagent_count);
+        let w = display_width(&text);
+        if leftover >= w {
+            left_spans.push(Span::styled(
+                text,
+                ctx.apply_bg(Style::default().fg(theme.subagent)),
+            ));
+            left_width += w;
+            leftover -= w;
+        }
+    }
+    let branch = crate::ui::text::branch_label(git_info);
+    if !branch.is_empty() && leftover >= 3 {
+        // One separator space + at least 2 branch characters, else the
+        // fragment is noise; truncation is handled by truncate_to_width.
+        let text = format!(" {}", truncate_to_width(&branch, leftover - 1));
+        let w = display_width(&text);
+        left_spans.push(Span::styled(
+            text,
+            ctx.apply_bg(Style::default().fg(theme.branch)),
+        ));
+        left_width += w;
+    }
+
+    let elapsed_fg = if pane.status.is_active() {
+        theme.text_active
+    } else {
+        theme.text_muted
+    };
+    let mut right_spans: Vec<Span<'static>> = Vec::with_capacity(2);
+    right_spans.push(Span::styled(
+        elapsed,
+        ctx.apply_bg(Style::default().fg(elapsed_fg)),
+    ));
+    if remove_marker {
+        right_spans.push(Span::styled(
+            " ×".to_string(),
+            ctx.apply_bg(Style::default().fg(theme.status_error)),
+        ));
+    }
+
+    vec![ctx.row_line_split(left_spans, left_width, right_spans, right_width)]
 }
 
 #[cfg(test)]
@@ -1171,5 +1316,188 @@ mod tests {
                 "each wrapped line should carry the left padding, got: {text}"
             );
         }
+    }
+
+    fn compact_row_text(pane: &PaneInfo, git: &PaneGitInfo, width: usize) -> String {
+        let theme = ColorTheme::default();
+        let lines = compact_row(
+            pane,
+            git,
+            false,
+            false,
+            width,
+            &StatusIcons::default(),
+            &theme,
+            0,
+            0,
+        );
+        lines.iter().map(line_text).collect::<Vec<_>>().join("\n")
+    }
+
+    #[test]
+    fn compact_row_renders_exactly_one_line() {
+        // Full mode renders status + branch + subagents + wait reason +
+        // prompt rows; compact must collapse all of that into one line.
+        let theme = ColorTheme::default();
+        let mut p = pane(PermissionMode::Auto, PaneStatus::Waiting, "some prompt");
+        p.session_name = "fix-api".into();
+        p.wait_reason = "permission_prompt".into();
+        p.subagents = vec!["Explore".into(), "Plan".into()];
+        let git = PaneGitInfo {
+            repo_root: Some("/r".into()),
+            branch: Some("feat/compact".into()),
+            is_worktree: false,
+            worktree_name: None,
+        };
+        let lines = compact_row(
+            &p,
+            &git,
+            false,
+            false,
+            40,
+            &StatusIcons::default(),
+            &theme,
+            0,
+            0,
+        );
+        assert_eq!(lines.len(), 1, "compact mode is strictly one line per pane");
+        let text = line_text(&lines[0]);
+        assert!(text.contains("fix-api"), "title must render: {text}");
+        assert!(
+            text.contains("+2"),
+            "subagent count badge must render: {text}"
+        );
+        assert!(
+            text.contains("auto"),
+            "permission badge must render: {text}"
+        );
+        assert!(
+            !text.contains("permission required"),
+            "wait-reason text must collapse into the glyph: {text}"
+        );
+    }
+
+    #[test]
+    fn compact_row_prefers_session_name_over_branch_when_narrow() {
+        // Priority rule: title > elapsed > badges > branch. At 16 columns
+        // the branch no longer fits; the session name must stay intact.
+        let theme = ColorTheme::default();
+        let mut p = pane(PermissionMode::Default, PaneStatus::Running, "");
+        p.session_name = "fix-api".into();
+        p.started_at = Some(1);
+        let git = PaneGitInfo {
+            repo_root: Some("/r".into()),
+            branch: Some("feature/very-long-branch-name".into()),
+            is_worktree: false,
+            worktree_name: None,
+        };
+        let lines = compact_row(
+            &p,
+            &git,
+            false,
+            false,
+            16,
+            &StatusIcons::default(),
+            &theme,
+            0,
+            66,
+        );
+        let text = lines.iter().map(line_text).collect::<Vec<_>>().join("\n");
+        assert!(text.contains("fix-api"), "name must survive: {text}");
+        assert!(
+            !text.contains("feature"),
+            "branch must be dropped first: {text}"
+        );
+        assert!(text.contains("1m5s"), "elapsed must survive: {text}");
+    }
+
+    #[test]
+    fn compact_row_shows_branch_fragment_when_room_remains() {
+        let mut p = pane(PermissionMode::Default, PaneStatus::Running, "");
+        p.session_name = "fix-api".into();
+        let git = PaneGitInfo {
+            repo_root: Some("/r".into()),
+            branch: Some("feat/compact".into()),
+            is_worktree: false,
+            worktree_name: None,
+        };
+        let text = compact_row_text(&p, &git, 40);
+        assert!(
+            text.contains(" feat/compact"),
+            "branch fragment should fill leftover space: {text}"
+        );
+    }
+
+    #[test]
+    fn compact_row_pins_remove_marker_to_right_edge_for_spawned_worktree() {
+        let theme = ColorTheme::default();
+        let mut p = pane(PermissionMode::Default, PaneStatus::Running, "");
+        p.session_name = "fix-api".into();
+        p.sidebar_spawned = true;
+        let git = PaneGitInfo {
+            repo_root: Some("/r".into()),
+            branch: Some("feat/x".into()),
+            is_worktree: true,
+            worktree_name: None,
+        };
+        let width = 40usize;
+        let lines = compact_row(
+            &p,
+            &git,
+            false,
+            false,
+            width,
+            &StatusIcons::default(),
+            &theme,
+            0,
+            0,
+        );
+        let text = line_text(&lines[0]);
+        // Same column math as the full branch row: marker(1) + space(1) +
+        // inner_width, with `×` on the last column.
+        let x_col = display_width(&text[..text.find('×').expect("× present")]);
+        assert_eq!(x_col, width - 1, "× must pin to the right edge: {text}");
+        assert!(
+            text.find("fix-api").unwrap() < text.find('×').unwrap(),
+            "× comes after the title: {text}"
+        );
+    }
+
+    #[test]
+    fn compact_row_no_remove_marker_for_plain_branch() {
+        let mut p = pane(PermissionMode::Default, PaneStatus::Running, "");
+        p.sidebar_spawned = true;
+        let git = PaneGitInfo {
+            repo_root: Some("/r".into()),
+            branch: Some("main".into()),
+            is_worktree: false,
+            worktree_name: None,
+        };
+        let text = compact_row_text(&p, &git, 40);
+        assert!(!text.contains('×'), "non-worktree panes get no ×: {text}");
+    }
+
+    #[test]
+    fn compact_row_selected_applies_selection_bg() {
+        let theme = ColorTheme::default();
+        let p = pane(PermissionMode::Default, PaneStatus::Running, "");
+        let lines = compact_row(
+            &p,
+            &PaneGitInfo::default(),
+            true,
+            false,
+            40,
+            &StatusIcons::default(),
+            &theme,
+            0,
+            0,
+        );
+        assert!(
+            lines[0]
+                .spans
+                .iter()
+                .any(|s| s.style.bg == Some(theme.selection_bg)),
+            "the single compact row is also the status row, so selection bg applies"
+        );
     }
 }

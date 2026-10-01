@@ -110,40 +110,63 @@ pub(super) fn collect(state: &AppState, width: u16) -> CollectedRows {
             let ports = pane_state.map(|s| s.ports.as_slice());
             let task_progress = pane_state.and_then(|s| s.task_progress.as_ref());
             let status_line_idx = collected.lines.len();
-            let pane_lines = row::render_pane_lines_with_ports(
-                pane,
-                git_info,
-                ports,
-                task_progress,
-                is_selected,
-                is_active,
-                width,
-                &state.icons,
-                theme,
-                state.spinner_frame,
-                state.now,
-            );
+            let compact = state.global.compact;
+            let pane_lines = if compact {
+                row::compact_row(
+                    pane,
+                    git_info,
+                    is_selected,
+                    is_active,
+                    width,
+                    &state.icons,
+                    theme,
+                    state.spinner_frame,
+                    state.now,
+                )
+            } else {
+                row::render_pane_lines_with_ports(
+                    pane,
+                    git_info,
+                    ports,
+                    task_progress,
+                    is_selected,
+                    is_active,
+                    width,
+                    &state.icons,
+                    theme,
+                    state.spinner_frame,
+                    state.now,
+                )
+            };
             let pane_line_count = pane_lines.len();
             collected.lines.extend(pane_lines);
             for _ in 0..pane_line_count {
                 collected.line_to_row.push(Some(row_index));
             }
 
-            // The branch row is always `status_line_idx + 1` when
-            // `branch_ports_row` emits a line (which requires a
-            // non-empty branch). Look up the exact column of the
-            // trailing `×` from the row helper so the click target
-            // lines up with the rendered glyph even when the branch
-            // name truncates.
+            // Register the trailing `×` remove marker when the pane is a
+            // sidebar-spawned worktree. In full mode the marker rides on
+            // the branch row (`status_line_idx + 1`, present only when the
+            // pane rendered >= 2 lines); in compact mode it is pinned to
+            // the status row itself.
+            let remove_eligible = if compact {
+                true
+            } else {
+                git_info.is_worktree && pane_line_count >= 2
+            };
             if pane.sidebar_spawned
-                && git_info.is_worktree
-                && pane_line_count >= 2
+                && remove_eligible
                 && let Some(x) =
                     row::sidebar_remove_marker_col(git_info, ports, true, width.saturating_sub(2))
             {
+                let line_idx = if compact {
+                    status_line_idx
+                } else {
+                    status_line_idx + 1
+                };
                 collected
                     .pending_remove
-                    .push((status_line_idx + 1, x, pane.pane_id.clone()));
+                    .push((line_idx, x, pane.pane_id.clone()));
             }
 
             row_index += 1;

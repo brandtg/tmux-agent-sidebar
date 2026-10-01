@@ -11,12 +11,19 @@ pub struct GlobalState {
     pub status_filter: StatusFilter,
     pub selected_pane_row: usize,
     pub repo_filter: RepoFilter,
+    /// Compact one-line-per-pane rendering. Toggleable at runtime with
+    /// `c`; synced across open sidebars via `@sidebar_compact` but never
+    /// restored on reopen — the landing mode comes from
+    /// `@sidebar_default_compact_view`.
+    pub compact: bool,
     /// Last filter value successfully written to tmux.
     last_saved_filter: StatusFilter,
     /// Last cursor value successfully written to tmux.
     last_saved_cursor: usize,
     /// Last repo filter value successfully written to tmux.
     last_saved_repo_filter: RepoFilter,
+    /// Last compact value successfully written to tmux.
+    last_saved_compact: bool,
     /// When the selected cursor was last changed and still needs persisting.
     pending_cursor_save_since: Option<Instant>,
 }
@@ -33,9 +40,11 @@ impl GlobalState {
             status_filter: StatusFilter::All,
             selected_pane_row: 0,
             repo_filter: RepoFilter::All,
+            compact: false,
             last_saved_filter: StatusFilter::All,
             last_saved_cursor: 0,
             last_saved_repo_filter: RepoFilter::All,
+            last_saved_compact: false,
             pending_cursor_save_since: None,
         }
     }
@@ -115,6 +124,29 @@ impl GlobalState {
         }
     }
 
+    /// Flip compact mode and broadcast the new value to every open
+    /// sidebar via the `@sidebar_compact` tmux global option.
+    pub fn toggle_compact(&mut self) {
+        self.compact = !self.compact;
+        self.save_compact();
+    }
+
+    /// Save compact flag to tmux global variable. Only updates
+    /// `last_saved_compact` on success so a failed write does not cause
+    /// a later sync to revert the user's choice.
+    pub fn save_compact(&mut self) {
+        if tmux::run_tmux(&[
+            "set",
+            "-g",
+            tmux::SIDEBAR_COMPACT,
+            if self.compact { "1" } else { "0" },
+        ])
+        .is_some()
+        {
+            self.last_saved_compact = self.compact;
+        }
+    }
+
     /// Load all global state from tmux variables.
     /// Called at startup and on SIGUSR1 (pane focus change).
     pub fn load_from_tmux(&mut self) {
@@ -132,21 +164,34 @@ impl GlobalState {
             .unwrap_or(StatusFilter::All)
     }
 
-    /// Land on the configured default view instead of the last-used filter.
+    /// Parse `@sidebar_default_compact_view` into the landing compact
+    /// mode for a newly opened sidebar. Accepts `on`/`true`/`1`
+    /// (case-insensitive); unset or any other value means `off`.
+    pub fn default_compact_view_from_options(opts: &HashMap<String, String>) -> bool {
+        opts.get(tmux::SIDEBAR_DEFAULT_COMPACT_VIEW)
+            .map(|s| matches!(s.trim().to_ascii_lowercase().as_str(), "on" | "true" | "1"))
+            .unwrap_or(false)
+    }
+
+    /// Land on the configured default view instead of the last-used
+    /// filter/compact values.
     ///
-    /// `@sidebar_filter` persists the most recent filter across sidebar
-    /// instances, so a freshly opened sidebar would otherwise resume
-    /// whatever filter some other window set earlier — a random-looking
-    /// landing view. Called once at startup, after `load_from_tmux`.
+    /// `@sidebar_filter` and `@sidebar_compact` persist the most recent
+    /// values across sidebar instances, so a freshly opened sidebar
+    /// would otherwise resume whatever some other window set earlier —
+    /// a random-looking landing state. Called once at startup, after
+    /// `load_from_tmux`.
     ///
-    /// Only `status_filter` is overridden: `apply_all` has already pointed
-    /// `last_saved_filter` at the persisted value, so the window-refocus
-    /// reload in the main loop does not restore the stale filter over the
-    /// default, while filter changes from other open sidebars still sync
-    /// in. The default is never written back to tmux here — opening a
-    /// sidebar must not yank the view out from under already-open ones.
+    /// Only `status_filter` and `compact` are overridden: `apply_all`
+    /// has already pointed the `last_saved_*` markers at the persisted
+    /// values, so the window-refocus reload in the main loop does not
+    /// restore the stale values over the defaults, while changes from
+    /// other open sidebars still sync in. The defaults are never
+    /// written back to tmux here — opening a sidebar must not yank the
+    /// view out from under already-open ones.
     pub fn apply_default_view(&mut self, opts: &HashMap<String, String>) {
         self.status_filter = Self::default_view_from_options(opts);
+        self.compact = Self::default_compact_view_from_options(opts);
     }
 
     /// Startup variant of [`GlobalState::apply_default_view`] that reads
@@ -178,6 +223,13 @@ impl GlobalState {
             if tmux_repo != self.last_saved_repo_filter {
                 self.repo_filter = tmux_repo.clone();
                 self.last_saved_repo_filter = tmux_repo;
+            }
+        }
+        if let Some(compact_str) = opts.get(tmux::SIDEBAR_COMPACT) {
+            let tmux_compact = compact_str.trim() == "1";
+            if tmux_compact != self.last_saved_compact {
+                self.compact = tmux_compact;
+                self.last_saved_compact = tmux_compact;
             }
         }
     }
