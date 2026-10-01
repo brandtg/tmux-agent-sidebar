@@ -121,6 +121,7 @@ mod tests {
             attention: PaneAttention::None,
             agent: AgentType::Codex,
             path: "/tmp/project".into(),
+            launch_cwd: String::new(),
             current_command: String::new(),
             prompt: prompt.into(),
             prompt_is_response: is_response,

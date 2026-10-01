@@ -89,14 +89,25 @@ pub fn group_panes_by_repo(sessions: &[crate::tmux::SessionInfo]) -> Vec<RepoGro
     for session in sessions {
         for window in &session.windows {
             for pane in &window.panes {
+                // Grouping anchor: prefer the launch-time cwd captured by
+                // hooks (`@pane_launch_cwd`) so an agent cd-ing into another
+                // checkout mid-session doesn't regroup the pane under the
+                // new repo. Panes without an anchor (hooks never fired for
+                // them) fall back to the live cwd.
+                let anchor = if pane.launch_cwd.is_empty() {
+                    &pane.path
+                } else {
+                    &pane.launch_cwd
+                };
+
                 // Cache the base git info per path. `get` first avoids a key
                 // clone on cache hits; misses fall through to `insert` which
                 // owns the key plus the (expensive) git-command lookup.
-                let mut git_info = match git_cache.get(pane.path.as_str()) {
+                let mut git_info = match git_cache.get(anchor.as_str()) {
                     Some(cached) => cached.clone(),
                     None => {
-                        let resolved = resolve_pane_git_info(&pane.path);
-                        git_cache.insert(pane.path.clone(), resolved.clone());
+                        let resolved = resolve_pane_git_info(anchor);
+                        git_cache.insert(anchor.clone(), resolved.clone());
                         resolved
                     }
                 };
@@ -115,7 +126,7 @@ pub fn group_panes_by_repo(sessions: &[crate::tmux::SessionInfo]) -> Vec<RepoGro
 
                 let group_key = match &git_info.repo_root {
                     Some(root) => root.clone(),
-                    None => pane.path.clone(),
+                    None => anchor.clone(),
                 };
 
                 let display_name = group_key
@@ -285,6 +296,7 @@ mod tests {
             attention: PaneAttention::None,
             agent: crate::tmux::AgentType::Claude,
             path: path.into(),
+            launch_cwd: String::new(),
             current_command: String::new(),
             prompt: String::new(),
             prompt_is_response: false,
@@ -322,6 +334,95 @@ mod tests {
     fn group_panes_empty_sessions() {
         let groups = group_panes_by_repo(&[]);
         assert!(groups.is_empty());
+    }
+
+    /// Build a single hermetic git repo at `<tmp>/<name>` with one commit.
+    fn temp_git_repo(tmp: &Path, name: &str) -> std::path::PathBuf {
+        let repo = tmp.join(name);
+        std::fs::create_dir_all(&repo).expect("mkdir repo");
+        let output = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&repo)
+            .args([
+                "-c",
+                "user.name=test",
+                "-c",
+                "user.email=test@example.com",
+                "-c",
+                "commit.gpgsign=false",
+                "init",
+                "-q",
+            ])
+            .output()
+            .expect("spawn git init");
+        assert!(
+            output.status.success(),
+            "git init failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        repo
+    }
+
+    #[test]
+    fn group_panes_anchor_keeps_launch_repo_when_agent_moves() {
+        // Regression for the live-cwd regroup bug: an agent launched in
+        // repo A that cd-s into repo B mid-session must stay grouped under
+        // A. The anchor (`@pane_launch_cwd`) wins over the live path.
+        let tmp = tempfile::tempdir().expect("temp dir");
+        let intel_eng = temp_git_repo(tmp.path(), "intel-eng");
+        let wisy_cloud = temp_git_repo(tmp.path(), "wisy-cloud");
+
+        let mut pane = test_pane("%1", wisy_cloud.to_str().unwrap());
+        pane.launch_cwd = intel_eng.to_str().unwrap().to_string();
+
+        let sessions = vec![test_session(vec![test_window(vec![pane], true)])];
+        let groups = group_panes_by_repo(&sessions);
+
+        assert_eq!(
+            groups.len(),
+            1,
+            "anchored pane must not spawn a second group"
+        );
+        assert_eq!(
+            groups[0].name, "intel-eng",
+            "group must stay at the launch repo, not the agent's live cwd"
+        );
+    }
+
+    #[test]
+    fn group_panes_without_anchor_uses_live_path() {
+        // No anchor (hooks never fired): grouping behaves exactly as
+        // before, keying off the live cwd.
+        let tmp = tempfile::tempdir().expect("temp dir");
+        let repo_a = temp_git_repo(tmp.path(), "repo-a");
+        let repo_b = temp_git_repo(tmp.path(), "repo-b");
+
+        let pane = test_pane("%1", repo_b.to_str().unwrap());
+
+        let sessions = vec![test_session(vec![test_window(vec![pane], true)])];
+        let groups = group_panes_by_repo(&sessions);
+
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].name, "repo-b");
+        assert_ne!(repo_a, repo_b, "sanity: fixtures are distinct repos");
+    }
+
+    #[test]
+    fn group_panes_anchored_and_unanchored_same_repo_merge() {
+        // A pane anchored at repo A and a pane still sitting in repo A
+        // must collapse into one group.
+        let tmp = tempfile::tempdir().expect("temp dir");
+        let repo = temp_git_repo(tmp.path(), "shared");
+
+        let mut anchored = test_pane("%1", "/somewhere/else");
+        anchored.launch_cwd = repo.to_str().unwrap().to_string();
+        let live = test_pane("%2", repo.to_str().unwrap());
+
+        let sessions = vec![test_session(vec![test_window(vec![anchored, live], true)])];
+        let groups = group_panes_by_repo(&sessions);
+
+        assert_eq!(groups.len(), 1, "anchor resolves to the same repo root");
+        assert_eq!(groups[0].panes.len(), 2);
     }
 
     #[test]

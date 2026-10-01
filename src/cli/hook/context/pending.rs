@@ -52,4 +52,9 @@ pub(in crate::cli::hook) fn run_worktree_remove_teardown(pane: &str) {
     // Clear hook-set cwd so query_sessions() falls back to
     // pane_current_path, avoiding stale worktree path association.
     tmux::unset_pane_option(pane, tmux::PANE_CWD);
+    // Drop the launch anchor too: if it was seeded from the worktree cwd
+    // (no original_repo_dir in the payload), it would otherwise pin
+    // grouping to the removed path forever. The next hook event re-seeds
+    // it from the restored cwd.
+    tmux::unset_pane_option(pane, tmux::PANE_LAUNCH_CWD);
 }

@@ -223,6 +223,7 @@ mod tests {
             attention: PaneAttention::None,
             agent: AgentType::Claude,
             path: "/tmp".into(),
+            launch_cwd: String::new(),
             current_command: String::new(),
             prompt: String::new(),
             prompt_is_response: false,

@@ -29,6 +29,7 @@ mod tests {
         tmux::test_mock::set(pane, tmux::PANE_WORKTREE_NAME, "parent-feat");
         tmux::test_mock::set(pane, tmux::PANE_WORKTREE_BRANCH, "feat/parent");
         tmux::test_mock::set(pane, tmux::PANE_CWD, "/repo/parent");
+        tmux::test_mock::set(pane, tmux::PANE_LAUNCH_CWD, "/repo/parent");
 
         on_worktree_remove(pane);
 
@@ -44,6 +45,11 @@ mod tests {
             tmux::test_mock::get(pane, tmux::PANE_CWD).as_deref(),
             Some("/repo/parent")
         );
+        assert_eq!(
+            tmux::test_mock::get(pane, tmux::PANE_LAUNCH_CWD).as_deref(),
+            Some("/repo/parent"),
+            "deferred teardown must not touch the parent's anchor early"
+        );
     }
 
     #[test]
@@ -53,12 +59,17 @@ mod tests {
         tmux::test_mock::set(pane, tmux::PANE_WORKTREE_NAME, "old");
         tmux::test_mock::set(pane, tmux::PANE_WORKTREE_BRANCH, "old");
         tmux::test_mock::set(pane, tmux::PANE_CWD, "/wt/old");
+        tmux::test_mock::set(pane, tmux::PANE_LAUNCH_CWD, "/wt/old");
 
         on_worktree_remove(pane);
 
         assert!(!tmux::test_mock::contains(pane, tmux::PANE_WORKTREE_NAME));
         assert!(!tmux::test_mock::contains(pane, tmux::PANE_WORKTREE_BRANCH));
         assert!(!tmux::test_mock::contains(pane, tmux::PANE_CWD));
+        assert!(
+            !tmux::test_mock::contains(pane, tmux::PANE_LAUNCH_CWD),
+            "anchor seeded from the removed worktree must not outlive it"
+        );
     }
 
     #[test]

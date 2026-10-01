@@ -5,7 +5,7 @@ use crate::tmux;
 
 use super::super::context::{
     AgentContext, PENDING_SESSION_END, PENDING_WORKTREE_REMOVE, clear_run_state,
-    pane_writes_allowed, run_session_end_teardown, set_agent_meta,
+    pane_writes_allowed, run_session_end_teardown, set_agent_meta, sync_launch_anchor,
 };
 use super::super::notifications::{
     NotifyLabels, NotifyPayload, notify_lifecycle, session_end_body, session_end_fingerprint,
@@ -18,6 +18,15 @@ pub(in crate::cli::hook) fn on_session_start(
     source: &str,
 ) -> i32 {
     set_agent_meta(pane, ctx);
+    // A fresh `startup` launch is authoritative: it re-anchors grouping
+    // even if a hard-killed previous agent left a stale anchor behind.
+    // Every other source (resume / clear / compact) continues the current
+    // run, whose anchor was already seeded by `set_agent_meta` and must
+    // stay put. Guarded like the other parent-owned writes so a subagent's
+    // own SessionStart can't re-anchor the parent pane.
+    if pane_writes_allowed(pane) {
+        sync_launch_anchor(pane, ctx.cwd, ctx.worktree, source == "startup");
+    }
     set_attention(pane, "clear");
     clear_run_state(pane);
     set_notification_run_id(pane);
@@ -254,6 +263,88 @@ mod tests {
             tmux::test_mock::get(pane, tmux::PANE_SUBAGENTS).as_deref(),
             Some("Explore:sub-1"),
             "SessionStart must not wipe an active subagent list"
+        );
+    }
+
+    #[test]
+    fn on_session_start_startup_overwrites_stale_launch_anchor() {
+        // A fresh startup launch is the one event that may re-anchor:
+        // a hard-killed previous agent can leave a stale anchor behind
+        // (no SessionEnd ran to clear it).
+        let _guard = tmux::test_mock::install();
+        let pane = "%ANCHOR_STARTUP";
+        tmux::test_mock::set(pane, tmux::PANE_LAUNCH_CWD, "/stale/repo");
+        let ctx = AgentContext {
+            agent: "claude",
+            cwd: "/fresh/repo",
+            permission_mode: "default",
+            worktree: &None,
+            session_id: &None,
+        };
+
+        on_session_start(pane, &ctx, "startup");
+
+        assert_eq!(
+            tmux::test_mock::get(pane, tmux::PANE_LAUNCH_CWD).as_deref(),
+            Some("/fresh/repo"),
+            "startup must re-anchor grouping at the new launch dir"
+        );
+    }
+
+    #[test]
+    fn on_session_start_continuation_keeps_launch_anchor() {
+        // resume / clear / compact continue the current run; the agent
+        // may have cd-ed since launch, so the payload cwd must NOT move
+        // the anchor.
+        let _guard = tmux::test_mock::install();
+        for source in ["resume", "clear", "compact", ""] {
+            let pane = format!("%ANCHOR_KEEP_{source}");
+            tmux::test_mock::set(&pane, tmux::PANE_LAUNCH_CWD, "/launch/repo");
+            let ctx = AgentContext {
+                agent: "claude",
+                cwd: "/moved/elsewhere",
+                permission_mode: "default",
+                worktree: &None,
+                session_id: &None,
+            };
+
+            on_session_start(&pane, &ctx, source);
+
+            assert_eq!(
+                tmux::test_mock::get(&pane, tmux::PANE_LAUNCH_CWD).as_deref(),
+                Some("/launch/repo"),
+                "source {source:?} must keep the existing anchor"
+            );
+        }
+    }
+
+    #[test]
+    fn on_session_start_skips_anchor_under_subagents() {
+        // A subagent's SessionStart shares the parent's pane; its cwd
+        // must never re-anchor the parent's grouping.
+        let _guard = tmux::test_mock::install();
+        let pane = "%ANCHOR_SUBAGENT";
+        tmux::test_mock::set(pane, tmux::PANE_SUBAGENTS, "Explore:sub-1");
+        tmux::test_mock::set(pane, tmux::PANE_LAUNCH_CWD, "/parent/repo");
+
+        on_session_start(pane, &basic_ctx(), "startup");
+
+        assert_eq!(
+            tmux::test_mock::get(pane, tmux::PANE_LAUNCH_CWD).as_deref(),
+            Some("/parent/repo"),
+            "subagent SessionStart must not re-anchor the parent pane"
+        );
+    }
+
+    #[test]
+    fn on_session_start_seeds_launch_anchor_when_unset() {
+        let _guard = tmux::test_mock::install();
+        let pane = "%ANCHOR_FRESH";
+        on_session_start(pane, &basic_ctx(), "");
+        assert_eq!(
+            tmux::test_mock::get(pane, tmux::PANE_LAUNCH_CWD).as_deref(),
+            Some("/repo"),
+            "first session in a pane seeds the anchor from its cwd"
         );
     }
 

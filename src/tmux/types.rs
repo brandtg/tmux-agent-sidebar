@@ -37,6 +37,10 @@ pub struct PaneInfo {
     pub attention: PaneAttention,
     pub agent: AgentType,
     pub path: String,
+    /// Launch-time cwd captured by hooks (`@pane_launch_cwd`). Repo
+    /// grouping resolves this instead of `path` when set, so cd-ing into
+    /// another checkout mid-session doesn't move the pane's group.
+    pub launch_cwd: String,
     pub current_command: String,
     pub prompt: String,
     pub prompt_is_response: bool,
