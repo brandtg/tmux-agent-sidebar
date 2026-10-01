@@ -114,6 +114,28 @@ type SessionMap = indexmap::IndexMap<String, indexmap::IndexMap<String, WindowIn
 /// later retarget a permission-mode update at the right pane.
 type CodexPidEntry = (String, usize, u32);
 
+/// Everything the per-tick refresh needs from one `tmux list-panes -a` call.
+///
+/// Historically this data cost three tmux spawns per tick (a `display-message`
+/// for the sidebar's focus state, the `list-panes -a` hierarchy, and a second
+/// `list-panes` for the sidebar's window to resolve the focused pane). All
+/// three answers are derivable from the single raw `list-panes -a` output, so
+/// they are extracted here.
+#[derive(Debug, Default)]
+pub(crate) struct TmuxSnapshot {
+    pub sessions: Vec<SessionInfo>,
+    pub process_snapshot: Option<ProcessSnapshot>,
+    /// `pane_active` of the sidebar pane itself.
+    pub sidebar_pane_active: bool,
+    /// `window_active` of the window containing the sidebar pane.
+    pub sidebar_window_active: bool,
+    /// Every pane sharing the sidebar's window, including the sidebar pane
+    /// and non-agent panes: `(pane_id, pane_active, pane_current_path)`.
+    /// Consumed by the pure [`pick_active_pane`] logic to resolve the
+    /// focused pane without a second tmux spawn.
+    pub sidebar_window_panes: Vec<(String, bool, String)>,
+}
+
 /// Query all sessions, windows, and panes in a single `tmux list-panes -a` call
 /// (plus one optional `ps` call for process-backed agent checks), instead of
 /// N+1 subprocess invocations.
@@ -122,22 +144,23 @@ type CodexPidEntry = (String, usize, u32);
 /// query could not be answered" from "tmux answered: zero panes" — treating
 /// the two alike would let one transient failure wipe tracked pane state.
 pub fn query_sessions() -> Vec<SessionInfo> {
-    query_sessions_with_process_snapshot().unwrap_or_default().0
+    query_session_snapshot("%0")
+        .map(|snapshot| snapshot.sessions)
+        .unwrap_or_default()
 }
 
-pub(crate) fn query_sessions_with_process_snapshot()
--> Option<(Vec<SessionInfo>, Option<ProcessSnapshot>)> {
+pub(crate) fn query_session_snapshot(sidebar_pane: &str) -> Option<TmuxSnapshot> {
     let pane_format = pane_format();
     let all_panes_output = run_tmux(&["list-panes", "-a", "-F", &pane_format])?;
-    Some(build_sessions_from_output(&all_panes_output))
+    Some(build_session_snapshot(&all_panes_output, sidebar_pane))
 }
 
-/// Parse raw `list-panes` output into the session hierarchy plus process
-/// snapshot. An empty input is a legitimate "no panes" success here; the
-/// failure-vs-empty distinction happens in the caller.
-fn build_sessions_from_output(
-    all_panes_output: &str,
-) -> (Vec<SessionInfo>, Option<ProcessSnapshot>) {
+/// Parse raw `list-panes` output into the session hierarchy, the process
+/// snapshot, and the sidebar-centric fields (own focus flags + the pane list
+/// of the sidebar's window) used to resolve the focused pane.
+fn build_session_snapshot(all_panes_output: &str, sidebar_pane: &str) -> TmuxSnapshot {
+    let (sidebar_pane_active, sidebar_window_active, sidebar_window_panes) =
+        extract_sidebar_window_info(all_panes_output, sidebar_pane);
     let process_snapshot = process_snapshot_for_panes(all_panes_output);
     let (mut sessions_map, codex_pids) =
         build_session_hierarchy(all_panes_output, process_snapshot.as_ref());
@@ -146,7 +169,75 @@ fn build_sessions_from_output(
     {
         resolve_codex_permission_modes(&mut sessions_map, &codex_pids, snapshot);
     }
-    (finalize_sessions(sessions_map), process_snapshot)
+    TmuxSnapshot {
+        sessions: finalize_sessions(sessions_map),
+        process_snapshot,
+        sidebar_pane_active,
+        sidebar_window_active,
+        sidebar_window_panes,
+    }
+}
+
+/// Pull the sidebar's focus flags and its window's pane list out of the raw
+/// `list-panes -a` output. The sidebar pane itself carries `@pane_role=sidebar`
+/// and is therefore absent from the parsed hierarchy, but its raw line (and
+/// every sibling pane's raw line) is present here — one pass over lines we
+/// have already paid for replaces two extra tmux spawns per tick.
+///
+/// When the sidebar pane cannot be found (pane killed mid-query), the
+/// fallbacks mirror the old standalone queries: both flags false and an empty
+/// pane list, i.e. "not focused" and "no focused pane".
+fn extract_sidebar_window_info(
+    all_panes_output: &str,
+    sidebar_pane: &str,
+) -> (bool, bool, Vec<(String, bool, String)>) {
+    struct RawPane {
+        window_id: String,
+        pane_id: String,
+        pane_active: bool,
+        path: String,
+    }
+
+    let mut sidebar_pane_active = false;
+    let mut sidebar_window_active = false;
+    let mut sidebar_window_id: Option<String> = None;
+    let mut panes: Vec<RawPane> = Vec::new();
+
+    for line in all_panes_output.lines() {
+        let parts = split_tmux_fields(line, '|');
+        if parts.len() < session_line_field::MIN_FIELDS {
+            continue;
+        }
+        let window_id = parts[session_line_field::WINDOW_ID].as_str();
+        let pane_fields = &parts[session_line_field::PANE_LINE_OFFSET..];
+        let pane_id = pane_fields[pane_line_field::PANE_ID].as_str();
+        let pane_active = pane_fields[pane_line_field::PANE_ACTIVE] == "1";
+        let path = pane_fields[pane_line_field::PANE_CURRENT_PATH].to_string();
+
+        // Grouped sessions can repeat the same pane line; the values are
+        // identical, so the first match wins.
+        if pane_id == sidebar_pane && sidebar_window_id.is_none() {
+            sidebar_pane_active = pane_active;
+            sidebar_window_active = parts[session_line_field::WINDOW_ACTIVE] == "1";
+            sidebar_window_id = Some(window_id.to_string());
+        }
+        panes.push(RawPane {
+            window_id: window_id.to_string(),
+            pane_id: pane_id.to_string(),
+            pane_active,
+            path,
+        });
+    }
+
+    let out = match &sidebar_window_id {
+        Some(window_id) => panes
+            .into_iter()
+            .filter(|pane| &pane.window_id == window_id)
+            .map(|pane| (pane.pane_id, pane.pane_active, pane.path))
+            .collect(),
+        None => Vec::new(),
+    };
+    (sidebar_pane_active, sidebar_window_active, out)
 }
 
 /// Parse the raw `tmux list-panes` output into an indexed session→window→pane
@@ -1471,7 +1562,7 @@ mod tests {
         // known-good snapshot instead of treating it as "no panes exist".
         let _tmux_down = crate::tmux::test_fail_tmux::install();
 
-        assert!(query_sessions_with_process_snapshot().is_none());
+        assert!(query_session_snapshot("%99").is_none());
     }
 
     #[test]
@@ -1479,9 +1570,62 @@ mod tests {
         // Empty output from a successful call is the legitimate
         // "tmux answered: zero panes" case and must stay distinguishable
         // from the failure case above.
-        let (sessions, process_snapshot) = build_sessions_from_output("");
+        let snapshot = build_session_snapshot("", "%99");
 
-        assert!(sessions.is_empty());
-        assert!(process_snapshot.is_none());
+        assert!(snapshot.sessions.is_empty());
+        assert!(snapshot.process_snapshot.is_none());
+        assert!(!snapshot.sidebar_pane_active);
+        assert!(!snapshot.sidebar_window_active);
+        assert!(snapshot.sidebar_window_panes.is_empty());
+    }
+
+    #[test]
+    fn snapshot_extracts_sidebar_window_panes() {
+        // The sidebar pane (%99, role sidebar) shares @1 with %1 (active,
+        // agent pane) and %2 (inactive); @2 belongs to another window and
+        // must not leak into the sidebar-window pane list.
+        let line = |window: &str,
+                    window_active: &str,
+                    pane: &str,
+                    active: &str,
+                    pid: &str,
+                    role: &str,
+                    path: &str| {
+            format!(
+                "main|{window}|1|win|{window_active}|1|{active}|running||claude|@pane_name|{path}|zsh|{role}|{pane}|prompt|src|100|wait|{pid}|sub|cwd|default|wt|wtb|sid|0|bg|title|/launch"
+            )
+        };
+        let output = [
+            line("@1", "1", "%99", "1", "11", "sidebar", "/w"),
+            line("@1", "1", "%1", "1", "12", "", "/agent"),
+            line("@1", "1", "%2", "0", "13", "", "/other"),
+            line("@2", "0", "%3", "1", "14", "", "/elsewhere"),
+        ]
+        .join("\n");
+
+        let snapshot = build_session_snapshot(&output, "%99");
+
+        assert!(snapshot.sidebar_pane_active);
+        assert!(snapshot.sidebar_window_active);
+        assert_eq!(
+            snapshot.sidebar_window_panes,
+            vec![
+                ("%99".to_string(), true, "/w".to_string()),
+                ("%1".to_string(), true, "/agent".to_string()),
+                ("%2".to_string(), false, "/other".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn snapshot_missing_sidebar_pane_yields_empty_window_panes() {
+        let line = "main|@1|1|win|1|1|1|running||claude|@pane_name|/agent|zsh||%1|prompt|src|100|wait|12|sub|cwd|default|wt|wtb|sid|0|bg|title|/launch";
+        let snapshot = build_session_snapshot(line, "%99");
+
+        assert!(!snapshot.sidebar_pane_active);
+        assert!(!snapshot.sidebar_window_active);
+        assert!(snapshot.sidebar_window_panes.is_empty());
+        // Session parsing is unaffected by the sidebar lookup.
+        assert_eq!(snapshot.sessions.len(), 1);
     }
 }

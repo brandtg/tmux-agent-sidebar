@@ -12,6 +12,12 @@ pub enum Focus {
 #[derive(Debug, Clone)]
 pub struct FocusState {
     pub sidebar_focused: bool,
+    /// Whether the sidebar's window is the session's active window, as of
+    /// the last successful tmux snapshot. Stored on the state so a failed
+    /// query can ride out the tick on the last known-good value instead of
+    /// fabricating `false` (which would trip the event loop's inactive
+    /// reload path).
+    pub window_active: bool,
     pub focus: Focus,
     pub focused_pane_id: Option<String>,
     pub prev_focused_pane_id: Option<String>,
@@ -21,6 +27,7 @@ impl FocusState {
     pub fn new() -> Self {
         Self {
             sidebar_focused: false,
+            window_active: false,
             focus: Focus::Panes,
             focused_pane_id: None,
             prev_focused_pane_id: None,
@@ -54,13 +61,16 @@ impl AppState {
         self.pane_by_id(&target.pane_id)
     }
 
-    pub fn find_focused_pane(&mut self) {
-        // Query tmux directly for the active pane, not through `repo_groups`
-        // which only contains agent panes. This allows activity/git info to
-        // be displayed even when the focused pane has no agent running.
-        // When the sidebar has focus, find_active_pane returns None — preserve
-        // the previously focused pane so bottom panel data stays stable.
-        if let Some((id, _)) = tmux::find_active_pane(&self.tmux_pane) {
+    /// Resolve the focused (non-sidebar) pane from the sidebar's window
+    /// pane list, which arrives as part of the same single `list-panes -a`
+    /// snapshot as everything else in the tick — this used to be its own
+    /// tmux query. The list covers all panes in the window, not just agent
+    /// panes, so activity/git info can be displayed even when the focused
+    /// pane has no agent running. When the sidebar has focus the list
+    /// yields no active non-sidebar pane — preserve the previously focused
+    /// pane so bottom panel data stays stable.
+    pub(crate) fn find_focused_pane_from(&mut self, panes: &[(String, bool, String)]) {
+        if let Some((id, _)) = tmux::pick_active_pane(&self.tmux_pane, panes) {
             self.focus_state.focused_pane_id = Some(id);
         }
     }

@@ -4,10 +4,9 @@ use std::time::Duration;
 
 use crate::process::{ProcessSnapshot, command_basename};
 use crate::subprocess;
-use crate::tmux::SessionInfo;
 
-/// Deadline for the `lsof` listening-port probe; it runs on the TUI event
-/// loop (every 10s) and must never hang there.
+/// Deadline for the `lsof` listening-port probe; it runs on the port-scan
+/// worker thread (every 10s) and must never hang there.
 const SUBPROCESS_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[derive(Debug, Default, Clone)]
@@ -15,6 +14,21 @@ pub struct PaneProcessSnapshot {
     pub ports_by_pane: HashMap<String, Vec<u16>>,
     pub command_by_pane: HashMap<String, String>,
     pub live_agent_panes: HashSet<String>,
+    /// Every pane the scan examined, including panes with no ports and no
+    /// detected command. Consumers use this to refresh (or clear) runtime
+    /// state exactly for the panes this scan saw — never for panes that
+    /// appeared after the scan request was queued.
+    pub scanned_panes: HashSet<String>,
+}
+
+/// One pane's process-scan input. A `pane_pid` of `None` (degenerate pid
+/// parse) still participates in the scan as an always-missed pane so its
+/// dead-scan streak can advance, matching the old inline scanner.
+#[derive(Debug, Clone)]
+pub struct PaneScanTarget {
+    pub pane_id: String,
+    pub pane_pid: Option<u32>,
+    pub agent: crate::tmux::AgentType,
 }
 
 fn run_command(cmd: &str, args: &[&str]) -> Option<String> {
@@ -26,20 +40,6 @@ fn run_command(cmd: &str, args: &[&str]) -> Option<String> {
     } else {
         None
     }
-}
-
-fn parse_pane_pids(sessions: &[SessionInfo]) -> HashMap<String, u32> {
-    let mut out = HashMap::new();
-    for session in sessions {
-        for window in &session.windows {
-            for pane in &window.panes {
-                if let Some(pid) = pane.pane_pid {
-                    out.insert(pane.pane_id.clone(), pid);
-                }
-            }
-        }
-    }
-    out
 }
 
 fn is_shell_command(basename: &str) -> bool {
@@ -120,51 +120,44 @@ fn parse_lsof_listening_ports(lsof_output: &str) -> Vec<(u32, u16)> {
     out
 }
 
-/// Scan per-pane process state for the provided sessions.
+/// Scan per-pane process state for the provided pane targets.
 /// The lookup starts from each pane's PID and walks the process tree, so it can
 /// pick up child dev servers spawned by an agent shell and detect when the
 /// agent process itself has exited.
-pub(crate) fn scan_session_process_snapshot(
-    sessions: &[SessionInfo],
-    process_snapshot: Option<&ProcessSnapshot>,
-) -> Option<PaneProcessSnapshot> {
-    let pane_pids = parse_pane_pids(sessions);
-    if pane_pids.is_empty() {
+///
+/// Runs on the port-scan worker thread: it owns the `ps` and `lsof`
+/// subprocesses that used to stall the render thread every 10 seconds.
+pub(crate) fn scan_pane_processes(targets: &[PaneScanTarget]) -> Option<PaneProcessSnapshot> {
+    if targets.is_empty() {
         return None;
     }
 
-    let owned_snapshot;
-    let process_snapshot = match process_snapshot {
-        Some(snapshot) => snapshot,
-        None => {
-            owned_snapshot = ProcessSnapshot::scan()?;
-            &owned_snapshot
-        }
-    };
+    // A failed `ps` scan surfaces as `None` (no result is sent), so a
+    // transient failure can never be mistaken for "every pane missed" —
+    // that would advance dead-scan streaks for live agents.
+    let process_snapshot = ProcessSnapshot::scan()?;
 
     let mut pid_to_panes: HashMap<u32, Vec<String>> = HashMap::new();
     let mut live_agent_panes: HashSet<String> = HashSet::new();
     let mut command_by_pane: HashMap<String, String> = HashMap::new();
-    for session in sessions {
-        for window in &session.windows {
-            for pane in &window.panes {
-                let Some(&pane_pid) = pane_pids.get(&pane.pane_id) else {
-                    continue;
-                };
-                let descendant_set = process_snapshot.descendants(&[pane_pid]);
-                if process_snapshot.tree_has_agent(&[pane_pid], &pane.agent) {
-                    live_agent_panes.insert(pane.pane_id.clone());
-                }
-                if let Some(command) = best_command_for_pane(pane_pid, process_snapshot) {
-                    command_by_pane.insert(pane.pane_id.clone(), command);
-                }
-                for pid in descendant_set {
-                    pid_to_panes
-                        .entry(pid)
-                        .or_default()
-                        .push(pane.pane_id.clone());
-                }
-            }
+    let mut scanned_panes: HashSet<String> = HashSet::new();
+    for target in targets {
+        scanned_panes.insert(target.pane_id.clone());
+        let Some(pane_pid) = target.pane_pid else {
+            continue;
+        };
+        let descendant_set = process_snapshot.descendants(&[pane_pid]);
+        if process_snapshot.tree_has_agent(&[pane_pid], &target.agent) {
+            live_agent_panes.insert(target.pane_id.clone());
+        }
+        if let Some(command) = best_command_for_pane(pane_pid, &process_snapshot) {
+            command_by_pane.insert(target.pane_id.clone(), command);
+        }
+        for pid in descendant_set {
+            pid_to_panes
+                .entry(pid)
+                .or_default()
+                .push(target.pane_id.clone());
         }
     }
 
@@ -190,16 +183,8 @@ pub(crate) fn scan_session_process_snapshot(
             .collect(),
         command_by_pane,
         live_agent_panes,
+        scanned_panes,
     })
-}
-
-/// Scan listening TCP ports for panes in the provided sessions.
-/// The lookup starts from each pane's PID and walks the process tree, so it can
-/// pick up child dev servers spawned by an agent shell.
-pub fn scan_session_ports(sessions: &[SessionInfo]) -> HashMap<String, Vec<u16>> {
-    scan_session_process_snapshot(sessions, None)
-        .map(|snapshot| snapshot.ports_by_pane)
-        .unwrap_or_default()
 }
 
 #[cfg(test)]

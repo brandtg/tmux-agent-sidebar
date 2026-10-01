@@ -443,6 +443,7 @@ mod tests {
             attention: PaneAttention::None,
             agent: crate::tmux::AgentType::Claude,
             path: String::new(),
+            launch_cwd: String::new(),
             current_command: String::new(),
             prompt: String::new(),
             prompt_is_response: false,

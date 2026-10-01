@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::time::Instant;
 
 use crate::ui::colors::ColorTheme;
@@ -64,6 +65,14 @@ pub struct AppState {
     pub icons: StatusIcons,
     pub bottom_tab: BottomTab,
     pub git: crate::git::GitData,
+    /// Resolved git metadata per pane working directory, maintained by
+    /// `git_info_poll_loop` (a background thread) and consumed by
+    /// `group_panes_by_repo`. The first snapshot primes it synchronously;
+    /// afterwards the render thread never spawns git for grouping.
+    pub git_info_cache: HashMap<String, crate::group::PaneGitInfo>,
+    /// Port-scan targets queued by `queue_port_scan_if_due`, drained by
+    /// the event loop into the port-scan worker thread.
+    pub pending_port_scan: Option<Vec<crate::port::PaneScanTarget>>,
     pub pane_states: PaneRuntimeMap,
     /// Periodic-refresh clocks (port scan, session-name scan, filter
     /// debounce, port-scan first-run flag).
@@ -160,6 +169,8 @@ impl AppState {
             icons: StatusIcons::default(),
             bottom_tab: BottomTab::Activity,
             git: crate::git::GitData::default(),
+            git_info_cache: HashMap::new(),
+            pending_port_scan: None,
             pane_states: PaneRuntimeMap::new(),
             timers: RefreshTimers::default(),
             popup: PopupState::None,
@@ -950,14 +961,16 @@ mod tests {
             }],
         }];
 
-        state.apply_session_snapshot(true, sessions);
+        state.focus_state.sidebar_focused = true;
+        state.apply_session_snapshot(sessions, Vec::new());
 
         assert!(state.focus_state.sidebar_focused);
         assert_eq!(state.repo_groups.len(), 1);
         assert_eq!(state.layout.pane_row_targets.len(), 1);
         assert_eq!(state.global.selected_pane_row, 0);
-        // focused_pane_id is set by find_focused_pane() which queries tmux
-        // directly, so we don't assert it here (tmux not available in tests).
+        // focused_pane_id is set by find_focused_pane_from() from the
+        // sidebar-window pane list, which is empty here, so focus is
+        // preserved (unset) in this test.
     }
 
     // ─── auto_switch_tab tests are in state/tab.rs ────────────────

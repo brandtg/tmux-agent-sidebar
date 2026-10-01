@@ -612,6 +612,7 @@ mod tests {
             attention: crate::tmux::PaneAttention::None,
             agent: crate::tmux::AgentType::Claude,
             path: "/tmp/myrepo".into(),
+            launch_cwd: String::new(),
             current_command: String::new(),
             prompt: String::new(),
             prompt_is_response: false,
