@@ -1,6 +1,7 @@
 pub mod capture;
 mod hook;
 mod label;
+mod notify_focus;
 pub mod plugin_state;
 pub(crate) mod setup;
 pub(crate) mod shared_html;
@@ -25,6 +26,7 @@ pub fn run(args: &[String]) -> Option<i32> {
         "set-status" => cmd_set_status(rest),
         "spawn" => spawn::cmd_spawn(rest),
         "capture" => capture::cmd_capture(rest),
+        "notify-focus" => notify_focus::cmd_notify_focus(rest),
         "--version" | "version" => {
             println!("{}", crate::VERSION);
             0
@@ -82,14 +84,13 @@ fn set_attention(pane: &str, state: &str) {
     }
 }
 
-/// Canonicalize a string before storing it in a tmux pane option. Tmux's
-/// pane-option format uses `|` as a field separator and `\n` as a record
-/// terminator, so both must be replaced with spaces to keep the stored
-/// value a single safe field. Readers that compare against raw process
-/// data (e.g. the bg-shell ps sweep) must apply the same normalization
-/// so round-tripping through storage doesn't silently break equality.
+/// Canonicalize a string before storing it in a tmux pane option. Thin
+/// wrapper over [`crate::tmux::sanitize_option_value`] (which
+/// `set_pane_option` now also applies as defense in depth); kept as a
+/// separate entry point because activity-log lines use the same `|`
+/// field-separator rules as tmux options.
 pub(crate) fn sanitize_tmux_value(s: &str) -> String {
-    s.replace(['\n', '|'], " ")
+    tmux::sanitize_option_value(s)
 }
 
 // ─── set-status subcommand ──────────────────────────────────────────────────

@@ -15,4 +15,4 @@ pub(super) use pending::{
     PENDING_SESSION_END, PENDING_WORKTREE_REMOVE, drain_pending_teardowns, mark_pending,
     run_session_end_teardown, run_worktree_remove_teardown,
 };
-pub(super) use subagents::{append_subagent, remove_subagent};
+pub(super) use subagents::remove_subagent;

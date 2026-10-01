@@ -2299,6 +2299,12 @@ fn snapshot_remove_confirm_modal_shows_three_options() {
     state.popup = PopupState::RemoveConfirm {
         pane_id: "%42".into(),
         branch: "add-login".into(),
+        warning: vec![
+            "Deletes uncommitted".into(),
+            "changes, untracked files".into(),
+            "2 unpushed".into(),
+            "commits: reflog only".into(),
+        ],
         error: None,
         area: None,
     };
@@ -2306,12 +2312,14 @@ fn snapshot_remove_confirm_modal_shows_three_options() {
     insta::assert_snapshot!(output, @r"
      ≡1  ●0  ◎0  ◐0  ○1  ✕0
     ⓘ                                              — ▾
-    proj                                             +
-    ┃ ○ claude
-    ┃   main   ╭ add-login ───────────────╮
-        Waiting│[y] remove worktree       │
-               │[c] close window only     │
-               │[n] cancel                │
+    proj       ╭ add-login ───────────────╮          +
+    ┃ ○ claude │[y] remove worktree       │
+    ┃   main   │[c] close window only     │
+        Waiting│[n] cancel                │
+               │Deletes uncommitted       │
+               │changes, untracked files  │
+               │2 unpushed                │
+               │commits: reflog only      │
                ╰──────────────────────────╯
     ╭ Activity │ Git ────────────────────────────────╮
     │                 No activity yet                │
@@ -2371,6 +2379,10 @@ fn snapshot_remove_confirm_modal_shows_inline_error() {
     state.popup = PopupState::RemoveConfirm {
         pane_id: "%42".into(),
         branch: "add-login".into(),
+        warning: vec![
+            "Deletes uncommitted".into(),
+            "changes, untracked files".into(),
+        ],
         error: Some("git: worktree has uncommitted changes".into()),
         area: None,
     };
@@ -2383,6 +2395,8 @@ fn snapshot_remove_confirm_modal_shows_inline_error() {
     ┃   main   │[y] remove worktree       │
         Waiting│[c] close window only     │
                │[n] cancel                │
+               │Deletes uncommitted       │
+               │changes, untracked files  │
                │git: worktree has uncommi…│
                ╰──────────────────────────╯
     ╭ Activity │ Git ────────────────────────────────╮

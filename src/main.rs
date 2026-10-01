@@ -11,6 +11,35 @@ use tmux_agent_sidebar::{app, tmux};
 
 static NEEDS_REFRESH: AtomicBool = AtomicBool::new(false);
 
+/// Publishes the sidebar's pid in `@sidebar_pid` for the lifetime of the
+/// TUI session and clears it on exit (normal return, error, or panic
+/// unwind). Without the cleanup, a crashed sidebar leaves a stale pid
+/// behind that the focus hooks would keep signaling — potentially an
+/// unrelated process after pid recycling.
+struct SidebarPidGuard {
+    pane: String,
+    pid: u32,
+}
+
+impl SidebarPidGuard {
+    fn new(pane: String) -> Self {
+        let pid = std::process::id();
+        tmux::set_pane_option(&pane, tmux::SIDEBAR_PID, &pid.to_string());
+        Self { pane, pid }
+    }
+}
+
+impl Drop for SidebarPidGuard {
+    fn drop(&mut self) {
+        // Only clear while the option still points at us — a restarted
+        // sidebar in the same pane has already written its own pid, and
+        // unsetting it would blind the new instance's refresh hook.
+        if tmux::get_pane_option_value(&self.pane, tmux::SIDEBAR_PID) == self.pid.to_string() {
+            tmux::unset_pane_option(&self.pane, tmux::SIDEBAR_PID);
+        }
+    }
+}
+
 struct TuiSession {
     entered_alt_screen: bool,
 }
@@ -57,17 +86,7 @@ fn main() -> io::Result<()> {
         libc::sigaction(libc::SIGUSR1, &sa, std::ptr::null_mut());
     }
 
-    let pid = std::process::id();
-    let _ = std::process::Command::new("tmux")
-        .args([
-            "set",
-            "-t",
-            &tmux_pane,
-            "-p",
-            tmux::SIDEBAR_PID,
-            &pid.to_string(),
-        ])
-        .output();
+    let _pid_guard = SidebarPidGuard::new(tmux_pane.clone());
 
     let mut stdout = io::stdout();
     let _tui_session = TuiSession::enter(&mut stdout)?;
