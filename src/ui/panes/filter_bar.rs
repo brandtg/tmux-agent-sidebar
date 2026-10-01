@@ -432,4 +432,115 @@ mod tests {
             "repo button should not be bold when popup is open"
         );
     }
+
+    fn pane_with_status(id: &str, status: PaneStatus) -> crate::tmux::PaneInfo {
+        crate::tmux::PaneInfo {
+            pane_id: id.into(),
+            pane_active: false,
+            status,
+            attention: PaneAttention::None,
+            agent: crate::tmux::AgentType::Claude,
+            path: String::new(),
+            current_command: String::new(),
+            prompt: String::new(),
+            prompt_is_response: false,
+            started_at: None,
+            wait_reason: String::new(),
+            permission_mode: crate::tmux::PermissionMode::Default,
+            subagents: vec![],
+            pane_pid: None,
+            worktree: crate::tmux::WorktreeMetadata::default(),
+            session_id: None,
+            session_name: String::new(),
+            sidebar_spawned: false,
+            bg_shell_cmd: None,
+        }
+    }
+
+    #[test]
+    fn handle_filter_click_hits_rendered_icon_columns() {
+        // Contract between `render_filter_bar` (above) and
+        // `AppState::handle_filter_click` (state/layout.rs): the click math
+        // re-derives the bar layout (` icon+count`, two-space separators),
+        // so drift between renderer and hit-test would silently shift or
+        // deaden the click regions. The probe columns are derived from the
+        // rendered spans themselves — not from the hit-test's own
+        // arithmetic — so any divergence fails here, mirroring the
+        // remove-`×` column contract test in ui/panes/row.rs.
+        let _tmux_down = crate::tmux::test_fail_tmux::install();
+        let mut state = make_state_with_groups(vec![crate::group::RepoGroup {
+            name: "project".into(),
+            has_focus: true,
+            panes: vec![
+                (
+                    pane_with_status("%1", PaneStatus::Running),
+                    PaneGitInfo::default(),
+                ),
+                (
+                    pane_with_status("%2", PaneStatus::Idle),
+                    PaneGitInfo::default(),
+                ),
+            ],
+        }]);
+        // Counts: all=2, running=1, background=0, waiting=0, idle=1, error=0
+        // — enough to prove the hit-test honours rendered count widths
+        // (multi-digit "2" vs single-digit "0") without hand-computing them.
+
+        let line = render_filter_bar(&state);
+        let icons = &state.icons;
+        let probes = [
+            (icons.all_icon().to_string(), StatusFilter::All),
+            (
+                icons.status_icon(&PaneStatus::Running).to_string(),
+                StatusFilter::Running,
+            ),
+            (
+                icons.status_icon(&PaneStatus::Background).to_string(),
+                StatusFilter::Background,
+            ),
+            (
+                icons.status_icon(&PaneStatus::Waiting).to_string(),
+                StatusFilter::Waiting,
+            ),
+            (
+                icons.status_icon(&PaneStatus::Idle).to_string(),
+                StatusFilter::Idle,
+            ),
+            (
+                icons.status_icon(&PaneStatus::Error).to_string(),
+                StatusFilter::Error,
+            ),
+        ];
+        let mut col = 0usize;
+        let mut hits: Vec<(StatusFilter, usize)> = Vec::new();
+        for span in &line.spans {
+            let text = span.content.as_ref();
+            if let Some((_, filter)) = probes.iter().find(|(icon, _)| icon == text) {
+                hits.push((*filter, col));
+            }
+            col += display_width(text);
+        }
+        assert_eq!(
+            hits.len(),
+            6,
+            "each filter icon must appear exactly once as its own span"
+        );
+
+        for (filter, col) in hits {
+            // Start from a filter different from the target so the assert
+            // can only pass if the click actually selected it.
+            state.global.status_filter = if matches!(filter, StatusFilter::All) {
+                StatusFilter::Running
+            } else {
+                StatusFilter::All
+            };
+            state.timers.last_filter_click =
+                std::time::Instant::now() - std::time::Duration::from_millis(200);
+            state.handle_filter_click(col as u16);
+            assert_eq!(
+                state.global.status_filter, filter,
+                "clicking the rendered column {col} must select {filter:?}"
+            );
+        }
+    }
 }

@@ -9,7 +9,7 @@ use crate::ui;
 /// color theme/icons from tmux options, loads global filter state, resolves
 /// the Claude plugin install version once at startup, seeds session names
 /// synchronously so `/rename` labels render on the first frame, and performs
-/// the first refresh pass.
+/// the single startup refresh pass.
 pub(super) fn init_state(tmux_pane: String) -> AppState {
     let mut state = AppState::new(tmux_pane);
     state.theme = ui::colors::ColorTheme::from_tmux();
@@ -29,6 +29,10 @@ pub(super) fn init_state(tmux_pane: String) -> AppState {
     // A new sidebar lands on `@sidebar_default_view` rather than the last
     // filter some other window persisted; see GlobalState::apply_default_view.
     state.global.apply_default_view_from_tmux();
+    // Populate session names synchronously before the refresh so
+    // `/rename`-assigned labels show up on the very first frame —
+    // `refresh` applies the map to every pane at the end of each pass.
+    state.sessions.names = session::scan_session_names();
     state.refresh();
 
     super::render::refresh_git_for_focused_pane(&mut state);
@@ -55,12 +59,6 @@ pub(super) fn init_state(tmux_pane: String) -> AppState {
     // also decouples the ⓘ badge from `focused_pane_id`, so killing
     // the last agent pane no longer drops outstanding setup warnings.
     state.refresh_notices();
-    // Populate session names synchronously before the first draw so
-    // `/rename`-assigned labels show up without waiting for the first
-    // background scan tick.
-    state.sessions.names = session::scan_session_names();
-    state.sessions.dirty = true;
-    state.refresh();
 
     state
 }

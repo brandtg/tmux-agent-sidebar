@@ -20,34 +20,39 @@ pub(super) fn handle_event(
 ) -> bool {
     match ev {
         Event::Key(key) => handle_key_event(key, state, git_tab_active),
-        Event::Mouse(mouse) => {
-            let term_height = terminal.size().map(|s| s.height).unwrap_or(0);
-            let bottom_h = state.bottom_panel_height;
-            match mouse.kind {
-                MouseEventKind::Down(MouseButton::Left) => {
-                    let bottom_start = term_height.saturating_sub(bottom_h);
-                    if mouse.row < bottom_start {
-                        state.handle_mouse_click(mouse.row, mouse.column);
-                    } else if mouse.row == bottom_start {
-                        state.handle_bottom_tab_click(mouse.column);
-                        // Keep the background git poller in sync immediately — the
-                        // keyboard `BackTab` path does the same update. Without this,
-                        // clicking into Git Status leaves polling disabled until the
-                        // next refresh tick and the tab renders stale data.
-                        git_tab_active
-                            .store(state.bottom_tab == BottomTab::GitStatus, Ordering::Relaxed);
-                    }
+        Event::Mouse(mouse) => match mouse.kind {
+            MouseEventKind::Down(MouseButton::Left) => {
+                let term_height = terminal.size().map(|s| s.height).unwrap_or(0);
+                let bottom_start = term_height.saturating_sub(state.bottom_panel_height);
+                if mouse.row < bottom_start {
+                    state.handle_mouse_click(mouse.row, mouse.column);
+                } else if mouse.row == bottom_start {
+                    state.handle_bottom_tab_click(mouse.column);
+                    // Keep the background git poller in sync immediately — the
+                    // keyboard `BackTab` path does the same update. Without this,
+                    // clicking into Git Status leaves polling disabled until the
+                    // next refresh tick and the tab renders stale data.
+                    git_tab_active
+                        .store(state.bottom_tab == BottomTab::GitStatus, Ordering::Relaxed);
                 }
-                MouseEventKind::ScrollDown => {
-                    state.handle_mouse_scroll(mouse.row, term_height, bottom_h, 3);
-                }
-                MouseEventKind::ScrollUp => {
-                    state.handle_mouse_scroll(mouse.row, term_height, bottom_h, -3);
-                }
-                _ => {}
+                true
             }
-            true
-        }
+            MouseEventKind::ScrollDown => {
+                let term_height = terminal.size().map(|s| s.height).unwrap_or(0);
+                state.handle_mouse_scroll(mouse.row, term_height, state.bottom_panel_height, 3);
+                true
+            }
+            MouseEventKind::ScrollUp => {
+                let term_height = terminal.size().map(|s| s.height).unwrap_or(0);
+                state.handle_mouse_scroll(mouse.row, term_height, state.bottom_panel_height, -3);
+                true
+            }
+            // Motion, drag, and button-release events mutate nothing; only
+            // the kinds above change state, and only they may schedule a
+            // redraw. Returning `true` for every mouse event used to force
+            // a full frame render on each movement burst.
+            _ => false,
+        },
         _ => false,
     }
 }

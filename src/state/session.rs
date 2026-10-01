@@ -1,44 +1,14 @@
 use std::collections::HashMap;
 
-#[derive(Debug, Clone)]
+/// Session-name map scanned by a background thread so the TUI thread never
+/// blocks on `~/.claude/sessions/*.json` reads.
+///
+/// The map is re-applied to every pane on every tick rather than gated by a
+/// change flag: `apply_session_snapshot` rebuilds `repo_groups` with an empty
+/// `session_name` on each fresh tmux parse, so `refresh` must restore labels
+/// every pass whether or not the map itself changed. The walk is one HashMap
+/// lookup per pane; the filesystem scan lives in the polling thread.
+#[derive(Debug, Clone, Default)]
 pub struct SessionNamesState {
     pub names: HashMap<String, String>,
-    pub dirty: bool,
-}
-
-impl SessionNamesState {
-    pub fn new() -> Self {
-        Self {
-            names: HashMap::new(),
-            dirty: true,
-        }
-    }
-}
-
-impl Default for SessionNamesState {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn new_starts_dirty_with_empty_map() {
-        let state = SessionNamesState::new();
-        assert!(
-            state.dirty,
-            "fresh state should be dirty so the first refresh runs"
-        );
-        assert!(state.names.is_empty());
-    }
-
-    #[test]
-    fn default_delegates_to_new() {
-        let default_state = SessionNamesState::default();
-        assert!(default_state.dirty);
-        assert!(default_state.names.is_empty());
-    }
 }

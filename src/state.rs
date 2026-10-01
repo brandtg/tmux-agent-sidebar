@@ -121,12 +121,10 @@ pub struct AppState {
     /// Maps session_id → session name, refreshed periodically from
     /// `~/.claude/sessions/*.json` files by `session_poll_loop`.
     ///
-    /// The `dirty` flag records that the map, or some pane's session_id,
-    /// changed since the last application. It does *not* gate the per-pane
-    /// label walk: `apply_session_snapshot` rebuilds `repo_groups` with an
-    /// empty `session_name` on every pane, so `refresh` has to re-apply the
-    /// map each tick whether or not anything changed. The walk itself is one
-    /// HashMap lookup per pane; the filesystem scan lives in the polling
+    /// The map is re-applied to every pane on every tick: `apply_session_snapshot`
+    /// rebuilds `repo_groups` with an empty `session_name`, so `refresh` has to
+    /// re-apply the map each pass whether or not it changed. The walk itself is
+    /// one HashMap lookup per pane; the filesystem scan lives in the polling
     /// thread.
     pub sessions: SessionNamesState,
     /// Whether the pet animation is drawn and ticked. Loaded once at startup
@@ -188,7 +186,7 @@ impl AppState {
             version_notice: None,
             global: GlobalState::new(),
             bottom_panel_height: crate::ui::BOTTOM_PANEL_HEIGHT,
-            sessions: SessionNamesState::new(),
+            sessions: SessionNamesState::default(),
             pet_enabled: false,
             popup_mode: false,
             quit_requested: false,

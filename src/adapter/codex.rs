@@ -2,9 +2,15 @@ use crate::event::{AgentEvent, AgentEventKind, EventAdapter};
 use crate::tmux::CODEX_AGENT;
 use serde_json::Value;
 
-use super::{HookRegistration, json_str, json_value_or_null, optional_str};
+use super::{EventBase, HookRegistration, json_str, json_value_or_null};
 
 pub struct CodexAdapter;
+
+/// Codex payloads carry a `permission_mode` and `session_id`, but no
+/// `worktree` object or `agent_id` — those stay at their defaults.
+fn base(input: &Value) -> EventBase {
+    EventBase::new(input, CODEX_AGENT).with_permission_mode(input)
+}
 
 impl CodexAdapter {
     /// Single source of truth for Codex CLI hook wiring. Verified against
@@ -45,34 +51,17 @@ impl CodexAdapter {
 impl EventAdapter for CodexAdapter {
     fn parse(&self, event_name: &str, input: &Value) -> Option<AgentEvent> {
         match event_name {
-            "session-start" => Some(AgentEvent::SessionStart {
-                agent: CODEX_AGENT.into(),
-                cwd: json_str(input, "cwd").into(),
-                permission_mode: json_str(input, "permission_mode").into(),
-                source: json_str(input, "source").into(),
-                worktree: None,
-                agent_id: None,
-                session_id: optional_str(input, "session_id"),
-            }),
-            "user-prompt-submit" => Some(AgentEvent::UserPromptSubmit {
-                agent: CODEX_AGENT.into(),
-                cwd: json_str(input, "cwd").into(),
-                permission_mode: json_str(input, "permission_mode").into(),
-                prompt: json_str(input, "prompt").into(),
-                worktree: None,
-                agent_id: None,
-                session_id: optional_str(input, "session_id"),
-            }),
-            "stop" => Some(AgentEvent::Stop {
-                agent: CODEX_AGENT.into(),
-                cwd: json_str(input, "cwd").into(),
-                permission_mode: json_str(input, "permission_mode").into(),
-                last_message: json_str(input, "last_assistant_message").into(),
-                response: Some("{\"continue\":true}".into()),
-                worktree: None,
-                agent_id: None,
-                session_id: optional_str(input, "session_id"),
-            }),
+            "session-start" => Some(base(input).session_start(json_str(input, "source").into())),
+            "user-prompt-submit" => {
+                Some(base(input).user_prompt_submit(json_str(input, "prompt").into()))
+            }
+            // Codex's Stop hook input carries no assistant response blob;
+            // the sidebar synthesizes a continue marker so the transcript
+            // hand-off keeps working.
+            "stop" => Some(base(input).stop(
+                json_str(input, "last_assistant_message").into(),
+                Some("{\"continue\":true}".into()),
+            )),
             // Codex's PostToolUse currently fires only for Bash (tool_input is
             // typed `{ command: String }`). Other tools do not emit the hook,
             // so the resulting activity log is Bash-only.

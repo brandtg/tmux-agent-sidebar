@@ -2,7 +2,7 @@ use crate::event::{AgentEvent, AgentEventKind, EventAdapter, WorktreeInfo};
 use crate::tmux::CLAUDE_AGENT;
 use serde_json::Value;
 
-use super::{HookRegistration, json_str};
+use super::{EventBase, HookRegistration, json_str};
 
 /// Parse optional worktree object from hook payload.
 /// Returns None if the "worktree" field is missing or not an object.
@@ -44,6 +44,17 @@ fn parse_json_field(input: &Value, field: &str) -> Value {
 }
 
 pub struct ClaudeAdapter;
+
+/// Claude payloads are the richest of the three adapters: they carry a
+/// `permission_mode`, an optional `worktree` object, and an `agent_id` for
+/// subagent/teammate contexts. All of that per-payload divergence is captured
+/// here once; the parse arms below only extract their event-specific fields.
+fn base(input: &Value) -> EventBase {
+    EventBase::new(input, CLAUDE_AGENT)
+        .with_permission_mode(input)
+        .with_worktree(parse_worktree(input))
+        .with_agent_id(optional_str(input, "agent_id"))
+}
 
 impl ClaudeAdapter {
     /// Single source of truth for Claude Code hook wiring. Each entry pairs
@@ -132,51 +143,21 @@ impl ClaudeAdapter {
 impl EventAdapter for ClaudeAdapter {
     fn parse(&self, event_name: &str, input: &Value) -> Option<AgentEvent> {
         match event_name {
-            "session-start" => Some(AgentEvent::SessionStart {
-                agent: CLAUDE_AGENT.into(),
-                cwd: json_str(input, "cwd").into(),
-                permission_mode: json_str(input, "permission_mode").into(),
-                source: json_str(input, "source").into(),
-                worktree: parse_worktree(input),
-                agent_id: optional_str(input, "agent_id"),
-                session_id: optional_str(input, "session_id"),
-            }),
+            "session-start" => Some(base(input).session_start(json_str(input, "source").into())),
             "session-end" => Some(AgentEvent::SessionEnd {
                 end_reason: json_str(input, "end_reason").into(),
             }),
-            "user-prompt-submit" => Some(AgentEvent::UserPromptSubmit {
-                agent: CLAUDE_AGENT.into(),
-                cwd: json_str(input, "cwd").into(),
-                permission_mode: json_str(input, "permission_mode").into(),
-                prompt: json_str(input, "prompt").into(),
-                worktree: parse_worktree(input),
-                agent_id: optional_str(input, "agent_id"),
-                session_id: optional_str(input, "session_id"),
-            }),
+            "user-prompt-submit" => {
+                Some(base(input).user_prompt_submit(json_str(input, "prompt").into()))
+            }
             "notification" => {
                 let wait_reason = json_str(input, "notification_type");
                 let meta_only = wait_reason == "idle_prompt";
-                Some(AgentEvent::Notification {
-                    agent: CLAUDE_AGENT.into(),
-                    cwd: json_str(input, "cwd").into(),
-                    permission_mode: json_str(input, "permission_mode").into(),
-                    wait_reason: wait_reason.into(),
-                    meta_only,
-                    worktree: parse_worktree(input),
-                    agent_id: optional_str(input, "agent_id"),
-                    session_id: optional_str(input, "session_id"),
-                })
+                Some(base(input).notification(wait_reason.into(), meta_only))
             }
-            "stop" => Some(AgentEvent::Stop {
-                agent: CLAUDE_AGENT.into(),
-                cwd: json_str(input, "cwd").into(),
-                permission_mode: json_str(input, "permission_mode").into(),
-                last_message: json_str(input, "last_assistant_message").into(),
-                response: None,
-                worktree: parse_worktree(input),
-                agent_id: optional_str(input, "agent_id"),
-                session_id: optional_str(input, "session_id"),
-            }),
+            "stop" => {
+                Some(base(input).stop(json_str(input, "last_assistant_message").into(), None))
+            }
             "stop-failure" => {
                 // Upstream fields: error_type (category), error_message (detail)
                 // Legacy fields: error, error_details
@@ -193,30 +174,10 @@ impl EventAdapter for ClaudeAdapter {
                 } else {
                     error_details
                 };
-                Some(AgentEvent::StopFailure {
-                    agent: CLAUDE_AGENT.into(),
-                    cwd: json_str(input, "cwd").into(),
-                    permission_mode: json_str(input, "permission_mode").into(),
-                    error: error.into(),
-                    worktree: parse_worktree(input),
-                    agent_id: optional_str(input, "agent_id"),
-                    session_id: optional_str(input, "session_id"),
-                })
+                Some(base(input).stop_failure(error.into()))
             }
-            "permission-denied" => Some(AgentEvent::PermissionDenied {
-                agent: CLAUDE_AGENT.into(),
-                cwd: json_str(input, "cwd").into(),
-                permission_mode: json_str(input, "permission_mode").into(),
-                worktree: parse_worktree(input),
-                agent_id: optional_str(input, "agent_id"),
-                session_id: optional_str(input, "session_id"),
-            }),
-            "cwd-changed" => Some(AgentEvent::CwdChanged {
-                cwd: json_str(input, "cwd").into(),
-                worktree: parse_worktree(input),
-                agent_id: optional_str(input, "agent_id"),
-                session_id: optional_str(input, "session_id"),
-            }),
+            "permission-denied" => Some(base(input).permission_denied()),
+            "cwd-changed" => Some(base(input).cwd_changed()),
             "subagent-start" => {
                 let agent_type = json_str(input, "agent_type");
                 if agent_type.is_empty() {

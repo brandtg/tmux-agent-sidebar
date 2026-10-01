@@ -273,6 +273,40 @@ mod tests {
         assert_eq!(overlay.y, 1);
     }
 
+    #[test]
+    fn pr_overlay_points_at_rendered_pr_text() {
+        // Contract between the header render (right-aligned `#N` on the
+        // branch row) and the OSC 8 overlay registration in
+        // `draw_git_content`: the overlay coordinates must land on the
+        // rendered glyphs. A header row inserted above the branch line or
+        // a drift in the right-alignment math would otherwise decorate the
+        // wrong cells with the hyperlink.
+        let mut state = AppState::new(String::new());
+        state.git.branch = "main".into();
+        state.git.pr_number = Some("42".into());
+        state.git.remote_url = "https://github.com/user/repo".into();
+        let terminal = draw(&mut state, 30, 4);
+        let buf = terminal.backend().buffer();
+
+        let overlay = state
+            .layout
+            .hyperlink_overlays
+            .first()
+            .expect("PR overlay should be registered");
+
+        let mut hash_cell = None;
+        for y in 0..buf.area.height {
+            for x in 0..buf.area.width {
+                if buf[(x, y)].symbol() == "#" {
+                    hash_cell = Some((x, y));
+                }
+            }
+        }
+        let (x, y) = hash_cell.expect("# must be rendered");
+        assert_eq!(overlay.x, x, "overlay x must match the rendered # column");
+        assert_eq!(overlay.y, y, "overlay y must match the rendered # row");
+    }
+
     // ─── Branch / PR header rendering ────────────────────────────────
 
     #[test]
