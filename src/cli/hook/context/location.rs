@@ -47,6 +47,30 @@ pub(in crate::cli::hook) fn sync_worktree_meta(pane: &str, worktree: &Option<Wor
     }
 }
 
+/// Seed or overwrite the launch anchor (`@pane_launch_cwd`).
+///
+/// The anchor is the cwd resolved at the pane's first observed hook event
+/// and is what repo grouping keys off, so an agent cd-ing into another
+/// checkout mid-session never moves its group. `overwrite` is only true
+/// for a fresh `startup` SessionStart — the one event that authoritatively
+/// re-launches an agent in the pane and can therefore heal a stale anchor
+/// left behind by a hard-killed previous run. Every other event seeds the
+/// anchor only when unset.
+pub(in crate::cli::hook) fn sync_launch_anchor(
+    pane: &str,
+    cwd: &str,
+    worktree: &Option<WorktreeInfo>,
+    overwrite: bool,
+) {
+    if cwd.is_empty() {
+        return;
+    }
+    if !overwrite && !tmux::get_pane_option_value(pane, tmux::PANE_LAUNCH_CWD).is_empty() {
+        return;
+    }
+    tmux::set_pane_option(pane, tmux::PANE_LAUNCH_CWD, resolve_cwd(cwd, worktree));
+}
+
 pub(in crate::cli::hook) fn sync_pane_location(
     pane: &str,
     cwd: &str,
@@ -81,6 +105,10 @@ pub(in crate::cli::hook) fn sync_pane_location(
     if !cwd.is_empty() {
         let effective_cwd = resolve_cwd(cwd, worktree);
         tmux::set_pane_option(pane, tmux::PANE_CWD, effective_cwd);
+        // Seed the launch anchor if the pane doesn't have one yet. Like
+        // @pane_cwd this is parent-owned: the subagent guard above already
+        // returned when children are active.
+        sync_launch_anchor(pane, cwd, worktree, false);
     }
     sync_worktree_meta(pane, worktree);
 }
@@ -181,6 +209,10 @@ mod tests {
             tmux::test_mock::get(pane, tmux::PANE_SESSION_ID).as_deref(),
             Some("parent-session")
         );
+        assert!(
+            !tmux::test_mock::contains(pane, tmux::PANE_LAUNCH_CWD),
+            "subagent-guarded events must not seed the parent's launch anchor"
+        );
     }
 
     #[test]
@@ -209,9 +241,77 @@ mod tests {
             tmux::test_mock::get(pane, tmux::PANE_CWD).as_deref(),
             Some("/repo")
         );
+        // The same resolution seeds the launch anchor on first sight.
+        assert_eq!(
+            tmux::test_mock::get(pane, tmux::PANE_LAUNCH_CWD).as_deref(),
+            Some("/repo")
+        );
         assert_eq!(
             tmux::test_mock::get(pane, tmux::PANE_SESSION_ID).as_deref(),
             Some("sess-1")
+        );
+    }
+
+    #[test]
+    fn sync_launch_anchor_seeds_when_unset() {
+        let _guard = tmux::test_mock::install();
+        let pane = "%ANCHOR_SEED";
+        sync_launch_anchor(pane, "/first/dir", &None, false);
+        assert_eq!(
+            tmux::test_mock::get(pane, tmux::PANE_LAUNCH_CWD).as_deref(),
+            Some("/first/dir")
+        );
+    }
+
+    #[test]
+    fn sync_launch_anchor_keeps_existing_unless_overwrite() {
+        let _guard = tmux::test_mock::install();
+        let pane = "%ANCHOR_STICKY";
+        tmux::test_mock::set(pane, tmux::PANE_LAUNCH_CWD, "/launch/repo");
+
+        // A mid-session cd must not move the anchor...
+        sync_launch_anchor(pane, "/other/repo", &None, false);
+        assert_eq!(
+            tmux::test_mock::get(pane, tmux::PANE_LAUNCH_CWD).as_deref(),
+            Some("/launch/repo"),
+            "non-overwrite events must keep the existing anchor"
+        );
+
+        // ...but a fresh startup launch is authoritative.
+        sync_launch_anchor(pane, "/other/repo", &None, true);
+        assert_eq!(
+            tmux::test_mock::get(pane, tmux::PANE_LAUNCH_CWD).as_deref(),
+            Some("/other/repo"),
+            "overwrite must replace a stale anchor"
+        );
+    }
+
+    #[test]
+    fn sync_launch_anchor_skips_empty_cwd() {
+        let _guard = tmux::test_mock::install();
+        let pane = "%ANCHOR_EMPTY";
+        sync_launch_anchor(pane, "", &None, true);
+        assert!(
+            !tmux::test_mock::contains(pane, tmux::PANE_LAUNCH_CWD),
+            "empty cwd must not write an anchor"
+        );
+    }
+
+    #[test]
+    fn sync_launch_anchor_resolves_worktree_original_repo_dir() {
+        let _guard = tmux::test_mock::install();
+        let pane = "%ANCHOR_WT";
+        let wt = Some(WorktreeInfo {
+            name: "feat".into(),
+            path: "/wt/feat".into(),
+            branch: "feat".into(),
+            original_repo_dir: "/main/repo".into(),
+        });
+        sync_launch_anchor(pane, "/wt/feat/src", &wt, false);
+        assert_eq!(
+            tmux::test_mock::get(pane, tmux::PANE_LAUNCH_CWD).as_deref(),
+            Some("/main/repo"),
+            "anchor must group worktree spawns under the original repo"
         );
     }
 

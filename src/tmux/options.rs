@@ -23,6 +23,11 @@ pub const PANE_ATTENTION: &str = "@pane_attention";
 /// Hook-reported working directory, preferred over tmux's
 /// `pane_current_path` for repo grouping.
 pub const PANE_CWD: &str = "@pane_cwd";
+/// Launch-time working directory, seeded on the first hook event that
+/// reports a cwd and overwritten only by a fresh `startup` SessionStart.
+/// Repo grouping keys off this anchor so an agent cd-ing into another
+/// checkout mid-session doesn't regroup the pane under the new repo.
+pub const PANE_LAUNCH_CWD: &str = "@pane_launch_cwd";
 /// Latest backgrounded Bash command (sanitized). Presence is the
 /// authoritative "live shell" signal: Stop routes to `background`
 /// while this is set, and the sidebar surfaces the command text.

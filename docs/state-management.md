@@ -39,7 +39,8 @@ Pane options written to tmux:
 |-------------|----------------|-------------|
 | `@pane_agent` | SessionStart | Agent type ("claude" / "codex" / "opencode") |
 | `@pane_status` | Every event | Status ("running" / "background" / "waiting" / "idle" / "error") |
-| `@pane_cwd` | SessionStart, CwdChanged | Working directory |
+| `@pane_cwd` | SessionStart, UserPromptSubmit, Notification, Stop, StopFailure, PermissionDenied, CwdChanged | Hook-reported working directory (skipped when subagents are active). Preferred over tmux's `pane_current_path` when resolving `PaneInfo.path`. |
+| `@pane_launch_cwd` | First hook event reporting a cwd (seed); fresh `startup` SessionStart (overwrite) | Launch-time working directory used as the repo-grouping anchor. Once seeded it survives mid-session `cd`s — an agent that moves into another checkout stays grouped under the repo it was launched in. Worktree payloads resolve to `original_repo_dir` so worktree spawns group under the main repo. Cleared on SessionEnd / teardown; a stale anchor from a hard-killed agent is replaced by the next `startup` SessionStart. |
 | `@pane_permission_mode` | SessionStart, hook event | Permission mode |
 | `@pane_prompt` | UserPromptSubmit, Stop | Latest prompt or response text |
 | `@pane_prompt_source` | UserPromptSubmit, Stop | "user" or "response" |
@@ -77,7 +78,7 @@ Per-pane file-based state:
 
 | Field | Update Frequency | Description |
 |-------|-----------------|-------------|
-| `repo_groups` | Every 1s | Panes grouped by git repo root (built directly from `tmux::query_sessions()` output, not stored separately as a session list) |
+| `repo_groups` | Every 1s | Panes grouped by git repo root (built directly from `tmux::query_sessions()` output, not stored separately as a session list). The path fed into repo resolution is the launch anchor `@pane_launch_cwd` when set, falling back to the live cwd — so mid-session `cd`s into other checkouts don't regroup the pane |
 | `focus_state.focused_pane_id` | Every 1s, plus immediately on user-initiated pane jumps | Currently focused agent pane |
 | `focus_state.sidebar_focused` | Every 1s | Whether sidebar pane itself has focus |
 | `focus_state.focus` | On user input | UI focus: `Filter` / `Panes` / `ActivityLog`; input also triggers an immediate redraw so focus changes appear without waiting for the next poll tick |

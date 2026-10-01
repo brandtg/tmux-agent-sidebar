@@ -61,6 +61,7 @@ pub(in crate::cli::hook) fn clear_all_meta(pane: &str) {
         tmux::PANE_BG_CMD,
         tmux::PANE_SUBAGENTS,
         tmux::PANE_CWD,
+        tmux::PANE_LAUNCH_CWD,
         tmux::PANE_PERMISSION_MODE,
         tmux::PANE_WORKTREE_NAME,
         tmux::PANE_WORKTREE_BRANCH,
