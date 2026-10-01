@@ -39,19 +39,27 @@ pub(crate) fn cmd_hook(args: &[String]) -> i32 {
         return 0;
     }
 
-    let (input, input_bytes, input_valid) = read_stdin_json();
+    let Some((input, input_bytes, input_valid)) = read_stdin_json() else {
+        debug::log(&format!(
+            "hook: {agent_name} {event_name} pane {pane}: stdin could not be read; dropping event"
+        ));
+        return 0;
+    };
+    if !input_valid {
+        // Malformed or truncated payload: adapters must never see it —
+        // an all-empty event parsed from garbage stdin would fire
+        // spurious teardowns and notifications.
+        debug::log(&format!(
+            "hook: {agent_name} {event_name} pane {pane}: payload is not valid JSON ({input_bytes} bytes); dropping event"
+        ));
+        return 0;
+    }
     let Some(event) = adapter.parse(event_name, &input) else {
-        if input_valid {
-            debug::log(&format!(
-                "hook: {agent_name} {event_name} pane {pane}: adapter produced no event for {} bytes: {}",
-                input_bytes,
-                payload_preview(&input)
-            ));
-        } else {
-            debug::log(&format!(
-                "hook: {agent_name} {event_name} pane {pane}: payload is not valid JSON ({input_bytes} bytes)"
-            ));
-        }
+        debug::log(&format!(
+            "hook: {agent_name} {event_name} pane {pane}: adapter produced no event for {} bytes: {}",
+            input_bytes,
+            payload_preview(&input)
+        ));
         return 0;
     };
 
@@ -98,9 +106,18 @@ fn handle_event(pane: &str, agent_name: &str, event: AgentEvent) -> i32 {
         AgentEvent::SessionTitle {
             session_id, title, ..
         } => handlers::on_session_title(pane, &title, session_id.as_deref()),
-        AgentEvent::SessionEnd { end_reason } => {
+        AgentEvent::SessionEnd {
+            end_reason,
+            session_id,
+        } => {
             let notifications = notification_settings();
-            handlers::on_session_end(pane, agent_name, &end_reason, &notifications)
+            handlers::on_session_end(
+                pane,
+                agent_name,
+                &end_reason,
+                session_id.as_deref(),
+                &notifications,
+            )
         }
         AgentEvent::UserPromptSubmit {
             agent,
@@ -220,7 +237,5 @@ fn handle_event(pane: &str, agent_name: &str, event: AgentEvent) -> i32 {
             idle_reason,
             ..
         } => handlers::on_teammate_idle(pane, &teammate_name, &idle_reason),
-        AgentEvent::WorktreeCreate => 0,
-        AgentEvent::WorktreeRemove { .. } => handlers::on_worktree_remove(pane),
     }
 }

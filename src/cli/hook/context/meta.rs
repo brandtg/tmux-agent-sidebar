@@ -1,5 +1,5 @@
 use super::location::{pane_writes_allowed, sync_pane_location};
-use super::pending::{PENDING_SESSION_END, PENDING_WORKTREE_REMOVE};
+use super::pending::PENDING_SESSION_END;
 use crate::event::WorktreeInfo;
 use crate::tmux;
 
@@ -68,7 +68,7 @@ pub(in crate::cli::hook) fn clear_all_meta(pane: &str) {
         tmux::PANE_SESSION_ID,
         tmux::PANE_SESSION_TITLE,
         PENDING_SESSION_END,
-        PENDING_WORKTREE_REMOVE,
+        tmux::PANE_PENDING_WORKTREE_REMOVE,
     ] {
         tmux::unset_pane_option(pane, key);
     }
@@ -276,7 +276,7 @@ mod tests {
             tmux::PANE_STARTED_AT,
             tmux::PANE_WAIT_REASON,
             PENDING_SESSION_END,
-            PENDING_WORKTREE_REMOVE,
+            tmux::PANE_PENDING_WORKTREE_REMOVE,
         ] {
             tmux::test_mock::set(pane, key, "x");
         }
@@ -296,7 +296,7 @@ mod tests {
             tmux::PANE_STARTED_AT,
             tmux::PANE_WAIT_REASON,
             PENDING_SESSION_END,
-            PENDING_WORKTREE_REMOVE,
+            tmux::PANE_PENDING_WORKTREE_REMOVE,
         ] {
             assert!(
                 !tmux::test_mock::contains(pane, key),

@@ -579,19 +579,19 @@ pub fn draw_pet(frame: &mut Frame, state: &AppState, bottom_area: Rect, running_
         }
     };
     let pet_x = bottom_area.x + state.pet_x;
-    render_lines(frame, &sprite_lines, pet_x, pet_y);
+    render_lines(frame, &sprite_lines, pet_x, pet_y, &bottom_area);
 
     // --- Draw chair (always visible) ---
     let chair_lines = chair_sprite();
     let chair_height = chair_lines.len() as u16;
     let chair_y = baseline.saturating_sub(chair_height - 1);
-    render_lines(frame, &chair_lines, chair_x, chair_y);
+    render_lines(frame, &chair_lines, chair_x, chair_y, &bottom_area);
 
     // --- Draw desk (legs on baseline, top plate one row above) ---
     let desk_lines = desk_sprite();
     let desk_height = desk_lines.len() as u16;
     let desk_y = baseline.saturating_sub(desk_height - 1);
-    render_lines(frame, &desk_lines, desk_x, desk_y);
+    render_lines(frame, &desk_lines, desk_x, desk_y, &bottom_area);
 
     // --- Draw papers above desk ---
     if running_count > 0 {
@@ -605,21 +605,26 @@ pub fn draw_pet(frame: &mut Frame, state: &AppState, bottom_area: Rect, running_
                 } else {
                     0
                 };
-            render_lines(frame, &papers, paper_x, paper_y);
+            render_lines(frame, &papers, paper_x, paper_y, &bottom_area);
         }
     }
 }
 
-/// Helper to render a slice of Lines at given position, clipping to frame bounds.
-fn render_lines(frame: &mut Frame, lines: &[Line<'_>], x: u16, start_y: u16) {
+/// Helper to render a slice of Lines at given position, clipped to the
+/// pet band. The band is guaranteed `PET_SCENE_HEIGHT` rows by the
+/// layout, but on short terminals ratatui's solver shrinks every chunk:
+/// sprites anchored to the baseline would then extend ABOVE the band and
+/// overdraw the pane list. Clipping to `band` (rather than the whole
+/// frame) keeps the scene inside its allotted rows no matter how the
+/// layout squeezes them.
+fn render_lines(frame: &mut Frame, lines: &[Line<'_>], x: u16, start_y: u16, band: &Rect) {
     for (i, line) in lines.iter().enumerate() {
         let y = start_y + i as u16;
-        if y >= frame.area().height {
+        if y < band.y || y >= band.y.saturating_add(band.height) {
             continue;
         }
         let line_width: u16 = line.spans.iter().map(|s| s.content.width() as u16).sum();
-        let area = frame.area();
-        let right = area.x.saturating_add(area.width);
+        let right = band.x.saturating_add(band.width);
         let available = right.saturating_sub(x);
         if available == 0 {
             continue;

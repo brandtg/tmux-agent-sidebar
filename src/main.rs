@@ -10,6 +10,33 @@ use ratatui::{Terminal, backend::CrosstermBackend};
 use tmux_agent_sidebar::{app, tmux};
 
 static NEEDS_REFRESH: AtomicBool = AtomicBool::new(false);
+/// Set once the TUI owns the terminal. The panic hook checks it so a
+/// crash mid-session restores the screen exactly once.
+static TUI_ACTIVE: AtomicBool = AtomicBool::new(false);
+
+/// Return the terminal to a usable state. Called from both the panic
+/// hook and `TuiSession::drop`; the escape sequences are idempotent.
+fn restore_terminal() {
+    let _ = disable_raw_mode();
+    let mut stdout = io::stdout();
+    let _ = execute!(stdout, LeaveAlternateScreen, DisableMouseCapture);
+}
+
+/// Route panics through a terminal restore before the message prints.
+/// `TuiSession::drop` already restores the terminal during unwinding,
+/// but the default panic hook runs BEFORE the unwind — its message was
+/// written to the alternate screen and erased the moment the drop left
+/// it, leaving nothing but a bare prompt. Restoring first lands the
+/// panic message on the normal screen where it can actually be read.
+fn install_panic_hook() {
+    let default_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        if TUI_ACTIVE.load(Ordering::Relaxed) {
+            restore_terminal();
+        }
+        default_hook(info);
+    }));
+}
 
 /// Publishes the sidebar's pid in `@sidebar_pid` for the lifetime of the
 /// TUI session and clears it on exit (normal return, error, or panic
@@ -51,6 +78,7 @@ impl TuiSession {
             let _ = disable_raw_mode();
             return Err(err);
         }
+        TUI_ACTIVE.store(true, Ordering::Relaxed);
         Ok(Self {
             entered_alt_screen: true,
         })
@@ -59,10 +87,9 @@ impl TuiSession {
 
 impl Drop for TuiSession {
     fn drop(&mut self) {
-        let _ = disable_raw_mode();
         if self.entered_alt_screen {
-            let mut stdout = io::stdout();
-            let _ = execute!(stdout, LeaveAlternateScreen, DisableMouseCapture);
+            TUI_ACTIVE.store(false, Ordering::Relaxed);
+            restore_terminal();
         }
     }
 }
@@ -87,6 +114,8 @@ fn main() -> io::Result<()> {
     }
 
     let _pid_guard = SidebarPidGuard::new(tmux_pane.clone());
+
+    install_panic_hook();
 
     let mut stdout = io::stdout();
     let _tui_session = TuiSession::enter(&mut stdout)?;

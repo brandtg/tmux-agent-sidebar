@@ -78,13 +78,20 @@ function download_binary() {
     local url="https://github.com/$REPO/releases/latest/download/$asset_name"
 
     echo "Downloading binary from $url"
-    if ! curl -fSL "$url" -o "$BINARY"; then
+    # Download to a temp file and swap in with mv. Writing straight onto
+    # the live binary meant a failed/interrupted curl left a truncated,
+    # unusable sidebar where a working one used to be.
+    local tmp
+    tmp="${BINARY}.download.$$"
+    if ! curl -fSL "$url" -o "$tmp"; then
+        rm -f "$tmp"
         echo ""
         echo "Download failed. No release found or network error."
         echo "Try 'Build from source' instead."
         return 1
     fi
-    chmod +x "$BINARY"
+    chmod +x "$tmp"
+    mv -f "$tmp" "$BINARY"
 
     post_install_fixups
 

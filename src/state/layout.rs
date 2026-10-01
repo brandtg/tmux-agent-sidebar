@@ -1,4 +1,6 @@
 use super::{AppState, RepoFilter, StatusFilter};
+use crate::tmux::PaneStatus;
+use crate::ui::text::display_width;
 
 #[derive(Debug, Clone)]
 pub struct RowTarget {
@@ -132,17 +134,37 @@ impl AppState {
         self.timers.last_filter_click = now;
 
         let (all, running, background, waiting, idle, error) = self.status_counts();
-        // Layout: " ∑N  ●N  ◎N  ◐N  ○N  ✕N"
-        // Each filter item renders as `icon(1) + count`, so the clickable
-        // width is `1 + digits(count)`.
+        // Layout: " <icon>N  <icon>N  ..." — must mirror
+        // `ui::panes::filter_bar::render_filter_bar` exactly. Icons are
+        // user-configurable (`@sidebar_icon_*`) and may be wider than one
+        // column, so the clickable width of each item is derived from the
+        // same glyphs the renderer draws — assuming `icon(1)` made clicks
+        // land on the wrong filter whenever a custom icon was set.
+        let icons = &self.icons;
+        let item_width = |icon: &str, count: usize| display_width(icon) + count.to_string().len();
         let mut x = 1usize; // leading space
         let items: Vec<(StatusFilter, usize)> = vec![
-            (StatusFilter::All, 1 + format!("{all}").len()),
-            (StatusFilter::Running, 1 + format!("{running}").len()),
-            (StatusFilter::Background, 1 + format!("{background}").len()),
-            (StatusFilter::Waiting, 1 + format!("{waiting}").len()),
-            (StatusFilter::Idle, 1 + format!("{idle}").len()),
-            (StatusFilter::Error, 1 + format!("{error}").len()),
+            (StatusFilter::All, item_width(icons.all_icon(), all)),
+            (
+                StatusFilter::Running,
+                item_width(icons.status_icon(&PaneStatus::Running), running),
+            ),
+            (
+                StatusFilter::Background,
+                item_width(icons.status_icon(&PaneStatus::Background), background),
+            ),
+            (
+                StatusFilter::Waiting,
+                item_width(icons.status_icon(&PaneStatus::Waiting), waiting),
+            ),
+            (
+                StatusFilter::Idle,
+                item_width(icons.status_icon(&PaneStatus::Idle), idle),
+            ),
+            (
+                StatusFilter::Error,
+                item_width(icons.status_icon(&PaneStatus::Error), error),
+            ),
         ];
         let col = col as usize;
         for (i, (filter, width)) in items.iter().enumerate() {

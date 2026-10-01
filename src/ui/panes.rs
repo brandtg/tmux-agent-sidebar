@@ -364,8 +364,12 @@ pub(super) fn render_repo_popup(frame: &mut Frame, state: &mut AppState, area: R
     }
 
     let max_name_len = repos.iter().map(|r| display_width(r)).max().unwrap_or(3);
-    // Width: padding(1 left + 1 right) + name + borders(2)
-    let popup_width = (max_name_len + 4).min(area.width as usize).max(10) as u16;
+    // Width: padding(1 left + 1 right) + name + borders(2). The floor of
+    // 10 keeps tiny lists readable, but the `.min(area.width)` must apply
+    // LAST — on a narrow sidebar a `.max(10)` applied after the min would
+    // push the popup wider than its own pane (the same clamp-order bug
+    // `center_popup`/`anchor_below` already guard against).
+    let popup_width = (max_name_len + 4).max(10).min(area.width as usize) as u16;
     let popup_height = (repos.len() as u16 + 2).min(area.height.saturating_sub(2)); // +2 for borders
 
     // Right-aligned, below the 2-row header

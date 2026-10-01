@@ -51,8 +51,10 @@ pub const PANE_OS_NOTIFY_TASK_FAILED: &str = "@pane_os_notify_task_failed";
 /// `cli/hook/context/pending.rs::PENDING_SESSION_END` for the
 /// rationale for keeping it defined but never set.
 pub const PANE_PENDING_SESSION_END: &str = "@pane_pending_session_end";
-/// Pending WorktreeRemove marker drained by `on_subagent_stop`
-/// when the last subagent exits.
+/// Legacy marker — no current event can set it (the WorktreeRemove
+/// event was unreachable and has been removed), but a pre-upgrade
+/// install may have left one behind; startup and stale-state sweeps
+/// still clear it.
 pub const PANE_PENDING_WORKTREE_REMOVE: &str = "@pane_pending_worktree_remove";
 /// Permission mode in use by the agent (e.g. `plan`,
 /// `acceptEdits`, `bypassPermissions`).
