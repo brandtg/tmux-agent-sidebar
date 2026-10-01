@@ -2,7 +2,7 @@ pub mod claude;
 pub mod codex;
 pub mod opencode;
 
-use crate::event::AgentEventKind;
+use crate::event::{AgentEvent, AgentEventKind, WorktreeInfo};
 
 pub(crate) fn json_str<'a>(val: &'a serde_json::Value, key: &str) -> &'a str {
     val.get(key).and_then(|v| v.as_str()).unwrap_or("")
@@ -15,6 +15,148 @@ pub(crate) fn optional_str(val: &serde_json::Value, key: &str) -> Option<String>
 
 pub(crate) fn json_value_or_null(val: &serde_json::Value, key: &str) -> serde_json::Value {
     val.get(key).cloned().unwrap_or(serde_json::Value::Null)
+}
+
+/// The identity fields every session-scoped [`AgentEvent`] variant carries:
+/// agent label, `cwd`, `permission_mode`, worktree metadata, and the
+/// agent/session ids. Each adapter builds one `EventBase` per payload via its
+/// own `base()` helper — making the per-agent divergences (which fields an
+/// agent actually provides) explicit in exactly one place — then hands it to
+/// the per-variant constructors below so the variant field wiring itself is
+/// written once instead of copy-pasted per parse arm.
+pub(crate) struct EventBase {
+    agent: &'static str,
+    cwd: String,
+    permission_mode: String,
+    worktree: Option<WorktreeInfo>,
+    agent_id: Option<String>,
+    session_id: Option<String>,
+}
+
+impl EventBase {
+    /// Identity fields every payload carries: the agent label, `cwd`, and
+    /// `session_id`. `permission_mode` starts empty; adapters whose upstream
+    /// payloads carry one chain [`EventBase::with_permission_mode`].
+    pub(crate) fn new(input: &serde_json::Value, agent: &'static str) -> Self {
+        Self {
+            agent,
+            cwd: json_str(input, "cwd").into(),
+            permission_mode: String::new(),
+            worktree: None,
+            agent_id: None,
+            session_id: optional_str(input, "session_id"),
+        }
+    }
+
+    /// Read `permission_mode` from the payload (Claude, Codex).
+    pub(crate) fn with_permission_mode(mut self, input: &serde_json::Value) -> Self {
+        self.permission_mode = json_str(input, "permission_mode").into();
+        self
+    }
+
+    /// Attach worktree metadata parsed by the adapter (only Claude payloads
+    /// carry a `worktree` object today).
+    pub(crate) fn with_worktree(mut self, worktree: Option<WorktreeInfo>) -> Self {
+        self.worktree = worktree;
+        self
+    }
+
+    /// Attach the subagent/teammate id (only Claude payloads carry one).
+    pub(crate) fn with_agent_id(mut self, agent_id: Option<String>) -> Self {
+        self.agent_id = agent_id;
+        self
+    }
+
+    pub(crate) fn session_start(self, source: String) -> AgentEvent {
+        AgentEvent::SessionStart {
+            agent: self.agent.into(),
+            cwd: self.cwd,
+            permission_mode: self.permission_mode,
+            source,
+            worktree: self.worktree,
+            agent_id: self.agent_id,
+            session_id: self.session_id,
+        }
+    }
+
+    pub(crate) fn user_prompt_submit(self, prompt: String) -> AgentEvent {
+        AgentEvent::UserPromptSubmit {
+            agent: self.agent.into(),
+            cwd: self.cwd,
+            permission_mode: self.permission_mode,
+            prompt,
+            worktree: self.worktree,
+            agent_id: self.agent_id,
+            session_id: self.session_id,
+        }
+    }
+
+    pub(crate) fn notification(self, wait_reason: String, meta_only: bool) -> AgentEvent {
+        AgentEvent::Notification {
+            agent: self.agent.into(),
+            cwd: self.cwd,
+            permission_mode: self.permission_mode,
+            wait_reason,
+            meta_only,
+            worktree: self.worktree,
+            agent_id: self.agent_id,
+            session_id: self.session_id,
+        }
+    }
+
+    pub(crate) fn stop(self, last_message: String, response: Option<String>) -> AgentEvent {
+        AgentEvent::Stop {
+            agent: self.agent.into(),
+            cwd: self.cwd,
+            permission_mode: self.permission_mode,
+            last_message,
+            response,
+            worktree: self.worktree,
+            agent_id: self.agent_id,
+            session_id: self.session_id,
+        }
+    }
+
+    pub(crate) fn stop_failure(self, error: String) -> AgentEvent {
+        AgentEvent::StopFailure {
+            agent: self.agent.into(),
+            cwd: self.cwd,
+            permission_mode: self.permission_mode,
+            error,
+            worktree: self.worktree,
+            agent_id: self.agent_id,
+            session_id: self.session_id,
+        }
+    }
+
+    pub(crate) fn permission_denied(self) -> AgentEvent {
+        AgentEvent::PermissionDenied {
+            agent: self.agent.into(),
+            cwd: self.cwd,
+            permission_mode: self.permission_mode,
+            worktree: self.worktree,
+            agent_id: self.agent_id,
+            session_id: self.session_id,
+        }
+    }
+
+    pub(crate) fn cwd_changed(self) -> AgentEvent {
+        AgentEvent::CwdChanged {
+            cwd: self.cwd,
+            worktree: self.worktree,
+            agent_id: self.agent_id,
+            session_id: self.session_id,
+        }
+    }
+
+    pub(crate) fn session_title(self, title: String) -> AgentEvent {
+        AgentEvent::SessionTitle {
+            agent: self.agent.into(),
+            cwd: self.cwd,
+            session_id: self.session_id,
+            title,
+        }
+    }
 }
 
 /// Binding between an upstream agent-side hook trigger (as it appears in the

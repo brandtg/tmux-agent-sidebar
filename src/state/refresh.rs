@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::time::Duration;
 
 use crate::activity::{self, TaskProgress};
@@ -57,34 +57,7 @@ impl AppState {
         sessions: Vec<SessionInfo>,
     ) {
         self.focus_state.sidebar_focused = sidebar_focused;
-        // Capture the prior `pane_id → session_id` map so we can detect
-        // anything that should re-trigger `refresh_session_names`:
-        //   - a brand-new pane_id (first appearance)
-        //   - an existing pane whose session_id changed (e.g. /clear or
-        //     a Codex session swap reuses the same pane_id but binds a
-        //     new session label)
-        let prev_session_ids: HashMap<String, Option<String>> = self
-            .repo_groups
-            .iter()
-            .flat_map(|g| {
-                g.panes
-                    .iter()
-                    .map(|(p, _)| (p.pane_id.clone(), p.session_id.clone()))
-            })
-            .collect();
         self.repo_groups = crate::group::group_panes_by_repo(&sessions);
-        if !self.sessions.dirty
-            && self
-                .repo_groups
-                .iter()
-                .flat_map(|g| g.panes.iter())
-                .any(|(p, _)| match prev_session_ids.get(&p.pane_id) {
-                    None => true,
-                    Some(prev_sid) => *prev_sid != p.session_id,
-                })
-        {
-            self.sessions.dirty = true;
-        }
         self.prune_pane_states_to_current_panes();
         self.rebuild_row_targets();
         self.find_focused_pane();
@@ -217,14 +190,13 @@ impl AppState {
         self.mark_focused_pane_seen(window_active);
         // `apply_session_snapshot` rebuilds `repo_groups` from a fresh tmux
         // query, and every freshly parsed `PaneInfo` carries an empty
-        // `session_name`. Guarding the re-application on `dirty` therefore
-        // labelled each pane for exactly one frame and lost the label on the
-        // next tick -- the optimisation was protecting state the rebuild had
-        // already destroyed. The lookup is a pure in-memory `HashMap` hit (the
-        // filesystem scan lives in `session_poll_loop`), so re-apply
-        // unconditionally.
+        // `session_name`. Guarding the re-application on a change flag
+        // therefore labelled each pane for exactly one frame and lost the
+        // label on the next tick -- the optimisation was protecting state
+        // the rebuild had already destroyed. The lookup is a pure in-memory
+        // `HashMap` hit (the filesystem scan lives in `session_poll_loop`),
+        // so re-apply unconditionally.
         self.refresh_session_names();
-        self.sessions.dirty = false;
         self.refresh_activity_data();
         window_active
     }
@@ -1105,41 +1077,6 @@ mod tests {
     }
 
     #[test]
-    fn apply_session_snapshot_marks_dirty_when_existing_pane_swaps_session_id() {
-        // Pane %1 keeps the same pane_id across snapshots but its
-        // session_id changes (e.g. the agent restarted with a new
-        // Claude session). Without dirty propagation,
-        // refresh_session_names would be skipped and the UI would
-        // keep showing the old session label forever.
-        let mut state = state_with_panes(vec![pane_with_session("%1", "sess-old")]);
-        state.sessions.dirty = false;
-
-        let next_sessions = test_session(vec![pane_with_session("%1", "sess-new")]);
-        state.apply_session_snapshot(false, next_sessions);
-
-        assert!(
-            state.sessions.dirty,
-            "session_names_dirty must be set when an existing pane's session_id changes"
-        );
-    }
-
-    #[test]
-    fn apply_session_snapshot_does_not_mark_dirty_when_session_ids_unchanged() {
-        // Same pane, same session_id across snapshots — no need to
-        // re-walk every pane, dirty flag should stay clear.
-        let mut state = state_with_panes(vec![pane_with_session("%1", "sess-a")]);
-        state.sessions.dirty = false;
-
-        let next_sessions = test_session(vec![pane_with_session("%1", "sess-a")]);
-        state.apply_session_snapshot(false, next_sessions);
-
-        assert!(
-            !state.sessions.dirty,
-            "session_names_dirty must remain clear when nothing changed"
-        );
-    }
-
-    #[test]
     fn snapshot_rebuild_drops_labels_so_refresh_must_reapply_unconditionally() {
         // Regression for the `/rename` label reverting to the default
         // agent name one tick after it appeared.
@@ -1147,31 +1084,23 @@ mod tests {
         // `apply_session_snapshot` rebuilds `repo_groups` from a fresh
         // tmux query, and a freshly parsed `PaneInfo` always carries an
         // empty `session_name` — tmux does not know about Claude's
-        // session names. When the session ids are unchanged the rebuild
-        // also (correctly) leaves `dirty` clear. So `refresh` cannot gate
-        // `refresh_session_names` on `dirty`: the gate was protecting
-        // state the rebuild had just destroyed, which labelled each pane
-        // for exactly one frame.
-        //
-        // This pins the precondition. If a future change makes the
-        // rebuild carry labels over, the gate becomes safe again and this
-        // test is the place that says so.
+        // session names. So `refresh` cannot gate `refresh_session_names`
+        // on any change signal: the rebuild drops the label every tick,
+        // and only an unconditional re-apply restores it. This pins the
+        // precondition. If a future change makes the rebuild carry labels
+        // over, a change-flag gate becomes safe again and this test is
+        // the place that says so.
         let mut state = state_with_panes(vec![pane_with_session("%1", "sess-a")]);
         state.sessions.names.insert("sess-a".into(), "alpha".into());
         state.refresh_session_names();
         assert_eq!(state.repo_groups[0].panes[0].0.session_name, "alpha");
 
-        state.sessions.dirty = false;
         let next_sessions = test_session(vec![pane_with_session("%1", "sess-a")]);
         state.apply_session_snapshot(false, next_sessions);
 
         assert!(
-            !state.sessions.dirty,
-            "unchanged session ids must leave the dirty flag clear",
-        );
-        assert!(
             state.repo_groups[0].panes[0].0.session_name.is_empty(),
-            "the rebuild drops the label, so a dirty-gated re-apply would lose it",
+            "the rebuild drops the label, so a gated re-apply would lose it",
         );
 
         state.refresh_session_names();

@@ -590,4 +590,93 @@ mod tests {
         assert_eq!(layout.list_area.y, 12);
         assert_eq!(layout.list_area.height, 13);
     }
+
+    #[test]
+    fn spawn_target_rects_cover_rendered_spawn_buttons() {
+        // Contract between the repo-header render in row_collector (title
+        // padded so SPAWN_BUTTON sits at the right edge) and the
+        // click-target math in click_targets::materialize (rect anchored
+        // at list_area.x + width - btn_width): every rendered `+` glyph
+        // must land inside one of the registered RepoSpawnTarget rects,
+        // mirroring the remove-`×` column contract test in
+        // ui/panes/row.rs.
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+        use ratatui::layout::Position;
+
+        let mut state = AppState::new("%99".into());
+        let pane = crate::tmux::PaneInfo {
+            pane_id: "%1".into(),
+            pane_active: false,
+            status: crate::tmux::PaneStatus::Running,
+            attention: crate::tmux::PaneAttention::None,
+            agent: crate::tmux::AgentType::Claude,
+            path: "/tmp/myrepo".into(),
+            current_command: String::new(),
+            prompt: String::new(),
+            prompt_is_response: false,
+            started_at: None,
+            wait_reason: String::new(),
+            permission_mode: crate::tmux::PermissionMode::Default,
+            subagents: vec![],
+            pane_pid: None,
+            worktree: crate::tmux::WorktreeMetadata::default(),
+            session_id: None,
+            session_name: String::new(),
+            sidebar_spawned: false,
+            bg_shell_cmd: None,
+        };
+        state.repo_groups = vec![crate::group::RepoGroup {
+            name: "myrepo".into(),
+            has_focus: false,
+            panes: vec![(
+                pane,
+                crate::group::PaneGitInfo {
+                    repo_root: Some("/tmp/myrepo".into()),
+                    branch: None,
+                    is_worktree: false,
+                    worktree_name: None,
+                },
+            )],
+        }];
+
+        let area = Rect::new(0, 0, 40, 10);
+        let mut terminal = Terminal::new(TestBackend::new(area.width, area.height)).unwrap();
+        terminal
+            .draw(|frame| draw_agents(frame, &mut state, area))
+            .unwrap();
+        let buf = terminal.backend().buffer();
+
+        assert_eq!(
+            state.layout.repo_spawn_targets.len(),
+            1,
+            "a repo group with a repo_root must register exactly one spawn target"
+        );
+        let target = &state.layout.repo_spawn_targets[0];
+        assert_eq!(target.repo_name, "myrepo");
+        assert_eq!(target.rect.width, SPAWN_BUTTON.len() as u16);
+        assert_eq!(
+            target.rect.x,
+            area.x + area.width - SPAWN_BUTTON.len() as u16,
+            "spawn rect must pin to the right edge of the list area"
+        );
+
+        let mut rendered_buttons = 0;
+        for y in 0..buf.area.height {
+            for x in 0..buf.area.width {
+                if buf[(x, y)].symbol() == SPAWN_BUTTON {
+                    rendered_buttons += 1;
+                    assert!(
+                        target.rect.contains(Position { x, y }),
+                        "rendered `+` at ({x},{y}) is not covered by the spawn target rect {:?}",
+                        target.rect
+                    );
+                }
+            }
+        }
+        assert_eq!(
+            rendered_buttons, 1,
+            "exactly one `+` spawn button should render"
+        );
+    }
 }

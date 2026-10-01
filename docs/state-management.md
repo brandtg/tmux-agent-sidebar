@@ -106,8 +106,7 @@ Per-pane file-based state:
 | `tmux_pane` | Once at startup | This sidebar's own tmux pane ID |
 | `pane_states.seen` | Every 1s | Set of pane IDs that have been seen as agents (bundled with `pane_states.map` under the `PaneRuntimeMap` wrapper) |
 | `version_notice` | Once at startup (bg fetch) | GitHub release update notice, `None` when up-to-date |
-| `sessions.names` | Every 10s (background thread) | `session_id → session name` map; scanned by `session_poll_loop` in `app/workers.rs` so the TUI thread never blocks on filesystem I/O |
-| `sessions.dirty` | On session map refresh / application tick | Records that the session map or a pane's `session_id` changed. Does not gate the per-pane label walk — `apply_session_snapshot` rebuilds panes with empty labels, so `refresh` re-applies the map every tick |
+| `sessions.names` | Every 10s (background thread) | `session_id → session name` map; scanned by `session_poll_loop` in `app/workers.rs` so the TUI thread never blocks on filesystem I/O. Re-applied to every pane on every tick because the snapshot rebuild wipes labels |
 
 ---
 
@@ -290,7 +289,6 @@ struct ActivityState {
 /// never blocks on `~/.claude/sessions/*.json` reads.
 struct SessionNamesState {
     names: HashMap<String, String>,
-    dirty: bool,
 }
 
 /// Frame-scoped render output cached for click hit-testing. Rewritten

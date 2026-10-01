@@ -4,9 +4,15 @@ use crate::event::{AgentEvent, EventAdapter};
 use crate::tmux::OPENCODE_AGENT;
 use crate::tool_name::CanonicalTool;
 
-use super::{json_str, json_value_or_null, optional_str};
+use super::{EventBase, json_str, json_value_or_null};
 
 pub struct OpenCodeAdapter;
+
+/// OpenCode payloads carry neither a `permission_mode` nor worktree/agent
+/// context, so the base stays at its defaults (empty mode, `None`s).
+fn base(input: &Value) -> EventBase {
+    EventBase::new(input, OPENCODE_AGENT)
+}
 
 /// OpenCode tool IDs are lowercase (`bash`, `read`, …) but the internal
 /// label extractor in `src/cli/label.rs` keys off Claude-style PascalCase
@@ -61,59 +67,16 @@ fn copy_keys(map: &mut Map<String, Value>, pairs: &[(&str, &str)]) {
 impl EventAdapter for OpenCodeAdapter {
     fn parse(&self, event_name: &str, input: &Value) -> Option<AgentEvent> {
         match event_name {
-            "session-start" => Some(AgentEvent::SessionStart {
-                agent: OPENCODE_AGENT.into(),
-                cwd: json_str(input, "cwd").into(),
-                permission_mode: String::new(),
-                source: json_str(input, "source").into(),
-                worktree: None,
-                agent_id: None,
-                session_id: optional_str(input, "session_id"),
-            }),
-            "session-title" => Some(AgentEvent::SessionTitle {
-                agent: OPENCODE_AGENT.into(),
-                cwd: json_str(input, "cwd").into(),
-                session_id: optional_str(input, "session_id"),
-                title: json_str(input, "title").into(),
-            }),
-            "user-prompt-submit" => Some(AgentEvent::UserPromptSubmit {
-                agent: OPENCODE_AGENT.into(),
-                cwd: json_str(input, "cwd").into(),
-                permission_mode: String::new(),
-                prompt: json_str(input, "prompt").into(),
-                worktree: None,
-                agent_id: None,
-                session_id: optional_str(input, "session_id"),
-            }),
-            "notification" => Some(AgentEvent::Notification {
-                agent: OPENCODE_AGENT.into(),
-                cwd: json_str(input, "cwd").into(),
-                permission_mode: String::new(),
-                wait_reason: json_str(input, "wait_reason").into(),
-                meta_only: false,
-                worktree: None,
-                agent_id: None,
-                session_id: optional_str(input, "session_id"),
-            }),
-            "stop" => Some(AgentEvent::Stop {
-                agent: OPENCODE_AGENT.into(),
-                cwd: json_str(input, "cwd").into(),
-                permission_mode: String::new(),
-                last_message: json_str(input, "last_message").into(),
-                response: None,
-                worktree: None,
-                agent_id: None,
-                session_id: optional_str(input, "session_id"),
-            }),
-            "stop-failure" => Some(AgentEvent::StopFailure {
-                agent: OPENCODE_AGENT.into(),
-                cwd: json_str(input, "cwd").into(),
-                permission_mode: String::new(),
-                error: json_str(input, "error").into(),
-                worktree: None,
-                agent_id: None,
-                session_id: optional_str(input, "session_id"),
-            }),
+            "session-start" => Some(base(input).session_start(json_str(input, "source").into())),
+            "session-title" => Some(base(input).session_title(json_str(input, "title").into())),
+            "user-prompt-submit" => {
+                Some(base(input).user_prompt_submit(json_str(input, "prompt").into()))
+            }
+            "notification" => {
+                Some(base(input).notification(json_str(input, "wait_reason").into(), false))
+            }
+            "stop" => Some(base(input).stop(json_str(input, "last_message").into(), None)),
+            "stop-failure" => Some(base(input).stop_failure(json_str(input, "error").into())),
             "activity-log" => {
                 let raw_name = json_str(input, "tool_name");
                 if raw_name.is_empty() {
