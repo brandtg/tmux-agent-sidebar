@@ -17,6 +17,11 @@ pub struct RefreshTimers {
     /// Whether the first port scan has completed; the first scan must
     /// always run regardless of the elapsed-time gate.
     pub port_scan_initialized: bool,
+    /// Whether the first snapshot has primed the path→git-info cache.
+    /// The priming runs synchronously once (matching the old inline
+    /// resolver) so the first frame groups by repo root; afterwards the
+    /// cache is maintained exclusively by `git_info_poll_loop`.
+    pub git_info_primed: bool,
     /// Timestamp of the last background-shell liveness sweep.
     pub last_bg_shell_sweep: Option<Instant>,
 }
@@ -28,6 +33,7 @@ impl Default for RefreshTimers {
             last_filter_click: now,
             last_port_refresh: now,
             port_scan_initialized: false,
+            git_info_primed: false,
             last_bg_shell_sweep: None,
         }
     }

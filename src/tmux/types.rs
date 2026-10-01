@@ -67,6 +67,18 @@ pub struct PaneInfo {
     pub bg_shell_cmd: Option<String>,
 }
 
+impl PaneInfo {
+    /// Directory repo grouping and the git-info cache are keyed by: the
+    /// launch-time cwd when hooks captured one, else the live cwd.
+    pub fn grouping_anchor(&self) -> &str {
+        if self.launch_cwd.is_empty() {
+            &self.path
+        } else {
+            &self.launch_cwd
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct WorktreeMetadata {
     pub name: String,

@@ -4,7 +4,7 @@ use std::time::Duration;
 use crate::activity::{self, TaskProgress};
 use crate::cli::sanitize_tmux_value;
 use crate::process::ProcessSnapshot;
-use crate::tmux::{self, PaneAttention, PaneStatus, SessionInfo};
+use crate::tmux::{self, PaneAttention, PaneStatus, SessionInfo, TmuxSnapshot};
 
 use super::{AppState, PaneRuntimeMap};
 
@@ -53,14 +53,35 @@ impl AppState {
 
     pub(crate) fn apply_session_snapshot(
         &mut self,
-        sidebar_focused: bool,
         sessions: Vec<SessionInfo>,
+        sidebar_window_panes: Vec<(String, bool, String)>,
     ) {
-        self.focus_state.sidebar_focused = sidebar_focused;
-        self.repo_groups = crate::group::group_panes_by_repo(&sessions);
+        // First snapshot primes the anchor→git-info cache synchronously so
+        // the very first frame groups by repo root. Later ticks consume
+        // only the worker-maintained cache (see `git_info_poll_loop`) and
+        // never spawn git on the render thread.
+        if !self.timers.git_info_primed {
+            let mut primed_paths: HashSet<String> = HashSet::new();
+            for session in &sessions {
+                for window in &session.windows {
+                    for pane in &window.panes {
+                        let anchor = pane.grouping_anchor();
+                        if anchor.is_empty() || self.git_info_cache.contains_key(anchor) {
+                            continue;
+                        }
+                        if primed_paths.insert(anchor.to_string()) {
+                            let info = crate::group::resolve_pane_git_info(anchor);
+                            self.git_info_cache.insert(anchor.to_string(), info);
+                        }
+                    }
+                }
+            }
+            self.timers.git_info_primed = true;
+        }
+        self.repo_groups = crate::group::group_panes_by_repo(&sessions, &self.git_info_cache);
         self.prune_pane_states_to_current_panes();
         self.rebuild_row_targets();
-        self.find_focused_pane();
+        self.find_focused_pane_from(&sidebar_window_panes);
     }
 
     /// Focus counts as "seen": when the user is looking at an agent
@@ -123,29 +144,6 @@ impl AppState {
         let _ = std::fs::remove_file(activity::log_file_path(pane_id));
     }
 
-    fn filter_sessions_to_live_agent_panes(
-        sessions: Vec<SessionInfo>,
-        live_agent_panes: &HashSet<String>,
-    ) -> Vec<SessionInfo> {
-        let mut out = Vec::new();
-        for mut session in sessions {
-            let mut windows = Vec::new();
-            for mut window in session.windows {
-                window
-                    .panes
-                    .retain(|pane| live_agent_panes.contains(&pane.pane_id));
-                if !window.panes.is_empty() {
-                    windows.push(window);
-                }
-            }
-            if !windows.is_empty() {
-                session.windows = windows;
-                out.push(session);
-            }
-        }
-        out
-    }
-
     fn refresh_activity_data(&mut self) {
         self.refresh_activity_log();
         self.refresh_task_progress();
@@ -154,40 +152,48 @@ impl AppState {
 
     /// Fast refresh: tmux state + activity log (called every 1s).
     /// Returns whether the sidebar's window is the active tmux window.
+    ///
+    /// Costs exactly one tmux spawn (`list-panes -a`): the sidebar's own
+    /// focus flags and its window's pane list — historically two extra
+    /// spawns — are extracted from the same output. Git resolution and the
+    /// periodic ps/lsof scan run on worker threads; see `app/workers.rs`.
     pub fn refresh(&mut self) -> bool {
         self.refresh_now();
-        // Inside a popup `TMUX_PANE` is the window's active pane at
-        // popup-open time, not the sidebar itself, and the popup always
-        // holds keyboard focus while open — so `get_sidebar_pane_info`'s
-        // focus/active report is not meaningful here. Reporting inactive
-        // would trip the per-tick global-option reload in the event loop
-        // after two ticks, so both are forced true in popup mode.
-        let (focused, window_active, _, _) = if self.popup_mode {
-            (true, true, 0, 0)
-        } else {
-            tmux::get_sidebar_pane_info(&self.tmux_pane)
-        };
-        let Some((mut sessions, mut process_snapshot)) =
-            tmux::query_sessions_with_process_snapshot()
-        else {
+        let Some(snapshot) = tmux::query_session_snapshot(&self.tmux_pane) else {
             // A failed `list-panes` call is not evidence that no panes
             // exist. Applying an empty snapshot here would prune every
             // pane's runtime state, and `rebuild_row_targets` would reset
             // the repo filter to All and persist that reset in a tmux
             // global option — surviving restarts and propagating to every
             // sidebar instance. Hold the last known-good snapshot instead
-            // and retry on the next tick.
-            return window_active;
+            // and retry on the next tick. The window-active flag rides
+            // the same way: reporting a fabricated `false` would trip the
+            // per-tick global-option reload in the event loop.
+            return self.focus_state.window_active;
         };
-        self.sweep_dead_bg_shells_if_due(&mut sessions, &mut process_snapshot);
-        if let Some(process_snapshot) = self.refresh_port_data(&sessions, process_snapshot.as_ref())
-        {
-            let retain = self.panes_to_retain(&sessions, &process_snapshot.live_agent_panes);
-            let sessions = Self::filter_sessions_to_live_agent_panes(sessions, &retain);
-            self.apply_session_snapshot(focused, sessions);
+        // Inside a popup `TMUX_PANE` is the window's active pane at
+        // popup-open time, not the sidebar itself, and the popup always
+        // holds keyboard focus while open — so the snapshot's focus
+        // report is not meaningful here. Reporting inactive would trip
+        // the per-tick global-option reload in the event loop after two
+        // ticks, so both are forced true in popup mode.
+        if self.popup_mode {
+            self.focus_state.sidebar_focused = true;
+            self.focus_state.window_active = true;
         } else {
-            self.apply_session_snapshot(focused, sessions);
+            self.focus_state.sidebar_focused = snapshot.sidebar_pane_active;
+            self.focus_state.window_active = snapshot.sidebar_window_active;
         }
+        let window_active = self.focus_state.window_active;
+        let TmuxSnapshot {
+            mut sessions,
+            mut process_snapshot,
+            sidebar_window_panes,
+            ..
+        } = snapshot;
+        self.sweep_dead_bg_shells_if_due(&mut sessions, &mut process_snapshot);
+        self.queue_port_scan_if_due(&sessions);
+        self.apply_session_snapshot(sessions, sidebar_window_panes);
         self.mark_focused_pane_seen(window_active);
         // `apply_session_snapshot` rebuilds `repo_groups` from a fresh tmux
         // query, and every freshly parsed `PaneInfo` carries an empty
@@ -200,33 +206,6 @@ impl AppState {
         self.refresh_session_names();
         self.refresh_activity_data();
         window_active
-    }
-
-    /// Union of this scan's live agent panes and panes still inside the
-    /// dead-scan grace window (miss streak below the wipe threshold).
-    /// The row filter keeps the latter visible so one missed scan cannot
-    /// blink a live pane out of the list for the ~10s until the next
-    /// scan; only panes whose state was actually torn down (streak
-    /// reached [`REQUIRED_DEAD_SCANS`], entry removed) drop out here.
-    fn panes_to_retain(
-        &self,
-        sessions: &[SessionInfo],
-        live_agent_panes: &HashSet<String>,
-    ) -> HashSet<String> {
-        let mut retain = live_agent_panes.clone();
-        for session in sessions {
-            for window in &session.windows {
-                for pane in &window.panes {
-                    if self
-                        .pane_state(&pane.pane_id)
-                        .is_some_and(|state| state.dead_scan_streak > 0)
-                    {
-                        retain.insert(pane.pane_id.clone());
-                    }
-                }
-            }
-        }
-        retain
     }
 
     /// Apply the current `session_id → name` map to each pane so the
@@ -255,60 +234,74 @@ impl AppState {
         }
     }
 
-    pub(crate) fn refresh_port_data(
-        &mut self,
-        sessions: &[SessionInfo],
-        process_snapshot: Option<&ProcessSnapshot>,
-    ) -> Option<crate::port::PaneProcessSnapshot> {
+    /// Due-check for the periodic ps/lsof scan. The scan itself no longer
+    /// runs here — it used to stall the render thread for up to the
+    /// subprocess timeout every 10 seconds. Instead the scan targets are
+    /// stashed in `pending_port_scan`; the event loop hands them to the
+    /// port-scan worker and results come back through
+    /// [`AppState::apply_process_snapshot`].
+    pub(crate) fn queue_port_scan_if_due(&mut self, sessions: &[SessionInfo]) {
         const PORT_REFRESH_INTERVAL: Duration = Duration::from_secs(10);
 
-        if !self.timers.port_scan_initialized
-            || self.timers.last_port_refresh.elapsed() >= PORT_REFRESH_INTERVAL
+        if self.timers.port_scan_initialized
+            && self.timers.last_port_refresh.elapsed() < PORT_REFRESH_INTERVAL
         {
-            let scanned = crate::port::scan_session_process_snapshot(sessions, process_snapshot)?;
-            let mut updates: Vec<(String, Vec<u16>, Option<String>)> = Vec::new();
-            for session in sessions {
-                for window in &session.windows {
-                    for pane in &window.panes {
-                        updates.push((
-                            pane.pane_id.clone(),
-                            scanned
-                                .ports_by_pane
-                                .get(&pane.pane_id)
-                                .cloned()
-                                .unwrap_or_default(),
-                            scanned.command_by_pane.get(&pane.pane_id).cloned(),
-                        ));
-                    }
-                }
-            }
-            for (pane_id, ports, command) in updates {
-                let pane_state = self.pane_state_mut(&pane_id);
-                pane_state.ports = ports;
-                pane_state.command = command;
-            }
-            // Wipe only after two consecutive scans missed the agent. A
-            // single scan can fail to see a live agent (ps timing,
-            // wrapper shim), and wiping on the first miss used to delete
-            // 14 `@pane_*` options plus the activity log every 10s while
-            // the agent was still running. Mirrors the guard
-            // `parse_pane_fields_with_processes` applies to Codex and
-            // OpenCode panes before their stale-state teardown.
-            let dead_panes = advance_dead_scan_streaks(
-                &mut self.pane_states,
-                sessions,
-                &scanned.live_agent_panes,
-            );
-            for pane_id in dead_panes {
-                Self::clear_dead_agent_metadata(&pane_id);
-                self.clear_pane_state(&pane_id);
-            }
-            self.timers.port_scan_initialized = true;
-            self.timers.last_port_refresh = std::time::Instant::now();
-            return Some(scanned);
+            return;
         }
+        self.timers.port_scan_initialized = true;
+        self.timers.last_port_refresh = std::time::Instant::now();
+        // Pane pid is None only in degenerate cases (pid parse failure).
+        // Such panes are still queued so the scan reports them as missed,
+        // matching the old inline scanner where they could never appear in
+        // the live set and decayed through the dead-scan streak.
+        self.pending_port_scan = Some(
+            sessions
+                .iter()
+                .flat_map(|session| session.windows.iter())
+                .flat_map(|window| window.panes.iter())
+                .map(|pane| crate::port::PaneScanTarget {
+                    pane_id: pane.pane_id.clone(),
+                    pane_pid: pane.pane_pid,
+                    agent: pane.agent.clone(),
+                })
+                .collect(),
+        );
+    }
 
-        None
+    pub(crate) fn take_pending_port_scan(&mut self) -> Option<Vec<crate::port::PaneScanTarget>> {
+        self.pending_port_scan.take()
+    }
+
+    /// Apply a completed worker scan: refresh per-pane ports/commands for
+    /// every pane the scan actually examined, advance dead-scan streaks,
+    /// and tear down panes confirmed dead. Runs on the event loop when the
+    /// result arrives, shortly after `queue_port_scan_if_due` fired.
+    pub(crate) fn apply_process_snapshot(&mut self, scanned: crate::port::PaneProcessSnapshot) {
+        for pane_id in &scanned.scanned_panes {
+            let pane_state = self.pane_state_mut(pane_id);
+            pane_state.ports = scanned
+                .ports_by_pane
+                .get(pane_id)
+                .cloned()
+                .unwrap_or_default();
+            pane_state.command = scanned.command_by_pane.get(pane_id).cloned();
+        }
+        // Wipe only after two consecutive scans missed the agent. A
+        // single scan can fail to see a live agent (ps timing,
+        // wrapper shim), and wiping on the first miss used to delete
+        // 14 `@pane_*` options plus the activity log every 10s while
+        // the agent was still running. Mirrors the guard
+        // `parse_pane_fields_with_processes` applies to Codex and
+        // OpenCode panes before their stale-state teardown.
+        let dead_panes = advance_dead_scan_streaks(
+            &mut self.pane_states,
+            &scanned.scanned_panes,
+            &scanned.live_agent_panes,
+        );
+        for pane_id in dead_panes {
+            Self::clear_dead_agent_metadata(&pane_id);
+            self.clear_pane_state(&pane_id);
+        }
     }
 
     pub(crate) fn refresh_task_progress(&mut self) {
@@ -452,28 +445,26 @@ impl AppState {
 /// missed scan only starts the streak.
 const REQUIRED_DEAD_SCANS: u32 = 2;
 
-/// Advance every pane's dead-scan streak against this scan's live set and
-/// return the pane ids whose streak reached [`REQUIRED_DEAD_SCANS`]. A
-/// pane found alive has its streak reset to zero, so only back-to-back
-/// misses confirm the agent is gone.
+/// Advance every scanned pane's dead-scan streak against this scan's live
+/// set and return the pane ids whose streak reached [`REQUIRED_DEAD_SCANS`].
+/// A pane found alive has its streak reset to zero, so only back-to-back
+/// misses confirm the death. Panes the scan did not examine (queued after
+/// the scan request) are left untouched so a fresh pane is never punished
+/// for a scan that never saw it.
 fn advance_dead_scan_streaks(
     pane_states: &mut PaneRuntimeMap,
-    sessions: &[SessionInfo],
+    scanned_panes: &HashSet<String>,
     live_agent_panes: &HashSet<String>,
 ) -> Vec<String> {
     let mut confirmed_dead = Vec::new();
-    for session in sessions {
-        for window in &session.windows {
-            for pane in &window.panes {
-                let state = pane_states.entry_mut(&pane.pane_id);
-                if live_agent_panes.contains(&pane.pane_id) {
-                    state.dead_scan_streak = 0;
-                } else {
-                    state.dead_scan_streak = state.dead_scan_streak.saturating_add(1);
-                    if state.dead_scan_streak >= REQUIRED_DEAD_SCANS {
-                        confirmed_dead.push(pane.pane_id.clone());
-                    }
-                }
+    for pane_id in scanned_panes {
+        let state = pane_states.entry_mut(pane_id);
+        if live_agent_panes.contains(pane_id) {
+            state.dead_scan_streak = 0;
+        } else {
+            state.dead_scan_streak = state.dead_scan_streak.saturating_add(1);
+            if state.dead_scan_streak >= REQUIRED_DEAD_SCANS {
+                confirmed_dead.push(pane_id.clone());
             }
         }
     }
@@ -910,37 +901,17 @@ mod tests {
         ));
     }
 
-    #[test]
-    fn filter_sessions_to_live_agent_panes_removes_dead_panes() {
-        let sessions = test_session(vec![test_pane("%1"), test_pane("%2")]);
-        let live = HashSet::from(["%2".to_string()]);
-
-        let filtered = AppState::filter_sessions_to_live_agent_panes(sessions, &live);
-
-        assert_eq!(filtered.len(), 1);
-        assert_eq!(filtered[0].windows.len(), 1);
-        assert_eq!(filtered[0].windows[0].panes.len(), 1);
-        assert_eq!(filtered[0].windows[0].panes[0].pane_id, "%2");
-    }
-
-    #[test]
-    fn filter_sessions_to_live_agent_panes_drops_empty_sessions() {
-        let sessions = test_session(vec![test_pane("%1")]);
-        let live = HashSet::new();
-
-        let filtered = AppState::filter_sessions_to_live_agent_panes(sessions, &live);
-
-        assert!(filtered.is_empty());
-    }
-
     // ─── dead-scan streak gate ──────────────────────────────────────
+
+    fn scanned(pane_ids: &[&str]) -> HashSet<String> {
+        pane_ids.iter().map(|id| id.to_string()).collect()
+    }
 
     #[test]
     fn advance_dead_scan_streaks_first_miss_does_not_confirm() {
         let mut pane_states = PaneRuntimeMap::new();
-        let sessions = test_session(vec![test_pane("%1")]);
 
-        let dead = advance_dead_scan_streaks(&mut pane_states, &sessions, &HashSet::new());
+        let dead = advance_dead_scan_streaks(&mut pane_states, &scanned(&["%1"]), &HashSet::new());
 
         assert!(dead.is_empty(), "one missed scan must not confirm death");
         assert_eq!(pane_states.get("%1").unwrap().dead_scan_streak, 1);
@@ -949,10 +920,9 @@ mod tests {
     #[test]
     fn advance_dead_scan_streaks_second_consecutive_miss_confirms() {
         let mut pane_states = PaneRuntimeMap::new();
-        let sessions = test_session(vec![test_pane("%1")]);
 
-        advance_dead_scan_streaks(&mut pane_states, &sessions, &HashSet::new());
-        let dead = advance_dead_scan_streaks(&mut pane_states, &sessions, &HashSet::new());
+        advance_dead_scan_streaks(&mut pane_states, &scanned(&["%1"]), &HashSet::new());
+        let dead = advance_dead_scan_streaks(&mut pane_states, &scanned(&["%1"]), &HashSet::new());
 
         assert_eq!(dead, vec!["%1".to_string()]);
     }
@@ -960,12 +930,11 @@ mod tests {
     #[test]
     fn advance_dead_scan_streaks_live_scan_resets_streak() {
         let mut pane_states = PaneRuntimeMap::new();
-        let sessions = test_session(vec![test_pane("%1")]);
         let live: HashSet<String> = HashSet::from(["%1".to_string()]);
 
-        advance_dead_scan_streaks(&mut pane_states, &sessions, &HashSet::new());
-        advance_dead_scan_streaks(&mut pane_states, &sessions, &live);
-        let dead = advance_dead_scan_streaks(&mut pane_states, &sessions, &HashSet::new());
+        advance_dead_scan_streaks(&mut pane_states, &scanned(&["%1"]), &HashSet::new());
+        advance_dead_scan_streaks(&mut pane_states, &scanned(&["%1"]), &live);
+        let dead = advance_dead_scan_streaks(&mut pane_states, &scanned(&["%1"]), &HashSet::new());
 
         assert!(
             dead.is_empty(),
@@ -975,25 +944,15 @@ mod tests {
     }
 
     #[test]
-    fn panes_to_retain_keeps_grace_panes_drops_confirmed_dead() {
-        let mut state = state_with_panes(vec![test_pane("%1"), test_pane("%2"), test_pane("%3")]);
-        // %1 missed one scan (grace), %2 is live, %3 was wiped so its
-        // runtime entry — the streak counter with it — is gone.
-        state.pane_state_mut("%1").dead_scan_streak = 1;
-        let sessions = test_session(vec![test_pane("%1"), test_pane("%2"), test_pane("%3")]);
-        let live: HashSet<String> = HashSet::from(["%2".to_string()]);
+    fn advance_dead_scan_streaks_leaves_unscanned_panes_untouched() {
+        // A pane queued after the scan request was built was never
+        // examined by that scan; punishing it with a miss would let a
+        // brand-new pane decay toward teardown.
+        let mut pane_states = PaneRuntimeMap::new();
 
-        let retain = state.panes_to_retain(&sessions, &live);
+        advance_dead_scan_streaks(&mut pane_states, &scanned(&["%1"]), &HashSet::new());
 
-        assert!(
-            retain.contains("%1"),
-            "a pane inside the grace window must stay visible until the second miss"
-        );
-        assert!(retain.contains("%2"));
-        assert!(
-            !retain.contains("%3"),
-            "a confirmed-dead pane (state torn down) must drop out of the list"
-        );
+        assert!(pane_states.get("%2").is_none());
     }
 
     // ─── refresh_session_names ──────────────────────────────────────
@@ -1098,7 +1057,7 @@ mod tests {
         assert_eq!(state.repo_groups[0].panes[0].0.session_name, "alpha");
 
         let next_sessions = test_session(vec![pane_with_session("%1", "sess-a")]);
-        state.apply_session_snapshot(false, next_sessions);
+        state.apply_session_snapshot(next_sessions, Vec::new());
 
         assert!(
             state.repo_groups[0].panes[0].0.session_name.is_empty(),

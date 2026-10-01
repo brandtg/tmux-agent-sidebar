@@ -33,12 +33,11 @@ pub use options::{
     get_all_global_options, get_option, get_pane_option_value, sanitize_option_value,
     set_pane_option, unset_pane_option,
 };
-pub use panes::{
-    find_active_pane, focused_pane_path, get_pane_path, get_sidebar_pane_info,
-    query_active_window_panes,
-};
+pub(crate) use panes::pick_active_pane;
+pub use panes::{find_active_pane, focused_pane_path, get_pane_path, query_active_window_panes};
+pub(crate) use query::TmuxSnapshot;
+pub(crate) use query::query_session_snapshot;
 pub use query::query_sessions;
-pub(crate) use query::query_sessions_with_process_snapshot;
 pub use types::{
     AgentType, CLAUDE_AGENT, CODEX_AGENT, OPENCODE_AGENT, PaneAttention, PaneInfo, PaneStatus,
     PermissionMode, SessionInfo, WindowInfo, WorktreeMetadata,

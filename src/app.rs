@@ -41,6 +41,11 @@ pub fn run(
         session_rx,
         version_rx,
         git_tab_active,
+        focus_git_tx,
+        git_info_tx,
+        git_info_rx,
+        port_scan_tx,
+        port_scan_rx,
     } = workers;
 
     let mut last_refresh = std::time::Instant::now();
@@ -94,7 +99,31 @@ pub fn run(
             let previous_focused_pane_id = state.focus_state.focused_pane_id.clone();
             let is_window_active = state.refresh();
             if state.focus_state.focused_pane_id != previous_focused_pane_id {
-                render::refresh_git_for_focused_pane(&mut state);
+                // The seven-git-call fetch for the newly focused pane runs
+                // on the focus-fetch worker; the result arrives on `git_rx`
+                // a frame later instead of stalling this tick.
+                if let Some(pane_id) = state.focus_state.focused_pane_id.clone() {
+                    let _ = focus_git_tx.send(pane_id);
+                }
+            }
+            // Hand the queued port scan (if due) to its worker.
+            if let Some(targets) = state.take_pending_port_scan() {
+                let _ = port_scan_tx.send(targets);
+            }
+            // Keep the git-info resolver fed with the current grouping
+            // anchors (launch cwd when captured, else live cwd — the same
+            // keys group_panes_by_repo looks up); it refreshes stale
+            // entries off-thread and returns the cache.
+            let paths: Vec<String> = state
+                .repo_groups
+                .iter()
+                .flat_map(|group| group.panes.iter())
+                .map(|(pane, _)| pane.grouping_anchor().to_string())
+                .collect::<std::collections::HashSet<_>>()
+                .into_iter()
+                .collect();
+            if !paths.is_empty() {
+                let _ = git_info_tx.send(paths);
             }
             needs_redraw = true;
             if is_window_active {
@@ -110,7 +139,7 @@ pub fn run(
             last_refresh = std::time::Instant::now();
         }
 
-        if let Ok(data) = git_rx.try_recv() {
+        while let Ok(data) = git_rx.try_recv() {
             state.apply_git_data(data);
             needs_redraw = true;
         }
@@ -122,6 +151,16 @@ pub fn run(
 
         if let Ok(notice) = version_rx.try_recv() {
             state.version_notice = Some(notice);
+            needs_redraw = true;
+        }
+
+        if let Ok(git_info) = git_info_rx.try_recv() {
+            state.git_info_cache = git_info;
+            needs_redraw = true;
+        }
+
+        while let Some(scanned) = port_scan_rx.try_recv().ok().flatten() {
+            state.apply_process_snapshot(scanned);
             needs_redraw = true;
         }
 

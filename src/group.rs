@@ -81,36 +81,26 @@ pub fn resolve_pane_git_info(path: &str) -> PaneGitInfo {
 /// Group all panes across all sessions by repo root.
 /// Returns groups sorted alphabetically by display name (case-insensitive),
 /// so the order is stable regardless of which pane is encountered first.
-pub fn group_panes_by_repo(sessions: &[crate::tmux::SessionInfo]) -> Vec<RepoGroup> {
+///
+/// Git metadata comes from `git_info`, the path→[`PaneGitInfo`] cache owned
+/// by the background `git_info_poll_loop`. A path missing from the cache
+/// (first tick of a new pane, before the worker has answered) falls back to
+/// default info, which groups the pane under its raw directory name until
+/// the next tick regroups it by repo root — no git subprocess is ever
+/// spawned on the render thread here.
+pub fn group_panes_by_repo(
+    sessions: &[crate::tmux::SessionInfo],
+    git_info_cache: &std::collections::HashMap<String, PaneGitInfo>,
+) -> Vec<RepoGroup> {
     let mut groups: IndexMap<String, RepoGroup> = IndexMap::new();
-    let mut git_cache: std::collections::HashMap<String, PaneGitInfo> =
-        std::collections::HashMap::new();
 
     for session in sessions {
         for window in &session.windows {
             for pane in &window.panes {
-                // Grouping anchor: prefer the launch-time cwd captured by
-                // hooks (`@pane_launch_cwd`) so an agent cd-ing into another
-                // checkout mid-session doesn't regroup the pane under the
-                // new repo. Panes without an anchor (hooks never fired for
-                // them) fall back to the live cwd.
-                let anchor = if pane.launch_cwd.is_empty() {
-                    &pane.path
-                } else {
-                    &pane.launch_cwd
-                };
-
-                // Cache the base git info per path. `get` first avoids a key
-                // clone on cache hits; misses fall through to `insert` which
-                // owns the key plus the (expensive) git-command lookup.
-                let mut git_info = match git_cache.get(anchor.as_str()) {
-                    Some(cached) => cached.clone(),
-                    None => {
-                        let resolved = resolve_pane_git_info(anchor);
-                        git_cache.insert(anchor.clone(), resolved.clone());
-                        resolved
-                    }
-                };
+                let mut git_info = git_info_cache
+                    .get(pane.grouping_anchor())
+                    .cloned()
+                    .unwrap_or_default();
 
                 // Override with hook-provided worktree info (Claude Code
                 // provides this; Codex does not, so the git-command base
@@ -126,7 +116,7 @@ pub fn group_panes_by_repo(sessions: &[crate::tmux::SessionInfo]) -> Vec<RepoGro
 
                 let group_key = match &git_info.repo_root {
                     Some(root) => root.clone(),
-                    None => anchor.clone(),
+                    None => pane.grouping_anchor().to_string(),
                 };
 
                 let display_name = group_key
@@ -171,6 +161,7 @@ fn resolve_git_path(base: &str, git_path: &str) -> std::path::PathBuf {
 mod tests {
     use super::*;
     use crate::tmux::PaneAttention;
+    use std::collections::HashMap;
     use std::path::Path;
 
     #[test]
@@ -332,7 +323,7 @@ mod tests {
 
     #[test]
     fn group_panes_empty_sessions() {
-        let groups = group_panes_by_repo(&[]);
+        let groups = group_panes_by_repo(&[], &HashMap::new());
         assert!(groups.is_empty());
     }
 
@@ -363,6 +354,15 @@ mod tests {
         repo
     }
 
+    /// Build a git-info cache with freshly resolved entries for `paths`,
+    /// mirroring what `git_info_poll_loop` would have delivered for them.
+    fn cache_with(paths: &[&str]) -> HashMap<String, PaneGitInfo> {
+        paths
+            .iter()
+            .map(|path| (path.to_string(), resolve_pane_git_info(path)))
+            .collect()
+    }
+
     #[test]
     fn group_panes_anchor_keeps_launch_repo_when_agent_moves() {
         // Regression for the live-cwd regroup bug: an agent launched in
@@ -376,7 +376,7 @@ mod tests {
         pane.launch_cwd = intel_eng.to_str().unwrap().to_string();
 
         let sessions = vec![test_session(vec![test_window(vec![pane], true)])];
-        let groups = group_panes_by_repo(&sessions);
+        let groups = group_panes_by_repo(&sessions, &cache_with(&[intel_eng.to_str().unwrap()]));
 
         assert_eq!(
             groups.len(),
@@ -400,7 +400,7 @@ mod tests {
         let pane = test_pane("%1", repo_b.to_str().unwrap());
 
         let sessions = vec![test_session(vec![test_window(vec![pane], true)])];
-        let groups = group_panes_by_repo(&sessions);
+        let groups = group_panes_by_repo(&sessions, &cache_with(&[repo_b.to_str().unwrap()]));
 
         assert_eq!(groups.len(), 1);
         assert_eq!(groups[0].name, "repo-b");
@@ -419,7 +419,7 @@ mod tests {
         let live = test_pane("%2", repo.to_str().unwrap());
 
         let sessions = vec![test_session(vec![test_window(vec![anchored, live], true)])];
-        let groups = group_panes_by_repo(&sessions);
+        let groups = group_panes_by_repo(&sessions, &cache_with(&[repo.to_str().unwrap()]));
 
         assert_eq!(groups.len(), 1, "anchor resolves to the same repo root");
         assert_eq!(groups[0].panes.len(), 2);
@@ -433,7 +433,7 @@ mod tests {
         let pane2 = test_pane("%2", manifest_dir);
 
         let sessions = vec![test_session(vec![test_window(vec![pane1, pane2], true)])];
-        let groups = group_panes_by_repo(&sessions);
+        let groups = group_panes_by_repo(&sessions, &HashMap::new());
 
         assert_eq!(groups.len(), 1, "same repo path should produce one group");
         assert_eq!(groups[0].panes.len(), 2);
@@ -447,7 +447,7 @@ mod tests {
         let pane = test_pane("%1", "/tmp/no-git-here");
 
         let sessions = vec![test_session(vec![test_window(vec![pane], true)])];
-        let groups = group_panes_by_repo(&sessions);
+        let groups = group_panes_by_repo(&sessions, &HashMap::new());
 
         assert_eq!(groups.len(), 1);
         assert_eq!(groups[0].name, "no-git-here");
@@ -462,8 +462,13 @@ mod tests {
         let (_tmp, main, _worktree) = temp_repo_with_worktree();
         let pane = test_pane("%1", main.to_str().unwrap());
 
+        let mut cache = HashMap::new();
+        cache.insert(
+            main.to_str().unwrap().to_string(),
+            resolve_pane_git_info(main.to_str().unwrap()),
+        );
         let sessions = vec![test_session(vec![test_window(vec![pane], true)])];
-        let groups = group_panes_by_repo(&sessions);
+        let groups = group_panes_by_repo(&sessions, &cache);
 
         assert_eq!(groups.len(), 1);
         let expected_name = main.file_name().unwrap().to_string_lossy();
@@ -474,13 +479,38 @@ mod tests {
     }
 
     #[test]
+    fn group_panes_uses_cached_git_info_without_resolving() {
+        // The cache is authoritative: a hit is consumed as-is (branch
+        // surfaced on the pane), a miss falls back to default info and
+        // groups by the raw path instead of spawning git.
+        let pane = test_pane("%1", "/tmp/whatever");
+
+        let mut cache = HashMap::new();
+        cache.insert(
+            "/tmp/whatever".to_string(),
+            PaneGitInfo {
+                repo_root: Some("/repos/shared".into()),
+                branch: Some("cached-branch".into()),
+                is_worktree: false,
+                worktree_name: None,
+            },
+        );
+        let sessions = vec![test_session(vec![test_window(vec![pane], true)])];
+        let groups = group_panes_by_repo(&sessions, &cache);
+
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].name, "shared");
+        assert_eq!(groups[0].panes[0].1.branch, Some("cached-branch".into()));
+    }
+
+    #[test]
     fn group_panes_has_focus_from_active_window_and_pane() {
         let manifest_dir = env!("CARGO_MANIFEST_DIR");
         let mut pane = test_pane("%1", manifest_dir);
         pane.pane_active = true;
 
         let sessions = vec![test_session(vec![test_window(vec![pane], true)])];
-        let groups = group_panes_by_repo(&sessions);
+        let groups = group_panes_by_repo(&sessions, &HashMap::new());
 
         assert!(
             groups[0].has_focus,
@@ -495,7 +525,7 @@ mod tests {
         pane.pane_active = true;
 
         let sessions = vec![test_session(vec![test_window(vec![pane], false)])]; // window_active=false
-        let groups = group_panes_by_repo(&sessions);
+        let groups = group_panes_by_repo(&sessions, &HashMap::new());
 
         assert!(
             !groups[0].has_focus,
@@ -508,7 +538,7 @@ mod tests {
         let pane = test_pane("%1", "");
 
         let sessions = vec![test_session(vec![test_window(vec![pane], true)])];
-        let groups = group_panes_by_repo(&sessions);
+        let groups = group_panes_by_repo(&sessions, &HashMap::new());
 
         // Empty path pane should still be grouped (by empty key)
         assert_eq!(groups.len(), 1);
@@ -527,7 +557,7 @@ mod tests {
                 windows: vec![test_window(vec![pane2], false)],
             },
         ];
-        let groups = group_panes_by_repo(&sessions);
+        let groups = group_panes_by_repo(&sessions, &HashMap::new());
 
         assert_eq!(
             groups.len(),
@@ -556,7 +586,7 @@ mod tests {
                 windows: vec![test_window(vec![pane_session_b], false)],
             },
         ];
-        let groups = group_panes_by_repo(&sessions);
+        let groups = group_panes_by_repo(&sessions, &HashMap::new());
 
         assert_eq!(
             groups.len(),
@@ -585,7 +615,7 @@ mod tests {
             vec![pane1, pane2, pane3, pane4],
             true,
         )])];
-        let groups = group_panes_by_repo(&sessions);
+        let groups = group_panes_by_repo(&sessions, &HashMap::new());
 
         assert_eq!(groups.len(), 3);
         assert_eq!(groups[0].name, "Aaa");
