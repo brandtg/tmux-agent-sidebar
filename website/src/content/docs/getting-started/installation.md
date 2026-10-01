@@ -63,6 +63,10 @@ To update later, press `prefix + U` in TPM's plugin list and select `tmux-agent-
 
 After editing `tmux.conf`, press `prefix + r` (or run `tmux source ~/.tmux.conf`) to reload.
 
+## Debugging
+
+If the sidebar shows stale or missing state, re-run the failing hook with `TMUX_AGENT_SIDEBAR_DEBUG=1` in its environment (and/or set it for the sidebar TUI). Hook-dispatch decisions — unknown agent, missing `TMUX_PANE`, rejected payloads — and tmux write failures are then appended to `$XDG_RUNTIME_DIR/tmux-agent-sidebar-debug.log` (fallback `/tmp`), one timestamped line each. Without the variable the hook stays fully silent, as hooks must never pollute the agent's output.
+
 ## Next steps
 
 The sidebar receives status updates through agent hooks — continue with the agent you use:

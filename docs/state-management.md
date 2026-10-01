@@ -71,7 +71,7 @@ Per-pane file-based state:
 
 | File | Update Trigger | Read Frequency | Description |
 |------|---------------|----------------|-------------|
-| `/tmp/tmux-agent-activity_{pane_id}.log` | Each ActivityLog event | Every 1s | Tool usage log (`HH:MM\|tool\|label`), max 200 lines |
+| `$XDG_RUNTIME_DIR/tmux-agent-activity_{pane_id}.log` (fallback `/tmp`) | Each ActivityLog event | Every 1s | Tool usage log (`HH:MM\|tool\|label`), max 200 lines |
 
 ### Local State (single sidebar process only)
 

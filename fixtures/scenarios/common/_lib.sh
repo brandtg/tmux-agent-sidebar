@@ -29,6 +29,13 @@
 
 # -- initialisation -------------------------------------------------
 
+# Directory where the sidebar writes per-pane activity logs:
+# $XDG_RUNTIME_DIR when set (per-user, 0700), /tmp fallback — must match
+# paths::runtime_dir() in src/paths.rs.
+activity_dir() {
+    printf '%s' "${XDG_RUNTIME_DIR:-/tmp}"
+}
+
 setup() {
     local session_name="$1"
 
@@ -59,7 +66,7 @@ setup() {
     export TMUX_TMPDIR="$TMUX_DIR"
 
     # Clean slate for activity logs that any prior run may have left.
-    rm -f /tmp/tmux-agent-activity_*.log
+    rm -f "$(activity_dir)"/tmux-agent-activity_*.log
 
     # The sidebar's port-scan pass clears @pane_* on any pane whose
     # process tree does not contain a real `claude` or `codex`
@@ -86,7 +93,7 @@ cleanup() {
         tmux kill-server 2>/dev/null || true
     fi
     rm -rf "${TMUX_DIR:-}"
-    rm -f /tmp/tmux-agent-activity_*.log
+    rm -f "$(activity_dir)"/tmux-agent-activity_*.log
 }
 
 # -- layout ---------------------------------------------------------
@@ -139,8 +146,8 @@ build_layout() {
     tmux set-option -t "$MAIN_PANE" -p @pane_subagents \
         "Explore:a1b2c3de,Plan:d4e5f6ab,Bash:deadbeef"
 
-    export MAIN_LOG="/tmp/tmux-agent-activity${MAIN_PANE/\%/_}.log"
-    : > "$MAIN_LOG"
+    export MAIN_LOG="$(activity_dir)/tmux-agent-activity${MAIN_PANE/\%/_}.log"
+    : > "$MAIN_LOG" && chmod 600 "$MAIN_LOG"
 
     # Off-screen window hosting the 3 other agents. Idle panes are
     # intentionally omitted — in real use, an agent going idle means
@@ -220,8 +227,8 @@ build_layout() {
     tmux select-pane -t "$focus_pane"
 
     export FOCUSED_PANE="$focus_pane"
-    export FOCUSED_LOG="/tmp/tmux-agent-activity${focus_pane/\%/_}.log"
-    : > "$FOCUSED_LOG"
+    export FOCUSED_LOG="$(activity_dir)/tmux-agent-activity${focus_pane/\%/_}.log"
+    : > "$FOCUSED_LOG" && chmod 600 "$FOCUSED_LOG"
 }
 
 # _seed_pane <pane_id> key=value ...

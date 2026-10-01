@@ -38,14 +38,23 @@ pub fn run(args: &[String]) -> Option<i32> {
 
 // ─── Shared helpers ──────────────────────────────────────────────────────────
 
-fn read_stdin_json() -> serde_json::Value {
+/// Read the hook payload from stdin. Returns the parsed JSON (Null when
+/// stdin is a TTY or the body is not valid JSON), the raw byte count, and
+/// whether the body parsed as JSON — the latter two feed the opt-in debug
+/// trace, where "invalid JSON" and "valid JSON the adapter doesn't map"
+/// are different diagnoses.
+fn read_stdin_json() -> (serde_json::Value, usize, bool) {
     let is_tty = unsafe { libc::isatty(libc::STDIN_FILENO) != 0 };
     if is_tty {
-        return serde_json::Value::Null;
+        return (serde_json::Value::Null, 0, true);
     }
     let mut buf = String::new();
     let _ = std::io::stdin().read_to_string(&mut buf);
-    serde_json::from_str(&buf).unwrap_or(serde_json::Value::Null)
+    let bytes = buf.len();
+    match serde_json::from_str(&buf) {
+        Ok(value) => (value, bytes, true),
+        Err(_) => (serde_json::Value::Null, bytes, false),
+    }
 }
 
 fn tmux_pane() -> String {
@@ -98,10 +107,16 @@ pub(crate) fn sanitize_tmux_value(s: &str) -> String {
 fn cmd_set_status(args: &[String]) -> i32 {
     let status = match args.first() {
         Some(s) => s.as_str(),
-        None => return 0,
+        None => {
+            crate::debug::log("set-status: ignored: no status argument");
+            return 0;
+        }
     };
     let pane = tmux_pane();
     if pane.is_empty() {
+        crate::debug::log(&format!(
+            "set-status: ignored: TMUX_PANE not set (status '{status}')"
+        ));
         return 0;
     }
     set_status(&pane, status);

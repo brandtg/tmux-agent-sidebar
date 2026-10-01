@@ -17,9 +17,10 @@ pub struct PaneRuntimeState {
     /// automatically by `prune_pane_states_to_current_panes` when the
     /// pane disappears, so a relaunched pane starts fresh.
     pub tab_pref: Option<BottomTab>,
-    /// Last observed mtime of this pane's `/tmp/tmux-agent-activity*.log`.
-    /// Used by `refresh_task_progress` to skip the (potentially expensive)
-    /// re-parse when the log has not been touched since the previous tick.
+    /// Last observed mtime of this pane's activity log (runtime dir,
+    /// see `crate::paths`). Used by `refresh_task_progress` to skip the
+    /// (potentially expensive) re-parse when the log has not been touched
+    /// since the previous tick.
     pub task_progress_log_mtime: Option<std::time::SystemTime>,
     /// Consecutive port-scan sweeps that found no live agent process in
     /// this pane's tree. Tmux metadata teardown only fires after

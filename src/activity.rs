@@ -1,5 +1,8 @@
 use std::fs;
+use std::io::Read;
 use std::path::PathBuf;
+
+use crate::paths;
 
 #[derive(Debug, Clone)]
 pub struct ActivityEntry {
@@ -36,21 +39,28 @@ impl ActivityEntry {
     }
 }
 
+/// Per-pane activity log path: the pane id with its leading `%` replaced
+/// by `_`. Lives in the user's runtime dir (`$XDG_RUNTIME_DIR`, `/tmp`
+/// fallback — see `paths::runtime_dir`) so the predictable name is not
+/// sitting in world-writable `/tmp` on multi-user hosts.
 pub fn log_file_path(pane_id: &str) -> PathBuf {
     let encoded = pane_id.replace('%', "_");
-    PathBuf::from(format!("/tmp/tmux-agent-activity{encoded}.log"))
+    paths::runtime_dir().join(format!("tmux-agent-activity{encoded}.log"))
 }
 
 /// Last-modified time of a pane's activity log, or `None` when the file
 /// does not exist or its metadata cannot be queried.
 ///
-/// The log is append-only with an occasional in-place truncation
-/// (`hook.rs` rewrites it when the line count exceeds 210), both of
-/// which bump the mtime, so refresh paths can use this as a cheap
-/// "anything to re-parse?" check before reading the file.
+/// Uses `symlink_metadata` so a symlink planted at the path is not
+/// followed — readers only trust real files. The log is append-only with
+/// an occasional in-place truncation (`hook.rs` rewrites it when the line
+/// count exceeds 210), both of which bump the mtime, so refresh paths can
+/// use this as a cheap "anything to re-parse?" check before reading the
+/// file.
 pub fn log_mtime(pane_id: &str) -> Option<std::time::SystemTime> {
-    fs::metadata(log_file_path(pane_id))
+    fs::symlink_metadata(log_file_path(pane_id))
         .ok()
+        .filter(|m| m.is_file())
         .and_then(|m| m.modified().ok())
 }
 
@@ -68,7 +78,13 @@ fn parse_entry(line: &str) -> Option<ActivityEntry> {
 
 pub fn read_activity_log(pane_id: &str, max_entries: usize) -> Vec<ActivityEntry> {
     let path = log_file_path(pane_id);
-    let content = match fs::read_to_string(&path) {
+    // O_NOFOLLOW read: refuse a symlink planted at the log path rather
+    // than rendering whatever it points at.
+    let content = match paths::open_read(&path).and_then(|mut f| {
+        let mut content = String::new();
+        f.read_to_string(&mut content)?;
+        Ok(content)
+    }) {
         Ok(c) => c,
         Err(_) => return vec![],
     };
@@ -318,7 +334,12 @@ mod tests {
     #[test]
     fn test_log_file_path() {
         let path = log_file_path("%5");
-        assert_eq!(path.to_str().unwrap(), "/tmp/tmux-agent-activity_5.log");
+        // Directory depends on the environment ($XDG_RUNTIME_DIR when
+        // set, /tmp fallback); the file name is what's stable.
+        assert_eq!(
+            path,
+            crate::paths::runtime_dir().join("tmux-agent-activity_5.log")
+        );
     }
 
     #[test]

@@ -39,11 +39,11 @@ Agent hooks (hook.sh) → CLI `hook` subcommand
                            ↓
         cli/hook/handlers dispatches on_* per event, which:
           • sets tmux pane options (@pane_status, @pane_attention, etc.)
-          • appends to /tmp/tmux-agent-activity*.log
+          • appends to $XDG_RUNTIME_DIR/tmux-agent-activity*.log (fallback /tmp)
                            ↓
 TUI event loop (app::run) → AppState::sync_global_state()
           • reads tmux panes via single `list-panes -a`
-          • parses /tmp/tmux-agent-activity*.log
+          • parses $XDG_RUNTIME_DIR/tmux-agent-activity*.log (fallback /tmp)
                            ↓
                 ui::draw() renders frame
 ```
@@ -57,7 +57,9 @@ TUI event loop (app::run) → AppState::sync_global_state()
 - **`event.rs` + `event/`** — Internal event layer: `AgentEvent` (pre-extracted fields; handlers never touch raw JSON or agent names), `AgentEventKind` (compile-time enum for hook kinds), `EventAdapter` trait + `resolve_adapter`.
 - **`cli/hook.rs` + `cli/hook/`** — Receives real-time status updates from agent hooks; dispatch in `hook.rs`, with submodules `context` (shared helpers + `AgentContext`), `handlers` (per-event `on_*` handlers), `activity` (activity log writing), `notifications` (desktop notification helpers).
 - **`git.rs`** — Git operations (branch, ahead/behind, PR numbers via `gh` CLI, diff stats). Runs in a background polling thread.
-- **`activity.rs`** — Parses `/tmp/tmux-agent-activity*.log` files, maps tool types to colors.
+- **`activity.rs`** — Parses `$XDG_RUNTIME_DIR/tmux-agent-activity*.log` files (fallback `/tmp`), maps tool types to colors.
+- **`debug.rs`** — Opt-in debug trace (`TMUX_AGENT_SIDEBAR_DEBUG=1`): hook-dispatch decisions and tmux-write failures are appended to `$XDG_RUNTIME_DIR/tmux-agent-sidebar-debug.log` (fallback `/tmp`). Silent no-op when unset.
+- **`paths.rs`** — Runtime-dir resolution (`$XDG_RUNTIME_DIR`, `/tmp` fallback) and hardened opens (O_NOFOLLOW, `0600` creation) shared by activity logs and the debug trace.
 - **`group.rs`** — Groups panes by repository path.
 - **`session.rs` / `worktree.rs` / `tool_name.rs` / `version.rs` / `port.rs` / `clipboard.rs` / `desktop_notification.rs`** — Leaf helpers used across modules (session name resolution, worktree metadata parsing, tool-name classification, version reporting, port detection, clipboard + desktop notification shims).
 - **`ui/`** — Rendering layer: `mod.rs` (entry `draw`), `panes.rs` (agent list + repo filter) with submodules (`filter_bar`, `row`, `row_collector`, `click_targets`, `popups`); `bottom.rs` + `bottom/` with submodules (`activity`, `git`) for the activity/git tabs; `colors.rs` (256-color theme); `icons.rs` (agent/status glyphs); `notices.rs` (transient banner rendering); `text.rs` (text formatting/truncation).

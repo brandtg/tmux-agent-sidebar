@@ -12,33 +12,54 @@ pub fn run_tmux(args: &[&str]) -> Option<String> {
     if test_fail_tmux::should_fail() {
         return None;
     }
-    let mut command = Command::new("tmux");
-    command.args(args);
-    let output = subprocess::run_with_timeout(&mut command, TMUX_TIMEOUT).ok()?;
-    if output.status.success() {
-        Some(String::from_utf8_lossy(&output.stdout).to_string())
-    } else {
-        None
-    }
+    exec_tmux(args).ok()
 }
 
 /// Run a tmux command, returning trimmed stdout on success and stderr on failure.
 /// Used by the spawn/remove flow so the UI can surface a meaningful error message
 /// instead of a silent fallthrough.
 pub fn run_tmux_capture(args: &[&str]) -> Result<String, String> {
+    exec_tmux(args).map(|out| out.trim().to_string())
+}
+
+/// Shared execution path for every tmux invocation. Failures are recorded
+/// in the opt-in debug trace (`TMUX_AGENT_SIDEBAR_DEBUG=1`, see
+/// `crate::debug`) before the caller's usual silent fallback. This is the
+/// single choke point: every pane-option write, query, and window
+/// operation goes through here.
+///
+/// Read commands (`show`, `display-message`, `list-panes`, …) fail
+/// routinely in normal operation — an unset option or a pane that just
+/// closed — so only their spawn/timeout failures are traced. Non-zero
+/// exits are traced for writes (`set …`), where a failure silently loses
+/// state and is exactly what the trace exists for.
+fn exec_tmux(args: &[&str]) -> Result<String, String> {
     let mut command = Command::new("tmux");
     command.args(args);
-    let output = subprocess::run_with_timeout(&mut command, TMUX_TIMEOUT)?;
+    let output = subprocess::run_with_timeout(&mut command, TMUX_TIMEOUT).map_err(|err| {
+        crate::debug::log(&format!("tmux {args:?} failed: {err}"));
+        err
+    })?;
     if output.status.success() {
-        Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
-    } else {
-        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-        Err(if stderr.is_empty() {
-            format!("tmux exited with status {}", output.status)
-        } else {
-            stderr
-        })
+        return Ok(String::from_utf8_lossy(&output.stdout).to_string());
     }
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    if args.first() == Some(&"set") {
+        crate::debug::log(&format!(
+            "tmux {args:?} exited with {}: {}",
+            output.status,
+            if stderr.is_empty() {
+                "<no stderr>".to_string()
+            } else {
+                stderr.clone()
+            }
+        ));
+    }
+    Err(if stderr.is_empty() {
+        format!("tmux exited with status {}", output.status)
+    } else {
+        stderr
+    })
 }
 
 pub fn display_message(target: &str, format: &str) -> String {
