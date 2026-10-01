@@ -56,7 +56,8 @@ pub(crate) fn cmd_hook(args: &[String]) -> i32 {
     };
 
     debug::log(&format!(
-        "hook: {agent_name} {event_name} pane {pane} -> {:?}",
+        "hook: {agent_name} {event_name} pane {pane} session {:?} -> {:?}",
+        event.session_id(),
         event.kind()
     ));
     handle_event(&pane, agent_name, event)
