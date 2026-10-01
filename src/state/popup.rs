@@ -66,10 +66,13 @@ pub enum PopupState {
     },
     /// Confirmation prompt shown when the user presses `x` on a
     /// spawn-created pane. `pane_id` feeds `worktree::remove`; `branch`
-    /// is shown in the modal title.
+    /// is shown in the modal title; `warning` lines spell out what the
+    /// force-remove destroys (computed by a pre-flight git check when
+    /// the dialog opens).
     RemoveConfirm {
         pane_id: String,
         branch: String,
+        warning: Vec<String>,
         error: Option<String>,
         area: Option<ratatui::layout::Rect>,
     },
@@ -447,6 +450,7 @@ impl AppState {
         self.popup = PopupState::RemoveConfirm {
             pane_id,
             branch,
+            warning: crate::worktree::removal_warnings(&markers.worktree_path),
             error: None,
             area: None,
         };
@@ -835,6 +839,7 @@ mod tests {
         state.popup = PopupState::RemoveConfirm {
             pane_id: "%1".into(),
             branch: "feature/x".into(),
+            warning: Vec::new(),
             error: None,
             area: Some(ratatui::layout::Rect::new(0, 0, 20, 5)),
         };

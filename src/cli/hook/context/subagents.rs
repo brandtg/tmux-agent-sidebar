@@ -1,9 +1,13 @@
-/// Append a subagent entry to the comma-separated `@pane_subagents` list.
+/// Build the `agent_type:agent_id` entry appended to the
+/// comma-separated `@pane_subagents` list.
 ///
 /// Format: each entry is `agent_type:agent_id`. The id suffix lets
 /// `remove_subagent` match the exact instance on stop, and also lets the
 /// UI render a stable `#<id-prefix>` tag that does not shift when siblings
-/// stop.
+/// stop. Production appends go through `tmux::append_pane_option` (atomic
+/// `set -a`); this helper remains for tests that model multi-subagent
+/// lifecycles.
+#[cfg(test)]
 pub(in crate::cli::hook) fn append_subagent(
     current: &str,
     agent_type: &str,
@@ -20,12 +24,17 @@ pub(in crate::cli::hook) fn append_subagent(
 /// Remove the entry with the given `agent_id` from the comma-separated list.
 /// Returns `None` if `agent_id` is not present, `Some(new_list)` otherwise
 /// (empty string if the list becomes empty).
+///
+/// Empty entries (a leading comma is normal: appends go through tmux
+/// `set -a`, which stores the comma-prefixed chunk verbatim on an unset
+/// option) are dropped on every rewrite so the stored list converges to
+/// a clean comma-separated form.
 pub(in crate::cli::hook) fn remove_subagent(current: &str, agent_id: &str) -> Option<String> {
     if current.is_empty() || agent_id.is_empty() {
         return None;
     }
     let needle = format!(":{}", agent_id);
-    let items: Vec<&str> = current.split(',').collect();
+    let items: Vec<&str> = current.split(',').filter(|s| !s.is_empty()).collect();
     let idx = items.iter().position(|entry| entry.ends_with(&needle))?;
     let filtered: Vec<&str> = items
         .iter()
@@ -133,6 +142,18 @@ mod tests {
         assert_eq!(
             remove_subagent("TrailingX:y,Explore:x", "x"),
             Some("TrailingX:y".into())
+        );
+    }
+
+    #[test]
+    fn remove_subagent_drops_empty_entries_from_atomic_appends() {
+        // `set -a` appends store the comma-prefixed chunk verbatim on an
+        // unset option, so live values can start with a leading comma.
+        // Removal must both find the target and drop the empty entry.
+        assert_eq!(remove_subagent(",Explore:sub-1", "sub-1"), Some("".into()));
+        assert_eq!(
+            remove_subagent(",Explore:sub-1,Plan:sub-2", "sub-1"),
+            Some("Plan:sub-2".into())
         );
     }
 

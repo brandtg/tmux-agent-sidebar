@@ -151,6 +151,18 @@ pub fn get_option(name: &str) -> Option<String> {
         .filter(|s| !s.is_empty())
 }
 
+/// Normalize a value before storing it in a tmux option. The sidebar's
+/// `list-panes` query is line-based and uses `|` as its field separator,
+/// so a newline splits the pane's record in two (the pane silently
+/// vanishes from the sidebar) and a pipe shifts every downstream field.
+/// Both are replaced with spaces. Callers that compare stored values
+/// against raw process data (e.g. the bg-shell ps sweep) must apply the
+/// same normalization so round-tripping through storage doesn't
+/// silently break equality.
+pub fn sanitize_option_value(s: &str) -> String {
+    s.replace(['\n', '|'], " ")
+}
+
 /// Fetch all global tmux options in a single subprocess call.
 /// Returns a map of option name → value.
 pub fn get_all_global_options() -> std::collections::HashMap<String, String> {
@@ -167,11 +179,31 @@ pub fn get_all_global_options() -> std::collections::HashMap<String, String> {
 }
 
 pub fn set_pane_option(pane: &str, key: &str, value: &str) {
+    let value = sanitize_option_value(value);
     #[cfg(test)]
-    if test_mock::intercept_set(pane, key, value) {
+    if test_mock::intercept_set(pane, key, &value) {
         return;
     }
-    let _ = run_tmux(&["set", "-t", pane, "-p", key, value]);
+    // `--` so a value that begins with `-` (a prompt like "- fix the login
+    // bug", an error string) is never parsed as a tmux flag — without it
+    // tmux rejects the write and the error is discarded, silently dropping
+    // the update.
+    let _ = run_tmux(&["set", "-t", pane, "-p", "--", key, &value]);
+}
+
+/// Append `value` to a pane option atomically, inside the tmux server.
+/// Hook events are independent processes; a get→append→set round trip
+/// loses entries when two hooks run concurrently. The appended chunk is
+/// passed verbatim by the caller — including any joining comma — because
+/// tmux concatenates it onto the current value as-is (and stores it
+/// verbatim when the option is unset).
+pub fn append_pane_option(pane: &str, key: &str, chunk: &str) {
+    let chunk = sanitize_option_value(chunk);
+    #[cfg(test)]
+    if test_mock::intercept_append(pane, key, &chunk) {
+        return;
+    }
+    let _ = run_tmux(&["set", "-t", pane, "-p", "-a", "--", key, &chunk]);
 }
 
 pub fn unset_pane_option(pane: &str, key: &str) {
@@ -179,7 +211,7 @@ pub fn unset_pane_option(pane: &str, key: &str) {
     if test_mock::intercept_unset(pane, key) {
         return;
     }
-    let _ = run_tmux(&["set", "-t", pane, "-p", "-u", key]);
+    let _ = run_tmux(&["set", "-t", pane, "-p", "-u", "--", key]);
 }
 
 pub fn get_pane_option_value(pane: &str, key: &str) -> String {
@@ -267,6 +299,27 @@ pub mod test_mock {
         })
     }
 
+    /// Mirrors tmux `set -a` semantics: the chunk is concatenated onto the
+    /// current value as-is (an unset option behaves like an empty current
+    /// value, so a leading comma in the chunk is preserved verbatim).
+    pub(super) fn intercept_append(pane: &str, key: &str, chunk: &str) -> bool {
+        MOCK.with(|m| {
+            if let Some(store) = m.borrow_mut().as_mut() {
+                let current = store
+                    .get(&(pane.to_string(), key.to_string()))
+                    .cloned()
+                    .unwrap_or_default();
+                store.insert(
+                    (pane.to_string(), key.to_string()),
+                    format!("{current}{chunk}"),
+                );
+                true
+            } else {
+                false
+            }
+        })
+    }
+
     pub(super) fn intercept_unset(pane: &str, key: &str) -> bool {
         MOCK.with(|m| {
             if let Some(store) = m.borrow_mut().as_mut() {
@@ -323,5 +376,46 @@ mod tests {
         }
         // No mock installed now — `contains` returns false.
         assert!(!test_mock::contains("%7", "@x"));
+    }
+
+    #[test]
+    fn sanitize_option_value_replaces_newlines_and_pipes() {
+        assert_eq!(sanitize_option_value("a\nb|c"), "a b c");
+        assert_eq!(sanitize_option_value("clean"), "clean");
+    }
+
+    #[test]
+    fn set_pane_option_sanitizes_value() {
+        let _guard = test_mock::install();
+        set_pane_option("%1", PANE_PROMPT, "- fix\nthe|bug");
+        assert_eq!(
+            get_pane_option_value("%1", PANE_PROMPT),
+            "- fix the bug",
+            "newlines and pipes must never reach tmux option storage"
+        );
+    }
+
+    #[test]
+    fn append_pane_option_concatenates_chunk_verbatim() {
+        let _guard = test_mock::install();
+        append_pane_option("%1", PANE_SUBAGENTS, ",Plan:sub-2");
+        // Unset option: tmux stores the chunk as-is (leading comma and all);
+        // readers filter empty entries.
+        assert_eq!(get_pane_option_value("%1", PANE_SUBAGENTS), ",Plan:sub-2");
+        append_pane_option("%1", PANE_SUBAGENTS, ",Explore:sub-1");
+        assert_eq!(
+            get_pane_option_value("%1", PANE_SUBAGENTS),
+            ",Plan:sub-2,Explore:sub-1"
+        );
+    }
+
+    #[test]
+    fn append_pane_option_sanitizes_chunk() {
+        let _guard = test_mock::install();
+        append_pane_option("%1", PANE_SUBAGENTS, ",Explore:sub\n1");
+        assert_eq!(
+            get_pane_option_value("%1", PANE_SUBAGENTS),
+            ",Explore:sub 1"
+        );
     }
 }

@@ -7,32 +7,81 @@ use super::super::{local_time_hhmm, sanitize_tmux_value, set_status};
 use super::context::pane_writes_allowed;
 
 /// Write a single activity entry to the log file and trim if needed.
+///
+/// Hook events are independent processes appending to the same file, so
+/// the append and the trim run under an exclusive `flock`: the old
+/// trim (read whole file → truncate-write) raced concurrent appends and
+/// silently dropped entries — this log also feeds task-progress parsing,
+/// so lost lines corrupt the task counters.
 pub(super) fn write_activity_entry(pane: &str, tool_name: &str, label: &str) {
     let log_path = crate::activity::log_file_path(pane);
     let label = sanitize_tmux_value(label);
     let timestamp = local_time_hhmm();
     let line = format!("{}|{}|{}\n", timestamp, tool_name, label);
 
-    use std::io::Write;
-    if let Ok(mut f) = std::fs::OpenOptions::new()
+    use std::io::{Seek, SeekFrom, Write};
+    // Read+write (no O_APPEND): the trim rewrites in place through the
+    // same fd. Holding the lock makes the manual end-seek equivalent to
+    // O_APPEND.
+    let Ok(mut f) = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
         .create(true)
-        .append(true)
+        .truncate(false)
         .open(&log_path)
-    {
+    else {
+        return;
+    };
+    if lock_exclusive(&f) {
+        let _ = f.seek(SeekFrom::End(0));
         let _ = f.write_all(line.as_bytes());
+        trim_locked(&mut f, 200, 210);
     }
+    // The lock is released when the fd closes.
+}
 
-    trim_log_file(&log_path, 200, 210);
+fn lock_exclusive(file: &std::fs::File) -> bool {
+    use std::os::fd::AsRawFd;
+    unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) == 0 }
+}
+
+/// Rewrite the file in place with only its last `keep` lines when it
+/// exceeds `threshold` lines. Caller must hold the flock; all reads and
+/// writes go through the same fd so no second open can deadlock on our
+/// own lock.
+fn trim_locked(file: &mut std::fs::File, keep: usize, threshold: usize) {
+    use std::io::{Read, Seek, SeekFrom, Write};
+    let _ = file.seek(SeekFrom::Start(0));
+    let mut content = String::new();
+    if file.read_to_string(&mut content).is_err() {
+        return;
+    }
+    let lines: Vec<&str> = content.lines().collect();
+    if lines.len() <= threshold {
+        return;
+    }
+    let kept = lines[lines.len() - keep..].join("\n") + "\n";
+    let _ = file.seek(SeekFrom::Start(0));
+    if file.write_all(kept.as_bytes()).is_ok() {
+        let _ = file.set_len(kept.len() as u64);
+    }
 }
 
 /// Trim a log file to `keep` lines when it exceeds `threshold` lines.
+/// Path-based seam for tests; production writes trim through
+/// `write_activity_entry` under the same lock.
+#[cfg(test)]
 pub(super) fn trim_log_file(path: &std::path::Path, keep: usize, threshold: usize) {
-    if let Ok(content) = std::fs::read_to_string(path) {
-        let lines: Vec<&str> = content.lines().collect();
-        if lines.len() > threshold {
-            let start = lines.len() - keep;
-            let _ = std::fs::write(path, lines[start..].join("\n") + "\n");
-        }
+    let Ok(mut f) = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .truncate(false)
+        .open(path)
+    else {
+        return;
+    };
+    if lock_exclusive(&f) {
+        trim_locked(&mut f, keep, threshold);
     }
 }
 
@@ -208,6 +257,49 @@ mod tests {
         let lines: Vec<&str> = content.lines().collect();
         assert!(lines.len() <= 210, "should be trimmed, got {}", lines.len());
         assert!(lines.last().unwrap().ends_with("|Read|file215.rs"));
+        fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn concurrent_appends_survive_trim() {
+        // Regression: hook events are independent processes. The old
+        // read-then-truncate-write trim dropped entries appended while a
+        // trim was in flight; under the flock every concurrent append
+        // must land and survive the trim.
+        let pane_id = "%CLI_CONCURRENT";
+        let path = crate::activity::log_file_path(pane_id);
+        let _ = fs::remove_file(&path);
+        let old: String = (1..=205)
+            .map(|i| format!("00:00|Read|old{}.rs\n", i))
+            .collect();
+        fs::write(&path, old).unwrap();
+
+        let handles: Vec<_> = (0..20)
+            .map(|i| {
+                let pane = pane_id.to_string();
+                std::thread::spawn(move || {
+                    write_activity_entry(&pane, "Bash", &format!("cmd{}", i));
+                })
+            })
+            .collect();
+        for handle in handles {
+            handle.join().unwrap();
+        }
+
+        let content = fs::read_to_string(&path).unwrap();
+        let lines: Vec<&str> = content.lines().collect();
+        assert!(
+            (200..=210).contains(&lines.len()),
+            "trim must keep the list within bounds, got {}",
+            lines.len()
+        );
+        for i in 0..20 {
+            let needle = format!("|cmd{}", i);
+            assert!(
+                lines.iter().any(|l| l.ends_with(&needle)),
+                "concurrent entry {i} must not be dropped by the trim"
+            );
+        }
         fs::remove_file(&path).ok();
     }
 

@@ -287,19 +287,23 @@ fn tail_fit(text: &str, max_width: usize) -> String {
 }
 
 pub(super) fn render_remove_confirm_popup(frame: &mut Frame, state: &mut AppState, area: Rect) {
-    let (branch, error) = match &state.popup {
-        PopupState::RemoveConfirm { branch, error, .. } => (branch.clone(), error.clone()),
+    let (branch, warning, error) = match &state.popup {
+        PopupState::RemoveConfirm {
+            branch,
+            warning,
+            error,
+            ..
+        } => (branch.clone(), warning.clone(), error.clone()),
         _ => return,
     };
     let theme = &state.theme;
 
     // Narrow-friendly: put the branch in the title, keep option rows
-    // short enough to fit in ~16 columns. Reserve an extra row when
-    // an inline error is present.
-    let popup_height: u16 = if error.is_some() { 7 } else { 6 };
+    // short enough to fit in ~16 columns. The consequence block grows
+    // the popup; an inline error reserves one more row.
+    let popup_height: u16 = 5 + warning.len() as u16 + u16::from(error.is_some());
     let popup_rect = center_popup(area, area.width.min(28), popup_height);
     state.popup.set_remove_confirm_area(Some(popup_rect));
-
     frame.render_widget(Clear, popup_rect);
     let title_text = format!(" {branch} ");
     let title = truncate_to_width(&title_text, popup_rect.width.saturating_sub(2) as usize);
@@ -340,8 +344,15 @@ pub(super) fn render_remove_confirm_popup(frame: &mut Frame, state: &mut AppStat
         "[n] cancel",
         Style::default().fg(theme.text_muted),
     );
+    // Force-remove consequences (`worktree remove --force` + `branch -D`
+    // run while the agent is still working) — the user must see what is
+    // unrecoverable before pressing y.
+    let warning_style = Style::default().fg(theme.status_error);
+    for (i, line) in warning.iter().enumerate() {
+        render_row(frame, 3 + i as u16, line, warning_style);
+    }
     if let Some(err) = error {
-        render_row(frame, 4, &err, Style::default().fg(theme.status_error));
+        render_row(frame, 3 + warning.len() as u16, &err, warning_style);
     }
 }
 

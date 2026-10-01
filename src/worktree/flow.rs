@@ -142,6 +142,44 @@ fn compose_spawn_error(primary: String, rollback_errs: Vec<String>) -> String {
     }
 }
 
+/// Pre-flight consequence summary shown in the remove-confirm dialog.
+///
+/// The remove flow runs `git worktree remove --force` + `git branch -D`
+/// while the agent is still running: uncommitted changes and untracked
+/// files are unrecoverable, and unpushed commits survive only in the
+/// reflog. The dialog spells those consequences out; when the worktree
+/// can still be inspected, the message is tailored with a dirty /
+/// unpushed-commits pre-flight check. Unknown state (git failed) warns
+/// worst-case.
+pub fn removal_warnings(worktree_path: &str) -> Vec<String> {
+    let dirty = match crate::git::run_git_capture(worktree_path, &["status", "--porcelain"]) {
+        Ok(status) => !status.is_empty(),
+        Err(_) => true,
+    };
+    let unpushed = crate::git::run_git_capture(
+        worktree_path,
+        &["rev-list", "--count", "HEAD", "--not", "--remotes"],
+    )
+    .ok()
+    .and_then(|out| out.parse::<usize>().ok())
+    .unwrap_or(0);
+
+    let mut lines = Vec::new();
+    if dirty {
+        lines.push("Deletes uncommitted".to_string());
+        lines.push("changes, untracked files".to_string());
+    }
+    if unpushed > 0 {
+        lines.push(format!("{unpushed} unpushed"));
+        lines.push("commits: reflog only".to_string());
+    }
+    if lines.is_empty() {
+        lines.push("Worktree is clean;".to_string());
+        lines.push("deletes branch + checkout".to_string());
+    }
+    lines
+}
+
 /// Tear down a previously-spawned pane. Runs ALL git cleanup
 /// (`worktree remove --force`, then `git branch -D`) BEFORE killing
 /// the tmux window so a git failure at any step leaves the window
@@ -757,5 +795,66 @@ mod env_tests {
             "worktree_remove must also stay skipped: {calls:?}"
         );
         assert!(has_call(&calls, "kill_window(@1)"));
+    }
+}
+
+#[cfg(test)]
+mod removal_warning_tests {
+    use super::*;
+
+    #[test]
+    fn unknown_state_warns_worst_case() {
+        // Nonexistent worktree: git status fails, so the dialog must
+        // assume the worst instead of claiming the worktree is clean.
+        let lines = removal_warnings("/nonexistent/warning/wt");
+        assert_eq!(
+            lines,
+            vec!["Deletes uncommitted", "changes, untracked files"]
+        );
+    }
+
+    #[test]
+    fn unpushed_commits_and_dirty_tree_are_reported() {
+        let dir = std::env::temp_dir().join(format!("sidebar_wt_warn_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let run = |args: &[&str]| {
+            let out = std::process::Command::new("git")
+                .args(args)
+                .current_dir(&dir)
+                .output()
+                .expect("git must be available");
+            assert!(out.status.success(), "git {args:?} failed");
+        };
+        run(&["init", "-q"]);
+        run(&[
+            "-c",
+            "user.email=t@t",
+            "-c",
+            "user.name=t",
+            "commit",
+            "--allow-empty",
+            "-q",
+            "-m",
+            "init",
+        ]);
+        // No remotes exist, so the root commit counts as unpushed; the
+        // tree is clean, so no dirty warning.
+        let lines = removal_warnings(dir.to_str().unwrap());
+        assert!(
+            lines.contains(&"1 unpushed".to_string())
+                && lines.contains(&"commits: reflog only".to_string()),
+            "commit with no remotes must be flagged unpushed: {lines:?}"
+        );
+        assert!(!lines.contains(&"Deletes uncommitted".to_string()));
+
+        // An untracked file flips the dirty warning on.
+        std::fs::write(dir.join("untracked.txt"), b"x").unwrap();
+        let lines = removal_warnings(dir.to_str().unwrap());
+        assert!(
+            lines.contains(&"Deletes uncommitted".to_string()),
+            "untracked file must trigger the dirty warning: {lines:?}"
+        );
+        std::fs::remove_dir_all(&dir).ok();
     }
 }

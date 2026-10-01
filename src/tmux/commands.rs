@@ -88,7 +88,9 @@ pub fn new_window(session: &str, cwd: &str, name: &str) -> Result<(String, Strin
 /// cannot be written — silently dropping the failure would leave an
 /// un-removable pane.
 pub fn set_window_option(window: &str, key: &str, value: &str) -> Result<(), String> {
-    run_tmux_capture(&["set", "-w", "-t", window, key, value]).map(|_| ())
+    // `--` so values starting with `-` (user-supplied task slugs, paths)
+    // are never parsed as tmux flags.
+    run_tmux_capture(&["set", "-w", "-t", window, "--", key, value]).map(|_| ())
 }
 
 /// Send a command line to `target` (a pane id) and press Enter so the shell

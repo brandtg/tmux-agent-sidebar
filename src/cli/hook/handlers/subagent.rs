@@ -1,6 +1,6 @@
 use crate::tmux;
 
-use super::super::context::{append_subagent, drain_pending_teardowns, remove_subagent};
+use super::super::context::{drain_pending_teardowns, remove_subagent};
 
 pub(in crate::cli::hook) fn on_subagent_start(
     pane: &str,
@@ -13,9 +13,15 @@ pub(in crate::cli::hook) fn on_subagent_start(
     let Some(id) = agent_id.filter(|s| !s.is_empty()) else {
         return 0;
     };
-    let current = tmux::get_pane_option_value(pane, tmux::PANE_SUBAGENTS);
-    let new_val = append_subagent(&current, agent_type, id);
-    tmux::set_pane_option(pane, tmux::PANE_SUBAGENTS, &new_val);
+    // Atomic server-side append (`set -a`). Hook events are independent
+    // processes sharing this pane option, and the old get→append→set
+    // round trip lost an entry whenever two SubagentStart hooks ran
+    // concurrently — leaving either a missing row or a subagent guard
+    // stuck open/closed. The chunk carries its own joining comma; on an
+    // unset option tmux stores it verbatim (leading comma), which every
+    // reader tolerates by filtering empty entries.
+    let entry = tmux::sanitize_option_value(&format!("{agent_type}:{id}"));
+    tmux::append_pane_option(pane, tmux::PANE_SUBAGENTS, &format!(",{entry}"));
     0
 }
 
@@ -60,18 +66,40 @@ mod tests {
     }
 
     #[test]
-    fn on_subagent_start_appends_to_list() {
+    fn on_subagent_start_appends_atomically() {
         let _guard = tmux::test_mock::install();
         let pane = "%SUB_START";
         on_subagent_start(pane, "Explore", Some("sub-1"));
+        // The chunk carries its own comma; on an unset option tmux stores
+        // it verbatim, so the value starts with a leading comma. Readers
+        // filter the empty entry.
         assert_eq!(
             tmux::test_mock::get(pane, tmux::PANE_SUBAGENTS).as_deref(),
-            Some("Explore:sub-1")
+            Some(",Explore:sub-1")
         );
         on_subagent_start(pane, "Plan", Some("sub-2"));
         assert_eq!(
             tmux::test_mock::get(pane, tmux::PANE_SUBAGENTS).as_deref(),
-            Some("Explore:sub-1,Plan:sub-2")
+            Some(",Explore:sub-1,Plan:sub-2")
+        );
+    }
+
+    #[test]
+    fn on_subagent_stop_cleans_leading_comma_left_by_atomic_append() {
+        let _guard = tmux::test_mock::install();
+        let pane = "%SUB_COMMA";
+        on_subagent_start(pane, "Explore", Some("sub-1"));
+        on_subagent_start(pane, "Plan", Some("sub-2"));
+        on_subagent_stop(pane, Some("sub-1"));
+        assert_eq!(
+            tmux::test_mock::get(pane, tmux::PANE_SUBAGENTS).as_deref(),
+            Some("Plan:sub-2"),
+            "stop must rewrite the list without the empty leading entry"
+        );
+        on_subagent_stop(pane, Some("sub-2"));
+        assert!(
+            !tmux::test_mock::contains(pane, tmux::PANE_SUBAGENTS),
+            "drained list must be unset"
         );
     }
 
