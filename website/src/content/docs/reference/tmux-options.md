@@ -20,6 +20,7 @@ Most options must be set **before** loading the plugin in your `tmux.conf`. Colo
 | `@sidebar_popup_max_width`       | `100`   | Windows narrower than this many columns open the sidebar as a tmux popup instead of a split pane — for phones and small SSH viewports. The popup hides the activity/git bottom panel; auto-create and toggle-all skip narrow windows. Set `0` to always use a split pane |
 | `@sidebar_notifications`         | `on`    | Master switch for desktop notifications                                                 |
 | `@sidebar_notifications_events`  | unset   | Restrict events — see [Notifications](/tmux-agent-sidebar/features/notifications/)       |
+| `@sidebar_agents`                | unset   | Comma-separated allow-list of agents (`claude`, `codex`, `opencode`) the ⓘ notices evaluates for missing hooks — e.g. `set -g @sidebar_agents "claude,opencode"` silences the Codex warning for non-Codex users. Unset checks every agent; pane rows and status parsing are unaffected |
 | `@sidebar_pet`                  | `off`   | Show the animated pet in a 5-row band above the bottom panel                           |
 
 ## Worktree spawn defaults

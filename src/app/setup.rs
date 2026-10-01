@@ -43,6 +43,13 @@ pub(super) fn init_state(tmux_pane: String) -> AppState {
     // the notices popup can warn about duplicate hook execution.
     state.notices.claude_settings_has_residual_hooks =
         plugin_state::claude_settings_has_residual_hooks();
+    // The `@sidebar_agents` allow-list narrows which agents the notices
+    // system evaluates (e.g. `set -g @sidebar_agents "claude,opencode"`
+    // silences the Codex missing-hooks warning for non-Codex users).
+    // Empty/unset means "evaluate every supported agent".
+    state.notices.enabled_agents = crate::state::parse_enabled_agents(
+        crate::tmux::get_option(crate::tmux::SIDEBAR_AGENTS).as_deref(),
+    );
     // Notice inputs are static after the two lines above, so compute
     // them once here instead of from the per-tick refresh loop. This
     // also decouples the ⓘ badge from `focused_pane_id`, so killing

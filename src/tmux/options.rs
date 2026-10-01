@@ -107,6 +107,10 @@ pub const SIDEBAR_POPUP_MAX_WIDTH: &str = "@sidebar_popup_max_width";
 pub const SIDEBAR_PET: &str = "@sidebar_pet";
 pub const SIDEBAR_NOTIFICATIONS: &str = "@sidebar_notifications";
 pub const SIDEBAR_NOTIFICATIONS_EVENTS: &str = "@sidebar_notifications_events";
+/// Comma-separated allow-list of agents (`claude`, `codex`, `opencode`)
+/// the ⓘ notices evaluates for hook-setup problems. Unset/empty means
+/// "no restriction". Parsed by `state::notices::parse_enabled_agents`.
+pub const SIDEBAR_AGENTS: &str = "@sidebar_agents";
 
 pub const SIDEBAR_COLOR_ACCENT: &str = "@sidebar_color_accent";
 pub const SIDEBAR_COLOR_BORDER: &str = "@sidebar_color_border";

@@ -24,6 +24,7 @@ pub use focus::{Focus, FocusState};
 pub use global::GlobalState;
 pub use layout::{FrameLayout, HyperlinkOverlay, RepoSpawnTarget, RowTarget, SpawnRemoveTarget};
 pub(crate) use notices::debug_forced_display;
+pub(crate) use notices::parse_enabled_agents;
 pub use notices::{ClaudePluginNotice, NoticesCopyTarget, NoticesMissingHookGroup, NoticesState};
 pub use pane_runtime::{PaneRuntimeMap, PaneRuntimeState};
 pub use popup::{PopupState, SpawnField};
@@ -74,11 +75,6 @@ pub struct AppState {
     /// click region, cached hook/plugin diagnostics, per-agent copy targets,
     /// and the transient "copied" feedback label.
     pub notices: NoticesState,
-    /// Pending OSC 52 clipboard payload. The main loop flushes this to
-    /// stdout after the next frame so tmux (with `set-clipboard on`) can
-    /// forward it to the upstream terminal's clipboard — covering the
-    /// SSH case where `arboard` would only reach the remote machine.
-    pub pending_osc52_copy: Option<String>,
     pub pet_state: crate::ui::pet::PetState,
     /// Pet animation X position (character offset from left of bottom panel).
     pub pet_x: u16,
@@ -170,7 +166,6 @@ impl AppState {
             timers: RefreshTimers::default(),
             popup: PopupState::None,
             notices: NoticesState::default(),
-            pending_osc52_copy: None,
             pet_state: crate::ui::pet::PetState::Idle,
             pet_x: crate::ui::pet::PET_HOME_X,
             pet_frame: 0,
