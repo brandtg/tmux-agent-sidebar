@@ -13,7 +13,7 @@ surface is similar to Codex but with a different event source.
 - Live status from `session.created` / `session.status` / `session.idle`
 - Prompt text from `chat.message`
 - Response preview (`▷ ...`) from `stop`
-- Elapsed time for the current turn: starts at the last user prompt and keeps counting across responses, retries, and permission waits until OpenCode goes idle
+- Elapsed time for the current turn: starts at the last user prompt and keeps counting across responses, retries, and permission waits until OpenCode goes idle. Subagent runs (the `task` tool spawns them in child sessions) are part of the same turn — their lifecycle events are filtered out so they cannot stop the clock mid-turn or restart it after the turn ends
 
 ### Attention cues
 

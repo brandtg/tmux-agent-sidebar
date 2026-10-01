@@ -132,6 +132,22 @@ pub enum AgentEvent {
 }
 
 impl AgentEvent {
+    /// The session the event belongs to, when the agent's payload carries
+    /// one. Used by the hook dispatch trace to attribute debug lines.
+    pub fn session_id(&self) -> Option<&str> {
+        match self {
+            Self::SessionStart { session_id, .. }
+            | Self::SessionTitle { session_id, .. }
+            | Self::UserPromptSubmit { session_id, .. }
+            | Self::Notification { session_id, .. }
+            | Self::Stop { session_id, .. }
+            | Self::StopFailure { session_id, .. }
+            | Self::PermissionDenied { session_id, .. }
+            | Self::CwdChanged { session_id, .. } => session_id.as_deref(),
+            _ => None,
+        }
+    }
+
     /// Project an `AgentEvent` down to its `AgentEventKind` discriminant.
     pub fn kind(&self) -> AgentEventKind {
         match self {
