@@ -2,6 +2,7 @@
 mod test_helpers;
 
 use test_helpers::*;
+use tmux_agent_sidebar::group::{PaneGitInfo, RepoGroup};
 use tmux_agent_sidebar::state::Focus;
 use tmux_agent_sidebar::tmux::{AgentType, PaneStatus, SessionInfo, WindowInfo};
 use tmux_agent_sidebar::ui::colors::ColorTheme;
@@ -413,5 +414,129 @@ fn repo_popup_highlights_selected_entry_with_background() {
     │[fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240]│[fg:240]
     │[fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240]│[fg:240]
     ╰[fg:240]─[fg:240]─[fg:240]─[fg:240]─[fg:240]─[fg:240]─[fg:240]─[fg:240]─[fg:240]─[fg:240]─[fg:240]─[fg:240]─[fg:240]─[fg:240]─[fg:240]─[fg:240]─[fg:240]─[fg:240]─[fg:240]─[fg:240]─[fg:240]─[fg:240]─[fg:240]─[fg:240]─[fg:240]─[fg:240]─[fg:240]─[fg:240]─[fg:240]─[fg:240]─[fg:240]─[fg:240]─[fg:240]─[fg:240]─[fg:240]─[fg:240]─[fg:240]─[fg:240]─[fg:240]╯[fg:240]
+    ");
+}
+
+// ─── Agents: compact mode ───────────────────────────────────────────
+
+#[test]
+fn snapshot_compact_mode_renders_one_line_per_pane() {
+    // Compact mode collapses each pane to a single row: status icon,
+    // session title, badges, elapsed.
+    let mut running = make_pane(AgentType::Claude, PaneStatus::Running);
+    running.pane_id = "%1".into();
+    running.session_name = "fix-api".into();
+    running.started_at = Some(FIXED_NOW - 65);
+
+    let mut idle = make_pane(AgentType::Codex, PaneStatus::Idle);
+    idle.pane_id = "%2".into();
+    idle.session_name = "docs".into();
+    idle.subagents = vec!["Explore".into(), "Plan".into()];
+
+    let mut state = make_state(vec![SessionInfo {
+        session_name: "main".into(),
+        windows: vec![WindowInfo {
+            window_id: "@1".into(),
+            window_name: "project".into(),
+            window_active: true,
+            auto_rename: false,
+            panes: vec![running.clone(), idle.clone()],
+        }],
+    }]);
+    state.repo_groups = vec![make_repo_group("project", vec![running, idle])];
+    state.rebuild_row_targets();
+    state.focus_state.sidebar_focused = false;
+    state.bottom_panel_height = 0;
+    state.global.compact = true;
+
+    insta::assert_snapshot!(render_to_string(&mut state, 28, 14), @"
+     ≡2  ●1  ◎0  ◐0  ○1  ✕0
+    ⓘ                        — ▾
+    project
+    ┃ ● fix-api             1m5s
+      ○ docs +2
+    ");
+}
+
+#[test]
+fn snapshot_compact_mode_multiple_repo_groups() {
+    let mut a = make_pane(AgentType::Claude, PaneStatus::Running);
+    a.pane_id = "%1".into();
+    a.session_name = "alpha".into();
+    let mut b = make_pane(AgentType::Codex, PaneStatus::Running);
+    b.pane_id = "%2".into();
+    b.session_name = "beta".into();
+
+    let mut state = make_state(vec![SessionInfo {
+        session_name: "main".into(),
+        windows: vec![WindowInfo {
+            window_id: "@1".into(),
+            window_name: "project".into(),
+            window_active: true,
+            auto_rename: false,
+            panes: vec![a.clone(), b.clone()],
+        }],
+    }]);
+    state.repo_groups = vec![
+        make_repo_group("frontend", vec![a]),
+        make_repo_group("backend", vec![b]),
+    ];
+    state.rebuild_row_targets();
+    state.focus_state.sidebar_focused = false;
+    state.bottom_panel_height = 0;
+    state.global.compact = true;
+
+    insta::assert_snapshot!(render_to_string(&mut state, 28, 14), @"
+     ≡2  ●2  ◎0  ◐0  ○0  ✕0
+    ⓘ                        — ▾
+    frontend
+    ┃ ● alpha
+    backend
+      ● beta
+    ");
+}
+
+#[test]
+fn snapshot_compact_mode_spawned_worktree_remove_marker() {
+    // Sidebar-spawned worktrees keep the trailing `×` remove affordance
+    // in compact mode, pinned to the rightmost column.
+    let mut pane = make_pane(AgentType::Claude, PaneStatus::Running);
+    pane.pane_id = "%1".into();
+    pane.session_name = "fix-api".into();
+    pane.sidebar_spawned = true;
+
+    let mut state = make_state(vec![SessionInfo {
+        session_name: "main".into(),
+        windows: vec![WindowInfo {
+            window_id: "@1".into(),
+            window_name: "project".into(),
+            window_active: true,
+            auto_rename: false,
+            panes: vec![pane.clone()],
+        }],
+    }]);
+    state.repo_groups = vec![RepoGroup {
+        name: "project".into(),
+        has_focus: true,
+        panes: vec![(
+            pane,
+            PaneGitInfo {
+                repo_root: Some("/home/user/project".into()),
+                branch: Some("agent/fix-api".into()),
+                is_worktree: true,
+                worktree_name: None,
+            },
+        )],
+    }];
+    state.rebuild_row_targets();
+    state.focus_state.sidebar_focused = false;
+    state.bottom_panel_height = 0;
+    state.global.compact = true;
+
+    insta::assert_snapshot!(render_to_string(&mut state, 28, 14), @"
+     ≡1  ●1  ◎0  ◐0  ○0  ✕0
+    ⓘ                        — ▾
+    project                    +
+    ┃ ● fix-api + agent/fix-a… ×
     ");
 }

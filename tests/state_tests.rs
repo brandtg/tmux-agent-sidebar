@@ -950,6 +950,140 @@ fn default_view_does_not_break_cross_instance_sync() {
     );
 }
 
+// ─── compact mode tests ─────────────────────────────────────────────
+// Compact rendering is a runtime toggle (`c`), synced across open
+// sidebars via `@sidebar_compact` but never restored on reopen — the
+// landing mode comes from `@sidebar_default_compact_view`.
+
+#[test]
+fn compact_defaults_to_off() {
+    let g = make_global();
+    assert!(!g.compact, "compact mode must default to off");
+}
+
+#[test]
+fn compact_syncs_from_tmux_when_changed_by_other_instance() {
+    let mut g = make_global();
+
+    g.apply_all(&make_opts(&[(tmux::SIDEBAR_COMPACT, "1")]));
+    assert!(
+        g.compact,
+        "another sidebar toggled compact on; must sync in"
+    );
+
+    g.apply_all(&make_opts(&[(tmux::SIDEBAR_COMPACT, "0")]));
+    assert!(
+        !g.compact,
+        "another sidebar toggled compact off; must sync in"
+    );
+}
+
+#[test]
+fn compact_ignores_tmux_value_matching_last_saved() {
+    // Mirrors full_sync_ignores_tmux_filter_matching_last_saved: the
+    // default-view override makes the local value diverge from tmux, and
+    // the refocus reload must not clobber it when tmux still holds the
+    // value this instance last saw.
+    let mut g = make_global();
+
+    g.apply_all(&make_opts(&[(tmux::SIDEBAR_COMPACT, "1")]));
+    assert!(g.compact);
+
+    g.compact = false; // simulate apply_default_view landing on off
+    g.apply_all(&make_opts(&[(tmux::SIDEBAR_COMPACT, "1")]));
+
+    assert!(
+        !g.compact,
+        "refocus reload must not restore the persisted value over the startup default"
+    );
+}
+
+#[test]
+fn default_compact_view_unset_lands_off_not_persisted_value() {
+    let mut g = make_global();
+
+    // Startup sync adopts the live persisted value...
+    let opts = make_opts(&[(tmux::SIDEBAR_COMPACT, "1")]);
+    g.apply_all(&opts);
+    assert!(g.compact);
+
+    // ...then the default-view override lands on off.
+    g.apply_default_view(&std::collections::HashMap::new());
+    assert!(
+        !g.compact,
+        "a new sidebar must land on the configured default, not the live value"
+    );
+
+    // Refocus reload reads the same live value — last_saved_compact
+    // points at it, so the default survives.
+    g.apply_all(&opts);
+    assert!(
+        !g.compact,
+        "refocus reload must not restore the live value over the default"
+    );
+}
+
+#[test]
+fn default_compact_view_configured_lands_on_that_mode() {
+    let mut g = make_global();
+
+    let opts = make_opts(&[
+        (tmux::SIDEBAR_COMPACT, "0"),
+        (tmux::SIDEBAR_DEFAULT_COMPACT_VIEW, "on"),
+    ]);
+    g.apply_all(&opts);
+    g.apply_default_view(&opts);
+
+    assert!(g.compact, "configured default compact view must be honored");
+
+    // Refocus reload keeps the configured default.
+    g.apply_all(&make_opts(&[(tmux::SIDEBAR_COMPACT, "0")]));
+    assert!(g.compact);
+}
+
+#[test]
+fn default_compact_view_unknown_value_falls_back_to_off() {
+    let mut g = make_global();
+
+    let opts = make_opts(&[(tmux::SIDEBAR_DEFAULT_COMPACT_VIEW, "maybe")]);
+    g.apply_default_view(&opts);
+
+    assert!(!g.compact);
+}
+
+#[test]
+fn default_compact_view_is_case_insensitive() {
+    let mut g = make_global();
+
+    let opts = make_opts(&[(tmux::SIDEBAR_DEFAULT_COMPACT_VIEW, "  ON ")]);
+    g.apply_default_view(&opts);
+
+    assert!(g.compact);
+}
+
+#[test]
+fn default_compact_view_does_not_break_cross_instance_sync() {
+    let mut g = make_global();
+
+    // Startup: live compact=1 from another sidebar, default off.
+    let opts = make_opts(&[(tmux::SIDEBAR_COMPACT, "1")]);
+    g.apply_all(&opts);
+    g.apply_default_view(&opts);
+    assert!(!g.compact);
+
+    // Another sidebar toggles compact off; this instance must sync.
+    g.apply_all(&make_opts(&[(tmux::SIDEBAR_COMPACT, "0")]));
+
+    assert!(
+        !g.compact,
+        "compact changes from other sidebars must still sync in after the default override"
+    );
+
+    // And toggling back on syncs too.
+    g.apply_all(&make_opts(&[(tmux::SIDEBAR_COMPACT, "1")]));
+    assert!(g.compact);
+}
+
 // ─── Spawn / Remove Popup State ───────────────────────────────────
 
 fn spawn_state_with_repo() -> AppState {

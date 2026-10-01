@@ -15,7 +15,6 @@ pub(super) fn status_row(
     spinner_frame: usize,
     now: u64,
 ) -> Line<'static> {
-    use crate::tmux::PermissionMode;
     let theme = ctx.theme;
 
     let (icon, pulse_color) = running_icon_for(&pane.status, spinner_frame, icons);
@@ -65,18 +64,9 @@ pub(super) fn status_row(
         ctx.apply_bg(Style::default().fg(title_fg)),
     ));
     if !badge.is_empty() {
-        let badge_color = match pane.permission_mode {
-            PermissionMode::BypassPermissions => theme.badge_danger,
-            PermissionMode::Auto => theme.badge_auto,
-            PermissionMode::DontAsk => theme.badge_auto,
-            PermissionMode::Plan => theme.badge_plan,
-            PermissionMode::AcceptEdits => theme.badge_auto,
-            PermissionMode::Defer => theme.badge_auto,
-            PermissionMode::Default => theme.text_muted,
-        };
         left_spans.push(Span::styled(
             format!(" {}", badge),
-            ctx.apply_bg(Style::default().fg(badge_color)),
+            ctx.apply_bg(Style::default().fg(permission_badge_color(&pane.permission_mode, theme))),
         ));
     }
 
@@ -86,6 +76,22 @@ pub(super) fn status_row(
     )];
 
     ctx.row_line_split(left_spans, left_width, right_spans, elapsed_width)
+}
+
+pub(super) fn permission_badge_color(
+    mode: &crate::tmux::PermissionMode,
+    theme: &crate::ui::colors::ColorTheme,
+) -> Color {
+    use crate::tmux::PermissionMode;
+    match mode {
+        PermissionMode::BypassPermissions => theme.badge_danger,
+        PermissionMode::Auto => theme.badge_auto,
+        PermissionMode::DontAsk => theme.badge_auto,
+        PermissionMode::Plan => theme.badge_plan,
+        PermissionMode::AcceptEdits => theme.badge_auto,
+        PermissionMode::Defer => theme.badge_auto,
+        PermissionMode::Default => theme.text_muted,
+    }
 }
 
 pub(super) fn running_icon_for<'a>(
