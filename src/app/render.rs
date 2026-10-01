@@ -3,7 +3,6 @@ use std::io::{self, Write as _};
 use crossterm::{cursor::MoveTo, execute};
 use ratatui::{Terminal, backend::CrosstermBackend};
 
-use crate::clipboard;
 use crate::git::{self, GitData};
 use crate::state::{AppState, HyperlinkOverlay};
 use crate::tmux;
@@ -17,24 +16,6 @@ pub(super) fn render_frame(
 
     // Write OSC 8 hyperlink overlays after frame render.
     write_hyperlink_overlays(terminal.backend_mut(), &state.layout.hyperlink_overlays)?;
-
-    // Flush any pending OSC 52 clipboard payload (set by notices copy).
-    // On I/O failure, restore the payload and propagate the error so the
-    // user's copy request survives a transient backend hiccup instead of
-    // silently disappearing.
-    if let Some(payload) = state.pending_osc52_copy.take() {
-        let seq = clipboard::osc52_sequence(&payload);
-        let write_result = {
-            let backend = terminal.backend_mut();
-            backend
-                .write_all(seq.as_bytes())
-                .and_then(|_| backend.flush())
-        };
-        if let Err(err) = write_result {
-            state.pending_osc52_copy = Some(payload);
-            return Err(err);
-        }
-    }
 
     Ok(())
 }
