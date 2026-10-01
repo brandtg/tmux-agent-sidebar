@@ -110,9 +110,14 @@ fn q(field: &str) -> String {
 
 type SessionMap = indexmap::IndexMap<String, indexmap::IndexMap<String, WindowInfo>>;
 
-/// (window_id, pane_index_in_window, pane_pid) — the minimum info needed to
-/// later retarget a permission-mode update at the right pane.
-type CodexPidEntry = (String, usize, u32);
+/// (window_id, pane_id, pane_pid) — the minimum info needed to later
+/// retarget a permission-mode update at the right pane. The pane id (not
+/// the pane's index in the window vector) is the join key: grouped
+/// sessions can split a shared window's panes across two session
+/// entries when the duplicate-dedup or the stale-teardown parse rejects
+/// one copy, and an index recorded against one session's vector must
+/// never be applied to another's.
+type CodexPidEntry = (String, String, u32);
 
 /// Everything the per-tick refresh needs from one `tmux list-panes -a` call.
 ///
@@ -292,7 +297,7 @@ fn build_session_hierarchy(
             if pane.agent == AgentType::Codex
                 && let Some(pid) = pane.pane_pid
             {
-                codex_pids.push((window_id.to_string(), window.panes.len(), pid));
+                codex_pids.push((window_id.to_string(), pane.pane_id.clone(), pid));
             }
             window.panes.push(pane);
         }
@@ -310,10 +315,10 @@ fn resolve_codex_permission_modes(
 ) {
     for windows in sessions_map.values_mut() {
         for (window_id, window) in windows.iter_mut() {
-            let window_pids: Vec<(usize, u32)> = codex_pids
+            let window_pids: Vec<(&str, u32)> = codex_pids
                 .iter()
                 .filter(|(wid, _, _)| wid == window_id)
-                .map(|(_, idx, pid)| (*idx, *pid))
+                .map(|(_, pane_id, pid)| (pane_id.as_str(), *pid))
                 .collect();
             if window_pids.is_empty() {
                 continue;
@@ -584,10 +589,10 @@ fn pane_output_needs_process_snapshot(all_panes_output: &str) -> bool {
 
 fn apply_codex_permission_modes(
     panes: &mut [PaneInfo],
-    pids_to_check: &[(usize, u32)],
+    pids_to_check: &[(&str, u32)],
     process_snapshot: &ProcessSnapshot,
 ) {
-    for (idx, pid) in pids_to_check {
+    for (pane_id, pid) in pids_to_check {
         let descendants = process_snapshot.descendants(&[*pid]);
         for descendant in descendants {
             let Some(info) = process_snapshot.info_by_pid.get(&descendant) else {
@@ -596,7 +601,7 @@ fn apply_codex_permission_modes(
             if command_basename(&info.comm) != CODEX_AGENT {
                 continue;
             }
-            if let Some(pane) = panes.get_mut(*idx) {
+            if let Some(pane) = panes.iter_mut().find(|pane| &pane.pane_id == pane_id) {
                 pane.permission_mode = detect_codex_permission_mode(&info.args);
                 if pane.permission_mode != PermissionMode::Default {
                     break;
@@ -743,7 +748,7 @@ mod tests {
     #[test]
     fn apply_codex_permission_modes_from_ps() {
         let mut panes = vec![test_pane_codex("%1")];
-        let pids = vec![(0, 101)];
+        let pids = vec![("%1", 101)];
         let ps_out = "101 1 bash /bin/bash\n102 101 codex /bin/codex --full-auto\n";
         let snapshot = ProcessSnapshot::from_ps_output(ps_out);
 
@@ -754,7 +759,7 @@ mod tests {
     #[test]
     fn apply_codex_permission_modes_follows_shell_wrappers() {
         let mut panes = vec![test_pane_codex("%1")];
-        let pids = vec![(0, 101)];
+        let pids = vec![("%1", 101)];
         let ps_out = "101 1 bash /bin/bash\n102 101 sh -c wrapper\n103 102 codex /usr/local/bin/codex --yolo\n";
         let snapshot = ProcessSnapshot::from_ps_output(ps_out);
 
@@ -765,12 +770,81 @@ mod tests {
     #[test]
     fn apply_codex_permission_modes_matches_path_comm() {
         let mut panes = vec![test_pane_codex("%1")];
-        let pids = vec![(0, 101)];
+        let pids = vec![("%1", 101)];
         let ps_out = "101 1 /bin/zsh /bin/zsh\n102 101 /opt/homebrew/bin/codex /opt/homebrew/bin/codex --full-auto\n";
         let snapshot = ProcessSnapshot::from_ps_output(ps_out);
 
         apply_codex_permission_modes(&mut panes, &pids, &snapshot);
         assert_eq!(panes[0].permission_mode, PermissionMode::Auto);
+    }
+
+    #[test]
+    fn apply_codex_permission_modes_unknown_pane_id_is_a_no_op() {
+        // The pane id is the join key: an id that is not in this window's
+        // pane list (e.g. recorded for a sibling session's copy of a
+        // shared window) must never badge a different pane by position.
+        let mut panes = vec![test_pane_codex("%1")];
+        let pids = vec![("%9", 101)];
+        let ps_out = "101 1 bash /bin/bash\n102 101 codex /bin/codex --full-auto\n";
+        let snapshot = ProcessSnapshot::from_ps_output(ps_out);
+
+        apply_codex_permission_modes(&mut panes, &pids, &snapshot);
+        assert_eq!(panes[0].permission_mode, PermissionMode::Default);
+    }
+
+    #[test]
+    fn resolve_codex_permission_modes_keys_badges_by_pane_id_across_grouped_sessions() {
+        // Grouped sessions share windows, and the pid-dedup (plus the
+        // stale-teardown parse) can split a shared window's panes across
+        // two session entries. The fan-out used to record the pane's
+        // INDEX in one session's vector and apply it to whichever
+        // session it iterated — badge two entries against the same
+        // index and the wrong pane's mode wins. The pane id is the join
+        // key: each pane keeps the mode detected in its own process
+        // tree, regardless of which session entry holds it.
+        let mut sessions_map: SessionMap = indexmap::IndexMap::new();
+        let beta = sessions_map.entry("beta".to_string()).or_default();
+        beta.insert(
+            "@1".to_string(),
+            WindowInfo {
+                window_id: "@1".into(),
+                window_name: "shared".into(),
+                window_active: false,
+                auto_rename: false,
+                panes: vec![test_pane_codex("%2")],
+            },
+        );
+        let alpha = sessions_map.entry("alpha".to_string()).or_default();
+        alpha.insert(
+            "@1".to_string(),
+            WindowInfo {
+                window_id: "@1".into(),
+                window_name: "shared".into(),
+                window_active: true,
+                auto_rename: false,
+                panes: vec![test_pane_codex("%1")],
+            },
+        );
+        let codex_pids = vec![
+            ("@1".to_string(), "%2".to_string(), 200),
+            ("@1".to_string(), "%1".to_string(), 100),
+        ];
+        let ps_out = "200 1 zsh /bin/zsh\n201 200 codex /usr/bin/codex --full-auto\n\
+                      100 1 zsh /bin/zsh\n101 100 codex /usr/bin/codex --yolo\n";
+        let snapshot = ProcessSnapshot::from_ps_output(ps_out);
+
+        resolve_codex_permission_modes(&mut sessions_map, &codex_pids, &snapshot);
+
+        assert_eq!(
+            sessions_map["beta"]["@1"].panes[0].permission_mode,
+            PermissionMode::Auto,
+            "pane %2 must be badged from its own process tree (200)"
+        );
+        assert_eq!(
+            sessions_map["alpha"]["@1"].panes[0].permission_mode,
+            PermissionMode::BypassPermissions,
+            "pane %1 must be badged from its own process tree (100)"
+        );
     }
 
     #[test]

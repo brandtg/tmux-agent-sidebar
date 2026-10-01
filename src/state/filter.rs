@@ -106,8 +106,14 @@ impl RepoFilter {
 
 impl AppState {
     /// Count agents per status across all repo groups.
+    ///
+    /// There is no dedicated filter button for `Unknown` panes, but the
+    /// list renders them under the `All` filter — so they are counted
+    /// into the `all` total. Excluding them made the header claim fewer
+    /// agents than the list actually showed.
     pub fn status_counts(&self) -> (usize, usize, usize, usize, usize, usize) {
-        let (mut running, mut background, mut waiting, mut idle, mut error) = (0, 0, 0, 0, 0);
+        let (mut running, mut background, mut waiting, mut idle, mut error, mut unknown) =
+            (0, 0, 0, 0, 0, 0);
         for group in &self.repo_groups {
             if !self.global.repo_filter.matches_group(&group.name) {
                 continue;
@@ -119,11 +125,11 @@ impl AppState {
                     crate::tmux::PaneStatus::Waiting => waiting += 1,
                     crate::tmux::PaneStatus::Idle => idle += 1,
                     crate::tmux::PaneStatus::Error => error += 1,
-                    crate::tmux::PaneStatus::Unknown => {}
+                    crate::tmux::PaneStatus::Unknown => unknown += 1,
                 }
             }
         }
-        let all = running + background + waiting + idle + error;
+        let all = running + background + waiting + idle + error + unknown;
         (all, running, background, waiting, idle, error)
     }
 
@@ -318,6 +324,25 @@ mod tests {
         state.global.repo_filter = RepoFilter::Repo("app".into());
         let (all, r, b, w, i, e) = state.status_counts();
         assert_eq!((all, r, b, w, i, e), (3, 1, 1, 0, 1, 0));
+    }
+
+    #[test]
+    fn status_counts_includes_unknown_in_all() {
+        // Unknown panes have no filter button of their own but DO render
+        // under the All filter — the header's `all` count must include
+        // them or the bar undercounts the visible rows.
+        let mut state = AppState::new("%99".into());
+        state.repo_groups = vec![RepoGroup {
+            name: "app".into(),
+            has_focus: true,
+            panes: vec![
+                (test_pane("%1", PaneStatus::Running), PaneGitInfo::default()),
+                (test_pane("%2", PaneStatus::Unknown), PaneGitInfo::default()),
+            ],
+        }];
+
+        let (all, r, b, w, i, e) = state.status_counts();
+        assert_eq!((all, r, b, w, i, e), (2, 1, 0, 0, 0, 0));
     }
 
     #[test]

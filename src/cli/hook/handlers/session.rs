@@ -4,8 +4,8 @@ use crate::desktop_notification::DesktopNotificationKind;
 use crate::tmux;
 
 use super::super::context::{
-    AgentContext, PENDING_SESSION_END, PENDING_WORKTREE_REMOVE, clear_run_state,
-    pane_writes_allowed, run_session_end_teardown, set_agent_meta, sync_launch_anchor,
+    AgentContext, PENDING_SESSION_END, clear_run_state, pane_writes_allowed,
+    run_session_end_teardown, set_agent_meta, sync_launch_anchor,
 };
 use super::super::notifications::{
     NotifyLabels, NotifyPayload, notify_lifecycle, session_end_body, session_end_fingerprint,
@@ -36,16 +36,17 @@ pub(in crate::cli::hook) fn on_session_start(
     // Subagents share the parent's `$TMUX_PANE`, so when a subagent
     // fires its own SessionStart after SubagentStart has populated the
     // list, clearing it here would drop the marker that
-    // `should_update_cwd` and `drain_pending_teardowns` rely on. The
-    // normal teardown paths (`run_session_end_teardown` via
-    // `clear_all_meta`) already clear the list when a real session
-    // ends, so the only state this would skip clearing is a subagent
-    // list stranded by a hard crash — acceptable vs. racing against
-    // legitimate subagent activity.
-    // A fresh session overrides any deferred teardown that was waiting
-    // for the previous run's subagents to drain.
+    // `pane_writes_allowed` relies on. The normal teardown paths
+    // (`run_session_end_teardown` via `clear_all_meta`) already clear
+    // the list when a real session ends, so the only state this would
+    // skip clearing is a subagent list stranded by a hard crash —
+    // acceptable vs. racing against legitimate subagent activity.
+    // A fresh session drops any stale pending marker left behind by
+    // the previous run.
     tmux::unset_pane_option(pane, PENDING_SESSION_END);
-    tmux::unset_pane_option(pane, PENDING_WORKTREE_REMOVE);
+    // Legacy marker: no current event can set it, but a pre-upgrade
+    // install may have left one behind.
+    tmux::unset_pane_option(pane, tmux::PANE_PENDING_WORKTREE_REMOVE);
     match source {
         "resume" => tmux::set_pane_option(pane, tmux::PANE_WAIT_REASON, "session_resumed"),
         "compact" => tmux::set_pane_option(pane, tmux::PANE_WAIT_REASON, "session_resumed_compact"),
@@ -91,19 +92,15 @@ pub(in crate::cli::hook) fn on_session_end(
     pane: &str,
     agent_name: &str,
     end_reason: &str,
+    session_id: Option<&str>,
     notifications: &desktop_notification::DesktopNotificationSettings,
 ) -> i32 {
     // Subagents share the parent's `$TMUX_PANE`, so a SessionEnd fired
     // while `@pane_subagents` is populated is almost certainly a child's
     // (we have no way to distinguish parent vs. child events otherwise).
-    // Bail out early before:
-    //
-    //   1. the notification path consumes the run-scoped fingerprint,
-    //      which would silently deduplicate the parent's real SessionEnd
-    //      notification when it eventually arrives, and
-    //   2. we set PENDING_SESSION_END, which `drain_pending_teardowns`
-    //      would later turn into `run_session_end_teardown` — wiping a
-    //      still-running parent pane the moment the last subagent stops.
+    // Bail out early before the notification path consumes the
+    // run-scoped fingerprint, which would silently deduplicate the
+    // parent's real SessionEnd notification when it eventually arrives.
     //
     // The tradeoff is that a parent SessionEnd that genuinely races
     // ahead of every SubagentStop will be ignored too, leaving stale
@@ -112,6 +109,20 @@ pub(in crate::cli::hook) fn on_session_end(
     // far safer and the one the user can recover from.
     if !pane_writes_allowed(pane) {
         return 0;
+    }
+
+    // A SessionEnd carries the ending session's identity. When the pane
+    // already tracks a DIFFERENT session, this teardown belongs to an
+    // older run whose hook fired late (e.g. a resumed or restarted
+    // session reusing the pane) — wiping now would destroy the newer
+    // session's state. Mirrors the foreign-session guard in
+    // `on_session_title`; events without a session id cannot prove a
+    // mismatch and proceed as before.
+    if let Some(sid) = session_id.filter(|sid| !sid.is_empty()) {
+        let tracked = tmux::get_pane_option_value(pane, tmux::PANE_SESSION_ID);
+        if !tracked.is_empty() && tracked != sid {
+            return 0;
+        }
     }
 
     // Noteworthy terminations (forced logout, bypass-permissions revoked) get
@@ -172,7 +183,7 @@ mod tests {
         let _ = fs::create_dir_all(log_path.parent().unwrap());
         fs::write(&log_path, "1234567890|Read|main.rs\n").unwrap();
 
-        let exit = on_session_end(pane, "claude", "", &default_notifications());
+        let exit = on_session_end(pane, "claude", "", None, &default_notifications());
 
         assert_eq!(exit, 0);
         assert!(
@@ -203,7 +214,7 @@ mod tests {
         tmux::test_mock::set(pane, tmux::PANE_CWD, "/repo");
         tmux::test_mock::set(pane, tmux::PANE_STATUS, "running");
 
-        let exit = on_session_end(pane, "claude", "", &default_notifications());
+        let exit = on_session_end(pane, "claude", "", None, &default_notifications());
 
         assert_eq!(exit, 0);
         assert!(
@@ -212,6 +223,74 @@ mod tests {
         );
         assert!(!tmux::test_mock::contains(pane, tmux::PANE_CWD));
         assert!(!tmux::test_mock::contains(pane, tmux::PANE_STATUS));
+    }
+
+    #[test]
+    fn on_session_end_drops_foreign_session_teardown() {
+        // Regression: a SessionEnd hook firing late — after the pane was
+        // already claimed by a newer session (resume/restart reuses the
+        // pane) — used to wipe the NEW session's state because the event
+        // carried no identity to check. A mismatched session_id must
+        // leave every pane option untouched.
+        let _guard = tmux::test_mock::install();
+        let pane = "%FOREIGN_END";
+        tmux::test_mock::set(pane, tmux::PANE_AGENT, "claude");
+        tmux::test_mock::set(pane, tmux::PANE_CWD, "/repo/new");
+        tmux::test_mock::set(pane, tmux::PANE_STATUS, "running");
+        tmux::test_mock::set(pane, tmux::PANE_SESSION_ID, "sess-new");
+        let log_path = crate::activity::log_file_path(pane);
+        let _ = fs::create_dir_all(log_path.parent().unwrap());
+        fs::write(&log_path, "1234567890|Read|main.rs\n").unwrap();
+
+        let exit = on_session_end(
+            pane,
+            "claude",
+            "",
+            Some("sess-old"),
+            &default_notifications(),
+        );
+
+        assert_eq!(exit, 0);
+        assert!(tmux::test_mock::contains(pane, tmux::PANE_AGENT));
+        assert!(tmux::test_mock::contains(pane, tmux::PANE_CWD));
+        assert!(tmux::test_mock::contains(pane, tmux::PANE_STATUS));
+        assert!(
+            log_path.exists(),
+            "foreign teardown must not delete the log"
+        );
+
+        fs::remove_file(&log_path).ok();
+    }
+
+    #[test]
+    fn on_session_end_accepts_matching_session_id() {
+        let _guard = tmux::test_mock::install();
+        let pane = "%MATCHED_END";
+        tmux::test_mock::set(pane, tmux::PANE_AGENT, "claude");
+        tmux::test_mock::set(pane, tmux::PANE_SESSION_ID, "sess-1");
+
+        let exit = on_session_end(pane, "claude", "", Some("sess-1"), &default_notifications());
+
+        assert_eq!(exit, 0);
+        assert!(
+            !tmux::test_mock::contains(pane, tmux::PANE_AGENT),
+            "the tracked session's own teardown must still run"
+        );
+    }
+
+    #[test]
+    fn on_session_end_without_session_id_still_tears_down() {
+        // Absence of a session id is not evidence of a mismatch — older
+        // payloads and agents without identity must keep the old behavior.
+        let _guard = tmux::test_mock::install();
+        let pane = "%NOID_END";
+        tmux::test_mock::set(pane, tmux::PANE_AGENT, "claude");
+        tmux::test_mock::set(pane, tmux::PANE_SESSION_ID, "sess-1");
+
+        let exit = on_session_end(pane, "claude", "", None, &default_notifications());
+
+        assert_eq!(exit, 0);
+        assert!(!tmux::test_mock::contains(pane, tmux::PANE_AGENT));
     }
 
     #[test]
@@ -353,7 +432,7 @@ mod tests {
         let _guard = tmux::test_mock::install();
         let pane = "%PARENT_RESTART";
         tmux::test_mock::set(pane, PENDING_SESSION_END, "1");
-        tmux::test_mock::set(pane, PENDING_WORKTREE_REMOVE, "1");
+        tmux::test_mock::set(pane, tmux::PANE_PENDING_WORKTREE_REMOVE, "1");
 
         let ctx = AgentContext {
             agent: "claude",
@@ -368,7 +447,10 @@ mod tests {
             !tmux::test_mock::contains(pane, PENDING_SESSION_END),
             "fresh SessionStart must drop a stale pending marker"
         );
-        assert!(!tmux::test_mock::contains(pane, PENDING_WORKTREE_REMOVE));
+        assert!(!tmux::test_mock::contains(
+            pane,
+            tmux::PANE_PENDING_WORKTREE_REMOVE
+        ));
     }
 
     #[test]
@@ -423,7 +505,7 @@ mod tests {
     fn on_session_end_routine_reason_does_not_notify() {
         let _guard = tmux::test_mock::install();
         let pane = "%END_ROUTINE";
-        on_session_end(pane, "claude", "clear", &notifications_enabled_all());
+        on_session_end(pane, "claude", "clear", None, &notifications_enabled_all());
         // The notification helper writes a dedup stamp only when a notification
         // actually goes out; a missing stamp is proof the gate rejected it.
         assert!(
@@ -445,6 +527,7 @@ mod tests {
             pane,
             "cargo-test: on_session_end_logout",
             "logout",
+            None,
             &notifications_enabled_all(),
         );
         // If `send_desktop_notification` succeeds (local dev with notify-send
@@ -471,6 +554,7 @@ mod tests {
             pane,
             "cargo-test: on_session_end_bypass_disabled",
             "bypass_permissions_disabled",
+            None,
             &notifications_enabled_all(),
         );
         let stamp_key = tmux::PANE_OS_NOTIFY_TASK_COMPLETED;

@@ -31,7 +31,8 @@ mod tests {
         assert_eq!(
             event,
             Some(AgentEvent::SessionEnd {
-                end_reason: "".into()
+                end_reason: "".into(),
+                session_id: None,
             })
         );
     }
@@ -183,7 +184,8 @@ mod tests {
         assert_eq!(
             claude.parse("session-end", &json!({})),
             Some(AgentEvent::SessionEnd {
-                end_reason: "".into()
+                end_reason: "".into(),
+                session_id: None,
             }),
         );
         assert!(

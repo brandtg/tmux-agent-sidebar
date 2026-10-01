@@ -38,22 +38,28 @@ pub fn run(args: &[String]) -> Option<i32> {
 
 // ─── Shared helpers ──────────────────────────────────────────────────────────
 
-/// Read the hook payload from stdin. Returns the parsed JSON (Null when
-/// stdin is a TTY or the body is not valid JSON), the raw byte count, and
-/// whether the body parsed as JSON — the latter two feed the opt-in debug
-/// trace, where "invalid JSON" and "valid JSON the adapter doesn't map"
-/// are different diagnoses.
-fn read_stdin_json() -> (serde_json::Value, usize, bool) {
+/// Read the hook payload from stdin. `None` means stdin could not be
+/// read at all; a body that is not valid JSON yields `parsed == false`
+/// so the caller can drop the event instead of degrading it to an
+/// all-empty one — an empty `SessionEnd` or `TaskCompleted` parsed from
+/// garbage stdin used to fire spurious teardowns and notifications. The
+/// raw byte count and parse flag feed the opt-in debug trace, where
+/// "invalid JSON" and "valid JSON the adapter doesn't map" are different
+/// diagnoses. Manual invocation from a TTY (no piped payload) still
+/// yields Null so subcommands behave as before.
+fn read_stdin_json() -> Option<(serde_json::Value, usize, bool)> {
     let is_tty = unsafe { libc::isatty(libc::STDIN_FILENO) != 0 };
     if is_tty {
-        return (serde_json::Value::Null, 0, true);
+        return Some((serde_json::Value::Null, 0, true));
     }
     let mut buf = String::new();
-    let _ = std::io::stdin().read_to_string(&mut buf);
+    if std::io::stdin().read_to_string(&mut buf).is_err() {
+        return None;
+    }
     let bytes = buf.len();
     match serde_json::from_str(&buf) {
-        Ok(value) => (value, bytes, true),
-        Err(_) => (serde_json::Value::Null, bytes, false),
+        Ok(value) => Some((value, bytes, true)),
+        Err(_) => Some((serde_json::Value::Null, bytes, false)),
     }
 }
 

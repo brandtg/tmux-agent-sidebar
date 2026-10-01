@@ -146,6 +146,7 @@ impl EventAdapter for ClaudeAdapter {
             "session-start" => Some(base(input).session_start(json_str(input, "source").into())),
             "session-end" => Some(AgentEvent::SessionEnd {
                 end_reason: json_str(input, "end_reason").into(),
+                session_id: optional_str(input, "session_id"),
             }),
             "user-prompt-submit" => {
                 Some(base(input).user_prompt_submit(json_str(input, "prompt").into()))

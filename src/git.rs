@@ -255,8 +255,29 @@ fn parse_numstat(text: &str) -> std::collections::HashMap<String, (usize, usize)
     map
 }
 
+/// Reduce a git path to its post-change location.
+///
+/// Handles the three spellings git emits for renamed paths:
+/// - status --short: `old -> new`
+/// - numstat flat form: `old => new`
+/// - numstat brace form: `dir/{old => new}/suffix` — splitting on ` => `
+///   alone leaves a trailing `}` on the result (`new}/suffix`), so the
+///   brace pair is expanded to `dir/new/suffix` instead. That trailing
+///   brace made every brace-form rename miss the numstat lookup and
+///   display 0/0 additions/deletions.
 fn normalize_git_path(path: &str) -> String {
     let path = path.trim();
+    if let Some(open) = path.find('{')
+        && let Some(close_rel) = path[open..].find('}')
+    {
+        let close = open + close_rel;
+        let inner = &path[open + 1..close];
+        if let Some((_, new)) = inner.rsplit_once(" => ") {
+            let prefix = &path[..open];
+            let suffix = &path[close + 1..];
+            return format!("{prefix}{}{suffix}", new.trim());
+        }
+    }
     if let Some((_, new_path)) = path.rsplit_once(" -> ") {
         new_path.trim().to_string()
     } else if let Some((_, new_path)) = path.rsplit_once(" => ") {
@@ -552,6 +573,40 @@ mod tests {
         let map = parse_numstat("1\t0\tsrc/app.rs\n2\t1\ttests/app.rs");
         assert_eq!(map.get("src/app.rs"), Some(&(1, 0)));
         assert_eq!(map.get("tests/app.rs"), Some(&(2, 1)));
+    }
+
+    #[test]
+    fn normalize_git_path_flat_rename_forms() {
+        // status --short and the flat numstat rename spelling.
+        assert_eq!(normalize_git_path("old.rs -> new.rs"), "new.rs");
+        assert_eq!(normalize_git_path("old.rs => new.rs"), "new.rs");
+        assert_eq!(normalize_git_path("plain.rs"), "plain.rs");
+    }
+
+    #[test]
+    fn normalize_git_path_expands_brace_rename() {
+        // Regression: `dir/{old => new}/suffix` split on ` => ` kept a
+        // trailing `}` (`new}/suffix`), so brace-form renames never
+        // matched their numstat entry and rendered 0/0.
+        assert_eq!(
+            normalize_git_path("src/{old_name.rs => new_name.rs}"),
+            "src/new_name.rs"
+        );
+        assert_eq!(
+            normalize_git_path("a/{old => new}/util.rs"),
+            "a/new/util.rs"
+        );
+        assert_eq!(normalize_git_path("{only-old => only-new}"), "only-new");
+    }
+
+    #[test]
+    fn parse_numstat_pairs_brace_rename_with_status_path() {
+        // The staged entry's path comes from `status --short`
+        // (`old -> new` → new path); numstat's brace-form key must
+        // normalize to the same string for the stats to attach.
+        let map = parse_numstat("12\t3\tsrc/{auth.rs => login.rs}");
+        assert_eq!(map.get("src/login.rs"), Some(&(12, 3)));
+        assert_eq!(map.get("src/auth.rs"), None);
     }
 
     #[test]

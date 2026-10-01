@@ -6,7 +6,7 @@ use ratatui::{
 use super::SPAWN_BUTTON;
 use super::row;
 use crate::state::{AppState, Focus};
-use crate::ui::text::display_width;
+use crate::ui::text::{display_width, truncate_to_width};
 
 #[derive(Debug, Default)]
 pub(super) struct CollectedRows {
@@ -67,10 +67,16 @@ pub(super) fn collect(state: &AppState, width: u16) -> CollectedRows {
             .iter()
             .find_map(|(_, git)| git.repo_root.clone());
         let spans: Vec<Span<'static>> = if let Some(ref root) = repo_root {
-            let title_w = display_width(title);
-            let pad_width = width
-                .saturating_sub(title_w)
-                .saturating_sub(SPAWN_BUTTON.len());
+            // The `+` button must stay visible: the title is truncated to
+            // the space left of the button. An untruncated long repo name
+            // used to push the button past the panel edge — the row then
+            // rendered no `+` at all while the click target (anchored at
+            // the right edge by `click_targets::materialize`) stayed live.
+            let button_width = SPAWN_BUTTON.len();
+            let title_budget = width.saturating_sub(button_width);
+            let title = truncate_to_width(title, title_budget);
+            let title_w = display_width(&title);
+            let pad_width = width.saturating_sub(title_w).saturating_sub(button_width);
             collected
                 .pending_spawn
                 .push((collected.lines.len(), group.name.clone(), root.clone()));
@@ -80,7 +86,7 @@ pub(super) fn collect(state: &AppState, width: u16) -> CollectedRows {
                 theme.text_active
             };
             vec![
-                Span::styled(title.clone(), Style::default().fg(title_color)),
+                Span::styled(title, Style::default().fg(title_color)),
                 Span::raw(" ".repeat(pad_width)),
                 Span::styled(SPAWN_BUTTON, Style::default().fg(button_color)),
             ]

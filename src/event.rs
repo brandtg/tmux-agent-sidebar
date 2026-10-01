@@ -41,6 +41,10 @@ pub enum AgentEvent {
     },
     SessionEnd {
         end_reason: String,
+        /// Claude Code reports the ending session's id. `None` when the
+        /// agent does not provide one — handlers must not treat absence
+        /// as a mismatch.
+        session_id: Option<String>,
     },
     UserPromptSubmit {
         agent: String,
@@ -125,10 +129,6 @@ pub enum AgentEvent {
         team_name: String,
         idle_reason: String,
     },
-    WorktreeCreate,
-    WorktreeRemove {
-        worktree_path: String,
-    },
 }
 
 impl AgentEvent {
@@ -150,8 +150,6 @@ impl AgentEvent {
             Self::TaskCreated { .. } => AgentEventKind::TaskCreated,
             Self::TaskCompleted { .. } => AgentEventKind::TaskCompleted,
             Self::TeammateIdle { .. } => AgentEventKind::TeammateIdle,
-            Self::WorktreeCreate => AgentEventKind::WorktreeCreate,
-            Self::WorktreeRemove { .. } => AgentEventKind::WorktreeRemove,
         }
     }
 }
