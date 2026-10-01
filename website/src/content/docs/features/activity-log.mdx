@@ -14,7 +14,7 @@ The bottom panel's **Activity** tab shows tool-call history for the selected age
 
 Each row is one tool call — when it started, which tool ran, and the arguments that mattered.
 
-Activity log files live under `/tmp/tmux-agent-activity<pane>.log`, where `<pane>` is the tmux pane id with the leading `%` replaced by `_` (e.g. pane `%3` → `/tmp/tmux-agent-activity_3.log`). The sidebar re-parses them on every refresh.
+Activity log files live under `$XDG_RUNTIME_DIR/tmux-agent-activity<pane>.log` (falling back to `/tmp` when `XDG_RUNTIME_DIR` is unset), where `<pane>` is the tmux pane id with the leading `%` replaced by `_` (e.g. pane `%3` → `tmux-agent-activity_3.log`). Files are created owner-only (`0600`) and never opened through symlinks. The sidebar re-parses them on every refresh.
 
 ## Tool palette
 

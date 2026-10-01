@@ -1,3 +1,4 @@
+use crate::debug;
 use crate::event::{AgentEvent, resolve_adapter};
 
 use super::{read_stdin_json, tmux_pane};
@@ -17,24 +18,64 @@ pub(crate) fn cmd_hook(args: &[String]) -> i32 {
     let event_name = args.get(1).map(|s| s.as_str()).unwrap_or("");
 
     if agent_name.is_empty() || event_name.is_empty() {
+        debug::log(&format!(
+            "hook: ignored: missing agent or event (args {args:?})"
+        ));
         return 0;
     }
 
     let Some(adapter) = resolve_adapter(agent_name) else {
+        debug::log(&format!(
+            "hook: ignored: unknown agent '{agent_name}' (event '{event_name}')"
+        ));
         return 0;
     };
 
     let pane = tmux_pane();
     if pane.is_empty() {
+        debug::log(&format!(
+            "hook: ignored: TMUX_PANE not set (agent '{agent_name}' event '{event_name}')"
+        ));
         return 0;
     }
 
-    let input = read_stdin_json();
+    let (input, input_bytes, input_valid) = read_stdin_json();
     let Some(event) = adapter.parse(event_name, &input) else {
+        if input_valid {
+            debug::log(&format!(
+                "hook: {agent_name} {event_name} pane {pane}: adapter produced no event for {} bytes: {}",
+                input_bytes,
+                payload_preview(&input)
+            ));
+        } else {
+            debug::log(&format!(
+                "hook: {agent_name} {event_name} pane {pane}: payload is not valid JSON ({input_bytes} bytes)"
+            ));
+        }
         return 0;
     };
 
+    debug::log(&format!(
+        "hook: {agent_name} {event_name} pane {pane} -> {:?}",
+        event.kind()
+    ));
     handle_event(&pane, agent_name, event)
+}
+
+/// Single-line, size-capped rendering of a hook payload for the debug
+/// trace. Debug logs live in the user's private runtime dir, but the
+/// payload can embed prompts and file contents, so only a prefix is kept.
+fn payload_preview(input: &serde_json::Value) -> String {
+    const MAX_PREVIEW_BYTES: usize = 300;
+    let rendered = input.to_string();
+    if rendered.len() <= MAX_PREVIEW_BYTES {
+        return rendered;
+    }
+    let mut end = MAX_PREVIEW_BYTES;
+    while !rendered.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}…", &rendered[..end])
 }
 
 // ─── event handler ──────────────────────────────────────────────────────────

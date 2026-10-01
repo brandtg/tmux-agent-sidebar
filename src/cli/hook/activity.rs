@@ -22,14 +22,12 @@ pub(super) fn write_activity_entry(pane: &str, tool_name: &str, label: &str) {
     use std::io::{Seek, SeekFrom, Write};
     // Read+write (no O_APPEND): the trim rewrites in place through the
     // same fd. Holding the lock makes the manual end-seek equivalent to
-    // O_APPEND.
-    let Ok(mut f) = std::fs::OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .open(&log_path)
-    else {
+    // O_APPEND. O_NOFOLLOW + 0600 creation — see `crate::paths`.
+    let Ok(mut f) = crate::paths::open_read_write_private(&log_path) else {
+        crate::debug::log(&format!(
+            "activity: failed to open {} for append",
+            log_path.display()
+        ));
         return;
     };
     if lock_exclusive(&f) {
