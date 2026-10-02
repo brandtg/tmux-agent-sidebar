@@ -121,6 +121,13 @@ pub const SIDEBAR_BOTTOM_HEIGHT: &str = "@sidebar_bottom_height";
 /// popup instead of a split pane (mobile viewports). `0` disables the
 /// popup path entirely. Read by the `toggle` subcommand.
 pub const SIDEBAR_POPUP_MAX_WIDTH: &str = "@sidebar_popup_max_width";
+/// Window-scoped `#{window_layout}` snapshot taken immediately before the
+/// sidebar split is created. The close paths replay it with
+/// `select-layout` so every pane returns to its pre-sidebar geometry —
+/// without it, tmux hands a killed pane's space to its layout-tree
+/// neighbors and repeated toggles progressively shrink them. Cleared
+/// again once the restore succeeds.
+pub const SIDEBAR_SAVED_LAYOUT: &str = "@sidebar_saved_layout";
 pub const SIDEBAR_PET: &str = "@sidebar_pet";
 pub const SIDEBAR_NOTIFICATIONS: &str = "@sidebar_notifications";
 pub const SIDEBAR_NOTIFICATIONS_EVENTS: &str = "@sidebar_notifications_events";

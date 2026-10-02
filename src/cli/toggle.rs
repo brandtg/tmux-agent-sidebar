@@ -71,7 +71,7 @@ pub(crate) fn cmd_toggle(args: &[String]) -> i32 {
         if create_only {
             return 0;
         }
-        let _ = tmux::run_tmux(&["kill-pane", "-t", &sidebar_pane]);
+        close_sidebar(&sidebar_pane, window_id);
         return 0;
     }
 
@@ -113,6 +113,10 @@ pub(crate) fn cmd_toggle(args: &[String]) -> i32 {
     // Remember active pane
     let active_pane = tmux::display_message(window_id, "#{pane_id}");
 
+    // Snapshot the layout before splitting so the close path can put
+    // every pane back where it was (see restore_window_layout).
+    save_window_layout(window_id);
+
     // Find our own binary path
     let self_bin = std::env::current_exe()
         .ok()
@@ -151,6 +155,89 @@ pub(crate) fn cmd_toggle(args: &[String]) -> i32 {
     0
 }
 
+/// Kill the sidebar pane, then replay the layout snapshot captured at
+/// open time. The restore must happen after the kill: while the sidebar
+/// pane still exists the saved layout's cell count doesn't match the
+/// window and `select-layout` would reject it.
+fn close_sidebar(sidebar_pane: &str, window_id: &str) {
+    let _ = tmux::run_tmux(&["kill-pane", "-t", sidebar_pane]);
+    restore_window_layout(window_id);
+}
+
+/// Store the window's current `#{window_layout}` in a window option so
+/// the close path can restore it. tmux redistributes a killed pane's
+/// space to its layout-tree neighbors rather than undoing the original
+/// split, so without this snapshot every toggle cycle shaves a few
+/// columns off the panes next to the sidebar. Resizes made while the
+/// sidebar is open are rolled back with the restore — the snapshot is
+/// the whole geometry, not just the sidebar's slice.
+fn save_window_layout(window_id: &str) {
+    let layout = tmux::display_message(window_id, "#{window_layout}");
+    if layout.is_empty() {
+        return;
+    }
+    let _ = tmux::set_window_option(window_id, tmux::SIDEBAR_SAVED_LAYOUT, &layout);
+}
+
+/// Apply the saved pre-sidebar layout, then clear the snapshot. A
+/// failed `select-layout` (panes opened or closed since the snapshot)
+/// leaves the option in place: it is stale, but a fresh snapshot
+/// overwrites it on the next open and a matching one still restores
+/// correctly.
+fn restore_window_layout(window_id: &str) {
+    let layout = saved_window_layout(window_id);
+    if layout.is_empty() {
+        return;
+    }
+    let restored = tmux::run_tmux(&["select-layout", "-t", window_id, &layout]).is_some();
+    if restored {
+        let _ = tmux::run_tmux(&[
+            "set",
+            "-wu",
+            "-t",
+            window_id,
+            "--",
+            tmux::SIDEBAR_SAVED_LAYOUT,
+        ]);
+    }
+}
+
+fn saved_window_layout(window_id: &str) -> String {
+    tmux::display_message(window_id, &format!("#{{{}}}", tmux::SIDEBAR_SAVED_LAYOUT))
+}
+
+/// Restore the saved layout after the TUI's own pane is gone. The TUI
+/// closes by exiting its process, so the restore cannot run inline —
+/// the pane (and this process) is still alive when the command would
+/// execute, and the saved layout's cell count wouldn't match. A
+/// server-side background `run-shell` survives the pane and applies
+/// the layout a moment later; `&&` keeps the snapshot when the restore
+/// is skipped (e.g. the user re-opened the sidebar before the job
+/// fired, so the fresh snapshot must survive).
+pub(crate) fn schedule_restore_after_pane_exit(pane_id: &str) {
+    let window_id = tmux::display_message(pane_id, "#{window_id}");
+    if window_id.is_empty() {
+        return;
+    }
+    let layout = saved_window_layout(&window_id);
+    if layout.is_empty() {
+        return;
+    }
+    let command = scheduled_restore_command(&window_id, &layout);
+    let _ = tmux::run_tmux(&["run-shell", "-b", &command]);
+}
+
+/// Shell command behind [`schedule_restore_after_pane_exit`]. The
+/// layout string only ever contains tmux's own layout grammar
+/// (digits, `x`, `,`, `[`, `]`, `{`, `}`, checksum hex), so single-quote
+/// wrapping is safe.
+fn scheduled_restore_command(window_id: &str, layout: &str) -> String {
+    format!(
+        "sleep 0.3 && tmux select-layout -t {window_id} '{layout}' && tmux set -wu -t {window_id} -- {}",
+        tmux::SIDEBAR_SAVED_LAYOUT
+    )
+}
+
 pub(crate) fn cmd_toggle_all(_args: &[String]) -> i32 {
     let pane_id_role_format = pane_id_role_format();
     let has_sidebar = tmux::run_tmux(&["list-panes", "-a", "-F", &pane_id_role_format])
@@ -158,12 +245,11 @@ pub(crate) fn cmd_toggle_all(_args: &[String]) -> i32 {
         .unwrap_or(false);
 
     if has_sidebar {
-        let all_panes =
-            tmux::run_tmux(&["list-panes", "-a", "-F", &pane_id_role_format]).unwrap_or_default();
+        let all_panes = tmux::run_tmux(&["list-panes", "-a", "-F", &pane_window_role_format()])
+            .unwrap_or_default();
         for line in all_panes.lines() {
-            let parts: Vec<&str> = line.splitn(2, '|').collect();
-            if parts.len() >= 2 && parts[1] == "sidebar" {
-                let _ = tmux::run_tmux(&["kill-pane", "-t", parts[0]]);
+            if let Some((sidebar_pane, window_id)) = parse_sidebar_close_target(line) {
+                close_sidebar(&sidebar_pane, &window_id);
             }
         }
     } else {
@@ -188,6 +274,19 @@ fn any_sidebar_pane(output: &str) -> bool {
         let parts: Vec<&str> = line.splitn(2, '|').collect();
         parts.len() >= 2 && parts[1] == "sidebar"
     })
+}
+
+/// Parse one `pane_window_role_format()` line into the
+/// `(sidebar_pane, window_id)` pair to close. Returns `None` for
+/// malformed lines and non-sidebar roles so regular panes are never
+/// killed by the close sweep.
+fn parse_sidebar_close_target(line: &str) -> Option<(String, String)> {
+    let parts: Vec<&str> = line.splitn(3, '|').collect();
+    if parts.len() >= 3 && parts[2] == "sidebar" {
+        Some((parts[0].to_string(), parts[1].to_string()))
+    } else {
+        None
+    }
 }
 
 fn unique_window_paths(output: &str) -> Vec<(String, String)> {
@@ -460,6 +559,13 @@ fn pane_id_role_format() -> String {
     format!("#{{pane_id}}|#{{{}}}", tmux::PANE_ROLE)
 }
 
+/// Close-path `list-panes` format: pane id, window id, role. None of
+/// the three ever contains `|` (pane/window ids are `%N`/`@N`, and
+/// option values are sanitized), so `splitn(3, '|')` is exact.
+fn pane_window_role_format() -> String {
+    format!("#{{pane_id}}|#{{window_id}}|#{{{}}}", tmux::PANE_ROLE)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -554,8 +660,57 @@ mod tests {
         assert_eq!(split_window_flags(SidebarPosition::Right), "-hf");
     }
 
-    // ─── popup mode (mobile viewport) ─────────────────────────────────
+    // ─── layout save/restore ──────────────────────────────────────────
 
+    #[test]
+    fn saved_layout_option_format_round_trips_through_display_message() {
+        // `saved_window_layout` interpolates the option name into a
+        // format string: `#{@sidebar_saved_layout}` must expand the
+        // window-scoped user option (verified by the tmux format
+        // grammar — `#{...}` wraps the name verbatim).
+        assert_eq!(tmux::SIDEBAR_SAVED_LAYOUT, "@sidebar_saved_layout");
+        assert_eq!(
+            format!("#{{{}}}", tmux::SIDEBAR_SAVED_LAYOUT),
+            "#{@sidebar_saved_layout}"
+        );
+    }
+
+    #[test]
+    fn scheduled_restore_command_targets_window_and_quotes_layout() {
+        let command = scheduled_restore_command("@5", "b2c4,237x58,0,0[237x58,0,0,0]");
+        assert_eq!(
+            command,
+            "sleep 0.3 && tmux select-layout -t @5 'b2c4,237x58,0,0[237x58,0,0,0]' \
+             && tmux set -wu -t @5 -- @sidebar_saved_layout"
+        );
+    }
+
+    #[test]
+    fn parse_sidebar_close_target_extracts_pane_and_window() {
+        assert_eq!(
+            parse_sidebar_close_target("%9|@5|sidebar"),
+            Some(("%9".to_string(), "@5".to_string()))
+        );
+    }
+
+    #[test]
+    fn parse_sidebar_close_target_skips_regular_panes_and_malformed_lines() {
+        assert_eq!(parse_sidebar_close_target("%1|@5|pane"), None);
+        // `@pane_role` unset renders as an empty third field.
+        assert_eq!(parse_sidebar_close_target("%1|@5|"), None);
+        assert_eq!(parse_sidebar_close_target("%1|sidebar"), None);
+        assert_eq!(parse_sidebar_close_target(""), None);
+    }
+
+    #[test]
+    fn pane_window_role_format_has_three_fields() {
+        assert_eq!(
+            pane_window_role_format(),
+            "#{pane_id}|#{window_id}|#{@pane_role}"
+        );
+    }
+
+    // ─── popup mode (mobile viewport) ─────────────────────────────────
     #[test]
     fn popup_max_width_defaults_on_missing_or_invalid_setting() {
         assert_eq!(popup_max_width_from_setting(""), 100);
