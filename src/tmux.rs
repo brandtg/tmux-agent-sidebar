@@ -5,8 +5,8 @@ mod query;
 mod types;
 
 pub use commands::{
-    display_message, kill_window, new_window, pane_session_name, run_tmux, run_tmux_capture,
-    select_pane, send_command, set_window_option,
+    display_message, enable_tmux_ipc, kill_window, new_window, pane_session_name, run_tmux,
+    run_tmux_capture, select_pane, send_command, set_window_option,
 };
 pub use options::{
     BG_CMD_PLACEHOLDER, PANE_AGENT, PANE_ATTENTION, PANE_BG_CMD, PANE_CWD, PANE_LAUNCH_CWD,
@@ -29,8 +29,8 @@ pub use options::{
     SIDEBAR_ICON_ALL, SIDEBAR_ICON_BACKGROUND, SIDEBAR_ICON_ERROR, SIDEBAR_ICON_IDLE,
     SIDEBAR_ICON_RUNNING, SIDEBAR_ICON_SET, SIDEBAR_ICON_UNKNOWN, SIDEBAR_ICON_WAITING,
     SIDEBAR_NOTIFICATIONS, SIDEBAR_NOTIFICATIONS_EVENTS, SIDEBAR_PET, SIDEBAR_PID,
-    SIDEBAR_POPUP_MAX_WIDTH, SIDEBAR_POSITION, SIDEBAR_REPO_FILTER, SIDEBAR_WIDTH,
-    append_pane_option, get_all_global_options, get_option, get_pane_option_value,
+    SIDEBAR_POPUP_MAX_WIDTH, SIDEBAR_POSITION, SIDEBAR_REPO_FILTER, SIDEBAR_SAVED_LAYOUT,
+    SIDEBAR_WIDTH, append_pane_option, get_all_global_options, get_option, get_pane_option_value,
     sanitize_option_value, set_pane_option, unset_pane_option,
 };
 pub(crate) use panes::pick_active_pane;

@@ -1,4 +1,5 @@
 use std::process::Command;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use crate::subprocess;
@@ -6,6 +7,25 @@ use crate::subprocess;
 /// Deadline for tmux IPC; every render-path query (list-panes,
 /// display-message, ...) goes through here and must never hang the loop.
 const TMUX_TIMEOUT: Duration = Duration::from_secs(3);
+
+/// Whether tmux IPC may spawn at all in this process. The binary entry
+/// point opts in via [`enable_tmux_ipc`]; a test harness never runs
+/// `main()`, so under `cargo test` every tmux invocation is refused at
+/// this choke point. Without the gate, tests exercise real lib paths
+/// against whatever tmux server they can find — harmless on CI (no
+/// server, every call fails exactly like the tests assume) but live
+/// against the developer's session locally: snapshot tests would pull
+/// in the user's real panes, hook-dispatch tests would write options,
+/// and focus paths could steal the client.
+static TMUX_IPC_ENABLED: AtomicBool = AtomicBool::new(false);
+
+/// Allow tmux IPC for this process. Called once, first thing, from the
+/// binary entry point. Tests that genuinely need a live tmux (the
+/// `#[ignore]`d capture integration tests, which run on their own
+/// throwaway server) may call this too — scoped to the test.
+pub fn enable_tmux_ipc() {
+    TMUX_IPC_ENABLED.store(true, Ordering::Relaxed);
+}
 
 pub fn run_tmux(args: &[&str]) -> Option<String> {
     #[cfg(test)]
@@ -34,6 +54,9 @@ pub fn run_tmux_capture(args: &[&str]) -> Result<String, String> {
 /// exits are traced for writes (`set …`), where a failure silently loses
 /// state and is exactly what the trace exists for.
 fn exec_tmux(args: &[&str]) -> Result<String, String> {
+    if !TMUX_IPC_ENABLED.load(Ordering::Relaxed) {
+        return Err("tmux IPC disabled (not enabled via enable_tmux_ipc)".to_string());
+    }
     let mut command = Command::new("tmux");
     command.args(args);
     let output = subprocess::run_with_timeout(&mut command, TMUX_TIMEOUT).map_err(|err| {

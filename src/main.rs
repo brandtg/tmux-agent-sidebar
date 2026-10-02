@@ -95,6 +95,10 @@ impl Drop for TuiSession {
 }
 
 fn main() -> io::Result<()> {
+    // Must precede every tmux call: the IPC gate defaults to off so test
+    // harnesses (which never run main) can never touch a live server.
+    tmux::enable_tmux_ipc();
+
     let args: Vec<String> = std::env::args().skip(1).collect();
     if let Some(code) = tmux_agent_sidebar::cli::run(&args) {
         std::process::exit(code);

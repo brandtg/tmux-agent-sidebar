@@ -81,6 +81,15 @@ pub fn run(
             }
         }
         if state.quit_requested {
+            // Pane-mode sidebars close by process exit, so the layout
+            // restore must be scheduled from a server-side job that
+            // outlives the pane (see toggle::schedule_restore_after_pane_exit).
+            // Popup mode never snapshots a layout and the helper no-ops
+            // on a missing snapshot, but skipping it here keeps popup
+            // teardown free of tmux round-trips.
+            if !state.popup_mode {
+                crate::cli::toggle::schedule_restore_after_pane_exit(&state.tmux_pane);
+            }
             break Ok(());
         }
 
