@@ -1,4 +1,4 @@
-use std::process::Command;
+use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
@@ -32,34 +32,66 @@ pub fn run_tmux(args: &[&str]) -> Option<String> {
     if test_fail_tmux::should_fail() {
         return None;
     }
-    exec_tmux(args).ok()
+    exec_tmux(args, Some(TMUX_TIMEOUT)).ok()
+}
+
+/// Run a tmux command that intentionally blocks for as long as the user
+/// keeps something on screen — `display-popup` being the only case today.
+/// These must not be subject to the render-path deadline: a popup that
+/// stays open for minutes is the expected outcome, not a hang. Killing
+/// the `display-popup` client process mid-popup does not even close the
+/// popup (the server keeps it); it just makes the invoking `toggle`
+/// report failure, which tmux surfaces as a spurious
+/// `"...toggle ..." returned 1` status-line error when the popup closes.
+pub fn run_tmux_blocking(args: &[&str]) -> Option<String> {
+    #[cfg(test)]
+    if test_fail_tmux::should_fail() {
+        return None;
+    }
+    exec_tmux(args, None).ok()
 }
 
 /// Run a tmux command, returning trimmed stdout on success and stderr on failure.
 /// Used by the spawn/remove flow so the UI can surface a meaningful error message
 /// instead of a silent fallthrough.
 pub fn run_tmux_capture(args: &[&str]) -> Result<String, String> {
-    exec_tmux(args).map(|out| out.trim().to_string())
+    exec_tmux(args, Some(TMUX_TIMEOUT)).map(|out| out.trim().to_string())
 }
 
 /// Shared execution path for every tmux invocation. Failures are recorded
 /// in the opt-in debug trace (`TMUX_AGENT_SIDEBAR_DEBUG=1`, see
-/// `crate::debug`) before the caller's usual silent fallback. This is the
+/// [`crate::debug`]) before the caller's usual silent fallback. This is the
 /// single choke point: every pane-option write, query, and window
 /// operation goes through here.
+///
+/// `timeout` bounds the wait; `None` waits for the child to exit on its
+/// own (see [`run_tmux_blocking`]).
 ///
 /// Read commands (`show`, `display-message`, `list-panes`, …) fail
 /// routinely in normal operation — an unset option or a pane that just
 /// closed — so only their spawn/timeout failures are traced. Non-zero
 /// exits are traced for writes (`set …`), where a failure silently loses
 /// state and is exactly what the trace exists for.
-fn exec_tmux(args: &[&str]) -> Result<String, String> {
+fn exec_tmux(args: &[&str], timeout: Option<Duration>) -> Result<String, String> {
     if !TMUX_IPC_ENABLED.load(Ordering::Relaxed) {
         return Err("tmux IPC disabled (not enabled via enable_tmux_ipc)".to_string());
     }
     let mut command = Command::new("tmux");
     command.args(args);
-    let output = subprocess::run_with_timeout(&mut command, TMUX_TIMEOUT).map_err(|err| {
+    command
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        command.process_group(0);
+    }
+    let output = match timeout {
+        Some(timeout) => subprocess::run_with_timeout(&mut command, timeout),
+        None => Ok(command.output().map_err(|err| err.to_string())?),
+    }
+    .map_err(|err| {
         crate::debug::log(&format!("tmux {args:?} failed: {err}"));
         err
     })?;

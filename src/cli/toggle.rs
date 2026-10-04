@@ -510,7 +510,11 @@ fn open_popup(window_id: &str, start_directory: &str) -> i32 {
     let active_pane = tmux::display_message(window_id, "#{pane_id}");
     let args = popup_command(window_id, start_directory, &self_bin, &active_pane);
     let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
-    let opened = tmux::run_tmux(&arg_refs).is_some();
+    // display-popup blocks for the popup's whole lifetime by design; the
+    // unbounded wait must not hit the render-path tmux deadline, or the
+    // killed client makes this toggle exit 1 (a spurious "returned 1"
+    // error on the user's status line) while the popup itself survives.
+    let opened = tmux::run_tmux_blocking(&arg_refs).is_some();
 
     if opened { 0 } else { 1 }
 }
