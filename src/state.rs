@@ -1051,6 +1051,34 @@ mod tests {
     }
 
     #[test]
+    fn mouse_scroll_in_compact_agents_panel_advances_one_pane_per_notch() {
+        let mut state = AppState::new("%99".into());
+        state.global.compact = true;
+        state.scrolls.panes = ScrollState {
+            offset: 0,
+            total_lines: 40,
+            visible_height: 20,
+        };
+        // A compact row is one line, so a 3-line notch must collapse to a
+        // single line — otherwise the wheel skips three panes at a time.
+        state.handle_mouse_scroll(10, 50, 20, 3);
+        assert_eq!(state.scrolls.panes.offset, 1);
+    }
+
+    #[test]
+    fn mouse_scroll_up_in_compact_agents_panel_reverses_one_pane() {
+        let mut state = AppState::new("%99".into());
+        state.global.compact = true;
+        state.scrolls.panes = ScrollState {
+            offset: 5,
+            total_lines: 40,
+            visible_height: 20,
+        };
+        state.handle_mouse_scroll(10, 50, 20, -3);
+        assert_eq!(state.scrolls.panes.offset, 4);
+    }
+
+    #[test]
     fn mouse_scroll_up_in_agents_panel() {
         let mut state = AppState::new("%99".into());
         state.scrolls.panes = ScrollState {

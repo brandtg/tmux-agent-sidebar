@@ -953,9 +953,12 @@ fn default_view_does_not_break_cross_instance_sync() {
 }
 
 // ─── compact mode tests ─────────────────────────────────────────────
-// Compact rendering is a runtime toggle (`c`), synced across open
-// sidebars via `@sidebar_compact` but never restored on reopen — the
-// landing mode comes from `@sidebar_default_compact_view`.
+// Compact rendering is a runtime toggle (`c`). The live value is shared
+// across open sidebars via `@sidebar_compact`, and every sidebar —
+// newly opened ones included — lands on it so all sidebars render the
+// same density. `@sidebar_default_compact_view` only seeds the mode
+// while no live value exists (fresh tmux server, before the first
+// toggle).
 
 #[test]
 fn compact_defaults_to_off() {
@@ -981,54 +984,50 @@ fn compact_syncs_from_tmux_when_changed_by_other_instance() {
 }
 
 #[test]
-fn compact_ignores_tmux_value_matching_last_saved() {
-    // Mirrors full_sync_ignores_tmux_filter_matching_last_saved: the
-    // default-view override makes the local value diverge from tmux, and
-    // the refocus reload must not clobber it when tmux still holds the
-    // value this instance last saw.
+fn new_sidebar_lands_on_live_compact_value_not_default() {
     let mut g = make_global();
 
-    g.apply_all(&make_opts(&[(tmux::SIDEBAR_COMPACT, "1")]));
-    assert!(g.compact);
-
-    g.compact = false; // simulate apply_default_view landing on off
-    g.apply_all(&make_opts(&[(tmux::SIDEBAR_COMPACT, "1")]));
-
-    assert!(
-        !g.compact,
-        "refocus reload must not restore the persisted value over the startup default"
-    );
-}
-
-#[test]
-fn default_compact_view_unset_lands_off_not_persisted_value() {
-    let mut g = make_global();
-
-    // Startup sync adopts the live persisted value...
+    // Startup sync adopts the live shared value...
     let opts = make_opts(&[(tmux::SIDEBAR_COMPACT, "1")]);
     g.apply_all(&opts);
     assert!(g.compact);
 
-    // ...then the default-view override lands on off.
-    g.apply_default_view(&std::collections::HashMap::new());
+    // ...and the landing default must not override it — the startup
+    // default view reads the same global options, live key included —
+    // or this sidebar would render a different density than the
+    // already-open ones.
+    g.apply_default_view(&opts);
     assert!(
-        !g.compact,
-        "a new sidebar must land on the configured default, not the live value"
+        g.compact,
+        "a new sidebar must land on the live value so all sidebars stay consistent"
     );
 
-    // Refocus reload reads the same live value — last_saved_compact
-    // points at it, so the default survives.
+    // Refocus reload keeps the live value.
     g.apply_all(&opts);
-    assert!(
-        !g.compact,
-        "refocus reload must not restore the live value over the default"
-    );
+    assert!(g.compact);
 }
 
 #[test]
-fn default_compact_view_configured_lands_on_that_mode() {
+fn default_compact_view_applies_only_before_first_toggle() {
     let mut g = make_global();
 
+    // No live value yet: the configured default seeds the mode...
+    let opts = make_opts(&[(tmux::SIDEBAR_DEFAULT_COMPACT_VIEW, "on")]);
+    g.apply_all(&opts);
+    g.apply_default_view(&opts);
+    assert!(g.compact, "configured default compact view must be honored");
+
+    // ...and survives refocus reloads while the live option stays unset.
+    g.apply_all(&opts);
+    assert!(g.compact);
+}
+
+#[test]
+fn live_compact_value_overrides_configured_default() {
+    let mut g = make_global();
+
+    // Live compact=0 from a previous toggle beats default=on so this
+    // sidebar matches the density of the already-open ones.
     let opts = make_opts(&[
         (tmux::SIDEBAR_COMPACT, "0"),
         (tmux::SIDEBAR_DEFAULT_COMPACT_VIEW, "on"),
@@ -1036,11 +1035,21 @@ fn default_compact_view_configured_lands_on_that_mode() {
     g.apply_all(&opts);
     g.apply_default_view(&opts);
 
-    assert!(g.compact, "configured default compact view must be honored");
+    assert!(
+        !g.compact,
+        "live @sidebar_compact must win over the landing default"
+    );
+}
 
-    // Refocus reload keeps the configured default.
-    g.apply_all(&make_opts(&[(tmux::SIDEBAR_COMPACT, "0")]));
-    assert!(g.compact);
+#[test]
+fn default_compact_view_unset_lands_off() {
+    let mut g = make_global();
+
+    g.apply_default_view(&std::collections::HashMap::new());
+    assert!(
+        !g.compact,
+        "unset @sidebar_default_compact_view must land on off"
+    );
 }
 
 #[test]
@@ -1067,18 +1076,20 @@ fn default_compact_view_is_case_insensitive() {
 fn default_compact_view_does_not_break_cross_instance_sync() {
     let mut g = make_global();
 
-    // Startup: live compact=1 from another sidebar, default off.
+    // Startup: live compact=1 from another sidebar wins over default off.
     let opts = make_opts(&[(tmux::SIDEBAR_COMPACT, "1")]);
     g.apply_all(&opts);
     g.apply_default_view(&opts);
-    assert!(!g.compact);
+    assert!(
+        g.compact,
+        "the live value must land the new sidebar in compact mode"
+    );
 
     // Another sidebar toggles compact off; this instance must sync.
     g.apply_all(&make_opts(&[(tmux::SIDEBAR_COMPACT, "0")]));
-
     assert!(
         !g.compact,
-        "compact changes from other sidebars must still sync in after the default override"
+        "compact changes from other sidebars must still sync in after landing"
     );
 
     // And toggling back on syncs too.

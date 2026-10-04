@@ -8,21 +8,23 @@ Every piece of state belongs to one of three scopes: **Global** (shared across a
 
 Stored in `GlobalState`. Written to tmux on change, with the cursor save
 debounced briefly so selection changes do not block redraw/input handling;
-reloaded on SIGUSR1. At startup — and only at startup — `status_filter` and
-`compact` are overridden by `@sidebar_default_view` (default `all`) and
-`@sidebar_default_compact_view` (default `off`), so a newly opened sidebar
-lands on a deterministic view instead of the last values some other window
-persisted. Changes still sync across already-open sidebars via the
-SIGUSR1/window-refocus reload.
+reloaded on SIGUSR1. At startup — and only at startup — `status_filter` is
+overridden by `@sidebar_default_view` (default `all`) so a newly opened
+sidebar lands on a deterministic view instead of the last value some other
+window persisted. `compact` follows the live `@sidebar_compact` value so
+every sidebar renders the same density; `@sidebar_default_compact_view`
+(default `off`) only seeds the mode while no live value exists yet, i.e.
+before the first `c` toggle on a fresh tmux server. Changes still sync
+across already-open sidebars via the SIGUSR1/window-refocus reload.
 
 | Field | Tmux Variable | Update Trigger | Description |
 |-------|--------------|----------------|-------------|
 | `status_filter` | `@sidebar_filter` | User input (left/right key) | Active status filter (All/Running/Background/Waiting/Idle/Error); startup landing view comes from `@sidebar_default_view` |
 | `selected_pane_row` | `@sidebar_cursor` | User input (j/k key); tmux write flushed after a short debounce | Cursor position in agent list |
 | `repo_filter` | `@sidebar_repo_filter` | User input (repo popup) | Repository filter (All or specific repo) |
-| `compact` | `@sidebar_compact` | User input (`c` key) | Compact one-line-per-pane rendering; startup landing mode comes from `@sidebar_default_compact_view` |
+| `compact` | `@sidebar_compact` | User input (`c` key) | Compact one-line-per-pane rendering; the live value is shared by all open sidebars, and `@sidebar_default_compact_view` seeds it only before the first toggle |
 
-Each field has a corresponding `last_saved_*` to prevent sync conflicts — only overwrites tmux if the local write succeeded.
+`status_filter`, `selected_pane_row`, and `repo_filter` each have a corresponding `last_saved_*` marker to prevent sync conflicts — tmux only overwrites the local value when it differs from what this instance last wrote. `compact` is exempt: the live tmux value is adopted unconditionally so sidebars can never diverge on density.
 
 ### Per-pane State (keyed by pane ID)
 
