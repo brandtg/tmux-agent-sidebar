@@ -14,8 +14,19 @@ sidebar lands on a deterministic view instead of the last value some other
 window persisted. `compact` follows the live `@sidebar_compact` value so
 every sidebar renders the same density; `@sidebar_default_compact_view`
 (default `off`) only seeds the mode while no live value exists yet, i.e.
-before the first `c` toggle on a fresh tmux server. Changes still sync
-across already-open sidebars via the SIGUSR1/window-refocus reload.
+before the first `c` toggle on a fresh tmux server.
+
+A shared-option change propagates to every open sidebar two ways: the
+changing sidebar broadcasts SIGUSR1 to all other live sidebar processes
+(pid-identity-checked, popups included via their anchor pane), and any
+SIGUSR1-driven refresh reloads the global options regardless of whether
+the receiving sidebar's window is currently active. The reload cannot be
+gated on window activation: `#{window_active}` is a per-session flag, so
+a sidebar whose window leads an unfocused session never registers a
+hidden→visible transition, and multi-client setups keep several windows
+"active" at once. Cursor updates are deliberately not broadcast — they
+fire on every navigation keystroke and converge via the focus-change
+reload instead.
 
 | Field | Tmux Variable | Update Trigger | Description |
 |-------|--------------|----------------|-------------|
@@ -23,6 +34,7 @@ across already-open sidebars via the SIGUSR1/window-refocus reload.
 | `selected_pane_row` | `@sidebar_cursor` | User input (j/k key); tmux write flushed after a short debounce | Cursor position in agent list |
 | `repo_filter` | `@sidebar_repo_filter` | User input (repo popup) | Repository filter (All or specific repo) |
 | `compact` | `@sidebar_compact` | User input (`c` key) | Compact one-line-per-pane rendering; the live value is shared by all open sidebars, and `@sidebar_default_compact_view` seeds it only before the first toggle |
+| sidebar mode | `@sidebar_mode` | `toggle-all` sweep | System-level `open`/`closed` intent; consulted by the new-window hook (falling back to `@sidebar_auto_create` while unset) so toggle-all covers windows created afterwards |
 
 `status_filter`, `selected_pane_row`, and `repo_filter` each have a corresponding `last_saved_*` marker to prevent sync conflicts — tmux only overwrites the local value when it differs from what this instance last wrote. `compact` is exempt: the live tmux value is adopted unconditionally so sidebars can never diverge on density.
 

@@ -137,6 +137,18 @@ pub const SIDEBAR_NOTIFICATIONS_EVENTS: &str = "@sidebar_notifications_events";
 pub const SIDEBAR_AGENTS: &str = "@sidebar_agents";
 
 pub const SIDEBAR_COLOR_ACCENT: &str = "@sidebar_color_accent";
+/// System-level sidebar mode written by `toggle-all` (`open` / `closed`).
+/// New windows consult it at creation time (via the auto-create hook and
+/// the `toggle --create-only` decision), so prefix+E means "sidebars
+/// always on/off everywhere", including windows created afterwards.
+/// Unset means no mode recorded: creation is governed by
+/// [`SIDEBAR_AUTO_CREATE`] alone. Per-window `toggle` presses ignore the
+/// mode — they remain explicit user actions.
+pub const SIDEBAR_MODE: &str = "@sidebar_mode";
+/// Whether a sidebar is created automatically for new windows (`on` /
+/// `off`, default `on` via agent-sidebar.conf seeding). Consulted at
+/// window-create time; only consulted while [`SIDEBAR_MODE`] is unset.
+pub const SIDEBAR_AUTO_CREATE: &str = "@sidebar_auto_create";
 pub const SIDEBAR_COLOR_BORDER: &str = "@sidebar_color_border";
 pub const SIDEBAR_COLOR_ALL: &str = "@sidebar_color_all";
 pub const SIDEBAR_COLOR_RUNNING: &str = "@sidebar_color_running";

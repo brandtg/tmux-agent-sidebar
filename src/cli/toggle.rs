@@ -1,14 +1,17 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use crate::tmux;
 
 pub(crate) fn cmd_toggle(args: &[String]) -> i32 {
     let mut create_only = false;
+    let mut force_split = false;
     let mut positional = Vec::new();
 
     for arg in args {
         if arg == "--create-only" {
             create_only = true;
+        } else if arg == "--force-split" {
+            force_split = true;
         } else {
             positional.push(arg.as_str());
         }
@@ -20,33 +23,7 @@ pub(crate) fn cmd_toggle(args: &[String]) -> i32 {
     };
     let pane_path = positional.get(1).copied().unwrap_or("~");
 
-    // Check sidebar width setting
-    let sidebar_width_setting = {
-        let s = tmux::display_message(window_id, &format!("#{{{}}}", tmux::SIDEBAR_WIDTH));
-        if s.is_empty() { "30".to_string() } else { s }
-    };
-
-    let sidebar_width = if sidebar_width_setting.ends_with('%') {
-        let window_width: u32 = tmux::display_message(window_id, "#{window_width}")
-            .parse()
-            .unwrap_or(0);
-        let pct: u32 = sidebar_width_setting
-            .trim_end_matches('%')
-            .parse()
-            .unwrap_or(15);
-        if window_width > 0 && pct > 0 {
-            let w = window_width * pct / 100;
-            if w < 1 {
-                "1".to_string()
-            } else {
-                w.to_string()
-            }
-        } else {
-            sidebar_width_setting
-        }
-    } else {
-        sidebar_width_setting
-    };
+    let sidebar_width = sidebar_width_cells(window_id);
 
     let sidebar_position = SidebarPosition::from_setting(&tmux::display_message(
         window_id,
@@ -56,13 +33,18 @@ pub(crate) fn cmd_toggle(args: &[String]) -> i32 {
     // Mobile viewport: windows narrower than `@sidebar_popup_max_width`
     // open as a tmux popup instead of a split pane. Auto-create stays a
     // no-op here — an unprompted popup on every new window would be
-    // hostile, and `toggle-all` reuses `--create-only`, so narrow windows
-    // are skipped there too. Popups never touch pane layout, which also
-    // keeps the layout-recalculation path (implicated in tmux's
-    // evbuffer-underflow SIGSEGV during heavy pane output) out of the
-    // mobile flow entirely. Resolved before the existing-sidebar check
-    // because the toggle-off path needs it too: on a narrow viewport the
-    // popup replaces a desktop split pane in the same keystroke.
+    // hostile. `toggle-all` passes `--force-split` so the global sweep
+    // still creates split panes on narrow windows: it is an explicit
+    // "same state everywhere" action, and a silently skipped window is
+    // exactly the inconsistency the sweep exists to prevent (a window
+    // sized down by a small client at sweep time would otherwise stay
+    // sidebar-less after growing back). Popups never touch pane layout,
+    // which also keeps the layout-recalculation path (implicated in
+    // tmux's evbuffer-underflow SIGSEGV during heavy pane output) out of
+    // the mobile flow entirely. Resolved before the existing-sidebar
+    // check because the toggle-off path needs it too: on a narrow
+    // viewport the popup replaces a desktop split pane in the same
+    // keystroke.
     let window_width: u32 = tmux::display_message(window_id, "#{window_width}")
         .parse()
         .unwrap_or(0);
@@ -70,7 +52,26 @@ pub(crate) fn cmd_toggle(args: &[String]) -> i32 {
         window_id,
         &format!("#{{{}}}", tmux::SIDEBAR_POPUP_MAX_WIDTH),
     );
-    let use_popup = should_use_popup(&popup_max_width, window_width);
+
+    // Auto-create decision: `--create-only` runs from the new-window
+    // hook and from the toggle-all sweep. A recorded system-level mode
+    // (`@sidebar_mode`, written by toggle-all) outranks
+    // `@sidebar_auto_create`, so prefix+E means "sidebars always on/off
+    // everywhere" — including windows created after the sweep, not just
+    // the ones that existed at press time. Explicit per-window `toggle`
+    // presses (no `--create-only`) never consult the mode.
+    if create_only {
+        let mode = tmux::display_message(window_id, &format!("#{{{}}}", tmux::SIDEBAR_MODE));
+        let auto_create =
+            tmux::display_message(window_id, &format!("#{{{}}}", tmux::SIDEBAR_AUTO_CREATE));
+        match auto_create_decision(&mode, &auto_create) {
+            AutoCreateDecision::Skip => return 0,
+            AutoCreateDecision::ForceSplit => force_split = true,
+            AutoCreateDecision::Default => {}
+        }
+    }
+
+    let use_popup = !force_split && should_use_popup(&popup_max_width, window_width);
 
     // Check for existing sidebar
     let pane_id_role_format = pane_id_role_format();
@@ -249,6 +250,34 @@ fn scheduled_restore_command(window_id: &str, layout: &str) -> String {
     )
 }
 
+/// What `toggle --create-only` (new-window hook, toggle-all sweep)
+/// should do, given the recorded system-level mode (`@sidebar_mode`)
+/// and the auto-create setting (`@sidebar_auto_create`). Extracted as a
+/// pure function so the precedence rule is directly unit-testable.
+#[derive(Debug, Eq, PartialEq)]
+enum AutoCreateDecision {
+    /// Do not create a sidebar.
+    Skip,
+    /// Create a split-pane sidebar, ignoring the popup threshold.
+    ForceSplit,
+    /// Create with normal popup-threshold semantics.
+    Default,
+}
+
+fn auto_create_decision(mode: &str, auto_create: &str) -> AutoCreateDecision {
+    match mode.trim() {
+        "open" => AutoCreateDecision::ForceSplit,
+        "closed" => AutoCreateDecision::Skip,
+        _ => {
+            if auto_create.trim().eq_ignore_ascii_case("off") {
+                AutoCreateDecision::Skip
+            } else {
+                AutoCreateDecision::Default
+            }
+        }
+    }
+}
+
 pub(crate) fn cmd_toggle_all(_args: &[String]) -> i32 {
     let pane_id_role_format = pane_id_role_format();
     let has_sidebar = tmux::run_tmux(&["list-panes", "-a", "-F", &pane_id_role_format])
@@ -256,6 +285,9 @@ pub(crate) fn cmd_toggle_all(_args: &[String]) -> i32 {
         .unwrap_or(false);
 
     if has_sidebar {
+        // Record the system-level mode BEFORE the sweep so windows
+        // created while it runs already follow the new intent.
+        let _ = tmux::run_tmux(&["set", "-g", tmux::SIDEBAR_MODE, "closed"]);
         let all_panes = tmux::run_tmux(&["list-panes", "-a", "-F", &pane_window_role_format()])
             .unwrap_or_default();
         for line in all_panes.lines() {
@@ -264,6 +296,7 @@ pub(crate) fn cmd_toggle_all(_args: &[String]) -> i32 {
             }
         }
     } else {
+        let _ = tmux::run_tmux(&["set", "-g", tmux::SIDEBAR_MODE, "open"]);
         let all_windows = tmux::run_tmux(&[
             "list-panes",
             "-a",
@@ -272,12 +305,89 @@ pub(crate) fn cmd_toggle_all(_args: &[String]) -> i32 {
         ])
         .unwrap_or_default();
         for (window_id, pane_path) in unique_window_paths(&all_windows) {
-            let args = vec!["--create-only".to_string(), window_id, pane_path];
+            let args = vec![
+                "--create-only".to_string(),
+                "--force-split".to_string(),
+                window_id,
+                pane_path,
+            ];
             cmd_toggle(&args);
         }
+        // Two overlapping sweeps (e.g. a double-pressed key) both observe
+        // "no sidebar" before either creates one and both split every
+        // window, leaving two sidebar panes side by side. The create path
+        // cannot distinguish its own pane from a concurrent one, so
+        // collapse any duplicates afterwards; the kept pane is the first
+        // in tmux's own listing order.
+        dedupe_window_sidebars();
     }
 
     0
+}
+
+/// Kill every sidebar pane beyond the first in its window, restoring
+/// each removed pane's window layout via the normal close path, and
+/// pin the surviving sidebar back to the configured width. The restore
+/// replays a snapshot taken by whichever overlapping sweep saved last;
+/// when it cannot apply (stale cell count), tmux hands the killed
+/// pane's space to its neighbors and the survivor drifts wide — the
+/// resize makes the outcome deterministic even without the user's
+/// layout-change width hook.
+fn dedupe_window_sidebars() {
+    let all_panes =
+        tmux::run_tmux(&["list-panes", "-a", "-F", &pane_window_role_format()]).unwrap_or_default();
+    for (survivor_pane, duplicate_pane, window_id) in duplicate_sidebar_targets(&all_panes) {
+        close_sidebar(&duplicate_pane, &window_id);
+        let target = sidebar_width_cells(&window_id);
+        if !target.is_empty() {
+            let _ = tmux::run_tmux(&["resize-pane", "-t", &survivor_pane, "-x", &target]);
+        }
+    }
+}
+
+/// Resolve `@sidebar_width` into absolute cells for `window_id`,
+/// converting a percentage against the window's current width. Falls
+/// back to the raw setting (or 30 cells when unset) when the window
+/// width cannot be queried.
+fn sidebar_width_cells(window_id: &str) -> String {
+    let setting = tmux::display_message(window_id, &format!("#{{{}}}", tmux::SIDEBAR_WIDTH));
+    let setting = if setting.is_empty() { "30" } else { &setting };
+    if !setting.ends_with('%') {
+        return setting.to_string();
+    }
+    let window_width: u32 = tmux::display_message(window_id, "#{window_width}")
+        .parse()
+        .unwrap_or(0);
+    let pct: u32 = setting.trim_end_matches('%').parse().unwrap_or(15);
+    if window_width == 0 || pct == 0 {
+        return setting.to_string();
+    }
+    (window_width * pct / 100).max(1).to_string()
+}
+
+/// Given `pane_window_role_format()` output, pick the sidebar panes to
+/// close: every sidebar pane that is not the first sidebar of its
+/// window. Returns `(survivor, duplicate, window)` triples — the
+/// survivor is the first sidebar in tmux's own listing order. Extracted
+/// as a pure function so the keep-first rule is directly unit-testable.
+fn duplicate_sidebar_targets(output: &str) -> Vec<(String, String, String)> {
+    let mut first: HashMap<String, String> = HashMap::new();
+    let mut duplicates = Vec::new();
+
+    for line in output.lines() {
+        if let Some((sidebar_pane, window_id)) = parse_sidebar_close_target(line) {
+            match first.get(&window_id) {
+                None => {
+                    first.insert(window_id, sidebar_pane);
+                }
+                Some(survivor) => {
+                    duplicates.push((survivor.clone(), sidebar_pane, window_id));
+                }
+            }
+        }
+    }
+
+    duplicates
 }
 
 fn any_sidebar_pane(output: &str) -> bool {
@@ -761,6 +871,80 @@ mod tests {
             pane_window_role_format(),
             "#{pane_id}|#{window_id}|#{@pane_role}"
         );
+    }
+
+    // ─── auto-create decision (mode vs auto_create precedence) ───────
+
+    #[test]
+    fn auto_create_mode_open_forces_split_and_outranks_auto_create() {
+        assert_eq!(
+            auto_create_decision("open", "off"),
+            AutoCreateDecision::ForceSplit
+        );
+        assert_eq!(
+            auto_create_decision("open", "on"),
+            AutoCreateDecision::ForceSplit
+        );
+        assert_eq!(
+            auto_create_decision(" open ", "off"),
+            AutoCreateDecision::ForceSplit
+        );
+    }
+
+    #[test]
+    fn auto_create_mode_closed_skips_and_outranks_auto_create() {
+        assert_eq!(
+            auto_create_decision("closed", "on"),
+            AutoCreateDecision::Skip
+        );
+        assert_eq!(
+            auto_create_decision("closed", "off"),
+            AutoCreateDecision::Skip
+        );
+    }
+
+    #[test]
+    fn auto_create_unset_mode_falls_back_to_auto_create() {
+        assert_eq!(auto_create_decision("", "on"), AutoCreateDecision::Default);
+        assert_eq!(
+            auto_create_decision("", ""),
+            AutoCreateDecision::Default,
+            "conf seeds @sidebar_auto_create; unset still defaults to create"
+        );
+        assert_eq!(auto_create_decision("", "off"), AutoCreateDecision::Skip);
+        assert_eq!(
+            auto_create_decision("garbage", "OFF"),
+            AutoCreateDecision::Skip
+        );
+    }
+
+    // ─── toggle-all dedupe ────────────────────────────────────────────
+
+    #[test]
+    fn duplicate_sidebar_targets_keeps_first_sidebar_per_window() {
+        let output = "%1|@0|sidebar\n%2|@0|sidebar\n%3|@1|sidebar";
+        assert_eq!(
+            duplicate_sidebar_targets(output),
+            vec![("%1".to_string(), "%2".to_string(), "@0".to_string())]
+        );
+    }
+
+    #[test]
+    fn duplicate_sidebar_targets_ignores_regular_panes_and_malformed_lines() {
+        // Regular panes and malformed lines never count as the "first"
+        // sidebar of a window, so they neither dedupe nor shield a
+        // duplicate: %4 is still a duplicate of %2 on @0.
+        let output = "%1|@0|pane\n%2|@0|sidebar\n%1|@0|\nbad\n%4|@0|sidebar";
+        assert_eq!(
+            duplicate_sidebar_targets(output),
+            vec![("%2".to_string(), "%4".to_string(), "@0".to_string())]
+        );
+    }
+
+    #[test]
+    fn duplicate_sidebar_targets_empty_when_single_sidebar_per_window() {
+        let output = "%1|@0|sidebar\n%2|@1|sidebar";
+        assert!(duplicate_sidebar_targets(output).is_empty());
     }
 
     // ─── popup mode (mobile viewport) ─────────────────────────────────

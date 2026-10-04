@@ -6,7 +6,8 @@ use crate::tmux;
 use super::filter::{RepoFilter, StatusFilter};
 
 /// State shared across all sidebar instances via tmux global variables.
-/// Synced from tmux at startup and on pane focus change (SIGUSR1).
+/// Synced from tmux at startup, on pane focus change (SIGUSR1), and
+/// whenever another sidebar broadcasts a shared-option change.
 pub struct GlobalState {
     pub status_filter: StatusFilter,
     pub selected_pane_row: usize,
@@ -17,6 +18,9 @@ pub struct GlobalState {
     /// `@sidebar_default_compact_view` only seeds the mode when no live
     /// value exists yet (fresh tmux server, before the first toggle).
     pub compact: bool,
+    /// Pane id of the sidebar instance owning this state. Used to skip
+    /// self-signaling when broadcasting shared-option changes.
+    owner_pane: String,
     /// Last filter value successfully written to tmux.
     last_saved_filter: StatusFilter,
     /// Last cursor value successfully written to tmux.
@@ -29,17 +33,18 @@ pub struct GlobalState {
 
 impl Default for GlobalState {
     fn default() -> Self {
-        Self::new()
+        Self::new(String::new())
     }
 }
 
 impl GlobalState {
-    pub fn new() -> Self {
+    pub fn new(owner_pane: String) -> Self {
         Self {
             status_filter: StatusFilter::All,
             selected_pane_row: 0,
             repo_filter: RepoFilter::All,
             compact: false,
+            owner_pane,
             last_saved_filter: StatusFilter::All,
             last_saved_cursor: 0,
             last_saved_repo_filter: RepoFilter::All,
@@ -47,7 +52,19 @@ impl GlobalState {
         }
     }
 
-    /// Save filter to tmux global variable.
+    /// Signal every other open sidebar to reload the shared options.
+    /// Called after this instance changes one, so the new value lands
+    /// immediately everywhere — including sidebars whose window never
+    /// leaves the "active" state of their own session, which the
+    /// focus-transition reload cannot reach. Cursor updates do not
+    /// broadcast: they fire on every navigation keystroke, and the
+    /// focus-change reload keeps them converging cheaply.
+    fn broadcast_change(&self) {
+        tmux::broadcast_refresh(&self.owner_pane);
+    }
+
+    /// Save filter to tmux global variable, then broadcast the change to
+    /// every other open sidebar.
     /// Only updates `last_saved_filter` on success so that a failed write
     /// does not cause sync to overwrite the user's choice.
     pub fn save_filter(&mut self) {
@@ -60,6 +77,7 @@ impl GlobalState {
         .is_some()
         {
             self.last_saved_filter = self.status_filter;
+            self.broadcast_change();
         }
     }
 
@@ -108,7 +126,8 @@ impl GlobalState {
         }
     }
 
-    /// Save repo filter to tmux global variable.
+    /// Save repo filter to tmux global variable, then broadcast the
+    /// change to every other open sidebar.
     pub fn save_repo_filter(&mut self) {
         if tmux::run_tmux(&[
             "set",
@@ -119,6 +138,7 @@ impl GlobalState {
         .is_some()
         {
             self.last_saved_repo_filter = self.repo_filter.clone();
+            self.broadcast_change();
         }
     }
 
@@ -126,20 +146,23 @@ impl GlobalState {
     /// sidebar via the `@sidebar_compact` tmux global option.
     pub fn toggle_compact(&mut self) {
         self.compact = !self.compact;
-        self.save_compact();
+        if self.save_compact() {
+            self.broadcast_change();
+        }
     }
 
-    /// Save compact flag to tmux global variable. The write result does
-    /// not gate anything: on the next sync the live tmux value wins, so
-    /// a failed write merely reverts this sidebar to the shared density
-    /// instead of leaving it diverged.
-    pub fn save_compact(&mut self) {
-        let _ = tmux::run_tmux(&[
+    /// Save compact flag to tmux global variable. Returns `true` when
+    /// tmux accepted the write (and the caller should broadcast). On a
+    /// failed write the next sync reverts this sidebar to the shared
+    /// density instead of leaving it diverged.
+    pub fn save_compact(&mut self) -> bool {
+        tmux::run_tmux(&[
             "set",
             "-g",
             tmux::SIDEBAR_COMPACT,
             if self.compact { "1" } else { "0" },
-        ]);
+        ])
+        .is_some()
     }
 
     /// Load all global state from tmux variables.
