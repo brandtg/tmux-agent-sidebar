@@ -12,9 +12,10 @@ pub struct GlobalState {
     pub selected_pane_row: usize,
     pub repo_filter: RepoFilter,
     /// Compact one-line-per-pane rendering. Toggleable at runtime with
-    /// `c`; synced across open sidebars via `@sidebar_compact` but never
-    /// restored on reopen — the landing mode comes from
-    /// `@sidebar_default_compact_view`.
+    /// `c`; the live value is shared across open sidebars via
+    /// `@sidebar_compact` so every sidebar renders the same density.
+    /// `@sidebar_default_compact_view` only seeds the mode when no live
+    /// value exists yet (fresh tmux server, before the first toggle).
     pub compact: bool,
     /// Last filter value successfully written to tmux.
     last_saved_filter: StatusFilter,
@@ -22,8 +23,6 @@ pub struct GlobalState {
     last_saved_cursor: usize,
     /// Last repo filter value successfully written to tmux.
     last_saved_repo_filter: RepoFilter,
-    /// Last compact value successfully written to tmux.
-    last_saved_compact: bool,
     /// When the selected cursor was last changed and still needs persisting.
     pending_cursor_save_since: Option<Instant>,
 }
@@ -44,7 +43,6 @@ impl GlobalState {
             last_saved_filter: StatusFilter::All,
             last_saved_cursor: 0,
             last_saved_repo_filter: RepoFilter::All,
-            last_saved_compact: false,
             pending_cursor_save_since: None,
         }
     }
@@ -131,20 +129,17 @@ impl GlobalState {
         self.save_compact();
     }
 
-    /// Save compact flag to tmux global variable. Only updates
-    /// `last_saved_compact` on success so a failed write does not cause
-    /// a later sync to revert the user's choice.
+    /// Save compact flag to tmux global variable. The write result does
+    /// not gate anything: on the next sync the live tmux value wins, so
+    /// a failed write merely reverts this sidebar to the shared density
+    /// instead of leaving it diverged.
     pub fn save_compact(&mut self) {
-        if tmux::run_tmux(&[
+        let _ = tmux::run_tmux(&[
             "set",
             "-g",
             tmux::SIDEBAR_COMPACT,
             if self.compact { "1" } else { "0" },
-        ])
-        .is_some()
-        {
-            self.last_saved_compact = self.compact;
-        }
+        ]);
     }
 
     /// Load all global state from tmux variables.
@@ -176,22 +171,22 @@ impl GlobalState {
     /// Land on the configured default view instead of the last-used
     /// filter/compact values.
     ///
-    /// `@sidebar_filter` and `@sidebar_compact` persist the most recent
-    /// values across sidebar instances, so a freshly opened sidebar
-    /// would otherwise resume whatever some other window set earlier —
-    /// a random-looking landing state. Called once at startup, after
-    /// `load_from_tmux`.
+    /// `@sidebar_filter` persists the most recent value across sidebar
+    /// instances, so a freshly opened sidebar would otherwise resume
+    /// whatever some other window set earlier — a random-looking landing
+    /// state. Called once at startup, after `load_from_tmux`.
     ///
-    /// Only `status_filter` and `compact` are overridden: `apply_all`
-    /// has already pointed the `last_saved_*` markers at the persisted
-    /// values, so the window-refocus reload in the main loop does not
-    /// restore the stale values over the defaults, while changes from
-    /// other open sidebars still sync in. The defaults are never
+    /// Only `status_filter` is overridden unconditionally. For `compact`
+    /// the landing default applies only while no live `@sidebar_compact`
+    /// value exists: once any sidebar has toggled, the shared value wins
+    /// so every sidebar renders the same density. The defaults are never
     /// written back to tmux here — opening a sidebar must not yank the
     /// view out from under already-open ones.
     pub fn apply_default_view(&mut self, opts: &HashMap<String, String>) {
         self.status_filter = Self::default_view_from_options(opts);
-        self.compact = Self::default_compact_view_from_options(opts);
+        if !opts.contains_key(tmux::SIDEBAR_COMPACT) {
+            self.compact = Self::default_compact_view_from_options(opts);
+        }
     }
 
     /// Startup variant of [`GlobalState::apply_default_view`] that reads
@@ -226,11 +221,12 @@ impl GlobalState {
             }
         }
         if let Some(compact_str) = opts.get(tmux::SIDEBAR_COMPACT) {
+            // Compact is adopted unconditionally: the live tmux value is
+            // the shared density across sidebars, so it also overrides a
+            // landing default from `@sidebar_default_compact_view` (which
+            // only applies while this option is unset).
             let tmux_compact = compact_str.trim() == "1";
-            if tmux_compact != self.last_saved_compact {
-                self.compact = tmux_compact;
-                self.last_saved_compact = tmux_compact;
-            }
+            self.compact = tmux_compact;
         }
     }
 }

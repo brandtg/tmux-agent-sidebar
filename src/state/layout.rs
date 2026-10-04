@@ -102,6 +102,11 @@ impl AppState {
     }
 
     /// Handle mouse scroll event, routing to agents or bottom panel based on Y position.
+    ///
+    /// `delta` is expressed in full-size row lines (one wheel notch = 3
+    /// lines = one agent row). A compact row is a single line, so in
+    /// compact mode a notch collapses to one line — otherwise each notch
+    /// skips three panes.
     pub fn handle_mouse_scroll(
         &mut self,
         row: u16,
@@ -113,7 +118,12 @@ impl AppState {
         if row >= bottom_start {
             self.scroll_bottom(delta);
         } else {
-            self.scrolls.panes.scroll(delta);
+            let lines = if self.global.compact {
+                delta.signum()
+            } else {
+                delta
+            };
+            self.scrolls.panes.scroll(lines);
         }
     }
 
