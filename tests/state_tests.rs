@@ -565,7 +565,7 @@ fn make_opts(pairs: &[(&str, &str)]) -> std::collections::HashMap<String, String
 }
 
 fn make_global() -> GlobalState {
-    GlobalState::new()
+    GlobalState::new(String::new())
 }
 
 // ─── apply_all (full sync: startup + SIGUSR1) tests ─────────────────

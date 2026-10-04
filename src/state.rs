@@ -155,6 +155,7 @@ pub struct AppState {
 
 impl AppState {
     pub fn new(tmux_pane: String) -> Self {
+        let global = GlobalState::new(tmux_pane.clone());
         let mut state = Self {
             now: 0,
             repo_groups: vec![],
@@ -195,7 +196,7 @@ impl AppState {
             pet_working_paper_x_offset: 0,
             pet_working_paper_seed: 1,
             version_notice: None,
-            global: GlobalState::new(),
+            global,
             bottom_panel_height: crate::ui::BOTTOM_PANEL_HEIGHT,
             sessions: SessionNamesState::default(),
             pet_enabled: false,

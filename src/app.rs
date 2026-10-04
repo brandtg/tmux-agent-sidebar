@@ -135,11 +135,20 @@ pub fn run(
                 let _ = git_info_tx.send(paths);
             }
             needs_redraw = true;
+            // Reload shared global options (compact, filters, cursor) on
+            // every SIGUSR1-driven refresh, and when an inactive window
+            // regains visibility (≥2 inactive ticks). The signal must
+            // reload regardless of window-active state: a broadcast from
+            // another sidebar has to land on *inactive* instances too —
+            // those are exactly the stale ones — and `#{window_active}`
+            // is per-session, so a sidebar whose window leads its own
+            // (unfocused) session never registers a visible→hidden
+            // transition for the second branch to catch.
+            if sigusr1 || (is_window_active && window_inactive_count >= 2) {
+                state.global.load_from_tmux();
+                state.rebuild_row_targets();
+            }
             if is_window_active {
-                if window_inactive_count >= 2 {
-                    state.global.load_from_tmux();
-                    state.rebuild_row_targets();
-                }
                 window_inactive_count = 0;
             } else {
                 window_inactive_count = window_inactive_count.saturating_add(1);

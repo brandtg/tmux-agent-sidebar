@@ -18,7 +18,7 @@ CI runs `cargo test`, `cargo clippy`, and `cargo fmt --check` on every push/PR.
 
 **Before creating any git commit**, always run `cargo fmt` first to avoid CI formatting failures. This applies to every commit, not just the final one.
 
-After implementation is complete, run `cargo build --release`. The plugin directory is usually a symlink to this repo, so the binary is picked up automatically; only a worktree build needs a manual copy (see "Debugging" section below).
+After implementation is complete, run `cargo build --release`. The running plugin (`~/.tmux/plugins/tmux-agent-sidebar`) is a git clone of the installed release, not a symlink to this repo — build artifacts and config changes must be copied into it manually (see "Debugging" section below).
 
 ## Architecture
 
@@ -78,18 +78,27 @@ Tests are in `/tests/` using Ratatui's `TestBackend` for UI rendering assertions
 
 ## Debugging (Local tmux Plugin)
 
-`~/.tmux/plugins/tmux-agent-sidebar` is typically a symlink to this repository, so `cargo build --release` alone updates the binary tmux loads. Just restart the sidebar (toggle off → on via the tmux keybinding) to pick up the new build.
+`~/.tmux/plugins/tmux-agent-sidebar` is the production deploy: a git clone of the installed release that tmux loads from. It is NOT a symlink to this repository, so testing changes from a checkout or worktree means copying build artifacts into it, then restarting the sidebar (toggle off → on via the tmux keybinding):
 
 ```bash
 cargo build --release
-# Restart sidebar (toggle off → on via tmux keybinding)
+cp target/release/tmux-agent-sidebar ~/.tmux/plugins/tmux-agent-sidebar/bin/tmux-agent-sidebar
 ```
 
-**When working in a worktree**: Worktrees build into their own `target/release/`, which is not what the plugin directory points at, so the artifact must be copied manually AND re-signed. On macOS (Darwin 24+), `cargo` produces a `linker-signed` ad-hoc signature that the kernel will SIGKILL (signal 9) immediately after a `cp` — the kernel refuses to honor a linker-only signature on a file it didn't write itself. Replace it with a fresh ad-hoc signature to avoid the kill:
+Two copy targets matter:
+
+- `bin/tmux-agent-sidebar` — what tmux actually runs. The entry script (`tmux-agent-sidebar.tmux`) prefers `bin/` over `target/release/` when both exist, so copying only `target/release/` leaves the old binary live (the classic "my change didn't do anything" trap).
+- `agent-sidebar.conf` — copy when hook registration or option defaults changed. Hooks are registered once at conf-load time, so a binary-only copy leaves stale wiring (e.g. the after-new-window hook) until the next plugin reload (prefix+R or `tmux source-file ~/.tmux/plugins/tmux-agent-sidebar/tmux-agent-sidebar.tmux`).
+
+**Reverting** is symmetric: rebuild the main checkout and copy the artifact over the same paths — no git surgery in the plugin clone required.
+
+**Version-check gotcha**: `tmux-agent-sidebar.tmux` compares the installed binary's `version` output against this repo's `Cargo.toml` when the plugin loads. A mismatch (e.g. reloading while testing a worktree build whose version was bumped, or not bumped) triggers the install wizard instead of sourcing the config. Copying the binary and toggling the sidebar avoids this; a full reload with mismatched versions may run the wizard.
+
+**When working in a worktree on macOS (Darwin 24+)**: `cargo` produces a `linker-signed` ad-hoc signature that the kernel will SIGKILL (signal 9) immediately after a `cp` — the kernel refuses to honor a linker-only signature on a file it didn't write itself. Replace it with a fresh ad-hoc signature to avoid the kill:
 
 ```bash
-cp <worktree-path>/target/release/tmux-agent-sidebar ~/.tmux/plugins/tmux-agent-sidebar/target/release/tmux-agent-sidebar
-codesign --force --sign - ~/.tmux/plugins/tmux-agent-sidebar/target/release/tmux-agent-sidebar
+cp <worktree-path>/target/release/tmux-agent-sidebar ~/.tmux/plugins/tmux-agent-sidebar/bin/tmux-agent-sidebar
+codesign --force --sign - ~/.tmux/plugins/tmux-agent-sidebar/bin/tmux-agent-sidebar
 ```
 
 If tmux reports `terminated by signal 9` after a worktree build, you almost certainly skipped the `codesign` step. Clearing `com.apple.provenance` with `xattr -c` is not required — the kernel only cares about the signature flavor.
