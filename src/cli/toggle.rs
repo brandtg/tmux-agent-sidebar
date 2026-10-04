@@ -53,6 +53,25 @@ pub(crate) fn cmd_toggle(args: &[String]) -> i32 {
         &format!("#{{{}}}", tmux::SIDEBAR_POSITION),
     ));
 
+    // Mobile viewport: windows narrower than `@sidebar_popup_max_width`
+    // open as a tmux popup instead of a split pane. Auto-create stays a
+    // no-op here — an unprompted popup on every new window would be
+    // hostile, and `toggle-all` reuses `--create-only`, so narrow windows
+    // are skipped there too. Popups never touch pane layout, which also
+    // keeps the layout-recalculation path (implicated in tmux's
+    // evbuffer-underflow SIGSEGV during heavy pane output) out of the
+    // mobile flow entirely. Resolved before the existing-sidebar check
+    // because the toggle-off path needs it too: on a narrow viewport the
+    // popup replaces a desktop split pane in the same keystroke.
+    let window_width: u32 = tmux::display_message(window_id, "#{window_width}")
+        .parse()
+        .unwrap_or(0);
+    let popup_max_width = tmux::display_message(
+        window_id,
+        &format!("#{{{}}}", tmux::SIDEBAR_POPUP_MAX_WIDTH),
+    );
+    let use_popup = should_use_popup(&popup_max_width, window_width);
+
     // Check for existing sidebar
     let pane_id_role_format = pane_id_role_format();
     let panes_output = tmux::run_tmux(&["list-panes", "-t", window_id, "-F", &pane_id_role_format])
@@ -72,25 +91,17 @@ pub(crate) fn cmd_toggle(args: &[String]) -> i32 {
             return 0;
         }
         close_sidebar(&sidebar_pane, window_id);
+        // Mobile takeover: mobile usually attaches to a session the
+        // desktop already set up, so the first toggle press in a narrow
+        // viewport lands on a live split-pane sidebar. Reopen it as the
+        // popup right away instead of demanding a second press.
+        if use_popup {
+            return open_popup(window_id, pane_path);
+        }
         return 0;
     }
 
-    // Mobile viewport: windows narrower than `@sidebar_popup_max_width`
-    // open as a tmux popup instead of a split pane. Auto-create stays a
-    // no-op here — an unprompted popup on every new window would be
-    // hostile, and `toggle-all` reuses `--create-only`, so narrow windows
-    // are skipped there too. Popups never touch pane layout, which also
-    // keeps the layout-recalculation path (implicated in tmux's
-    // evbuffer-underflow SIGSEGV during heavy pane output) out of the
-    // mobile flow entirely.
-    let window_width: u32 = tmux::display_message(window_id, "#{window_width}")
-        .parse()
-        .unwrap_or(0);
-    let popup_max_width = tmux::display_message(
-        window_id,
-        &format!("#{{{}}}", tmux::SIDEBAR_POPUP_MAX_WIDTH),
-    );
-    if should_use_popup(&popup_max_width, window_width) {
+    if use_popup {
         if create_only {
             return 0;
         }
@@ -452,7 +463,45 @@ fn popup_command(
     args
 }
 
+/// Kill every split-pane sidebar still running in `window_id`'s session.
+///
+/// Mobile normally attaches to a session the desktop already set up, so
+/// entering the popup view can start with desktop sidebar panes still
+/// live — in other windows, or in the popup's own window when the toggle
+/// path did not just close one. Left running, they keep polling tmux and
+/// racing the popup over shared global options while wasting the narrow
+/// viewport's columns. Each kill replays that window's saved layout via
+/// the normal close path; panes without the sidebar role are never
+/// touched.
+fn stop_session_sidebar_panes(window_id: &str) {
+    let session_id = tmux::display_message(window_id, "#{session_id}");
+    if session_id.is_empty() {
+        return;
+    }
+    let output = tmux::run_tmux(&[
+        "list-panes",
+        "-s",
+        "-t",
+        &session_id,
+        "-F",
+        &pane_window_role_format(),
+    ])
+    .unwrap_or_default();
+
+    for line in output.lines() {
+        if let Some((sidebar_pane, pane_window)) = parse_sidebar_close_target(line) {
+            close_sidebar(&sidebar_pane, &pane_window);
+        }
+    }
+}
+
 fn open_popup(window_id: &str, start_directory: &str) -> i32 {
+    // Entering the popup view is the mobile takeover point: stop the
+    // split-pane sidebars the desktop left running in this session before
+    // drawing the popup. Runs before the anchor pane resolves so
+    // `TMUX_PANE` is never pinned to a pane about to be killed.
+    stop_session_sidebar_panes(window_id);
+
     let self_bin = std::env::current_exe()
         .ok()
         .and_then(|p| p.to_str().map(|s| s.to_string()))
