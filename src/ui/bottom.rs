@@ -35,13 +35,6 @@ pub fn draw_bottom(frame: &mut Frame, state: &mut AppState, area: Rect) {
 
     let tab_title = build_tab_title(state);
 
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .style(Style::default().fg(border_color));
-
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
-
     let title_spans = tab_title.spans;
     let title_dw = title_spans
         .iter()
@@ -56,6 +49,22 @@ pub fn draw_bottom(frame: &mut Frame, state: &mut AppState, area: Rect) {
     ));
     let top_line = Line::from(top_line_spans);
     let top_rect = Rect::new(area.x, area.y, area.width, 1);
+
+    // Minimized: collapse to just the tab header row. The Activity/Git
+    // labels stay visible and clickable so tabs can still be switched
+    // without expanding the panel.
+    if state.bottom_minimized {
+        frame.render_widget(Paragraph::new(top_line), top_rect);
+        return;
+    }
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .style(Style::default().fg(border_color));
+
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
     frame.render_widget(Paragraph::new(top_line), top_rect);
 
     let bottom_line = Line::from(Span::styled(

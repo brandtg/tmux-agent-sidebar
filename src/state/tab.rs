@@ -153,6 +153,44 @@ impl AppState {
             BottomTab::GitStatus => self.scrolls.git.scroll(delta),
         }
     }
+
+    /// Effective height of the bottom panel this frame, accounting for the
+    /// `@sidebar_bottom_height` setting (0 = hidden) and the minimized state
+    /// (collapsed to just the tab header row).
+    pub fn effective_bottom_height(&self) -> u16 {
+        if self.bottom_panel_height == 0 {
+            0
+        } else if self.bottom_minimized {
+            crate::ui::MINIMIZED_BOTTOM_HEIGHT
+        } else {
+            self.bottom_panel_height
+        }
+    }
+
+    /// Re-evaluate auto-minimize against the current terminal height. A user
+    /// override from `m` pins the choice; otherwise the panel minimizes when
+    /// the viewport is too short to fit the configured panel plus
+    /// [`crate::ui::AUTO_MINIMIZE_MIN_LIST_ROWS`] list rows.
+    pub fn apply_auto_minimize(&mut self, term_height: u16) {
+        if self.bottom_minimize_override.is_none() {
+            let needed = self
+                .bottom_panel_height
+                .saturating_add(crate::ui::AUTO_MINIMIZE_MIN_LIST_ROWS);
+            self.bottom_minimized = term_height <= needed;
+        }
+    }
+
+    /// Toggle the bottom panel between expanded and minimized, pinning the
+    /// choice so it no longer follows the viewport. No-op when the panel is
+    /// hidden entirely (`@sidebar_bottom_height 0`).
+    pub fn toggle_bottom_minimized(&mut self) {
+        if self.bottom_panel_height == 0 {
+            return;
+        }
+        let next = !self.bottom_minimized;
+        self.bottom_minimized = next;
+        self.bottom_minimize_override = Some(next);
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -589,5 +627,85 @@ mod tests {
             BottomTab::Activity,
             "relaunched agent should trigger Activity"
         );
+    }
+
+    // ─── bottom panel minimize ──────────────────────────────────
+
+    #[test]
+    fn effective_height_uses_configured_value_when_expanded() {
+        let mut state = AppState::new("%99".into());
+        state.bottom_panel_height = 20;
+        state.bottom_minimized = false;
+        assert_eq!(state.effective_bottom_height(), 20);
+    }
+
+    #[test]
+    fn effective_height_collapses_to_header_when_minimized() {
+        let mut state = AppState::new("%99".into());
+        state.bottom_panel_height = 20;
+        state.bottom_minimized = true;
+        assert_eq!(
+            state.effective_bottom_height(),
+            crate::ui::MINIMIZED_BOTTOM_HEIGHT
+        );
+    }
+
+    #[test]
+    fn effective_height_stays_zero_when_panel_hidden() {
+        let mut state = AppState::new("%99".into());
+        state.bottom_panel_height = 0;
+        state.bottom_minimized = true;
+        assert_eq!(state.effective_bottom_height(), 0);
+    }
+
+    #[test]
+    fn auto_minimize_triggers_when_list_would_be_squeezed() {
+        let mut state = AppState::new("%99".into());
+        state.bottom_panel_height = 20;
+        let threshold = 20 + crate::ui::AUTO_MINIMIZE_MIN_LIST_ROWS;
+        state.apply_auto_minimize(threshold);
+        assert!(state.bottom_minimized);
+        state.apply_auto_minimize(threshold + 1);
+        assert!(!state.bottom_minimized);
+    }
+
+    #[test]
+    fn auto_minimize_threshold_tracks_configured_panel_height() {
+        let mut state = AppState::new("%99".into());
+        state.bottom_panel_height = 30;
+        // A 26-row viewport clears a fixed 24 cutoff but must still minimize
+        // against a 30-row panel.
+        state.apply_auto_minimize(26);
+        assert!(state.bottom_minimized);
+    }
+
+    #[test]
+    fn auto_minimize_respects_manual_override() {
+        let mut state = AppState::new("%99".into());
+        state.toggle_bottom_minimized();
+        assert!(state.bottom_minimized);
+        // A tall viewport must not undo the user's explicit minimize.
+        state.apply_auto_minimize(60);
+        assert!(state.bottom_minimized);
+    }
+
+    #[test]
+    fn toggle_bottom_minimized_pins_the_choice() {
+        let mut state = AppState::new("%99".into());
+        state.toggle_bottom_minimized();
+        assert!(state.bottom_minimized);
+        assert_eq!(state.bottom_minimize_override, Some(true));
+        state.toggle_bottom_minimized();
+        assert!(!state.bottom_minimized);
+        assert_eq!(state.bottom_minimize_override, Some(false));
+    }
+
+    #[test]
+    fn toggle_bottom_minimized_noop_when_panel_hidden() {
+        let mut state = AppState::new("%99".into());
+        state.bottom_panel_height = 0;
+        state.toggle_bottom_minimized();
+        assert!(!state.bottom_minimized);
+        assert_eq!(state.bottom_minimize_override, None);
     }
 }

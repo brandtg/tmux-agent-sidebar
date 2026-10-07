@@ -13,7 +13,7 @@ Most options must be set **before** loading the plugin in your `tmux.conf`. Colo
 | `@sidebar_key_all`               | `E`     | Prefix-triggered keybinding to toggle the sidebar in all windows                        |
 | `@sidebar_width`                 | `15%`   | Width in columns or as a percentage                                                     |
 | `@sidebar_position`              | `left`  | Sidebar placement (`left` or `right`)                                                   |
-| `@sidebar_bottom_height`         | `20`    | Bottom panel height in lines (set `0` to hide)                                          |
+| `@sidebar_bottom_height`         | `20`    | Bottom panel height in lines (set `0` to hide). When the terminal is too short to fit this panel plus ~10 rows of agent list, the panel auto-minimizes to its Activity/Git tab header; press `m` to expand or minimize it manually |
 | `@sidebar_default_view`          | `all`   | Status filter view the sidebar lands on when it opens (`all`, `running`, `background`, `waiting`, `idle`, `error`). Filter changes still sync across open sidebars but are not restored on reopen |
 | `@sidebar_default_compact_view`  | `off`   | Whether a newly opened sidebar starts in compact mode — one line per agent. Toggle live with `c` inside the sidebar; the toggle syncs across open sidebars but is not restored on reopen |
 | `@sidebar_auto_create`           | `on`    | Auto-create the sidebar on new windows (set `off` to disable). Consulted at window-create time, and only while no `@sidebar_mode` is recorded — a toggle-all sweep overrides it until the next one |

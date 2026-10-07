@@ -17,6 +17,16 @@ use crate::{state::AppState, tmux};
 
 pub const BOTTOM_PANEL_HEIGHT: u16 = 20;
 
+/// Minimum rows the agent list must retain before the bottom panel is
+/// auto-minimized. When the terminal is too short to fit the configured
+/// `@sidebar_bottom_height` panel plus this many list rows, the panel
+/// collapses to its Activity/Git tab header. The user can override with `m`.
+pub const AUTO_MINIMIZE_MIN_LIST_ROWS: u16 = 10;
+
+/// Height of the bottom panel when minimized: just the Activity/Git tab
+/// header row, which stays clickable so tabs can still be switched.
+pub const MINIMIZED_BOTTOM_HEIGHT: u16 = 1;
+
 /// Rows reserved between the pane list and the bottom panel when the pet is
 /// enabled. The pet and its desk/chair all render inside this band so they
 /// never overdraw the pane list above or the bottom panel's border below.
@@ -57,8 +67,8 @@ pub fn draw(frame: &mut Frame, state: &mut AppState) {
     state.layout.hyperlink_overlays.clear();
     let area = frame.area();
 
-    let bot_h = state.bottom_panel_height;
-    let divider_h = if bot_h > 0 && state.pet_enabled {
+    let bot_h = state.effective_bottom_height();
+    let divider_h = if bot_h > 0 && state.pet_enabled && !state.bottom_minimized {
         PET_SCENE_HEIGHT
     } else {
         1
@@ -81,7 +91,7 @@ pub fn draw(frame: &mut Frame, state: &mut AppState) {
 
     if bot_h > 0 && chunks.len() > 2 {
         bottom::draw_bottom(frame, state, chunks[2]);
-        if state.pet_enabled {
+        if state.pet_enabled && !state.bottom_minimized {
             let running_count = state.running_count();
             pet::draw_pet(frame, state, chunks[1], running_count);
         }
