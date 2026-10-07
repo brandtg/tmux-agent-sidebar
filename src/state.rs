@@ -1181,14 +1181,15 @@ mod tests {
     }
 
     #[test]
-    fn rebuild_row_targets_empty_groups() {
+    fn rebuild_row_targets_resets_cursor_when_empty() {
         let mut state = AppState::new("%99".into());
         state.global.selected_pane_row = 5;
         state.repo_groups = vec![];
         state.rebuild_row_targets();
         assert!(state.layout.pane_row_targets.is_empty());
-        // selected_pane_row stays as-is when targets empty (no clamp needed)
-        assert_eq!(state.global.selected_pane_row, 5);
+        // Empty targets reset the cursor: a stale index would make the next,
+        // larger view auto-scroll down to a meaningless row.
+        assert_eq!(state.global.selected_pane_row, 0);
     }
 
     #[test]

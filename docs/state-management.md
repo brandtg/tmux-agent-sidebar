@@ -25,13 +25,16 @@ gated on window activation: `#{window_active}` is a per-session flag, so
 a sidebar whose window leads an unfocused session never registers a
 hidden→visible transition, and multi-client setups keep several windows
 "active" at once. Cursor updates are deliberately not broadcast — they
-fire on every navigation keystroke and converge via the focus-change
-reload instead.
+fire on every navigation keystroke. On the SIGUSR1 focus-change reload the
+shared cursor is loaded, but the agent list is then re-anchored at the top
+(`reset_pane_scroll`), so switching windows or panes always shows the list
+from its first row instead of auto-scrolling down to a cursor left by
+another window.
 
 | Field | Tmux Variable | Update Trigger | Description |
 |-------|--------------|----------------|-------------|
 | `status_filter` | `@sidebar_filter` | User input (left/right key) | Active status filter (All/Running/Background/Waiting/Idle/Error); startup landing view comes from `@sidebar_default_view` |
-| `selected_pane_row` | `@sidebar_cursor` | User input (j/k key); tmux write flushed after a short debounce | Cursor position in agent list |
+| `selected_pane_row` | `@sidebar_cursor` | User input (j/k key); tmux write flushed after a short debounce | Cursor position in agent list; re-anchored to the first row on a window/pane (focus-change) reload |
 | `repo_filter` | `@sidebar_repo_filter` | User input (repo popup) | Repository filter (All or specific repo) |
 | `compact` | `@sidebar_compact` | User input (`c` key) | Compact one-line-per-pane rendering; the live value is shared by all open sidebars, and `@sidebar_default_compact_view` seeds it only before the first toggle |
 | sidebar mode | `@sidebar_mode` | `toggle-all` sweep | System-level `open`/`closed` intent; consulted by the new-window hook (falling back to `@sidebar_auto_create` while unset) so toggle-all covers windows created afterwards |
@@ -345,7 +348,7 @@ struct NoticesState {
 
 ## State Invariants
 
-1. `selected_pane_row` is always < `layout.pane_row_targets.len()` — clamped in `rebuild_row_targets()`
+1. `selected_pane_row` is clamped in `rebuild_row_targets()`: reset to 0 when `layout.pane_row_targets` is empty, otherwise clamped to the last valid index
 2. `activity.entries` contains only the focused pane's entries — cleared on focus change
 3. Tab preferences persist per pane in `PaneRuntimeState.tab_pref` and are restored on focus change. They vanish together with the rest of `PaneRuntimeState` when the pane is pruned, so a relaunched agent starts on the default tab
 4. Git fetching respects the `git_tab_active` flag — stops when tab is hidden

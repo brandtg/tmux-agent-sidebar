@@ -3,7 +3,7 @@ mod test_helpers;
 
 use test_helpers::*;
 use tmux_agent_sidebar::group::{PaneGitInfo, RepoGroup};
-use tmux_agent_sidebar::state::Focus;
+use tmux_agent_sidebar::state::{Focus, StatusFilter};
 use tmux_agent_sidebar::tmux::{AgentType, PaneStatus, SessionInfo, WindowInfo};
 use tmux_agent_sidebar::ui::colors::ColorTheme;
 use tmux_agent_sidebar::ui::icons::StatusIcons;
@@ -306,6 +306,99 @@ fn test_agents_auto_scroll_up_shows_group_header() {
     │      No activity yet     │
     ╰──────────────────────────╯
     ");
+}
+
+// ─── Agents: window/pane switch resets scroll ───────────────────────
+
+#[test]
+fn test_window_switch_reset_returns_list_to_top() {
+    // A tmux window/pane switch reloads the shared `@sidebar_cursor`, which
+    // another window may have left on a low row; `app::run` then calls
+    // `reset_pane_scroll`. Without it the auto-scroll snaps this list down
+    // to the adopted row and hides the agents above it.
+    let mut panes = Vec::new();
+    for i in 0..8 {
+        let mut pane = make_pane(AgentType::Claude, PaneStatus::Idle);
+        pane.pane_id = format!("%{}", i);
+        panes.push(pane);
+    }
+
+    let mut state = make_state(vec![SessionInfo {
+        session_name: "main".into(),
+        windows: vec![WindowInfo {
+            window_id: "@1".into(),
+            window_name: "project".into(),
+            window_active: true,
+            auto_rename: false,
+            panes: panes.clone(),
+        }],
+    }]);
+    state.repo_groups = vec![make_repo_group("project", panes)];
+    state.focus_state.sidebar_focused = true;
+    state.focus_state.focus = Focus::Panes;
+    state.rebuild_row_targets();
+
+    // Cursor adopted from another window; auto-scroll moves the list down.
+    state.global.selected_pane_row = 7;
+    let _ = render_to_string(&mut state, 28, 26);
+    assert!(
+        state.scrolls.panes.offset > 0,
+        "an adopted cursor should scroll the list"
+    );
+
+    state.reset_pane_scroll();
+    let _ = render_to_string(&mut state, 28, 26);
+    assert_eq!(state.global.selected_pane_row, 0);
+    assert_eq!(
+        state.scrolls.panes.offset, 0,
+        "window switch must anchor the list at the top"
+    );
+}
+
+#[test]
+fn test_empty_view_clamps_scroll_and_resets_cursor() {
+    // Switching to a status view with no matching agents must not keep a
+    // stale offset (which renders blank) or a stale cursor (which the next
+    // view would auto-scroll to).
+    let mut panes = Vec::new();
+    for i in 0..8 {
+        let mut pane = make_pane(AgentType::Claude, PaneStatus::Idle);
+        pane.pane_id = format!("%{}", i);
+        panes.push(pane);
+    }
+
+    let mut state = make_state(vec![SessionInfo {
+        session_name: "main".into(),
+        windows: vec![WindowInfo {
+            window_id: "@1".into(),
+            window_name: "project".into(),
+            window_active: true,
+            auto_rename: false,
+            panes: panes.clone(),
+        }],
+    }]);
+    state.repo_groups = vec![make_repo_group("project", panes)];
+    state.focus_state.sidebar_focused = true;
+    state.focus_state.focus = Focus::Panes;
+    state.rebuild_row_targets();
+
+    state.global.selected_pane_row = 7;
+    let _ = render_to_string(&mut state, 28, 26);
+    assert!(state.scrolls.panes.offset > 0, "scrolled down in All view");
+
+    state.global.status_filter = StatusFilter::Error;
+    state.rebuild_row_targets();
+    let _ = render_to_string(&mut state, 28, 26);
+
+    assert_eq!(state.scrolls.panes.total_lines, 0);
+    assert_eq!(
+        state.scrolls.panes.offset, 0,
+        "empty view must not keep a stale offset"
+    );
+    assert_eq!(
+        state.global.selected_pane_row, 0,
+        "empty view must reset the cursor"
+    );
 }
 
 // ─── Repo popup rendering ───────────────────────────────────────────

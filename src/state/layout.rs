@@ -94,9 +94,11 @@ impl AppState {
                 }
             }
         }
-        if self.global.selected_pane_row >= self.layout.pane_row_targets.len()
-            && !self.layout.pane_row_targets.is_empty()
-        {
+        if self.layout.pane_row_targets.is_empty() {
+            // No rows to select — reset the cursor so a later, larger view
+            // cannot inherit a stale index and auto-scroll down to it.
+            self.global.selected_pane_row = 0;
+        } else if self.global.selected_pane_row >= self.layout.pane_row_targets.len() {
             self.global.selected_pane_row = self.layout.pane_row_targets.len() - 1;
         }
     }

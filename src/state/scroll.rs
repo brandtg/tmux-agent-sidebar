@@ -19,6 +19,20 @@ pub struct ScrollStates {
     pub git: ScrollState,
 }
 
+impl super::AppState {
+    /// Anchor the agent list at the top: first row selected, offset zero.
+    ///
+    /// `@sidebar_cursor` is a shared global and an index into the global
+    /// agent list, so the focus-change reload can adopt a value written by
+    /// a sidebar in another window. The auto-scroll then snaps this list
+    /// down to that row, hiding the agents above it. Resetting on the
+    /// switch keeps every window's list showing from the top.
+    pub fn reset_pane_scroll(&mut self) {
+        self.global.selected_pane_row = 0;
+        self.scrolls.panes.offset = 0;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -90,5 +104,17 @@ mod tests {
         assert_eq!(states.git.offset, 0);
         assert_eq!(states.git.total_lines, 0);
         assert_eq!(states.git.visible_height, 0);
+    }
+
+    #[test]
+    fn reset_pane_scroll_returns_to_first_row() {
+        let mut state = super::super::AppState::new("%99".into());
+        state.global.selected_pane_row = 7;
+        state.scrolls.panes.offset = 14;
+
+        state.reset_pane_scroll();
+
+        assert_eq!(state.global.selected_pane_row, 0);
+        assert_eq!(state.scrolls.panes.offset, 0);
     }
 }
