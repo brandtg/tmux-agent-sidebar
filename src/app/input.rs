@@ -23,7 +23,8 @@ pub(super) fn handle_event(
         Event::Mouse(mouse) => match mouse.kind {
             MouseEventKind::Down(MouseButton::Left) => {
                 let term_height = terminal.size().map(|s| s.height).unwrap_or(0);
-                let bottom_start = term_height.saturating_sub(state.bottom_panel_height);
+                let bottom_h = state.effective_bottom_height();
+                let bottom_start = term_height.saturating_sub(bottom_h);
                 if mouse.row < bottom_start {
                     state.handle_mouse_click(mouse.row, mouse.column);
                 } else if mouse.row == bottom_start {
@@ -39,12 +40,14 @@ pub(super) fn handle_event(
             }
             MouseEventKind::ScrollDown => {
                 let term_height = terminal.size().map(|s| s.height).unwrap_or(0);
-                state.handle_mouse_scroll(mouse.row, term_height, state.bottom_panel_height, 3);
+                let bottom_h = state.effective_bottom_height();
+                state.handle_mouse_scroll(mouse.row, term_height, bottom_h, 3);
                 true
             }
             MouseEventKind::ScrollUp => {
                 let term_height = terminal.size().map(|s| s.height).unwrap_or(0);
-                state.handle_mouse_scroll(mouse.row, term_height, state.bottom_panel_height, -3);
+                let bottom_h = state.effective_bottom_height();
+                state.handle_mouse_scroll(mouse.row, term_height, bottom_h, -3);
                 true
             }
             // Motion, drag, and button-release events mutate nothing; only
@@ -53,6 +56,13 @@ pub(super) fn handle_event(
             // a full frame render on each movement burst.
             _ => false,
         },
+        // Re-evaluate auto-minimize immediately when the viewport changes;
+        // without this a short terminal keeps the full-height panel until
+        // the next refresh tick.
+        Event::Resize(_, height) => {
+            state.apply_auto_minimize(height);
+            true
+        }
         _ => false,
     }
 }
@@ -160,6 +170,11 @@ pub(super) fn handle_key_event(
             } else {
                 "Compact view: off"
             });
+        }
+        KeyCode::Char('m') => {
+            if state.bottom_panel_height > 0 {
+                state.toggle_bottom_minimized();
+            }
         }
         KeyCode::Enter => {
             if state.focus_state.focus == Focus::Panes {
@@ -427,6 +442,22 @@ mod tests {
             state.flash.as_ref().map(|(text, _)| text.as_str()),
             Some("Compact view: off")
         );
+    }
+
+    #[test]
+    fn m_toggles_bottom_minimize() {
+        // `m` is global (any non-modal focus) like `c`, so the panel can be
+        // minimized without first returning to the pane list.
+        let mut state = state_with_three_panes();
+        let flag = AtomicBool::new(false);
+        assert!(!state.bottom_minimized);
+
+        handle_key_event(key(KeyCode::Char('m')), &mut state, &flag);
+        assert!(state.bottom_minimized);
+        assert!(state.flash.is_none(), "no toggle feedback expected");
+
+        handle_key_event(key(KeyCode::Char('m')), &mut state, &flag);
+        assert!(!state.bottom_minimized);
     }
 
     #[test]

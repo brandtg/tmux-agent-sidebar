@@ -200,6 +200,42 @@ fn snapshot_activity_tab_active_ui() {
 }
 
 #[test]
+fn snapshot_bottom_panel_minimized_shows_only_header() {
+    let pane = make_pane(AgentType::Claude, PaneStatus::Running);
+    let mut state = make_state(vec![SessionInfo {
+        session_name: "main".into(),
+        windows: vec![WindowInfo {
+            window_id: "@1".into(),
+            window_name: "project".into(),
+            window_active: true,
+            auto_rename: false,
+            panes: vec![pane.clone()],
+        }],
+    }]);
+    state.repo_groups = vec![make_repo_group("project", vec![pane])];
+    state.rebuild_row_targets();
+
+    state.bottom_tab = BottomTab::Activity;
+    state.focus_state.focus = Focus::ActivityLog;
+    state.focus_state.sidebar_focused = true;
+    state.activity.entries = vec![ActivityEntry {
+        timestamp: "10:32".into(),
+        tool: "Edit".into(),
+        label: "src/main.rs".into(),
+    }];
+    state.bottom_minimized = true;
+
+    let output = render_to_string(&mut state, 28, 24);
+    insta::assert_snapshot!(output, @r"
+     ≡1  ●1  ◎0  ◐0  ○0  ✕0
+    ⓘ                        — ▾
+    project
+    ┃ ● claude
+    ╭ Activity │ Git ──────────╮
+    ");
+}
+
+#[test]
 fn activity_tab_leaves_one_blank_row_above_entries() {
     let pane = make_pane(AgentType::Claude, PaneStatus::Running);
     let mut state = make_state(vec![SessionInfo {

@@ -127,6 +127,14 @@ pub struct AppState {
     /// Height of the bottom panel in lines. Loaded once at startup from
     /// the `@sidebar_bottom_height` tmux option. A value of 0 hides the panel.
     pub bottom_panel_height: u16,
+    /// Whether the bottom panel is collapsed to just its tab header row.
+    /// While `bottom_minimize_override` is `None` this tracks the viewport
+    /// (auto-minimized on short terminals); an explicit `m` press pins it.
+    pub bottom_minimized: bool,
+    /// User override for [`Self::bottom_minimized`], set by the `m` key.
+    /// `None` means "follow the viewport height"; `Some` pins the user's
+    /// choice for the rest of the session.
+    pub bottom_minimize_override: Option<bool>,
     /// Maps session_id → session name, refreshed periodically from
     /// `~/.claude/sessions/*.json` files by `session_poll_loop`.
     ///
@@ -198,6 +206,8 @@ impl AppState {
             version_notice: None,
             global,
             bottom_panel_height: crate::ui::BOTTOM_PANEL_HEIGHT,
+            bottom_minimized: false,
+            bottom_minimize_override: None,
             sessions: SessionNamesState::default(),
             pet_enabled: false,
             popup_mode: false,

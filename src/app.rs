@@ -33,6 +33,9 @@ pub fn run(
     needs_refresh: &'static AtomicBool,
 ) -> io::Result<()> {
     let mut state = setup::init_state(tmux_pane);
+    // Short viewports start with the bottom panel minimized so the agent
+    // list keeps usable space; the user can expand it with `m`.
+    state.apply_auto_minimize(terminal.size()?.height);
     let mut window_inactive_count: u32 = 0;
 
     let workers = workers::spawn(&state);
@@ -105,6 +108,12 @@ pub fn run(
 
         let sigusr1 = needs_refresh.swap(false, Ordering::Relaxed);
         if sigusr1 || last_refresh.elapsed() >= refresh_interval {
+            // Re-check the viewport each tick as a safety net for resize
+            // signals a pane may miss; cheap, and only mutates state while
+            // the user has not pinned the panel with `m`.
+            if let Ok(size) = terminal.size() {
+                state.apply_auto_minimize(size.height);
+            }
             let previous_focused_pane_id = state.focus_state.focused_pane_id.clone();
             let is_window_active = state.refresh();
             if state.focus_state.focused_pane_id != previous_focused_pane_id {
