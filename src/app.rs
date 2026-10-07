@@ -156,6 +156,11 @@ pub fn run(
             if sigusr1 || (is_window_active && window_inactive_count >= 2) {
                 state.global.load_from_tmux();
                 state.rebuild_row_targets();
+                // A window/pane switch reloads the shared cursor, which
+                // another window may have moved. Re-anchor this sidebar at
+                // the top so the switch shows every agent instead of
+                // auto-scrolling to the adopted row.
+                state.reset_pane_scroll();
             }
             if is_window_active {
                 window_inactive_count = 0;

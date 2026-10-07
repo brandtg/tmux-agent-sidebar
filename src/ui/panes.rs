@@ -441,6 +441,11 @@ fn render_secondary_header_into(frame: &mut Frame, state: &mut AppState, area: R
 fn compute_scroll_offset(state: &mut AppState, total_lines: usize, list_area: Rect) -> usize {
     state.scrolls.panes.total_lines = total_lines;
     state.scrolls.panes.visible_height = list_area.height as usize;
+    // Clamp a stale offset to the new content size. When the list shrinks
+    // (view switch, agents disappearing) the offset can point past the
+    // last line and render an empty panel; the activity and git panels
+    // already clamp the same way.
+    state.scrolls.panes.scroll(0);
 
     // Auto-scroll to keep selected agent visible
     if state.focus_state.sidebar_focused && state.focus_state.focus == Focus::Panes {
