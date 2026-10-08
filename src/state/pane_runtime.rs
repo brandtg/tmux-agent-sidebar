@@ -134,6 +134,11 @@ impl AppState {
                 active_ids.insert(pane.pane_id.clone());
             }
         }
+        for windows in self.other_windows.values() {
+            for window in windows {
+                active_ids.insert(window.pane_id.clone());
+            }
+        }
         self.pane_states
             .map
             .retain(|pane_id, _| active_ids.contains(pane_id));

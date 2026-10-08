@@ -54,6 +54,7 @@ impl AppState {
     pub(crate) fn apply_session_snapshot(
         &mut self,
         sessions: Vec<SessionInfo>,
+        other_panes: Vec<crate::tmux::OtherPane>,
         sidebar_window_panes: Vec<(String, bool, String)>,
     ) {
         // First snapshot primes the anchor→git-info cache synchronously so
@@ -76,9 +77,23 @@ impl AppState {
                     }
                 }
             }
+            for pane in &other_panes {
+                if pane.path.is_empty() || self.git_info_cache.contains_key(&pane.path) {
+                    continue;
+                }
+                if primed_paths.insert(pane.path.clone()) {
+                    let info = crate::group::resolve_pane_git_info(&pane.path);
+                    self.git_info_cache.insert(pane.path.clone(), info);
+                }
+            }
             self.timers.git_info_primed = true;
         }
         self.repo_groups = crate::group::group_panes_by_repo(&sessions, &self.git_info_cache);
+        self.other_windows = crate::group::group_other_windows_by_repo(
+            &other_panes,
+            &sessions,
+            &self.git_info_cache,
+        );
         self.prune_pane_states_to_current_panes();
         self.rebuild_row_targets();
         self.find_focused_pane_from(&sidebar_window_panes);
@@ -187,13 +202,14 @@ impl AppState {
         let window_active = self.focus_state.window_active;
         let TmuxSnapshot {
             mut sessions,
+            other_panes,
             mut process_snapshot,
             sidebar_window_panes,
             ..
         } = snapshot;
         self.sweep_dead_bg_shells_if_due(&mut sessions, &mut process_snapshot);
         self.queue_port_scan_if_due(&sessions);
-        self.apply_session_snapshot(sessions, sidebar_window_panes);
+        self.apply_session_snapshot(sessions, other_panes, sidebar_window_panes);
         self.mark_focused_pane_seen(window_active);
         // `apply_session_snapshot` rebuilds `repo_groups` from a fresh tmux
         // query, and every freshly parsed `PaneInfo` carries an empty
@@ -254,18 +270,31 @@ impl AppState {
         // Such panes are still queued so the scan reports them as missed,
         // matching the old inline scanner where they could never appear in
         // the live set and decayed through the dead-scan streak.
-        self.pending_port_scan = Some(
-            sessions
-                .iter()
-                .flat_map(|session| session.windows.iter())
-                .flat_map(|window| window.panes.iter())
-                .map(|pane| crate::port::PaneScanTarget {
-                    pane_id: pane.pane_id.clone(),
-                    pane_pid: pane.pane_pid,
-                    agent: pane.agent.clone(),
-                })
-                .collect(),
-        );
+        let mut targets: Vec<crate::port::PaneScanTarget> = sessions
+            .iter()
+            .flat_map(|session| session.windows.iter())
+            .flat_map(|window| window.panes.iter())
+            .map(|pane| crate::port::PaneScanTarget {
+                pane_id: pane.pane_id.clone(),
+                pane_pid: pane.pane_pid,
+                agent: pane.agent.clone(),
+                kind: crate::port::PaneKind::Agent,
+            })
+            .collect();
+        // Non-agent window panes are scanned too so their listening ports
+        // and foreground command show up. They are marked `Window` so the
+        // dead-scan sweep never tears them down.
+        for windows in self.other_windows.values() {
+            for window in windows {
+                targets.push(crate::port::PaneScanTarget {
+                    pane_id: window.pane_id.clone(),
+                    pane_pid: window.pane_pid,
+                    agent: crate::tmux::AgentType::Unknown,
+                    kind: crate::port::PaneKind::Window,
+                });
+            }
+        }
+        self.pending_port_scan = Some(targets);
     }
 
     pub(crate) fn take_pending_port_scan(&mut self) -> Option<Vec<crate::port::PaneScanTarget>> {
@@ -295,7 +324,7 @@ impl AppState {
         // OpenCode panes before their stale-state teardown.
         let dead_panes = advance_dead_scan_streaks(
             &mut self.pane_states,
-            &scanned.scanned_panes,
+            &scanned.scanned_agent_panes,
             &scanned.live_agent_panes,
         );
         for pane_id in dead_panes {
@@ -1057,7 +1086,7 @@ mod tests {
         assert_eq!(state.repo_groups[0].panes[0].0.session_name, "alpha");
 
         let next_sessions = test_session(vec![pane_with_session("%1", "sess-a")]);
-        state.apply_session_snapshot(next_sessions, Vec::new());
+        state.apply_session_snapshot(next_sessions, Vec::new(), Vec::new());
 
         assert!(
             state.repo_groups[0].panes[0].0.session_name.is_empty(),

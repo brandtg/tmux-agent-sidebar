@@ -18,6 +18,12 @@ pub struct GlobalState {
     /// `@sidebar_default_compact_view` only seeds the mode when no live
     /// value exists yet (fresh tmux server, before the first toggle).
     pub compact: bool,
+    /// Show the "other windows" section beneath each repo's agent rows.
+    /// Toggleable at runtime with `w`; the live value is shared across
+    /// open sidebars via `@sidebar_show_windows`.
+    /// `@sidebar_default_show_windows` only seeds the mode when no live
+    /// value exists yet.
+    pub show_windows: bool,
     /// Pane id of the sidebar instance owning this state. Used to skip
     /// self-signaling when broadcasting shared-option changes.
     owner_pane: String,
@@ -44,6 +50,7 @@ impl GlobalState {
             selected_pane_row: 0,
             repo_filter: RepoFilter::All,
             compact: false,
+            show_windows: false,
             owner_pane,
             last_saved_filter: StatusFilter::All,
             last_saved_cursor: 0,
@@ -165,6 +172,28 @@ impl GlobalState {
         .is_some()
     }
 
+    /// Flip the "other windows" section and broadcast the new value to
+    /// every open sidebar via the `@sidebar_show_windows` tmux global.
+    pub fn toggle_show_windows(&mut self) {
+        self.show_windows = !self.show_windows;
+        if self.save_show_windows() {
+            self.broadcast_change();
+        }
+    }
+
+    /// Save the "other windows" flag to tmux. Returns `true` when tmux
+    /// accepted the write (and the caller should broadcast). On a failed
+    /// write the next sync reverts this sidebar to the shared value.
+    pub fn save_show_windows(&mut self) -> bool {
+        tmux::run_tmux(&[
+            "set",
+            "-g",
+            tmux::SIDEBAR_SHOW_WINDOWS,
+            if self.show_windows { "1" } else { "0" },
+        ])
+        .is_some()
+    }
+
     /// Load all global state from tmux variables.
     /// Called at startup and on SIGUSR1 (pane focus change).
     pub fn load_from_tmux(&mut self) {
@@ -191,6 +220,15 @@ impl GlobalState {
             .unwrap_or(false)
     }
 
+    /// Parse `@sidebar_default_show_windows` into the landing "other
+    /// windows" mode for a newly opened sidebar. Same accepted values as
+    /// [`Self::default_compact_view_from_options`].
+    pub fn default_show_windows_from_options(opts: &HashMap<String, String>) -> bool {
+        opts.get(tmux::SIDEBAR_DEFAULT_SHOW_WINDOWS)
+            .map(|s| matches!(s.trim().to_ascii_lowercase().as_str(), "on" | "true" | "1"))
+            .unwrap_or(false)
+    }
+
     /// Land on the configured default view instead of the last-used
     /// filter/compact values.
     ///
@@ -209,6 +247,9 @@ impl GlobalState {
         self.status_filter = Self::default_view_from_options(opts);
         if !opts.contains_key(tmux::SIDEBAR_COMPACT) {
             self.compact = Self::default_compact_view_from_options(opts);
+        }
+        if !opts.contains_key(tmux::SIDEBAR_SHOW_WINDOWS) {
+            self.show_windows = Self::default_show_windows_from_options(opts);
         }
     }
 
@@ -250,6 +291,9 @@ impl GlobalState {
             // only applies while this option is unset).
             let tmux_compact = compact_str.trim() == "1";
             self.compact = tmux_compact;
+        }
+        if let Some(show_windows_str) = opts.get(tmux::SIDEBAR_SHOW_WINDOWS) {
+            self.show_windows = show_windows_str.trim() == "1";
         }
     }
 }

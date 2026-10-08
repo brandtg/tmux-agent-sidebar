@@ -5,6 +5,10 @@ use crate::ui::text::display_width;
 #[derive(Debug, Clone)]
 pub struct RowTarget {
     pub pane_id: String,
+    /// `true` when this row is a non-agent window rather than an agent
+    /// pane. `pane_id` is the window's active pane either way. Used by
+    /// activation to jump without summoning a sidebar into the window.
+    pub is_window: bool,
 }
 
 /// Click target for the `+` button rendered at the right edge of each
@@ -90,6 +94,25 @@ impl AppState {
                 if self.global.status_filter.matches(&pane.status) {
                     self.layout.pane_row_targets.push(RowTarget {
                         pane_id: pane.pane_id.clone(),
+                        is_window: false,
+                    });
+                }
+            }
+
+            // Window rows follow the agent rows, mirroring the render
+            // order in `row_collector::collect`. They only appear under
+            // the `All` filter, same as the renderer.
+            let show_windows =
+                self.global.show_windows && matches!(self.global.status_filter, StatusFilter::All);
+            let key = crate::group::repo_group_key(group);
+            if show_windows
+                && !key.is_empty()
+                && let Some(windows) = self.other_windows.get(&key)
+            {
+                for window in windows {
+                    self.layout.pane_row_targets.push(RowTarget {
+                        pane_id: window.pane_id.clone(),
+                        is_window: true,
                     });
                 }
             }

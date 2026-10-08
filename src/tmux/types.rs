@@ -158,6 +158,32 @@ pub struct SessionInfo {
     pub windows: Vec<WindowInfo>,
 }
 
+/// A non-agent, non-sidebar pane. Retained by the tmux parse so the
+/// sidebar can show the "other windows" sharing a repo with the agents.
+#[derive(Debug, Clone)]
+pub struct OtherPane {
+    pub session_name: String,
+    pub window_id: String,
+    pub window_index: i64,
+    pub window_name: String,
+    pub window_active: bool,
+    pub pane_id: String,
+    pub pane_active: bool,
+    pub path: String,
+    pub command: String,
+    pub pane_pid: Option<u32>,
+}
+
+/// Coarse status for a non-agent window row. Distinct from
+/// [`PaneStatus`] because windows have no hooks and must never be
+/// counted by the agent status filter.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WindowStatus {
+    Idle,
+    Busy,
+    Task,
+}
+
 impl AgentType {
     /// Parse the agent label set by hooks. Returns `None` for unknown
     /// values so callers can skip non-agent panes.

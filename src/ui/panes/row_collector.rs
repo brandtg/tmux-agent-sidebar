@@ -171,6 +171,41 @@ pub(super) fn collect(state: &AppState, width: u16) -> CollectedRows {
 
             row_index += 1;
         }
+
+        // Non-agent windows in this repo, rendered after the agent rows.
+        // Only under the `All` filter: a status filter expresses agent
+        // attention, and windows have no agent status to match. Window
+        // rows use a diamond status glyph (see `row::window_row`), so the
+        // section reads as distinct without a header line.
+        let show_windows = state.global.show_windows
+            && matches!(state.global.status_filter, crate::state::StatusFilter::All);
+        let key = crate::group::repo_group_key(group);
+        if show_windows
+            && !key.is_empty()
+            && let Some(windows) = state.other_windows.get(&key)
+        {
+            for window in windows {
+                let is_selected = state.focus_state.sidebar_focused
+                    && state.focus_state.focus == Focus::Panes
+                    && row_index == state.global.selected_pane_row;
+                let is_active = window.window_active && window.pane_active;
+                let line = row::window_row(
+                    window,
+                    state
+                        .pane_state(&window.pane_id)
+                        .map(|s| s.ports.as_slice()),
+                    is_selected,
+                    is_active,
+                    width,
+                    &state.icons,
+                    theme,
+                    state.spinner_frame,
+                );
+                collected.lines.push(line);
+                collected.line_to_row.push(Some(row_index));
+                row_index += 1;
+            }
+        }
     }
 
     collected
@@ -218,6 +253,91 @@ mod tests {
         assert!(collected.line_to_row.is_empty());
         assert!(collected.pending_spawn.is_empty());
         assert!(collected.pending_remove.is_empty());
+    }
+
+    fn other_window(pane_id: &str, name: &str, command: &str) -> crate::group::OtherWindow {
+        crate::group::OtherWindow {
+            window_id: "@5".into(),
+            window_index: 0,
+            window_name: name.into(),
+            window_active: false,
+            session_name: "main".into(),
+            pane_id: pane_id.into(),
+            pane_active: true,
+            pane_pid: None,
+            command: command.into(),
+            path: "/tmp/repo".into(),
+            git_info: PaneGitInfo::default(),
+            status: crate::tmux::classify_window_status(command),
+        }
+    }
+
+    fn line_text(line: &ratatui::text::Line<'_>) -> String {
+        line.spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect()
+    }
+
+    #[test]
+    fn collect_renders_window_section_when_enabled() {
+        let mut state = AppState::new("%0".into());
+        state.global.show_windows = true;
+        state.repo_groups = vec![RepoGroup {
+            name: "repo".into(),
+            has_focus: false,
+            panes: vec![(make_pane("%1", PaneStatus::Idle), PaneGitInfo::default())],
+        }];
+        state.other_windows.insert(
+            "/tmp/repo".into(),
+            vec![other_window("%10", "cargo test", "cargo")],
+        );
+
+        let collected = collect(&state, 40);
+        let text = collected
+            .lines
+            .iter()
+            .map(line_text)
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        assert!(text.contains("cargo test"), "window row missing:\n{text}");
+        assert!(text.contains('\u{25C6}'), "window glyph missing:\n{text}");
+        // Layout: repo header, agent status, agent idle hint, then the
+        // window row (row index 1). No sub-header line.
+        assert_eq!(
+            collected.line_to_row,
+            vec![None, Some(0), Some(0), Some(1)],
+            "the window row must be selectable as row 1"
+        );
+    }
+
+    #[test]
+    fn collect_hides_window_section_when_disabled() {
+        let mut state = AppState::new("%0".into());
+        state.global.show_windows = false;
+        state.repo_groups = vec![RepoGroup {
+            name: "repo".into(),
+            has_focus: false,
+            panes: vec![(make_pane("%1", PaneStatus::Idle), PaneGitInfo::default())],
+        }];
+        state.other_windows.insert(
+            "/tmp/repo".into(),
+            vec![other_window("%10", "cargo test", "cargo")],
+        );
+
+        let collected = collect(&state, 40);
+        let text = collected
+            .lines
+            .iter()
+            .map(line_text)
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        assert!(
+            !text.contains("cargo test") && !text.contains('\u{25C6}'),
+            "window section must be hidden:\n{text}"
+        );
     }
 
     #[test]

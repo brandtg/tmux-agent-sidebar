@@ -27,25 +27,26 @@ pub use options::{
     SIDEBAR_COLOR_SUBAGENT, SIDEBAR_COLOR_TASK_PROGRESS, SIDEBAR_COLOR_TEXT_ACTIVE,
     SIDEBAR_COLOR_TEXT_INACTIVE, SIDEBAR_COLOR_TEXT_MUTED, SIDEBAR_COLOR_WAIT_REASON,
     SIDEBAR_COLOR_WAITING, SIDEBAR_COMPACT, SIDEBAR_CURSOR, SIDEBAR_DEFAULT_COMPACT_VIEW,
-    SIDEBAR_DEFAULT_VIEW, SIDEBAR_FILTER, SIDEBAR_ICON_ALL, SIDEBAR_ICON_BACKGROUND,
-    SIDEBAR_ICON_ERROR, SIDEBAR_ICON_IDLE, SIDEBAR_ICON_RUNNING, SIDEBAR_ICON_SET,
-    SIDEBAR_ICON_UNKNOWN, SIDEBAR_ICON_WAITING, SIDEBAR_MODE, SIDEBAR_NOTIFICATIONS,
-    SIDEBAR_NOTIFICATIONS_EVENTS, SIDEBAR_PET, SIDEBAR_PID, SIDEBAR_POPUP_MAX_WIDTH,
-    SIDEBAR_POSITION, SIDEBAR_REPO_FILTER, SIDEBAR_SAVED_LAYOUT, SIDEBAR_WIDTH, append_pane_option,
-    get_all_global_options, get_option, get_pane_option_value, sanitize_option_value,
-    set_pane_option, unset_pane_option,
+    SIDEBAR_DEFAULT_SHOW_WINDOWS, SIDEBAR_DEFAULT_VIEW, SIDEBAR_FILTER, SIDEBAR_ICON_ALL,
+    SIDEBAR_ICON_BACKGROUND, SIDEBAR_ICON_ERROR, SIDEBAR_ICON_IDLE, SIDEBAR_ICON_RUNNING,
+    SIDEBAR_ICON_SET, SIDEBAR_ICON_UNKNOWN, SIDEBAR_ICON_WAITING, SIDEBAR_MODE,
+    SIDEBAR_NOTIFICATIONS, SIDEBAR_NOTIFICATIONS_EVENTS, SIDEBAR_PET, SIDEBAR_PID,
+    SIDEBAR_POPUP_MAX_WIDTH, SIDEBAR_POSITION, SIDEBAR_REPO_FILTER, SIDEBAR_SAVED_LAYOUT,
+    SIDEBAR_SHOW_WINDOWS, SIDEBAR_WIDTH, append_pane_option, get_all_global_options, get_option,
+    get_pane_option_value, sanitize_option_value, set_pane_option, unset_pane_option,
 };
 pub(crate) use panes::pick_active_pane;
 pub use panes::{find_active_pane, focused_pane_path, get_pane_path, query_active_window_panes};
 pub(crate) use query::TmuxSnapshot;
+pub(crate) use query::classify_window_status;
 pub(crate) use query::query_session_snapshot;
 pub use query::query_sessions;
 pub(crate) use signal::broadcast_refresh;
 pub(crate) use signal::is_sidebar_process;
 pub(crate) use signal::signal_usr1;
 pub use types::{
-    AgentType, CLAUDE_AGENT, CODEX_AGENT, OPENCODE_AGENT, PaneAttention, PaneInfo, PaneStatus,
-    PermissionMode, SessionInfo, WindowInfo, WorktreeMetadata,
+    AgentType, CLAUDE_AGENT, CODEX_AGENT, OPENCODE_AGENT, OtherPane, PaneAttention, PaneInfo,
+    PaneStatus, PermissionMode, SessionInfo, WindowInfo, WindowStatus, WorktreeMetadata,
 };
 
 #[cfg(test)]

@@ -19,6 +19,18 @@ pub struct PaneProcessSnapshot {
     /// state exactly for the panes this scan saw — never for panes that
     /// appeared after the scan request was queued.
     pub scanned_panes: HashSet<String>,
+    /// The subset of [`Self::scanned_panes`] that were agent targets.
+    /// Dead-scan teardown only advances for these; non-agent window panes
+    /// are never "live agents" and must not be torn down by the sweep.
+    pub scanned_agent_panes: HashSet<String>,
+}
+
+/// Whether a scan target is an agent pane or a non-agent window pane.
+/// Only agent targets participate in dead-scan teardown.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PaneKind {
+    Agent,
+    Window,
 }
 
 /// One pane's process-scan input. A `pane_pid` of `None` (degenerate pid
@@ -29,6 +41,7 @@ pub struct PaneScanTarget {
     pub pane_id: String,
     pub pane_pid: Option<u32>,
     pub agent: crate::tmux::AgentType,
+    pub kind: PaneKind,
 }
 
 fn run_command(cmd: &str, args: &[&str]) -> Option<String> {
@@ -141,8 +154,12 @@ pub(crate) fn scan_pane_processes(targets: &[PaneScanTarget]) -> Option<PaneProc
     let mut live_agent_panes: HashSet<String> = HashSet::new();
     let mut command_by_pane: HashMap<String, String> = HashMap::new();
     let mut scanned_panes: HashSet<String> = HashSet::new();
+    let mut scanned_agent_panes: HashSet<String> = HashSet::new();
     for target in targets {
         scanned_panes.insert(target.pane_id.clone());
+        if target.kind == PaneKind::Agent {
+            scanned_agent_panes.insert(target.pane_id.clone());
+        }
         let Some(pane_pid) = target.pane_pid else {
             continue;
         };
@@ -184,6 +201,7 @@ pub(crate) fn scan_pane_processes(targets: &[PaneScanTarget]) -> Option<PaneProc
         command_by_pane,
         live_agent_panes,
         scanned_panes,
+        scanned_agent_panes,
     })
 }
 
