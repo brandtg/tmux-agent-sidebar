@@ -86,6 +86,7 @@ pub(super) fn trim_log_file(path: &std::path::Path, keep: usize, threshold: usiz
 /// Activity-log handler, called from `hook <agent> activity-log` event.
 pub(super) fn handle_activity_log(
     pane: &str,
+    agent_name: &str,
     tool_name: &str,
     tool_input: &serde_json::Value,
     tool_response: &serde_json::Value,
@@ -101,7 +102,19 @@ pub(super) fn handle_activity_log(
     }
 
     let current_status = tmux::get_pane_option_value(pane, tmux::PANE_STATUS);
-    if current_status != "running" && !current_status.is_empty() {
+    // OpenCode's permission/question prompts are cleared by the agent's
+    // explicit reply event, not by a tool result. A sibling tool finishing
+    // while the prompt is open (OpenCode runs a step's tool calls in
+    // parallel) must not flip the pane back to `running` and hide the
+    // prompt. Claude has no reply event — its `PostToolUse` is the resume
+    // signal — so the guard is scoped to OpenCode.
+    let pending_action = agent_name == crate::tmux::OPENCODE_AGENT
+        && current_status == "waiting"
+        && super::handlers::is_pending_action_wait_reason(&tmux::get_pane_option_value(
+            pane,
+            tmux::PANE_WAIT_REASON,
+        ));
+    if current_status != "running" && !current_status.is_empty() && !pending_action {
         set_status(pane, "running");
         if current_status == "waiting" {
             tmux::unset_pane_option(pane, tmux::PANE_ATTENTION);
@@ -311,6 +324,7 @@ mod tests {
 
         handle_activity_log(
             pane_id,
+            "claude",
             "Read",
             &json!({"file_path": "/home/user/src/main.rs"}),
             &Value::Null,
@@ -330,6 +344,7 @@ mod tests {
 
         handle_activity_log(
             pane_id,
+            "claude",
             "Bash",
             &json!({"command": "npm run dev", "run_in_background": true}),
             &Value::Null,
@@ -352,6 +367,7 @@ mod tests {
 
         handle_activity_log(
             pane_id,
+            "claude",
             "Bash",
             &json!({"run_in_background": true}),
             &Value::Null,
@@ -373,6 +389,7 @@ mod tests {
 
         handle_activity_log(
             pane_id,
+            "claude",
             "Bash",
             &json!({"command": "cat a.log | grep foo\nbar", "run_in_background": true}),
             &Value::Null,
@@ -397,6 +414,7 @@ mod tests {
 
         handle_activity_log(
             pane_id,
+            "claude",
             "Read",
             &json!({"file_path": "/home/user/src/main.rs"}),
             &Value::Null,
@@ -425,6 +443,7 @@ mod tests {
 
         handle_activity_log(
             pane_id,
+            "claude",
             "Read",
             &json!({"file_path": "/home/user/src/main.rs"}),
             &Value::Null,
@@ -440,6 +459,96 @@ mod tests {
     }
 
     #[test]
+    fn handle_activity_log_keeps_opencode_permission_wait_sticky() {
+        // Regression: OpenCode runs a step's tool calls in parallel, so a
+        // sibling tool's result can land while a permission prompt is open.
+        // It must not clear the wait — only the explicit reply does.
+        let _guard = tmux::test_mock::install();
+        let pane_id = "%CLI_OC_PERM_STICKY";
+        let path = crate::activity::log_file_path(pane_id);
+        let _ = fs::remove_file(&path);
+        tmux::test_mock::set(pane_id, tmux::PANE_STATUS, "waiting");
+        tmux::test_mock::set(pane_id, tmux::PANE_ATTENTION, "notification");
+        tmux::test_mock::set(pane_id, tmux::PANE_WAIT_REASON, "permission");
+
+        handle_activity_log(
+            pane_id,
+            "opencode",
+            "Read",
+            &json!({"file_path": "/home/user/src/main.rs"}),
+            &Value::Null,
+        );
+
+        assert_eq!(
+            tmux::test_mock::get(pane_id, tmux::PANE_STATUS).as_deref(),
+            Some("waiting"),
+            "a concurrent tool result must not clear a pending permission"
+        );
+        assert_eq!(
+            tmux::test_mock::get(pane_id, tmux::PANE_WAIT_REASON).as_deref(),
+            Some("permission")
+        );
+        assert!(tmux::test_mock::contains(pane_id, tmux::PANE_ATTENTION));
+        // The activity entry is still recorded.
+        assert!(fs::read_to_string(&path).unwrap().contains("|Read|main.rs"));
+        fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn handle_activity_log_keeps_opencode_question_wait_sticky() {
+        let _guard = tmux::test_mock::install();
+        let pane_id = "%CLI_OC_QUESTION_STICKY";
+        let path = crate::activity::log_file_path(pane_id);
+        let _ = fs::remove_file(&path);
+        tmux::test_mock::set(pane_id, tmux::PANE_STATUS, "waiting");
+        tmux::test_mock::set(pane_id, tmux::PANE_WAIT_REASON, "question");
+
+        handle_activity_log(
+            pane_id,
+            "opencode",
+            "Read",
+            &json!({"file_path": "/home/user/src/main.rs"}),
+            &Value::Null,
+        );
+
+        assert_eq!(
+            tmux::test_mock::get(pane_id, tmux::PANE_STATUS).as_deref(),
+            Some("waiting")
+        );
+        assert_eq!(
+            tmux::test_mock::get(pane_id, tmux::PANE_WAIT_REASON).as_deref(),
+            Some("question")
+        );
+        fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn handle_activity_log_opencode_non_action_wait_still_resumes() {
+        // Only pending-action reasons are sticky; an ordinary waiting pane
+        // (e.g. a soft notification) still resumes on tool use.
+        let _guard = tmux::test_mock::install();
+        let pane_id = "%CLI_OC_SOFT_WAIT";
+        let path = crate::activity::log_file_path(pane_id);
+        let _ = fs::remove_file(&path);
+        tmux::test_mock::set(pane_id, tmux::PANE_STATUS, "waiting");
+        tmux::test_mock::set(pane_id, tmux::PANE_WAIT_REASON, "rate_limit");
+
+        handle_activity_log(
+            pane_id,
+            "opencode",
+            "Read",
+            &json!({"file_path": "/home/user/src/main.rs"}),
+            &Value::Null,
+        );
+
+        assert_eq!(
+            tmux::test_mock::get(pane_id, tmux::PANE_STATUS).as_deref(),
+            Some("running")
+        );
+        fs::remove_file(&path).ok();
+    }
+
+    #[test]
     fn handle_activity_log_empty_tool_name_does_nothing() {
         let pane_id = "%CLI_EMPTY_TOOL";
         let path = crate::activity::log_file_path(pane_id);
@@ -448,7 +557,7 @@ mod tests {
         // With the adapter pattern, empty tool_name is filtered by the adapter
         // before reaching handle_activity_log. We still test that handle_activity_log
         // writes an entry even with empty tool_name (label extraction handles it).
-        let result = handle_activity_log(pane_id, "", &Value::Null, &Value::Null);
+        let result = handle_activity_log(pane_id, "claude", "", &Value::Null, &Value::Null);
         assert_eq!(result, 0);
         // Empty tool_name still writes an entry now (adapter filters upstream)
     }
@@ -461,6 +570,7 @@ mod tests {
 
         handle_activity_log(
             pane_id,
+            "claude",
             "Edit",
             &json!({"file_path": "/a/b/test.rs"}),
             &Value::Null,
@@ -477,7 +587,7 @@ mod tests {
         let path = crate::activity::log_file_path(pane_id);
         let _ = fs::remove_file(&path);
 
-        handle_activity_log(pane_id, "UnknownTool", &Value::Null, &Value::Null);
+        handle_activity_log(pane_id, "claude", "UnknownTool", &Value::Null, &Value::Null);
 
         let content = fs::read_to_string(&path).unwrap();
         assert!(content.contains("|UnknownTool|"));
@@ -492,6 +602,7 @@ mod tests {
 
         handle_activity_log(
             pane_id,
+            "claude",
             "TaskCreate",
             &json!({"subject": "Fix bug"}),
             &json!({"task": {"id": "42"}}),
@@ -511,7 +622,7 @@ mod tests {
 
         // A subagent's EnterPlanMode tool use must not flip the parent
         // badge to "plan".
-        handle_activity_log(pane, "EnterPlanMode", &Value::Null, &Value::Null);
+        handle_activity_log(pane, "claude", "EnterPlanMode", &Value::Null, &Value::Null);
 
         assert_eq!(
             tmux::test_mock::get(pane, tmux::PANE_PERMISSION_MODE).as_deref(),

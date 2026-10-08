@@ -17,9 +17,10 @@ surface is similar to Codex but with a different event source.
 
 ### Attention cues
 
-- Waiting status + wait reason from `permission.asked`
+- Waiting status + wait reason from `permission.asked` and `question.asked`
+- The wait clears when OpenCode emits `permission.replied` / `question.replied` / `question.rejected`. While a prompt is open the pane stays `waiting` even if a parallel tool call finishes, so the cue cannot be missed
 - API failure reason from `session.error` / `session.status=error`
-- `notification` desktop alerts for permission prompts
+- `notification` desktop alerts for permission and question prompts
 
 ### Activity log
 
