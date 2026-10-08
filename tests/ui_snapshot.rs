@@ -63,7 +63,7 @@ fn snapshot_done_unseen_pane_matches_idle_layout() {
 
     let output = render_to_string(&mut state, 28, 25);
     insta::assert_snapshot!(output, @r"
-     ≡1  ●0  ◎0  ◐0  ○1  ✕0
+     ≡1  ●1  ◎0  ◐0  ○1  ✕0
     ⓘ                        — ▾
     ┃ ○ claude
         Waiting for prompt…
