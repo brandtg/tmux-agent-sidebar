@@ -100,16 +100,19 @@ impl AppState {
             }
 
             // Window rows follow the agent rows, mirroring the render
-            // order in `row_collector::collect`. They only appear under
-            // the `All` filter, same as the renderer.
-            let show_windows =
-                self.global.show_windows && matches!(self.global.status_filter, StatusFilter::All);
+            // order in `row_collector::collect`, and pass the same
+            // per-window status-filter rule as the renderer.
+            let show_windows = self.global.show_windows;
             let key = crate::group::repo_group_key(group);
             if show_windows
                 && !key.is_empty()
                 && let Some(windows) = self.other_windows.get(&key)
             {
                 for window in windows {
+                    let runtime = self.pane_state(&window.pane_id);
+                    if !self.global.status_filter.matches_window(window, runtime) {
+                        continue;
+                    }
                     self.layout.pane_row_targets.push(RowTarget {
                         pane_id: window.pane_id.clone(),
                         is_window: true,

@@ -4,9 +4,37 @@ use super::AppState;
 use crate::activity::TaskProgress;
 use crate::state::BottomTab;
 
+/// The completed foreground task of a non-agent window pane, kept until
+/// the user focuses the pane (or a new task starts, or the pane dies),
+/// subject to the minimum-flash grace: consuming it before
+/// [`ATTENTION_MIN_FLASH_SECS`](super::refresh::ATTENTION_MIN_FLASH_SECS)
+/// have passed is deferred, so the row is actually seen flashing even
+/// when its pane is focused at the moment the task ends. `exit_code` is
+/// `None` when the shell-integration snippet that would report it is not
+/// installed — the pane still flashes as finished, but it cannot be
+/// classified as failed.
+#[derive(Debug, Clone, PartialEq)]
+pub struct WindowFinished {
+    pub command: String,
+    pub exit_code: Option<i64>,
+    /// Epoch seconds the sidebar first observed the finished result.
+    pub finished_at: u64,
+}
+
 /// Per-pane runtime state that should vanish together with the pane.
 #[derive(Debug, Clone, Default)]
 pub struct PaneRuntimeState {
+    /// Basename of the non-agent foreground task currently tracked as
+    /// running in this pane (Task-classified command). Drives the
+    /// task-finished detection: when the pane's foreground command
+    /// drops back to a shell while this is `Some`, the task ended.
+    pub window_task_command: Option<String>,
+    /// Epoch seconds at which [`Self::window_task_command`] was first
+    /// observed. Observation time only — a sidebar launched mid-run
+    /// undercounts.
+    pub window_task_since: Option<u64>,
+    /// The most recent finished task awaiting the user's attention.
+    pub window_finished: Option<WindowFinished>,
     pub ports: Vec<u16>,
     pub command: Option<String>,
     pub task_progress: Option<TaskProgress>,

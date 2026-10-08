@@ -5,11 +5,11 @@ use crate::process::{ProcessSnapshot, command_basename};
 
 use super::commands::run_tmux;
 use super::options::{
-    PANE_AGENT, PANE_ATTENTION, PANE_BG_CMD, PANE_CWD, PANE_LAUNCH_CWD, PANE_NAME,
-    PANE_PENDING_SESSION_END, PANE_PENDING_WORKTREE_REMOVE, PANE_PERMISSION_MODE, PANE_PROMPT,
-    PANE_PROMPT_SOURCE, PANE_ROLE, PANE_SESSION_ID, PANE_SESSION_TITLE, PANE_STARTED_AT,
-    PANE_STATUS, PANE_SUBAGENTS, PANE_WAIT_REASON, PANE_WORKTREE_BRANCH, PANE_WORKTREE_NAME,
-    unset_pane_option,
+    PANE_AGENT, PANE_ATTENTION, PANE_BG_CMD, PANE_CWD, PANE_LAST_CMD, PANE_LAST_EXIT,
+    PANE_LAUNCH_CWD, PANE_NAME, PANE_PENDING_SESSION_END, PANE_PENDING_WORKTREE_REMOVE,
+    PANE_PERMISSION_MODE, PANE_PROMPT, PANE_PROMPT_SOURCE, PANE_ROLE, PANE_SESSION_ID,
+    PANE_SESSION_TITLE, PANE_STARTED_AT, PANE_STATUS, PANE_SUBAGENTS, PANE_WAIT_REASON,
+    PANE_WORKTREE_BRANCH, PANE_WORKTREE_NAME, unset_pane_option,
 };
 use super::types::{
     AgentType, CODEX_AGENT, OtherPane, PaneAttention, PaneInfo, PaneStatus, PermissionMode,
@@ -30,7 +30,7 @@ mod session_line_field {
     /// Index where the per-pane field suffix consumed by `parse_pane_line` begins.
     pub const PANE_LINE_OFFSET: usize = 6;
     /// Minimum number of fields a valid `pane_format()` line must contain.
-    pub const MIN_FIELDS: usize = 30;
+    pub const MIN_FIELDS: usize = 32;
 }
 
 // Indices into the pane-line suffix that `parse_pane_line` operates on.
@@ -61,9 +61,11 @@ pub(super) mod pane_line_field {
     pub const BG_CMD: usize = 21; // absolute 27 (@pane_bg_cmd)
     pub const SESSION_TITLE: usize = 22; // absolute 28 (@pane_session_title)
     pub const LAUNCH_CWD: usize = 23; // absolute 29 (@pane_launch_cwd)
+    pub const LAST_CMD: usize = 24; // absolute 30 (@pane_last_cmd)
+    pub const LAST_EXIT: usize = 25; // absolute 31 (@pane_last_exit)
     /// Minimum number of fields the pane-line suffix must contain.
     /// Equals `session_line_field::MIN_FIELDS - PANE_LINE_OFFSET`.
-    pub const MIN_FIELDS: usize = 24;
+    pub const MIN_FIELDS: usize = 26;
 }
 
 /// Build the tmux `list-panes -F` format used by [`query_sessions`].
@@ -101,6 +103,8 @@ fn pane_format() -> String {
         q(PANE_BG_CMD),
         q(PANE_SESSION_TITLE),
         q(PANE_LAUNCH_CWD),
+        q(PANE_LAST_CMD),
+        q(PANE_LAST_EXIT),
     ]
     .join("|")
 }
@@ -224,6 +228,15 @@ fn collect_other_panes(all_panes_output: &str) -> Vec<OtherPane> {
             path: pane_fields[pane_line_field::PANE_CURRENT_PATH].clone(),
             command: command.clone(),
             pane_pid: pane_fields[pane_line_field::PANE_PID].parse().ok(),
+            last_cmd: {
+                let raw = pane_fields[pane_line_field::LAST_CMD].as_str();
+                if raw.is_empty() {
+                    None
+                } else {
+                    Some(raw.to_string())
+                }
+            },
+            last_exit: pane_fields[pane_line_field::LAST_EXIT].parse().ok(),
         });
     }
     out
@@ -1075,6 +1088,8 @@ mod tests {
             "",                   // 21: @pane_bg_cmd
             "",                   // 22: @pane_session_title
             "",                   // 23: @pane_launch_cwd
+            "",                   // 24: @pane_last_cmd
+            "",                   // 25: @pane_last_exit
         ]
     }
 
@@ -1216,13 +1231,42 @@ mod tests {
             "15 fields should be rejected"
         );
 
-        // 22 fields — still rejected (need 24 including @pane_session_title
-        // and @pane_launch_cwd).
-        let fields_22 = "1|running||claude|name|/path|fish||%1|prompt|user|1700000000||12345|Explore|/cwd|auto|||||";
+        // 22 fields — still rejected (need 26 including @pane_session_title,
+        // @pane_launch_cwd, @pane_last_cmd and @pane_last_exit).
+        let fields_22 =
+            "1|running||claude|name|/path|fish||%1|prompt|1700000000||12345|Explore|/cwd|auto|||||";
         assert!(
             parse_pane_line(fields_22).is_none(),
             "22 fields should be rejected"
         );
+
+        // 25 fields — still rejected.
+        let fields_25 = "1|running||claude|name|/path|fish||%1|prompt|user|1700000000||12345|Explore|/cwd|auto||||||||";
+        assert!(
+            parse_pane_line(fields_25).is_none(),
+            "25 fields should be rejected"
+        );
+    }
+
+    #[test]
+    fn collect_other_panes_reads_last_cmd_and_exit() {
+        // `full_fields` is the 26-field pane-line suffix; prefix it with
+        // the 6 window-level fields `collect_other_panes` expects.
+        let mut fields = full_fields();
+        fields[pane_line_field::PANE_ROLE] = ""; // not the sidebar
+        fields[pane_line_field::AGENT] = ""; // @pane_agent unset
+        fields[pane_line_field::PANE_CURRENT_COMMAND] = "zsh"; // plain shell
+        fields[pane_line_field::LAST_CMD] = "cargo";
+        fields[pane_line_field::LAST_EXIT] = "0";
+        let mut segments: Vec<&str> = vec!["main", "@5", "1", "editor", "0", "1"];
+        segments.extend(&fields);
+        let line = segments.join("|");
+
+        let panes = collect_other_panes(&line);
+        assert_eq!(panes.len(), 1);
+        assert_eq!(panes[0].pane_id, "%1");
+        assert_eq!(panes[0].last_cmd.as_deref(), Some("cargo"));
+        assert_eq!(panes[0].last_exit, Some(0));
     }
 
     #[test]
@@ -1638,8 +1682,8 @@ mod tests {
         // 23:@pane_worktree_name|24:@pane_worktree_branch|
         // 25:@pane_session_id|26:@agent-sidebar-spawned|27:@pane_bg_cmd|
         // 28:@pane_session_title|29:@pane_launch_cwd
-        // 30 total fields (MIN_FIELDS = 30)
-        let mut fields: Vec<&str> = vec![""; 30];
+        // 32 total fields (MIN_FIELDS = 32)
+        let mut fields: Vec<&str> = vec![""; 32];
         fields[0] = session_name;
         fields[1] = "@0"; // window_id
         fields[3] = "win"; // window_name
@@ -1739,7 +1783,7 @@ mod tests {
                     role: &str,
                     path: &str| {
             format!(
-                "main|{window}|1|win|{window_active}|1|{active}|running||claude|@pane_name|{path}|zsh|{role}|{pane}|prompt|src|100|wait|{pid}|sub|cwd|default|wt|wtb|sid|0|bg|title|/launch"
+                "main|{window}|1|win|{window_active}|1|{active}|running||claude|@pane_name|{path}|zsh|{role}|{pane}|prompt|src|100|wait|{pid}|sub|cwd|default|wt|wtb|sid|0|bg|title|/launch||"
             )
         };
         let output = [
@@ -1766,7 +1810,7 @@ mod tests {
 
     #[test]
     fn snapshot_missing_sidebar_pane_yields_empty_window_panes() {
-        let line = "main|@1|1|win|1|1|1|running||claude|@pane_name|/agent|zsh||%1|prompt|src|100|wait|12|sub|cwd|default|wt|wtb|sid|0|bg|title|/launch";
+        let line = "main|@1|1|win|1|1|1|running||claude|@pane_name|/agent|zsh||%1|prompt|src|100|wait|12|sub|cwd|default|wt|wtb|sid|0|bg|title|/launch||";
         let snapshot = build_session_snapshot(line, "%99");
 
         assert!(!snapshot.sidebar_pane_active);
@@ -1789,7 +1833,7 @@ mod tests {
         path: &str,
     ) -> String {
         format!(
-            "main|{window_id}|1|editor|{window_active}|1|{pane_active}|running|||@pane_name|{path}|{command}||{pane_id}|prompt|src|100|wait|12345|sub|cwd|default|wt|wtb|sid|0|bg|title|/launch"
+            "main|{window_id}|1|editor|{window_active}|1|{pane_active}|running|||@pane_name|{path}|{command}||{pane_id}|prompt|src|100|wait|12345|sub|cwd|default|wt|wtb|sid|0|bg|title|/launch||"
         )
     }
 
@@ -1815,7 +1859,7 @@ mod tests {
         // The sidebar's own pane is excluded by role, but a non-agent
         // sibling in the same window is kept — a window the user jumps
         // into must still list its other panes.
-        let sidebar = "main|@5|1|editor|1|1|1|running|||@pane_name|/repo|zsh|sidebar|%9|prompt|src|100|wait|12345|sub|cwd|default|wt|wtb|sid|0|bg|title|/launch";
+        let sidebar = "main|@5|1|editor|1|1|1|running|||@pane_name|/repo|zsh|sidebar|%9|prompt|src|100|wait|12345|sub|cwd|default|wt|wtb|sid|0|bg|title|/launch||";
         let sibling = other_pane_line("@5", "1", "%7", "1", "zsh", "/repo");
 
         let panes = collect_other_panes(&format!("{sidebar}\n{sibling}"));

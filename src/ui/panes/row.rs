@@ -246,10 +246,17 @@ pub(super) fn compact_row(
 /// row are distinguishable at a glance while color still conveys status.
 /// No elapsed counter — a window (an editor, a shell) is not a task worth
 /// timing.
+///
+/// `finished` carries the completed foreground task tracked runtime-side.
+/// A finished task overrides the plain status: exit 0 (or an unknown
+/// exit, no shell integration) draws a hollow diamond in the
+/// flashing-green done-attention color until the user focuses the pane;
+/// a non-zero exit draws a solid red diamond plus an `exit N` note.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn window_row(
     window: &crate::group::OtherWindow,
     ports: Option<&[u16]>,
+    finished: Option<&crate::state::WindowFinished>,
     selected: bool,
     active: bool,
     width: usize,
@@ -290,6 +297,24 @@ pub(super) fn window_row(
             let (_, pulse) = running_icon_for(&PaneStatus::Running, spinner_frame, icons);
             ("\u{25C6}", pulse.unwrap_or(theme.status_running))
         }
+    };
+
+    // A finished tracked task outranks the plain status glyph.
+    let mut exit_note: Option<String> = None;
+    let (icon, icon_color) = match finished {
+        Some(finished) => match finished.exit_code {
+            None | Some(0) => {
+                let flash = theme
+                    .attention_color(crate::tmux::PaneAttention::Done, spinner_frame)
+                    .unwrap_or(theme.status_idle);
+                ("\u{25C7}", flash)
+            }
+            Some(code) => {
+                exit_note = Some(format!("exit {code}"));
+                ("\u{25C6}", theme.status_error)
+            }
+        },
+        None => (icon, icon_color),
     };
 
     // Right side: the listening-port list, when there is one.
@@ -343,6 +368,24 @@ pub(super) fn window_row(
         left_spans.push(Span::styled(
             text,
             ctx.apply_bg(Style::default().fg(theme.text_muted)),
+        ));
+        left_width += w;
+        left_budget = left_budget.saturating_sub(w);
+    }
+
+    // Failed-run marker: a muted note naming the failing exit code keeps
+    // the red diamond unambiguous on theme colors that also tint tasks.
+    if let Some(note) = exit_note
+        && left_budget >= 3
+    {
+        let text = format!(
+            " ({})",
+            truncate_to_width(&note, left_budget.saturating_sub(1))
+        );
+        let w = display_width(&text);
+        left_spans.push(Span::styled(
+            text,
+            ctx.apply_bg(Style::default().fg(theme.status_error)),
         ));
         left_width += w;
     }
@@ -1641,6 +1684,7 @@ mod tests {
         let line = window_row(
             &w,
             Some(&[3000]),
+            None,
             false,
             false,
             40,
@@ -1661,6 +1705,7 @@ mod tests {
         let w = window("nvim", "nvim", crate::tmux::WindowStatus::Busy);
         let line = window_row(
             &w,
+            None,
             None,
             false,
             false,
@@ -1690,6 +1735,7 @@ mod tests {
         let line = window_row(
             &w,
             None,
+            None,
             false,
             false,
             40,
@@ -1702,5 +1748,69 @@ mod tests {
             !text.contains('m') && !text.contains('s'),
             "window rows must not show a time counter: {text}"
         );
+    }
+
+    #[test]
+    fn window_row_finished_success_flashes_hollow_green_diamond() {
+        let theme = ColorTheme::default();
+        // A tracked task that finished with exit 0 (or an unknown exit)
+        // renders a hollow diamond in the done-attention pulse color —
+        // the same "look here" treatment agent rows get.
+        let w = window("tests", "cargo", crate::tmux::WindowStatus::Idle);
+        let finished = crate::state::WindowFinished {
+            command: "cargo".into(),
+            exit_code: None,
+            finished_at: 0,
+        };
+        let line = window_row(
+            &w,
+            None,
+            Some(&finished),
+            false,
+            false,
+            40,
+            &StatusIcons::default(),
+            &theme,
+            0,
+        );
+        let text = line_text(&line);
+        assert!(text.contains('\u{25C7}'), "hollow diamond missing: {text}");
+        let icon_span = &line.spans[2];
+        assert_eq!(icon_span.content.as_ref(), "\u{25C7}");
+        assert_eq!(
+            icon_span.style.fg,
+            Some(
+                theme
+                    .attention_color(crate::tmux::PaneAttention::Done, 0)
+                    .unwrap()
+            )
+        );
+    }
+
+    #[test]
+    fn window_row_finished_nonzero_gets_red_diamond_and_exit_note() {
+        let theme = ColorTheme::default();
+        let w = window("tests", "cargo", crate::tmux::WindowStatus::Idle);
+        let finished = crate::state::WindowFinished {
+            command: "cargo".into(),
+            exit_code: Some(1),
+            finished_at: 0,
+        };
+        let line = window_row(
+            &w,
+            None,
+            Some(&finished),
+            false,
+            false,
+            40,
+            &StatusIcons::default(),
+            &theme,
+            0,
+        );
+        let text = line_text(&line);
+        assert!(text.contains("(exit 1)"), "exit note missing: {text}");
+        let icon_span = &line.spans[2];
+        assert_eq!(icon_span.content.as_ref(), "\u{25C6}");
+        assert_eq!(icon_span.style.fg, Some(theme.status_error));
     }
 }

@@ -93,6 +93,17 @@ pub const PANE_WAIT_REASON: &str = "@pane_wait_reason";
 pub const PANE_WORKTREE_BRANCH: &str = "@pane_worktree_branch";
 /// Worktree slug (directory basename) for the attached worktree.
 pub const PANE_WORKTREE_NAME: &str = "@pane_worktree_name";
+/// Basename of the last foreground command the pane's interactive shell
+/// started, written by the optional shell-integration snippet (`preexec`
+/// on zsh, a DEBUG-trap preexec on bash). Paired with
+/// [`PANE_LAST_EXIT`] to confirm that a tracked non-agent task has
+/// actually finished (as opposed to a transient inter-command gap).
+pub const PANE_LAST_CMD: &str = "@pane_last_cmd";
+/// Exit code of the last completed foreground command, written by the
+/// shell-integration snippet right after each command returns
+/// (`precmd` / `PROMPT_COMMAND`). Read by `collect_other_panes` so a
+/// finished non-agent task can be marked failed on a non-zero code.
+pub const PANE_LAST_EXIT: &str = "@pane_last_exit";
 
 // ─── Sidebar global option keys ─────────────────────────────────────
 

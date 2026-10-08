@@ -3,10 +3,31 @@ use std::time::Duration;
 
 use crate::activity::{self, TaskProgress};
 use crate::cli::sanitize_tmux_value;
-use crate::process::ProcessSnapshot;
-use crate::tmux::{self, PaneAttention, PaneStatus, SessionInfo, TmuxSnapshot};
+use crate::process::{ProcessSnapshot, command_basename};
+use crate::state::pane_runtime::WindowFinished;
+use crate::tmux::{self, PaneAttention, PaneStatus, SessionInfo, TmuxSnapshot, WindowStatus};
 
 use super::{AppState, PaneRuntimeMap};
+
+/// Minimum flash duration for finished non-agent task indicators: a
+/// tracked task that finished keeps its hollow-diamond flash for this
+/// long even while its pane is focused, so the transition is actually
+/// visible. Pane-focus ticks consume the flag after this grace —
+/// without it, a finish that lands while the user is looking at the
+/// pane is erased one second later and the row reads idle with no
+/// indication anything happened.
+pub(crate) const ATTENTION_MIN_FLASH_SECS: u64 = 5;
+
+/// Minimum observed runtime before a finished non-agent task earns the
+/// completion flash. Roughly the time after which the user would have
+/// looked away to work on something else — commands quicker than this
+/// (`ls`, `git status`, a failed build retry) complete while the user is
+/// still looking at the pane, so a flash would be noise for every
+/// little command. Observation time only: a task already running when
+/// the sidebar starts is timed from the first observation and may
+/// undercount, in which case its finish is treated like a quick
+/// command and stays silent.
+pub(crate) const TASK_MIN_RUN_SECS: u64 = 15;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum TaskProgressDecision {
@@ -51,7 +72,7 @@ impl AppState {
         self.now = crate::time::now_epoch_secs();
     }
 
-    pub(crate) fn apply_session_snapshot(
+    pub fn apply_session_snapshot(
         &mut self,
         sessions: Vec<SessionInfo>,
         other_panes: Vec<crate::tmux::OtherPane>,
@@ -94,9 +115,137 @@ impl AppState {
             &sessions,
             &self.git_info_cache,
         );
+        self.refresh_window_tasks(&other_panes);
         self.prune_pane_states_to_current_panes();
         self.rebuild_row_targets();
         self.find_focused_pane_from(&sidebar_window_panes);
+    }
+
+    /// Same "seen" contract as [`Self::mark_focused_pane_seen`], extended
+    /// to non-agent window panes: a tracked finished task waits for the
+    /// user's eye and is dropped once its pane has focus — but not before
+    /// the minimum-flash grace ([`ATTENTION_MIN_FLASH_SECS`]), so the
+    /// flash is actually rendered when the task ends under the user's
+    /// gaze. Goes through `focus_state.focused_pane_id` like the agent
+    /// path — that id is plain `pane_active` from tmux, so a window pane
+    /// the user jumped to clears here too.
+    fn mark_window_finished_seen(&mut self) {
+        let Some(pane_id) = self.focus_state.focused_pane_id.as_ref() else {
+            return;
+        };
+        let is_window_pane = self
+            .other_windows
+            .values()
+            .any(|windows| windows.iter().any(|w| &w.pane_id == pane_id));
+        if !is_window_pane {
+            return;
+        }
+        let now = self.now;
+        if let Some(runtime) = self.pane_states.get_mut(pane_id) {
+            let fresh = runtime.window_finished.as_ref().is_some_and(|finished| {
+                now.saturating_sub(finished.finished_at) < ATTENTION_MIN_FLASH_SECS
+            });
+            if !fresh {
+                runtime.window_finished = None;
+            }
+        }
+    }
+
+    /// Per-tick tracking of non-agent foreground tasks. While a
+    /// Task-classified command runs, its basename is remembered; when the
+    /// pane drops back to a shell while the task is armed, the task is
+    /// confirmed finished, so the row can flash for attention — green for
+    /// exit 0 (or an unknown exit), red for a non-zero code. Two guards
+    /// keep the flash high-signal:
+    ///
+    /// - [`TASK_MIN_RUN_SECS`]: quick commands complete while the user
+    ///   is still looking at the pane and end silently;
+    /// - `@pane_last_cmd`/`@pane_last_exit` (optional shell-integration
+    ///   snippet): whenever integration data is present, the
+    ///   confirmation requires the recorded command to match the tracked
+    ///   one, skipping the one-frame shell gaps inside `a && b` chains.
+    ///   Panes without the snippet confirm on the transition itself, and
+    ///   their exit code is unknown (treated as success).
+    fn refresh_window_tasks(&mut self, other_panes: &[crate::tmux::OtherPane]) {
+        for pane in other_panes {
+            let pane_id = pane.pane_id.clone();
+            let prior_task = self
+                .pane_state(&pane_id)
+                .and_then(|s| s.window_task_command.clone());
+            let prior_since = self.pane_state(&pane_id).and_then(|s| s.window_task_since);
+            let prior_finished = self
+                .pane_state(&pane_id)
+                .and_then(|s| s.window_finished.clone());
+
+            let (task_command, task_since, finished) =
+                match crate::tmux::classify_window_status(&pane.command) {
+                    WindowStatus::Task => {
+                        let base = command_basename(&pane.command).to_string();
+                        let prior = prior_task.as_deref();
+                        if prior_finished.is_some() || prior != Some(base.as_str()) {
+                            (Some(base), Some(self.now), None)
+                        } else {
+                            (prior_task, prior_since, None)
+                        }
+                    }
+                    WindowStatus::Idle | WindowStatus::Busy => match prior_task {
+                        None => (None, None, prior_finished),
+                        Some(task) => {
+                            let integration_active =
+                                pane.last_cmd.is_some() || pane.last_exit.is_some();
+                            let confirmed = if integration_active {
+                                pane.last_cmd.as_deref() == Some(task.as_str())
+                            } else {
+                                true
+                            };
+                            let ran_long_enough = prior_since.is_some_and(|since| {
+                                self.now.saturating_sub(since) >= TASK_MIN_RUN_SECS
+                            });
+                            if confirmed && ran_long_enough {
+                                (
+                                    None,
+                                    None,
+                                    Some(WindowFinished {
+                                        command: task,
+                                        exit_code: pane.last_exit,
+                                        finished_at: self.now,
+                                    }),
+                                )
+                            } else if confirmed {
+                                // A quick command finished while the user was
+                                // still looking at the pane — no flash is
+                                // warranted, so the task ends silently and
+                                // the row drops back to its plain status.
+                                (None, None, None)
+                            } else {
+                                // The last recorded command is not the tracked
+                                // task: a chained command's preexec fired between
+                                // the two polls. Drop the stale tracking; a later
+                                // poll catches the real completion (or the user's
+                                // next task re-arms).
+                                (None, None, None)
+                            }
+                        }
+                    },
+                };
+
+            if task_command
+                == self
+                    .pane_state(&pane_id)
+                    .and_then(|s| s.window_task_command.clone())
+                && task_since == self.pane_state(&pane_id).and_then(|s| s.window_task_since)
+                && finished
+                    == self
+                        .pane_state(&pane_id)
+                        .and_then(|s| s.window_finished.clone())
+            {
+                continue;
+            }
+            let runtime = self.pane_state_mut(&pane_id);
+            runtime.window_task_command = task_command;
+            runtime.window_task_since = task_since;
+            runtime.window_finished = finished;
+        }
     }
 
     /// Focus counts as "seen": when the user is looking at an agent
@@ -110,10 +259,11 @@ impl AppState {
     /// window, whose `pane_active` marker survives after the user moves
     /// elsewhere, so consuming the flag then would swallow notifications
     /// for a pane the user never looked at.
-    fn mark_focused_pane_seen(&mut self, sidebar_window_active: bool) {
+    pub fn mark_focused_pane_seen(&mut self, sidebar_window_active: bool) {
         if self.focus_state.sidebar_focused || !sidebar_window_active {
             return;
         }
+        self.mark_window_finished_seen();
         let Some(pane_id) = self.focus_state.focused_pane_id.clone() else {
             return;
         };

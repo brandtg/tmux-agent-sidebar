@@ -58,10 +58,12 @@ pub fn repo_group_key(group: &RepoGroup) -> String {
         .unwrap_or_default()
 }
 
-/// Bucket non-agent panes by repo key, one [`OtherWindow`] per window.
-/// Excludes windows that already have an agent pane (their agent row
-/// already represents them). Windows in a repo with no agent are still
-/// returned; the caller only renders keys that match an existing group.
+/// Bucket non-agent panes by repo key, one [`OtherWindow`] per pane.
+/// Every pane running in a repo window gets its own row so two programs
+/// split across panes are tracked independently. Excludes windows that
+/// already have an agent pane (their agent row already represents them).
+/// Windows in a repo with no agent are still returned; the caller only
+/// renders keys that match an existing group.
 pub fn group_other_windows_by_repo(
     other_panes: &[OtherPane],
     sessions: &[SessionInfo],
@@ -73,9 +75,15 @@ pub fn group_other_windows_by_repo(
         .map(|window| window.window_id.as_str())
         .collect();
 
-    let mut by_window: IndexMap<(String, String), OtherWindow> = IndexMap::new();
+    let mut out: IndexMap<String, Vec<OtherWindow>> = IndexMap::new();
+    let mut seen_panes: std::collections::HashSet<(String, String)> =
+        std::collections::HashSet::new();
     for pane in other_panes {
         if agent_windows.contains(pane.window_id.as_str()) {
+            continue;
+        }
+        // Grouped sessions can emit the same pane line twice.
+        if !seen_panes.insert((pane.window_id.clone(), pane.pane_id.clone())) {
             continue;
         }
         let git_info = git_info_cache.get(&pane.path).cloned().unwrap_or_default();
@@ -83,8 +91,7 @@ pub fn group_other_windows_by_repo(
             .repo_root
             .clone()
             .unwrap_or_else(|| pane.path.clone());
-        let entry_key = (key, pane.window_id.clone());
-        let candidate = OtherWindow {
+        out.entry(key).or_default().push(OtherWindow {
             window_id: pane.window_id.clone(),
             window_index: pane.window_index,
             window_name: pane.window_name.clone(),
@@ -97,20 +104,9 @@ pub fn group_other_windows_by_repo(
             path: pane.path.clone(),
             git_info,
             status: crate::tmux::classify_window_status(&pane.command),
-        };
-        match by_window.get(&entry_key) {
-            // Prefer the window's active pane as its representative.
-            Some(existing) if existing.pane_active && !candidate.pane_active => {}
-            _ => {
-                by_window.insert(entry_key, candidate);
-            }
-        }
+        });
     }
 
-    let mut out: IndexMap<String, Vec<OtherWindow>> = IndexMap::new();
-    for ((key, _), window) in by_window {
-        out.entry(key).or_default().push(window);
-    }
     for windows in out.values_mut() {
         windows.sort_by_key(|w| (status_rank(w.status), w.window_index));
     }
@@ -746,6 +742,8 @@ mod tests {
             path: path.into(),
             command: command.into(),
             pane_pid: None,
+            last_cmd: None,
+            last_exit: None,
         }
     }
 
@@ -790,18 +788,41 @@ mod tests {
     }
 
     #[test]
-    fn group_other_windows_prefers_active_pane() {
-        let inactive = other_pane("@5", "%5", "/repo", "vim", false);
+    fn group_other_windows_emits_one_row_per_pane() {
+        // Every pane of a non-agent window gets its own row, so two
+        // programs running in two splits are tracked independently.
+        let inactive = other_pane("@5", "%5", "/repo", "zsh", false);
         let active = other_pane("@5", "%6", "/repo", "cargo", true);
         let cache = cache_with_repo("/repo", "/repo");
 
         let grouped = group_other_windows_by_repo(&[inactive, active], &[], &cache);
 
         let windows = grouped.get("/repo").expect("repo bucket");
-        assert_eq!(windows.len(), 1);
-        assert_eq!(windows[0].pane_id, "%6");
-        assert_eq!(windows[0].command, "cargo");
-        assert_eq!(windows[0].status, WindowStatus::Task);
+        assert_eq!(
+            windows.len(),
+            2,
+            "one row per pane, not one representative per window"
+        );
+        let active_row = windows
+            .iter()
+            .find(|w| w.pane_id == "%6")
+            .expect("active pane row");
+        assert!(active_row.pane_active);
+        assert_eq!(active_row.command, "cargo");
+        assert_eq!(active_row.status, WindowStatus::Task);
+        assert!(windows.iter().any(|w| w.pane_id == "%5"));
+    }
+
+    #[test]
+    fn group_other_windows_dedups_grouped_session_lines() {
+        // Grouped sessions can emit the same pane line twice; the pane id
+        // must be deduped so one pane never renders two rows.
+        let pane = other_pane("@5", "%5", "/repo", "zsh", true);
+        let cache = cache_with_repo("/repo", "/repo");
+
+        let grouped = group_other_windows_by_repo(&[pane.clone(), pane], &[], &cache);
+
+        assert_eq!(grouped.get("/repo").expect("repo bucket").len(), 1);
     }
 
     #[test]

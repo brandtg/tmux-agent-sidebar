@@ -34,7 +34,31 @@ pub(super) fn collect(state: &AppState, width: u16) -> CollectedRows {
             .iter()
             .filter(|(pane, _)| filter.matches(pane))
             .collect();
-        if filtered_panes.is_empty() {
+
+        // A group with no matching agent panes is skipped entirely —
+        // unless one of its non-agent window panes still matches the
+        // filter (a finished task under `running`, a failed run under
+        // `error`, an idle shell under `idle`), in which case the group
+        // header and window section render without agent rows.
+        let matched_windows: Vec<&crate::group::OtherWindow> = if state.global.show_windows {
+            let key = crate::group::repo_group_key(group);
+            state
+                .other_windows
+                .get(&key)
+                .map(|windows| {
+                    windows
+                        .iter()
+                        .filter(|window| {
+                            let runtime = state.pane_state(&window.pane_id);
+                            filter.matches_window(window, runtime)
+                        })
+                        .collect()
+                })
+                .unwrap_or_default()
+        } else {
+            Vec::new()
+        };
+        if filtered_panes.is_empty() && matched_windows.is_empty() {
             continue;
         }
 
@@ -172,39 +196,31 @@ pub(super) fn collect(state: &AppState, width: u16) -> CollectedRows {
             row_index += 1;
         }
 
-        // Non-agent windows in this repo, rendered after the agent rows.
-        // Only under the `All` filter: a status filter expresses agent
-        // attention, and windows have no agent status to match. Window
-        // rows use a diamond status glyph (see `row::window_row`), so the
-        // section reads as distinct without a header line.
-        let show_windows = state.global.show_windows
-            && matches!(state.global.status_filter, crate::state::StatusFilter::All);
-        let key = crate::group::repo_group_key(group);
-        if show_windows
-            && !key.is_empty()
-            && let Some(windows) = state.other_windows.get(&key)
-        {
-            for window in windows {
-                let is_selected = state.focus_state.sidebar_focused
-                    && state.focus_state.focus == Focus::Panes
-                    && row_index == state.global.selected_pane_row;
-                let is_active = window.window_active && window.pane_active;
-                let line = row::window_row(
-                    window,
-                    state
-                        .pane_state(&window.pane_id)
-                        .map(|s| s.ports.as_slice()),
-                    is_selected,
-                    is_active,
-                    width,
-                    &state.icons,
-                    theme,
-                    state.spinner_frame,
-                );
-                collected.lines.push(line);
-                collected.line_to_row.push(Some(row_index));
-                row_index += 1;
-            }
+        // Non-agent window panes in this repo, rendered after the agent
+        // rows. Window rows use a diamond status glyph
+        // (see `row::window_row`), so the section reads as distinct
+        // without a header line.
+        for window in matched_windows {
+            let runtime = state.pane_state(&window.pane_id);
+            let is_selected = state.focus_state.sidebar_focused
+                && state.focus_state.focus == Focus::Panes
+                && row_index == state.global.selected_pane_row;
+            let is_active = window.window_active && window.pane_active;
+            let finished = runtime.and_then(|s| s.window_finished.clone());
+            let line = row::window_row(
+                window,
+                runtime.map(|s| s.ports.as_slice()),
+                finished.as_ref(),
+                is_selected,
+                is_active,
+                width,
+                &state.icons,
+                theme,
+                state.spinner_frame,
+            );
+            collected.lines.push(line);
+            collected.line_to_row.push(Some(row_index));
+            row_index += 1;
         }
     }
 

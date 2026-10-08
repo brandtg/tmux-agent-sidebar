@@ -172,6 +172,14 @@ pub struct OtherPane {
     pub path: String,
     pub command: String,
     pub pane_pid: Option<u32>,
+    /// Basename of the last foreground command the pane's shell recorded
+    /// via the shell-integration snippet. Empty/None when no integration
+    /// is active; then task-finish confirmation falls back to the plain
+    /// task→shell command transition.
+    pub last_cmd: Option<String>,
+    /// Exit code of the last completed foreground command (same snippet).
+    /// `None` when no integration is active or the value failed to parse.
+    pub last_exit: Option<i64>,
 }
 
 /// Coarse status for a non-agent window row. Distinct from
