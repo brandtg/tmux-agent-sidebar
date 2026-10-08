@@ -12,8 +12,8 @@ use super::options::{
     unset_pane_option,
 };
 use super::types::{
-    AgentType, CODEX_AGENT, PaneAttention, PaneInfo, PaneStatus, PermissionMode, SessionInfo,
-    WindowInfo, WorktreeMetadata,
+    AgentType, CODEX_AGENT, OtherPane, PaneAttention, PaneInfo, PaneStatus, PermissionMode,
+    SessionInfo, WindowInfo, WindowStatus, WorktreeMetadata,
 };
 use crate::worktree::SPAWNED_OPTION;
 
@@ -23,6 +23,7 @@ use crate::worktree::SPAWNED_OPTION;
 mod session_line_field {
     pub const SESSION_NAME: usize = 0;
     pub const WINDOW_ID: usize = 1;
+    pub const WINDOW_INDEX: usize = 2;
     pub const WINDOW_NAME: usize = 3;
     pub const WINDOW_ACTIVE: usize = 4;
     pub const AUTOMATIC_RENAME: usize = 5;
@@ -138,7 +139,10 @@ pub(crate) struct TmuxSnapshot {
     /// and non-agent panes: `(pane_id, pane_active, pane_current_path)`.
     /// Consumed by the pure [`pick_active_pane`] logic to resolve the
     /// focused pane without a second tmux spawn.
-    pub sidebar_window_panes: Vec<(String, bool, String)>,
+    pub sidebar_window_panes: Vec<SidebarWindowPane>,
+    /// Non-agent, non-sidebar panes across every window. Consumed by
+    /// `group_other_windows_by_repo` to build the opt-in windows section.
+    pub other_panes: Vec<OtherPane>,
 }
 
 /// Query all sessions, windows, and panes in a single `tmux list-panes -a` call
@@ -167,6 +171,7 @@ fn build_session_snapshot(all_panes_output: &str, sidebar_pane: &str) -> TmuxSna
     let (sidebar_pane_active, sidebar_window_active, sidebar_window_panes) =
         extract_sidebar_window_info(all_panes_output, sidebar_pane);
     let process_snapshot = process_snapshot_for_panes(all_panes_output);
+    let other_panes = collect_other_panes(all_panes_output);
     let (mut sessions_map, codex_pids) =
         build_session_hierarchy(all_panes_output, process_snapshot.as_ref());
     if !codex_pids.is_empty()
@@ -180,8 +185,53 @@ fn build_session_snapshot(all_panes_output: &str, sidebar_pane: &str) -> TmuxSna
         sidebar_pane_active,
         sidebar_window_active,
         sidebar_window_panes,
+        other_panes,
     }
 }
+
+/// Extract every pane that is neither the sidebar nor an agent. A pane is
+/// an agent when `@pane_agent` resolves, or (fallback) when its foreground
+/// command is an agent binary. The sidebar's own pane is skipped by role;
+/// non-agent siblings in the sidebar's window (a shell or editor split
+/// beside it) are kept, so a window the user jumps into still lists its
+/// other panes.
+fn collect_other_panes(all_panes_output: &str) -> Vec<OtherPane> {
+    let mut out = Vec::new();
+    for line in all_panes_output.lines() {
+        let parts = split_tmux_fields(line, '|');
+        if parts.len() < session_line_field::MIN_FIELDS {
+            continue;
+        }
+        let window_id = parts[session_line_field::WINDOW_ID].as_str();
+        let pane_fields = &parts[session_line_field::PANE_LINE_OFFSET..];
+        if pane_fields[pane_line_field::PANE_ROLE] == "sidebar" {
+            continue;
+        }
+        let agent_field = &pane_fields[pane_line_field::AGENT];
+        let command = &pane_fields[pane_line_field::PANE_CURRENT_COMMAND];
+        if AgentType::from_label(agent_field).is_some() || AgentType::from_label(command).is_some()
+        {
+            continue;
+        }
+        out.push(OtherPane {
+            session_name: parts[session_line_field::SESSION_NAME].clone(),
+            window_id: window_id.to_string(),
+            window_index: parts[session_line_field::WINDOW_INDEX].parse().unwrap_or(0),
+            window_name: parts[session_line_field::WINDOW_NAME].clone(),
+            window_active: parts[session_line_field::WINDOW_ACTIVE] == "1",
+            pane_id: pane_fields[pane_line_field::PANE_ID].clone(),
+            pane_active: pane_fields[pane_line_field::PANE_ACTIVE] == "1",
+            path: pane_fields[pane_line_field::PANE_CURRENT_PATH].clone(),
+            command: command.clone(),
+            pane_pid: pane_fields[pane_line_field::PANE_PID].parse().ok(),
+        });
+    }
+    out
+}
+
+/// `(pane_id, pane_active, pane_current_path)` for each pane in the
+/// sidebar's window.
+type SidebarWindowPane = (String, bool, String);
 
 /// Pull the sidebar's focus flags and its window's pane list out of the raw
 /// `list-panes -a` output. The sidebar pane itself carries `@pane_role=sidebar`
@@ -195,7 +245,7 @@ fn build_session_snapshot(all_panes_output: &str, sidebar_pane: &str) -> TmuxSna
 fn extract_sidebar_window_info(
     all_panes_output: &str,
     sidebar_pane: &str,
-) -> (bool, bool, Vec<(String, bool, String)>) {
+) -> (bool, bool, Vec<SidebarWindowPane>) {
     struct RawPane {
         window_id: String,
         pane_id: String,
@@ -556,6 +606,28 @@ fn is_shell_command(command: &str) -> bool {
 
     SHELL_COMMANDS.contains(&executable.as_str())
 }
+
+/// Classify a non-agent pane's foreground command. Shells are idle;
+/// known interactive programs are busy-but-steady; everything else is a
+/// "task" and pulses. The allowlist is a tuning knob — keep it small.
+pub fn classify_window_status(command: &str) -> WindowStatus {
+    if is_shell_command(command) {
+        return WindowStatus::Idle;
+    }
+    let base = command_basename(command);
+    if INTERACTIVE_COMMANDS.contains(&base) {
+        return WindowStatus::Busy;
+    }
+    WindowStatus::Task
+}
+
+/// Foreground programs that should read as "busy" without pulsing: an
+/// editor or a pager is open, not a task running to completion. Kept
+/// deliberately short; anything ambiguous falls through to `Task`.
+const INTERACTIVE_COMMANDS: &[&str] = &[
+    "vim", "nvim", "vi", "emacs", "nano", "less", "more", "man", "htop", "top", "btop", "ssh",
+    "mosh", "fzf", "lazygit", "python", "python3", "node", "irb", "psql", "sqlite3",
+];
 
 /// Detect Codex permission mode from process args (--full-auto, --yolo, etc.)
 fn detect_codex_permission_mode(args: &str) -> PermissionMode {
@@ -1651,6 +1723,7 @@ mod tests {
         assert!(!snapshot.sidebar_pane_active);
         assert!(!snapshot.sidebar_window_active);
         assert!(snapshot.sidebar_window_panes.is_empty());
+        assert!(snapshot.other_panes.is_empty());
     }
 
     #[test]
@@ -1701,5 +1774,79 @@ mod tests {
         assert!(snapshot.sidebar_window_panes.is_empty());
         // Session parsing is unaffected by the sidebar lookup.
         assert_eq!(snapshot.sessions.len(), 1);
+    }
+
+    // ─── collect_other_panes ────────────────────────────────────────
+
+    /// Build a 30-field `list-panes` line for a non-agent pane.
+    #[allow(clippy::too_many_arguments)]
+    fn other_pane_line(
+        window_id: &str,
+        window_active: &str,
+        pane_id: &str,
+        pane_active: &str,
+        command: &str,
+        path: &str,
+    ) -> String {
+        format!(
+            "main|{window_id}|1|editor|{window_active}|1|{pane_active}|running|||@pane_name|{path}|{command}||{pane_id}|prompt|src|100|wait|12345|sub|cwd|default|wt|wtb|sid|0|bg|title|/launch"
+        )
+    }
+
+    #[test]
+    fn collect_other_panes_keeps_shell_pane_and_skips_agent() {
+        let shell = other_pane_line("@5", "0", "%7", "0", "zsh", "/repo/tests");
+        let agent = other_pane_line("@6", "0", "%8", "0", "claude", "/repo");
+        let output = format!("{shell}\n{agent}\n");
+
+        let panes = collect_other_panes(&output);
+
+        assert_eq!(panes.len(), 1, "only the shell pane is an 'other' pane");
+        assert_eq!(panes[0].pane_id, "%7");
+        assert_eq!(panes[0].window_id, "@5");
+        assert_eq!(panes[0].window_name, "editor");
+        assert_eq!(panes[0].command, "zsh");
+        assert_eq!(panes[0].path, "/repo/tests");
+        assert_eq!(panes[0].pane_pid, Some(12345));
+    }
+
+    #[test]
+    fn collect_other_panes_skips_sidebar_pane() {
+        // The sidebar's own pane is excluded by role, but a non-agent
+        // sibling in the same window is kept — a window the user jumps
+        // into must still list its other panes.
+        let sidebar = "main|@5|1|editor|1|1|1|running|||@pane_name|/repo|zsh|sidebar|%9|prompt|src|100|wait|12345|sub|cwd|default|wt|wtb|sid|0|bg|title|/launch";
+        let sibling = other_pane_line("@5", "1", "%7", "1", "zsh", "/repo");
+
+        let panes = collect_other_panes(&format!("{sidebar}\n{sibling}"));
+
+        assert_eq!(panes.len(), 1, "sidebar pane must be excluded");
+        assert_eq!(panes[0].pane_id, "%7");
+    }
+
+    // ─── classify_window_status ─────────────────────────────────────
+
+    #[test]
+    fn classify_window_status_shell_is_idle() {
+        assert_eq!(classify_window_status("zsh"), WindowStatus::Idle);
+        assert_eq!(classify_window_status("/bin/bash"), WindowStatus::Idle);
+        assert_eq!(classify_window_status("fish -l"), WindowStatus::Idle);
+    }
+
+    #[test]
+    fn classify_window_status_interactive_is_busy() {
+        assert_eq!(classify_window_status("vim"), WindowStatus::Busy);
+        assert_eq!(classify_window_status("/usr/bin/nvim"), WindowStatus::Busy);
+        assert_eq!(classify_window_status("less"), WindowStatus::Busy);
+    }
+
+    #[test]
+    fn classify_window_status_program_is_task() {
+        assert_eq!(classify_window_status("cargo"), WindowStatus::Task);
+        assert_eq!(
+            classify_window_status("/usr/local/bin/npm run test"),
+            WindowStatus::Task
+        );
+        assert_eq!(classify_window_status("pytest"), WindowStatus::Task);
     }
 }

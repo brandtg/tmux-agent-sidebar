@@ -91,36 +91,42 @@ impl AppState {
     }
 
     pub fn activate_selected_pane(&mut self) {
-        if let Some(target_pane_id) = self
+        let Some(target) = self
             .layout
             .pane_row_targets
             .get(self.global.selected_pane_row)
-            .map(|target| target.pane_id.clone())
-        {
-            // Update the sidebar immediately so the active marker and
-            // repo header highlight move without waiting for the next
-            // periodic tmux refresh.
-            self.focus_state.focused_pane_id = Some(target_pane_id.clone());
-            tmux::select_pane(&target_pane_id);
+        else {
+            return;
+        };
+        let target_pane_id = target.pane_id.clone();
+        let is_window = target.is_window;
 
-            // The jump may land on a window that has no sidebar of its own
-            // (e.g. with @sidebar_auto_create off). Summon one there so the
-            // sidebar "follows" the jump instead of disappearing. create-only
-            // is a no-op when that window already has a sidebar.
-            let window_id = tmux::display_message(&target_pane_id, "#{window_id}");
-            if !window_id.is_empty() {
-                let pane_path = tmux::display_message(&target_pane_id, "#{pane_current_path}");
-                let pane_path = if pane_path.is_empty() {
-                    "~".to_string()
-                } else {
-                    pane_path
-                };
-                crate::cli::toggle::cmd_toggle(&[
-                    "--create-only".to_string(),
-                    window_id,
-                    pane_path,
-                ]);
-            }
+        // Update the sidebar immediately so the active marker and
+        // repo header highlight move without waiting for the next
+        // periodic tmux refresh.
+        self.focus_state.focused_pane_id = Some(target_pane_id.clone());
+        tmux::select_pane(&target_pane_id);
+
+        // A non-agent window row is a jump target only: it has no sidebar
+        // of its own to summon, and creating one would spawn a sidebar
+        // where the user keeps an editor or a test run.
+        if is_window {
+            return;
+        }
+
+        // The jump may land on a window that has no sidebar of its own
+        // (e.g. with @sidebar_auto_create off). Summon one there so the
+        // sidebar "follows" the jump instead of disappearing. create-only
+        // is a no-op when that window already has a sidebar.
+        let window_id = tmux::display_message(&target_pane_id, "#{window_id}");
+        if !window_id.is_empty() {
+            let pane_path = tmux::display_message(&target_pane_id, "#{pane_current_path}");
+            let pane_path = if pane_path.is_empty() {
+                "~".to_string()
+            } else {
+                pane_path
+            };
+            crate::cli::toggle::cmd_toggle(&["--create-only".to_string(), window_id, pane_path]);
         }
     }
 }
@@ -220,9 +226,11 @@ mod tests {
         state.layout.pane_row_targets = vec![
             RowTarget {
                 pane_id: "%1".into(),
+                is_window: false,
             },
             RowTarget {
                 pane_id: "%2".into(),
+                is_window: false,
             },
         ];
 
@@ -247,9 +255,11 @@ mod tests {
         state.layout.pane_row_targets = vec![
             RowTarget {
                 pane_id: "%1".into(),
+                is_window: false,
             },
             RowTarget {
                 pane_id: "%2".into(),
+                is_window: false,
             },
         ];
         state.global.selected_pane_row = 0;

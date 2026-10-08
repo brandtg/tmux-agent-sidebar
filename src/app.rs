@@ -132,7 +132,7 @@ pub fn run(
             // anchors (launch cwd when captured, else live cwd — the same
             // keys group_panes_by_repo looks up); it refreshes stale
             // entries off-thread and returns the cache.
-            let paths: Vec<String> = state
+            let mut paths: Vec<String> = state
                 .repo_groups
                 .iter()
                 .flat_map(|group| group.panes.iter())
@@ -140,6 +140,14 @@ pub fn run(
                 .collect::<std::collections::HashSet<_>>()
                 .into_iter()
                 .collect();
+            paths.extend(
+                state
+                    .other_windows
+                    .values()
+                    .flatten()
+                    .map(|window| window.path.clone())
+                    .filter(|path| !path.is_empty()),
+            );
             if !paths.is_empty() {
                 let _ = git_info_tx.send(paths);
             }

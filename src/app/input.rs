@@ -171,6 +171,16 @@ pub(super) fn handle_key_event(
                 "Compact view: off"
             });
         }
+        KeyCode::Char('w') => {
+            state.global.toggle_show_windows();
+            state.rebuild_row_targets();
+            let count: usize = state.other_windows.values().map(Vec::len).sum();
+            if state.global.show_windows {
+                state.set_flash(format!("Windows: on ({count})"));
+            } else {
+                state.set_flash("Windows: off");
+            }
+        }
         KeyCode::Char('m') => {
             if state.bottom_panel_height > 0 {
                 state.toggle_bottom_minimized();
@@ -271,12 +281,15 @@ mod tests {
         state.layout.pane_row_targets = vec![
             RowTarget {
                 pane_id: "%1".into(),
+                is_window: false,
             },
             RowTarget {
                 pane_id: "%2".into(),
+                is_window: false,
             },
             RowTarget {
                 pane_id: "%3".into(),
+                is_window: false,
             },
         ];
         state.global.selected_pane_row = 0;
@@ -442,6 +455,50 @@ mod tests {
             state.flash.as_ref().map(|(text, _)| text.as_str()),
             Some("Compact view: off")
         );
+    }
+
+    #[test]
+    fn w_toggles_show_windows_and_sets_flash() {
+        // `w` is global like `c`, and the flash reports the window count.
+        let mut state = state_with_three_panes();
+        let flag = AtomicBool::new(false);
+        assert!(!state.global.show_windows);
+
+        handle_key_event(key(KeyCode::Char('w')), &mut state, &flag);
+        assert!(state.global.show_windows);
+        assert_eq!(
+            state.flash.as_ref().map(|(text, _)| text.as_str()),
+            Some("Windows: on (0)")
+        );
+
+        handle_key_event(key(KeyCode::Char('w')), &mut state, &flag);
+        assert!(!state.global.show_windows);
+        assert_eq!(
+            state.flash.as_ref().map(|(text, _)| text.as_str()),
+            Some("Windows: off")
+        );
+    }
+
+    #[test]
+    fn w_types_into_spawn_input_without_toggling() {
+        let mut state = state_with_three_panes();
+        state.popup = PopupState::SpawnInput {
+            input: String::new(),
+            target_repo: "repo-a".into(),
+            target_repo_root: "/tmp/repo-a".into(),
+            agent_idx: 0,
+            mode_idx: 0,
+            field: SpawnField::Task,
+            anchor_y: None,
+            error: None,
+            area: None,
+        };
+        let flag = AtomicBool::new(false);
+        handle_key_event(key(KeyCode::Char('w')), &mut state, &flag);
+        assert!(!state.global.show_windows, "popup must swallow the key");
+        if let PopupState::SpawnInput { input, .. } = &state.popup {
+            assert_eq!(input, "w");
+        }
     }
 
     #[test]

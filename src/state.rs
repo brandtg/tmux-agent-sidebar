@@ -44,6 +44,9 @@ pub enum BottomTab {
 pub struct AppState {
     pub now: u64,
     pub repo_groups: Vec<crate::group::RepoGroup>,
+    /// Non-agent windows sharing a repo with the listed agents, keyed by
+    /// the same repo key as `repo_groups`. Rebuilt every refresh.
+    pub other_windows: indexmap::IndexMap<String, Vec<crate::group::OtherWindow>>,
     /// Sidebar focus + pane focus tracking (sidebar_focused, focus,
     /// focused_pane_id, prev_focused_pane_id).
     pub focus_state: FocusState,
@@ -167,6 +170,7 @@ impl AppState {
         let mut state = Self {
             now: 0,
             repo_groups: vec![],
+            other_windows: indexmap::IndexMap::new(),
             focus_state: FocusState::new(),
             flash: None,
             spinner_frame: 0,
@@ -973,7 +977,7 @@ mod tests {
         }];
 
         state.focus_state.sidebar_focused = true;
-        state.apply_session_snapshot(sessions, Vec::new());
+        state.apply_session_snapshot(sessions, Vec::new(), Vec::new());
 
         assert!(state.focus_state.sidebar_focused);
         assert_eq!(state.repo_groups.len(), 1);
@@ -1146,12 +1150,15 @@ mod tests {
         state.layout.pane_row_targets = vec![
             RowTarget {
                 pane_id: "%1".into(),
+                is_window: false,
             },
             RowTarget {
                 pane_id: "%2".into(),
+                is_window: false,
             },
             RowTarget {
                 pane_id: "%3".into(),
+                is_window: false,
             },
         ];
         state.global.selected_pane_row = 0;
@@ -1286,9 +1293,11 @@ mod tests {
         state.layout.pane_row_targets = vec![
             RowTarget {
                 pane_id: "%1".into(),
+                is_window: false,
             },
             RowTarget {
                 pane_id: "%2".into(),
+                is_window: false,
             },
         ];
         // line_to_row: line 0 = group header (None), line 1 = agent 0, line 2 = agent 1
@@ -1308,6 +1317,7 @@ mod tests {
         let mut state = AppState::new("%99".into());
         state.layout.pane_row_targets = vec![RowTarget {
             pane_id: "%1".into(),
+            is_window: false,
         }];
         state.layout.line_to_row = vec![None, Some(0)];
         state.global.selected_pane_row = 0;
@@ -1424,9 +1434,11 @@ mod tests {
         state.layout.pane_row_targets = vec![
             RowTarget {
                 pane_id: "%1".into(),
+                is_window: false,
             },
             RowTarget {
                 pane_id: "%2".into(),
+                is_window: false,
             },
         ];
         // 5 lines total, scrolled down by 2
@@ -1443,6 +1455,7 @@ mod tests {
         let mut state = AppState::new("%99".into());
         state.layout.pane_row_targets = vec![RowTarget {
             pane_id: "%1".into(),
+            is_window: false,
         }];
         state.layout.line_to_row = vec![None, Some(0)];
         state.global.selected_pane_row = 0;

@@ -116,6 +116,13 @@ pub const SIDEBAR_COMPACT: &str = "@sidebar_compact";
 /// default `off`). Read once at startup; the live [`SIDEBAR_COMPACT`]
 /// value is never restored on reopen.
 pub const SIDEBAR_DEFAULT_COMPACT_VIEW: &str = "@sidebar_default_compact_view";
+/// Live "show other windows" flag (`1`/`0`). Written whenever a sidebar
+/// toggles with `w` so every open sidebar renders the section alike.
+pub const SIDEBAR_SHOW_WINDOWS: &str = "@sidebar_show_windows";
+/// "Show other windows" mode a newly opened sidebar lands on (`on` /
+/// `off`, default `off`). Read once at startup; the live
+/// [`SIDEBAR_SHOW_WINDOWS`] value is never restored on reopen.
+pub const SIDEBAR_DEFAULT_SHOW_WINDOWS: &str = "@sidebar_default_show_windows";
 pub const SIDEBAR_BOTTOM_HEIGHT: &str = "@sidebar_bottom_height";
 /// Windows narrower than this many columns open the sidebar as a tmux
 /// popup instead of a split pane (mobile viewports). `0` disables the

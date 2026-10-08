@@ -20,9 +20,11 @@ fn test_move_pane_selection_bounds() {
     state.layout.pane_row_targets = vec![
         RowTarget {
             pane_id: "%1".into(),
+            is_window: false,
         },
         RowTarget {
             pane_id: "%2".into(),
+            is_window: false,
         },
     ];
     state.global.selected_pane_row = 0;
@@ -397,9 +399,11 @@ fn test_move_pane_selection_return_value() {
     state.layout.pane_row_targets = vec![
         RowTarget {
             pane_id: "%1".into(),
+            is_window: false,
         },
         RowTarget {
             pane_id: "%2".into(),
+            is_window: false,
         },
     ];
     state.global.selected_pane_row = 0;
@@ -1070,6 +1074,86 @@ fn default_compact_view_is_case_insensitive() {
     g.apply_default_view(&opts);
 
     assert!(g.compact);
+}
+
+// ─── show-windows tests ─────────────────────────────────────────────
+// Mirrors the compact-mode contract: `w` toggles a shared live value in
+// `@sidebar_show_windows`; `@sidebar_default_show_windows` only seeds the
+// mode while no live value exists.
+
+#[test]
+fn show_windows_defaults_to_off() {
+    let g = make_global();
+    assert!(!g.show_windows, "show-windows must default to off");
+}
+
+#[test]
+fn show_windows_syncs_from_tmux_when_changed_by_other_instance() {
+    let mut g = make_global();
+
+    g.apply_all(&make_opts(&[(tmux::SIDEBAR_SHOW_WINDOWS, "1")]));
+    assert!(
+        g.show_windows,
+        "another sidebar toggled it on; must sync in"
+    );
+
+    g.apply_all(&make_opts(&[(tmux::SIDEBAR_SHOW_WINDOWS, "0")]));
+    assert!(
+        !g.show_windows,
+        "another sidebar toggled it off; must sync in"
+    );
+}
+
+#[test]
+fn new_sidebar_lands_on_live_show_windows_value_not_default() {
+    let mut g = make_global();
+
+    let opts = make_opts(&[(tmux::SIDEBAR_SHOW_WINDOWS, "1")]);
+    g.apply_all(&opts);
+    assert!(g.show_windows);
+
+    g.apply_default_view(&opts);
+    assert!(g.show_windows, "a new sidebar must land on the live value");
+}
+
+#[test]
+fn default_show_windows_applies_only_before_first_toggle() {
+    let mut g = make_global();
+
+    let opts = make_opts(&[(tmux::SIDEBAR_DEFAULT_SHOW_WINDOWS, "on")]);
+    g.apply_all(&opts);
+    g.apply_default_view(&opts);
+    assert!(
+        g.show_windows,
+        "configured default show-windows must be honored"
+    );
+}
+
+#[test]
+fn live_show_windows_value_overrides_configured_default() {
+    let mut g = make_global();
+
+    let opts = make_opts(&[
+        (tmux::SIDEBAR_SHOW_WINDOWS, "0"),
+        (tmux::SIDEBAR_DEFAULT_SHOW_WINDOWS, "on"),
+    ]);
+    g.apply_all(&opts);
+    g.apply_default_view(&opts);
+
+    assert!(
+        !g.show_windows,
+        "live @sidebar_show_windows must win over the landing default"
+    );
+}
+
+#[test]
+fn default_show_windows_is_case_insensitive() {
+    let mut g = make_global();
+
+    let opts = make_opts(&[(tmux::SIDEBAR_DEFAULT_SHOW_WINDOWS, "  ON ")]);
+    g.apply_default_view(&opts);
+
+    assert!(g.show_windows);
 }
 
 #[test]

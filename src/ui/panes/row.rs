@@ -240,6 +240,116 @@ pub(super) fn compact_row(
     vec![ctx.row_line_split(left_spans, left_width, right_spans, right_width)]
 }
 
+/// One line for a non-agent window row. Window rows are always a single
+/// line in both densities and use the same gutter as agent rows. A
+/// diamond glyph (`◇`/`◆`) replaces the agent circle so the two kinds of
+/// row are distinguishable at a glance while color still conveys status.
+/// No elapsed counter — a window (an editor, a shell) is not a task worth
+/// timing.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn window_row(
+    window: &crate::group::OtherWindow,
+    ports: Option<&[u16]>,
+    selected: bool,
+    active: bool,
+    width: usize,
+    icons: &StatusIcons,
+    theme: &ColorTheme,
+    spinner_frame: usize,
+) -> Line<'static> {
+    use crate::tmux::WindowStatus;
+
+    let bg = if selected {
+        Some(theme.selection_bg)
+    } else {
+        None
+    };
+    let apply_bg = |style: Style| match bg {
+        Some(c) => style.bg(c),
+        None => style,
+    };
+    let ctx = RowCtx {
+        marker_char: if active { SELECTION_MARKER } else { " " },
+        marker_style: if active {
+            apply_bg(Style::default().fg(theme.accent))
+        } else {
+            apply_bg(Style::default())
+        },
+        inner_width: width.saturating_sub(2),
+        theme,
+        bg,
+        active,
+    };
+
+    // Diamond family: hollow = idle, filled = busy, filled+pulse = task.
+    // Distinct from the agent circle while still driven by `icon_color`.
+    let (icon, icon_color): (&str, ratatui::style::Color) = match window.status {
+        WindowStatus::Idle => ("\u{25C7}", theme.status_idle),
+        WindowStatus::Busy => ("\u{25C6}", theme.status_running),
+        WindowStatus::Task => {
+            let (_, pulse) = running_icon_for(&PaneStatus::Running, spinner_frame, icons);
+            ("\u{25C6}", pulse.unwrap_or(theme.status_running))
+        }
+    };
+
+    // Right side: the listening-port list, when there is one.
+    let port_text = ports.and_then(|ports| {
+        if ports.is_empty() {
+            None
+        } else {
+            let joined = ports
+                .iter()
+                .map(u16::to_string)
+                .collect::<Vec<_>>()
+                .join(", ");
+            Some(format!(":{}", joined))
+        }
+    });
+    let mut right_spans: Vec<Span<'static>> = Vec::with_capacity(1);
+    let mut right_width = 0usize;
+    if let Some(text) = port_text {
+        right_width += display_width(&text);
+        right_spans.push(Span::styled(
+            text,
+            ctx.apply_bg(Style::default().fg(theme.port)),
+        ));
+    }
+
+    let icon_w = display_width(icon);
+    // Icon + space + name take priority; the command fills what remains
+    // after reserving room for the right-pinned port.
+    let mut left_budget = ctx.inner_width.saturating_sub(icon_w + 1 + right_width);
+    let name = truncate_to_width(&window.window_name, left_budget);
+    let name_w = display_width(&name);
+    left_budget = left_budget.saturating_sub(name_w);
+
+    let mut left_spans: Vec<Span<'static>> = Vec::with_capacity(4);
+    left_spans.push(Span::styled(
+        icon,
+        ctx.apply_bg(Style::default().fg(icon_color)),
+    ));
+    left_spans.push(Span::styled(
+        format!(" {}", name),
+        ctx.apply_bg(Style::default().fg(theme.text_active)),
+    ));
+    let mut left_width = icon_w + 1 + name_w;
+
+    // tmux usually auto-renames the window to the running command, so
+    // only show the command when it adds information.
+    if !window.command.is_empty() && window.command != window.window_name && left_budget >= 3 {
+        let command = truncate_to_width(&window.command, left_budget.saturating_sub(2));
+        let text = format!("  {}", command);
+        let w = display_width(&text);
+        left_spans.push(Span::styled(
+            text,
+            ctx.apply_bg(Style::default().fg(theme.text_muted)),
+        ));
+        left_width += w;
+    }
+
+    ctx.row_line_split(left_spans, left_width, right_spans, right_width)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1498,6 +1608,99 @@ mod tests {
                 .iter()
                 .any(|s| s.style.bg == Some(theme.selection_bg)),
             "the single compact row is also the status row, so selection bg applies"
+        );
+    }
+
+    // ─── window_row ─────────────────────────────────────────────────
+
+    fn window(
+        name: &str,
+        command: &str,
+        status: crate::tmux::WindowStatus,
+    ) -> crate::group::OtherWindow {
+        crate::group::OtherWindow {
+            window_id: "@5".into(),
+            window_index: 0,
+            window_name: name.into(),
+            window_active: false,
+            session_name: "main".into(),
+            pane_id: "%10".into(),
+            pane_active: true,
+            pane_pid: None,
+            command: command.into(),
+            path: "/repo".into(),
+            git_info: PaneGitInfo::default(),
+            status,
+        }
+    }
+
+    #[test]
+    fn window_row_renders_name_command_and_port() {
+        let theme = ColorTheme::default();
+        let w = window("web", "node", crate::tmux::WindowStatus::Task);
+        let line = window_row(
+            &w,
+            Some(&[3000]),
+            false,
+            false,
+            40,
+            &StatusIcons::default(),
+            &theme,
+            0,
+        );
+        let text = line_text(&line);
+        assert!(text.contains('\u{25C6}'), "diamond glyph missing: {text}");
+        assert!(text.contains("web"), "name missing: {text}");
+        assert!(text.contains("node"), "command missing: {text}");
+        assert!(text.contains(":3000"), "port missing: {text}");
+    }
+
+    #[test]
+    fn window_row_omits_command_when_same_as_name_and_port_when_empty() {
+        let theme = ColorTheme::default();
+        let w = window("nvim", "nvim", crate::tmux::WindowStatus::Busy);
+        let line = window_row(
+            &w,
+            None,
+            false,
+            false,
+            40,
+            &StatusIcons::default(),
+            &theme,
+            0,
+        );
+        let text = line_text(&line);
+        assert!(text.contains("nvim"), "name missing: {text}");
+        // The command equals the window name (tmux auto-rename), so it is
+        // not repeated, and no port renders.
+        assert_eq!(
+            text.matches("nvim").count(),
+            1,
+            "command must not duplicate the name: {text}"
+        );
+        assert!(!text.contains(':'), "no port expected: {text}");
+    }
+
+    #[test]
+    fn window_row_never_renders_an_elapsed_counter() {
+        let theme = ColorTheme::default();
+        // Pick name/command with no "m"/"s" so a stray duration like
+        // "2m14s" would be the only source of those characters.
+        let w = window("web", "node", crate::tmux::WindowStatus::Task);
+        let line = window_row(
+            &w,
+            None,
+            false,
+            false,
+            40,
+            &StatusIcons::default(),
+            &theme,
+            0,
+        );
+        let text = line_text(&line);
+        assert!(
+            !text.contains('m') && !text.contains('s'),
+            "window rows must not show a time counter: {text}"
         );
     }
 }
