@@ -91,7 +91,7 @@ impl AppState {
                 continue;
             }
             for (pane, _) in &group.panes {
-                if self.global.status_filter.matches(&pane.status) {
+                if self.global.status_filter.matches(pane) {
                     self.layout.pane_row_targets.push(RowTarget {
                         pane_id: pane.pane_id.clone(),
                         is_window: false,

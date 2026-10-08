@@ -32,7 +32,7 @@ pub(super) fn collect(state: &AppState, width: u16) -> CollectedRows {
         let filtered_panes: Vec<_> = group
             .panes
             .iter()
-            .filter(|(pane, _)| filter.matches(&pane.status))
+            .filter(|(pane, _)| filter.matches(pane))
             .collect();
         if filtered_panes.is_empty() {
             continue;

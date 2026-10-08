@@ -61,14 +61,26 @@ impl StatusFilter {
         }
     }
 
-    pub fn matches(self, status: &crate::tmux::PaneStatus) -> bool {
+    /// Does a pane pass this filter?
+    ///
+    /// The `Running` filter doubles as the "what's going on" view: besides
+    /// actively running agents it also matches panes carrying any
+    /// `@pane_attention` flag (a finished-but-unseen turn, a waiting /
+    /// permission prompt), so one filter surfaces everything that wants
+    /// the user's eye right now. The flag clears when the pane gains
+    /// focus, at which point the pane drops back to its status-only
+    /// filters (all + idle/waiting).
+    pub fn matches(self, pane: &crate::tmux::PaneInfo) -> bool {
         match self {
             StatusFilter::All => true,
-            StatusFilter::Running => *status == crate::tmux::PaneStatus::Running,
-            StatusFilter::Background => *status == crate::tmux::PaneStatus::Background,
-            StatusFilter::Waiting => *status == crate::tmux::PaneStatus::Waiting,
-            StatusFilter::Idle => *status == crate::tmux::PaneStatus::Idle,
-            StatusFilter::Error => *status == crate::tmux::PaneStatus::Error,
+            StatusFilter::Running => {
+                pane.status == crate::tmux::PaneStatus::Running
+                    || pane.attention != crate::tmux::PaneAttention::None
+            }
+            StatusFilter::Background => pane.status == crate::tmux::PaneStatus::Background,
+            StatusFilter::Waiting => pane.status == crate::tmux::PaneStatus::Waiting,
+            StatusFilter::Idle => pane.status == crate::tmux::PaneStatus::Idle,
+            StatusFilter::Error => pane.status == crate::tmux::PaneStatus::Error,
         }
     }
 }
@@ -111,26 +123,46 @@ impl AppState {
     /// list renders them under the `All` filter — so they are counted
     /// into the `all` total. Excluding them made the header claim fewer
     /// agents than the list actually showed.
+    ///
+    /// `running` mirrors the `Running` filter's match rule (see
+    /// [`StatusFilter::matches`]): attention-flagged panes show up there
+    /// as well, so a done-but-unseen agent raises the running count too
+    /// (and still counts into its own status bucket).
     pub fn status_counts(&self) -> (usize, usize, usize, usize, usize, usize) {
-        let (mut running, mut background, mut waiting, mut idle, mut error, mut unknown) =
-            (0, 0, 0, 0, 0, 0);
+        let (mut running, mut background, mut waiting, mut idle, mut error) = (0, 0, 0, 0, 0);
         for group in &self.repo_groups {
             if !self.global.repo_filter.matches_group(&group.name) {
                 continue;
             }
             for (pane, _) in &group.panes {
+                if pane.status == crate::tmux::PaneStatus::Running
+                    || pane.attention != crate::tmux::PaneAttention::None
+                {
+                    running += 1;
+                }
                 match pane.status {
-                    crate::tmux::PaneStatus::Running => running += 1,
+                    crate::tmux::PaneStatus::Running => {}
                     crate::tmux::PaneStatus::Background => background += 1,
                     crate::tmux::PaneStatus::Waiting => waiting += 1,
                     crate::tmux::PaneStatus::Idle => idle += 1,
                     crate::tmux::PaneStatus::Error => error += 1,
-                    crate::tmux::PaneStatus::Unknown => unknown += 1,
+                    crate::tmux::PaneStatus::Unknown => {}
                 }
             }
         }
-        let all = running + background + waiting + idle + error + unknown;
+        // Counted per pane, not as a bucket sum: an attention-flagged
+        // pane lands in both `running` and its status bucket above.
+        let all = self.pane_count();
         (all, running, background, waiting, idle, error)
+    }
+
+    /// Total agent panes under the active repo filter.
+    fn pane_count(&self) -> usize {
+        self.repo_groups
+            .iter()
+            .filter(|g| self.global.repo_filter.matches_group(&g.name))
+            .map(|g| g.panes.len())
+            .sum()
     }
 
     /// Return list of repo names for the popup: ["All", repo1, repo2, ...]
@@ -171,30 +203,67 @@ mod tests {
     }
 
     #[test]
-    fn status_filter_matches_status() {
-        assert!(StatusFilter::All.matches(&PaneStatus::Running));
-        assert!(StatusFilter::All.matches(&PaneStatus::Background));
-        assert!(StatusFilter::All.matches(&PaneStatus::Idle));
-        assert!(StatusFilter::All.matches(&PaneStatus::Waiting));
-        assert!(StatusFilter::All.matches(&PaneStatus::Error));
+    fn status_filter_matches_panes() {
+        let mut pane = test_pane("%1", PaneStatus::Running);
+        pane.attention = PaneAttention::None;
 
-        assert!(StatusFilter::Running.matches(&PaneStatus::Running));
-        assert!(!StatusFilter::Running.matches(&PaneStatus::Background));
-        assert!(!StatusFilter::Running.matches(&PaneStatus::Idle));
-        assert!(!StatusFilter::Running.matches(&PaneStatus::Waiting));
-        assert!(!StatusFilter::Running.matches(&PaneStatus::Error));
+        assert!(StatusFilter::All.matches(&pane));
+        assert!(StatusFilter::Running.matches(&pane));
 
-        assert!(StatusFilter::Background.matches(&PaneStatus::Background));
-        assert!(!StatusFilter::Background.matches(&PaneStatus::Running));
+        pane.status = PaneStatus::Background;
+        assert!(StatusFilter::Background.matches(&pane));
+        assert!(!StatusFilter::Running.matches(&pane));
 
-        assert!(StatusFilter::Waiting.matches(&PaneStatus::Waiting));
-        assert!(!StatusFilter::Waiting.matches(&PaneStatus::Running));
+        pane.status = PaneStatus::Waiting;
+        assert!(StatusFilter::Waiting.matches(&pane));
 
-        assert!(StatusFilter::Idle.matches(&PaneStatus::Idle));
-        assert!(!StatusFilter::Idle.matches(&PaneStatus::Running));
+        pane.status = PaneStatus::Idle;
+        assert!(StatusFilter::Idle.matches(&pane));
 
-        assert!(StatusFilter::Error.matches(&PaneStatus::Error));
-        assert!(!StatusFilter::Error.matches(&PaneStatus::Idle));
+        pane.status = PaneStatus::Error;
+        assert!(StatusFilter::Error.matches(&pane));
+    }
+
+    #[test]
+    fn running_filter_matches_any_attention_flag() {
+        // The Running filter is the "what's going on" view: an
+        // attention flag on any status makes the pane show up there.
+        for status in [
+            PaneStatus::Idle,
+            PaneStatus::Waiting,
+            PaneStatus::Running,
+            PaneStatus::Unknown,
+        ] {
+            for attention in [PaneAttention::Done, PaneAttention::Notification] {
+                let mut pane = test_pane("%1", status.clone());
+                pane.attention = attention;
+                assert!(
+                    StatusFilter::Running.matches(&pane),
+                    "{status:?} with {attention:?} should match the Running filter"
+                );
+                // The pane keeps its status-only filter membership too.
+                match status {
+                    PaneStatus::Idle => assert!(StatusFilter::Idle.matches(&pane)),
+                    PaneStatus::Waiting => assert!(StatusFilter::Waiting.matches(&pane)),
+                    PaneStatus::Running => {}
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn running_filter_drops_pane_once_attention_clears() {
+        // "Received attention" = the pane gains focus, which clears the
+        // flag. The pane must then fall out of the Running filter and
+        // back into its status-only filters.
+        let mut pane = test_pane("%1", PaneStatus::Idle);
+        pane.attention = PaneAttention::Done;
+        assert!(StatusFilter::Running.matches(&pane));
+        pane.attention = PaneAttention::None;
+        assert!(!StatusFilter::Running.matches(&pane));
+        assert!(StatusFilter::Idle.matches(&pane));
+        assert!(StatusFilter::All.matches(&pane));
     }
 
     // ─── StatusFilter as_str / from_str tests ─────────────────────────
@@ -343,6 +412,30 @@ mod tests {
 
         let (all, r, b, w, i, e) = state.status_counts();
         assert_eq!((all, r, b, w, i, e), (2, 1, 0, 0, 0, 0));
+    }
+
+    #[test]
+    fn status_counts_running_includes_attention_panes() {
+        // Attention-flagged panes raise the running count (the Running
+        // filter shows them) while still landing in their status bucket;
+        // `all` counts each pane exactly once.
+        let mut state = AppState::new("%99".into());
+        let mut done = test_pane("%1", PaneStatus::Idle);
+        done.attention = PaneAttention::Done;
+        let mut waiting = test_pane("%2", PaneStatus::Waiting);
+        waiting.attention = PaneAttention::Notification;
+        state.repo_groups = vec![RepoGroup {
+            name: "app".into(),
+            has_focus: true,
+            panes: vec![
+                (done, PaneGitInfo::default()),
+                (waiting, PaneGitInfo::default()),
+                (test_pane("%3", PaneStatus::Running), PaneGitInfo::default()),
+            ],
+        }];
+
+        let (all, r, b, w, i, e) = state.status_counts();
+        assert_eq!((all, r, b, w, i, e), (3, 3, 0, 1, 1, 0));
     }
 
     #[test]
