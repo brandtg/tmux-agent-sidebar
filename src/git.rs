@@ -294,7 +294,14 @@ pub(crate) fn run_git(path: &str, args: &[&str]) -> Option<String> {
     command.env("GIT_OPTIONAL_LOCKS", "0").args(&cmd_args);
     let output = subprocess::run_with_timeout(&mut command, GIT_TIMEOUT).ok()?;
     if output.status.success() {
-        let s = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        // `trim_end`, not `trim`: `git status --short` uses a leading space
+        // as the worktree-status column (`" M file"` for unstaged-only
+        // changes). Trimming the whole output strips that column from the
+        // first line, shifting every subsequent field and dropping the
+        // first character of the filename (`"README.md"` → `"EADME.md"`).
+        let s = String::from_utf8_lossy(&output.stdout)
+            .trim_end()
+            .to_string();
         if s.is_empty() { None } else { Some(s) }
     } else {
         None
@@ -628,6 +635,55 @@ mod tests {
         assert!(data.staged_files.is_empty());
         assert!(data.unstaged_files.is_empty());
         assert!(data.untracked_files.is_empty());
+    }
+
+    #[test]
+    fn fetch_git_data_keeps_first_unstaged_filename_intact() {
+        // Regression: `run_git` trimmed the whole stdout, which strips the
+        // leading worktree-status space from the first `git status --short`
+        // line. `" M README.md"` became `"M README.md"`, so the parser read
+        // x='M', y='R' and sliced the name to `"EADME.md"`.
+        let tmp = tempfile::tempdir().expect("temp dir");
+        let repo = tmp.path();
+        let git = |args: &[&str]| {
+            let out = std::process::Command::new("git")
+                .arg("-C")
+                .arg(repo)
+                .args(args)
+                .output()
+                .expect("spawn git");
+            assert!(
+                out.status.success(),
+                "git {args:?} failed: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+        };
+        git(&["init", "-q"]);
+        std::fs::write(repo.join("README.md"), "original\n").unwrap();
+        git(&["add", "README.md"]);
+        git(&[
+            "-c",
+            "user.name=test",
+            "-c",
+            "user.email=test@example.com",
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "--no-verify",
+            "-m",
+            "init",
+        ]);
+        // Modify without staging → `" M README.md"` is the only status line.
+        std::fs::write(repo.join("README.md"), "changed\n").unwrap();
+
+        let data = fetch_git_data(repo.to_str().unwrap());
+        assert!(
+            data.staged_files.is_empty(),
+            "unstaged change must not be classified as staged"
+        );
+        assert_eq!(data.unstaged_files.len(), 1);
+        assert_eq!(data.unstaged_files[0].status, 'M');
+        assert_eq!(data.unstaged_files[0].name, "README.md");
     }
 
     // ─── PrCache tests ───────────────────────────────────────────────
