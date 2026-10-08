@@ -115,6 +115,7 @@ impl AppState {
             &sessions,
             &self.git_info_cache,
         );
+        self.update_attention_stamps();
         self.refresh_window_tasks(&other_panes);
         self.prune_pane_states_to_current_panes();
         self.rebuild_row_targets();
@@ -248,6 +249,36 @@ impl AppState {
         }
     }
 
+    /// Stamp when each agent pane's current attention flag was first
+    /// observed, so [`Self::mark_focused_pane_seen`] can tell a fresh
+    /// "done and unseen" pulse from one that has been on screen long
+    /// enough to have been seen. Runs every snapshot, ahead of the
+    /// seen-tick: the stamp must exist even on the first tick after the
+    /// hook lands, and observation time (like
+    /// [`Self::window_task_since`]) undercounts when the flag predates
+    /// the sidebar — a stale flag is treated as always-eligible.
+    /// Only `Done` is stamped: `Notification` (permission / question
+    /// prompts) must surface immediately and clears on focus as before.
+    fn update_attention_stamps(&mut self) {
+        let now = self.now;
+        let transitions: Vec<(String, PaneAttention)> = self
+            .repo_groups
+            .iter()
+            .flat_map(|g| g.panes.iter())
+            .map(|(pane, _)| (pane.pane_id.clone(), pane.attention))
+            .collect();
+        for (pane_id, attention) in transitions {
+            let runtime = self.pane_state_mut(&pane_id);
+            match attention {
+                PaneAttention::Done if runtime.attention_since.is_none() => {
+                    runtime.attention_since = Some(now);
+                }
+                PaneAttention::None => runtime.attention_since = None,
+                _ => {}
+            }
+        }
+    }
+
     /// Focus counts as "seen": when the user is looking at an agent
     /// pane, drop its `@pane_attention` flag (a pending notification or
     /// an unseen finished turn) so the indicator only survives while the
@@ -259,6 +290,15 @@ impl AppState {
     /// window, whose `pane_active` marker survives after the user moves
     /// elsewhere, so consuming the flag then would swallow notifications
     /// for a pane the user never looked at.
+    ///
+    /// `Done` additionally honors [`ATTENTION_MIN_FLASH_SECS`]: a turn
+    /// that finishes while its pane holds the (stale-surviving)
+    /// `pane_active` marker was previously consumed within one tick and
+    /// its row snapped to idle with never a visible pulse. The stamp
+    /// comes from [`Self::update_attention_stamps`]; once the grace has
+    /// elapsed a focused pane still consumes the flag, and flags observed
+    /// before the sidebar started are aged (stamp set on first sight) so
+    /// they clear immediately.
     pub fn mark_focused_pane_seen(&mut self, sidebar_window_active: bool) {
         if self.focus_state.sidebar_focused || !sidebar_window_active {
             return;
@@ -267,11 +307,23 @@ impl AppState {
         let Some(pane_id) = self.focus_state.focused_pane_id.clone() else {
             return;
         };
-        let flagged = self
-            .pane_by_id(&pane_id)
-            .is_some_and(|pane| pane.attention != PaneAttention::None);
-        if !flagged {
+        let Some(pane) = self.pane_by_id(&pane_id) else {
             return;
+        };
+        if pane.attention == PaneAttention::None {
+            return;
+        }
+        if pane.attention == PaneAttention::Done {
+            let now = self.now;
+            let stamped = self
+                .pane_states
+                .get(&pane_id)
+                .and_then(|state| state.attention_since);
+            let fresh =
+                stamped.is_some_and(|since| now.saturating_sub(since) < ATTENTION_MIN_FLASH_SECS);
+            if fresh {
+                return;
+            }
         }
         tmux::unset_pane_option(&pane_id, tmux::PANE_ATTENTION);
         if let Some(pane) = self
@@ -1329,6 +1381,132 @@ mod tests {
             state.repo_groups[0].panes[0].0.attention,
             PaneAttention::None,
             "in-memory flag must clear so the same tick stops pulsing"
+        );
+    }
+
+    /// A finish observed mid-snapshot must survive the min-flash grace
+    /// when its pane already holds focus: the stale-surviving
+    /// `pane_active` marker in the sidebar's window is not an
+    /// observation of the user having read the result. Without this,
+    /// hook's `@pane_attention=done` landed and was consumed within one
+    /// tick — the row read idle with never a visible pulse (the agent
+    /// analogue of the window-pane flash grace).
+    #[test]
+    fn done_flag_survives_focus_within_min_flash_grace() {
+        let _guard = tmux::test_mock::install();
+        let pane_id = "%GRACE_DONE";
+        tmux::test_mock::set(pane_id, tmux::PANE_ATTENTION, "done");
+        let mut state = state_with_panes(vec![pane_with_attention(pane_id, PaneAttention::Done)]);
+        state.now = 10_000;
+        state.focus_state.sidebar_focused = false;
+        state.focus_state.focused_pane_id = Some(pane_id.into());
+
+        // Simulate the snapshot stamp: the sidebar observed the flag now.
+        state.pane_state_mut(pane_id).attention_since = Some(state.now);
+
+        state.mark_focused_pane_seen(true);
+
+        assert!(
+            tmux::test_mock::contains(pane_id, tmux::PANE_ATTENTION),
+            "a fresh done flag must survive focus for the flash grace"
+        );
+        assert_eq!(
+            state.repo_groups[0].panes[0].0.attention,
+            PaneAttention::Done,
+            "in-memory flag must clear so the same tick keeps pulsing"
+        );
+    }
+
+    #[test]
+    fn done_flag_consumed_after_grace_expires() {
+        // Same setup, aged past ATTENTION_MIN_FLASH_SECS: focus consumes
+        // the flag exactly like the pre-grace behavior.
+        let _guard = tmux::test_mock::install();
+        let pane_id = "%AGED_DONE";
+        tmux::test_mock::set(pane_id, tmux::PANE_ATTENTION, "done");
+        let mut state = state_with_panes(vec![pane_with_attention(pane_id, PaneAttention::Done)]);
+        state.now = 10_000;
+        state.focus_state.sidebar_focused = false;
+        state.focus_state.focused_pane_id = Some(pane_id.into());
+        state.pane_state_mut(pane_id).attention_since =
+            Some(state.now.saturating_sub(ATTENTION_MIN_FLASH_SECS + 1));
+
+        state.mark_focused_pane_seen(true);
+
+        assert!(
+            !tmux::test_mock::contains(pane_id, tmux::PANE_ATTENTION),
+            "after the grace, focusing the pane consumes the done flag"
+        );
+        assert_eq!(
+            state.repo_groups[0].panes[0].0.attention,
+            PaneAttention::None
+        );
+    }
+
+    #[test]
+    fn update_attention_stamps_observes_new_done_flags_once() {
+        // The stamp is taken on first observation and unset when the flag
+        // clears, so a later turn's completion re-arms its own grace.
+        let _guard = tmux::test_mock::install();
+        let pane_id = "%STAMPED_DONE";
+        let mut state = state_with_panes(vec![pane_with_attention(pane_id, PaneAttention::Done)]);
+        state.now = 5_000;
+
+        state.update_attention_stamps();
+        assert_eq!(
+            state.pane_state(pane_id).and_then(|s| s.attention_since),
+            Some(5_000),
+            "first observation stamps the flag"
+        );
+
+        state.now = 8_000;
+        state.update_attention_stamps();
+        assert_eq!(
+            state.pane_state(pane_id).and_then(|s| s.attention_since),
+            Some(5_000),
+            "a still-set flag keeps its original stamp"
+        );
+
+        if let Some(pane) = state
+            .repo_groups
+            .iter_mut()
+            .flat_map(|g| g.panes.iter_mut())
+            .map(|(pane, _)| pane)
+            .find(|pane| pane.pane_id == pane_id)
+        {
+            pane.attention = PaneAttention::None;
+        }
+        state.update_attention_stamps();
+        assert_eq!(
+            state.pane_state(pane_id).and_then(|s| s.attention_since),
+            None,
+            "a cleared flag resets the stamp so the next completion re-arms"
+        );
+    }
+
+    #[test]
+    fn update_attention_stamps_ignores_notification_flags() {
+        // Notification (permission / question prompts) must clear on
+        // focus immediately — the grace is scoped to the Done pulse.
+        let _guard = tmux::test_mock::install();
+        let pane_id = "%WAITING_UNSTAMPED";
+        let mut state = state_with_panes(vec![pane_with_attention(
+            pane_id,
+            PaneAttention::Notification,
+        )]);
+        state.now = 5_000;
+
+        state.update_attention_stamps();
+        assert_eq!(
+            state.pane_state(pane_id).and_then(|s| s.attention_since),
+            None
+        );
+        state.focus_state.sidebar_focused = false;
+        state.focus_state.focused_pane_id = Some(pane_id.into());
+        state.mark_focused_pane_seen(true);
+        assert!(
+            !tmux::test_mock::contains(pane_id, tmux::PANE_ATTENTION),
+            "notification flag clears on focus with no grace"
         );
     }
 
