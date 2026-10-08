@@ -17,8 +17,22 @@
 pub(in crate::cli::hook) fn is_permission_wait_reason(wait_reason: &str) -> bool {
     matches!(
         wait_reason,
-        "permission" | "permission_prompt" | "permission_denied" | "elicitation_dialog"
+        "permission"
+            | "permission_prompt"
+            | "permission_denied"
+            | "elicitation_dialog"
+            | "question"
     )
+}
+
+/// Wait reasons whose agent emits an explicit reply event to clear the wait
+/// (OpenCode's `permission.asked` / `question.asked`). While one is pending
+/// the pane must stay `waiting`: a concurrent tool result is not the resume
+/// signal and must not flip it back to `running`. Claude has no reply event
+/// — its `PostToolUse` is the resume signal — so its reasons are absent
+/// here and its activity-log transitions are unchanged.
+pub(in crate::cli::hook) fn is_pending_action_wait_reason(wait_reason: &str) -> bool {
+    matches!(wait_reason, "permission" | "question")
 }
 
 /// Status `Stop` should land in.
@@ -48,12 +62,27 @@ mod tests {
         assert!(is_permission_wait_reason("permission_prompt"));
         assert!(is_permission_wait_reason("permission_denied"));
         assert!(is_permission_wait_reason("elicitation_dialog"));
+        assert!(is_permission_wait_reason("question"));
 
         assert!(!is_permission_wait_reason("auth_success"));
         assert!(!is_permission_wait_reason("rate_limit"));
         assert!(!is_permission_wait_reason("session_resumed"));
         assert!(!is_permission_wait_reason("teammate_idle:alice"));
         assert!(!is_permission_wait_reason(""));
+    }
+
+    #[test]
+    fn is_pending_action_wait_reason_covers_opencode_only() {
+        assert!(is_pending_action_wait_reason("permission"));
+        assert!(is_pending_action_wait_reason("question"));
+
+        // Claude's reasons clear via PostToolUse, not a reply event, so
+        // they must not be sticky.
+        assert!(!is_pending_action_wait_reason("permission_prompt"));
+        assert!(!is_pending_action_wait_reason("permission_denied"));
+        assert!(!is_pending_action_wait_reason("elicitation_dialog"));
+        assert!(!is_pending_action_wait_reason("auth_success"));
+        assert!(!is_pending_action_wait_reason(""));
     }
 
     #[test]

@@ -223,9 +223,9 @@ export const TmuxAgentSidebar = async ({ directory }) => {
           });
           return;
 
-        // Permission asks never touch the run clock, so they pass more
-        // freely: a subagent asking mid-turn still flips the pane to
-        // waiting (the whole turn is blocked on the answer), while
+        // Permission and question asks never touch the run clock, so they
+        // pass more freely: a subagent asking mid-turn still flips the pane
+        // to waiting (the whole turn is blocked on the answer), while
         // between turns only main-session asks are forwarded so a
         // background subagent cannot yank an idle pane around.
         case "permission.asked":
@@ -233,6 +233,32 @@ export const TmuxAgentSidebar = async ({ directory }) => {
             return;
           }
           hook("notification", { cwd, session_id, wait_reason: "permission" });
+          return;
+
+        // OpenCode's `question` tool blocks the turn on a user answer the
+        // same way a permission prompt does. Without this the pane stayed
+        // `running` while the agent waited for the answer.
+        case "question.asked":
+          if (!isMainSession(session_id) && !turnPromptSeen) {
+            return;
+          }
+          hook("notification", { cwd, session_id, wait_reason: "question" });
+          return;
+
+        // The user answered (or rejected) a permission/question prompt.
+        // Re-submit an empty prompt to clear the wait and mark the pane
+        // running again — the same synthetic-resume signal the `busy`
+        // branch uses for retry recovery. The activity-log handler keeps a
+        // pending-action wait sticky, so a concurrent tool's result cannot
+        // clear it; this reply is what resumes the pane.
+        case "permission.replied":
+        case "question.replied":
+        case "question.rejected":
+          if (!isMainSession(session_id) && !turnPromptSeen) {
+            return;
+          }
+          hook("user-prompt-submit", { cwd, session_id, prompt: "" });
+          return;
       }
     },
 

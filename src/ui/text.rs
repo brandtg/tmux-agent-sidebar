@@ -40,6 +40,7 @@ pub fn wait_reason_label(reason: &str) -> String {
         "elicitation_dialog" => "waiting for selection".into(),
         "rate_limit" => "rate limit".into(),
         "permission_denied" => "permission denied".into(),
+        "question" => "waiting for answer".into(),
         "session_resumed" => "resumed".into(),
         "session_resumed_compact" => "resumed (compact)".into(),
         _ => {
@@ -363,6 +364,7 @@ mod tests {
             "waiting for selection"
         );
         assert_eq!(wait_reason_label("rate_limit"), "rate limit");
+        assert_eq!(wait_reason_label("question"), "waiting for answer");
     }
 
     #[test]

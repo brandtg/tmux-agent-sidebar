@@ -227,6 +227,56 @@ test("subagent permission asks pass mid-turn but not between turns", async () =>
   }
 });
 
+test("question asks map to a waiting notification like permissions", async () => {
+  const h = await loadPlugin();
+  try {
+    const plugin = await h.init("/repo");
+    await plugin.event({ event: { type: "session.created", properties: { sessionID: MAIN, info: { title: "Main" } } } });
+    await plugin["chat.message"]({ sessionID: MAIN }, { parts: [{ type: "text", text: "go" }] });
+    // Mid-turn child question passes (the whole turn is blocked).
+    await plugin.event({ event: { type: "question.asked", properties: { sessionID: CHILD, id: "que_1" } } });
+    await plugin.event({ event: { type: "session.idle", properties: { sessionID: MAIN } } });
+    // Between turns a child question is dropped, a main question passes.
+    await plugin.event({ event: { type: "question.asked", properties: { sessionID: CHILD, id: "que_2" } } });
+    await plugin.event({ event: { type: "question.asked", properties: { sessionID: MAIN, id: "que_3" } } });
+    await settle(h);
+
+    assert.deepEqual(h.events(), [
+      "session-start " + JSON.stringify({ cwd: "/repo", session_id: MAIN, source: "startup" }),
+      "session-title " + JSON.stringify({ cwd: "/repo", session_id: MAIN, title: "Main" }),
+      "user-prompt-submit " + JSON.stringify({ cwd: "/repo", session_id: MAIN, prompt: "go" }),
+      "notification " + JSON.stringify({ cwd: "/repo", session_id: CHILD, wait_reason: "question" }),
+      "stop " + JSON.stringify({ cwd: "/repo", session_id: MAIN, last_message: "" }),
+      "notification " + JSON.stringify({ cwd: "/repo", session_id: MAIN, wait_reason: "question" }),
+    ]);
+  } finally {
+    h.dispose();
+  }
+});
+
+test("permission and question replies resume the pane", async () => {
+  const h = await loadPlugin();
+  try {
+    const plugin = await h.init("/repo");
+    await plugin["chat.message"]({ sessionID: MAIN }, { parts: [{ type: "text", text: "go" }] });
+    await plugin.event({ event: { type: "permission.replied", properties: { sessionID: MAIN, requestID: "per_1", reply: "once" } } });
+    await plugin.event({ event: { type: "question.replied", properties: { sessionID: MAIN, requestID: "que_1" } } });
+    await plugin.event({ event: { type: "question.rejected", properties: { sessionID: MAIN, requestID: "que_2" } } });
+    await settle(h);
+
+    assert.deepEqual(h.events(), [
+      "user-prompt-submit " + JSON.stringify({ cwd: "/repo", session_id: MAIN, prompt: "go" }),
+      // Each reply re-submits an empty prompt: the synthetic resume that
+      // clears the sticky wait and flips the pane back to running.
+      "user-prompt-submit " + JSON.stringify({ cwd: "/repo", session_id: MAIN, prompt: "" }),
+      "user-prompt-submit " + JSON.stringify({ cwd: "/repo", session_id: MAIN, prompt: "" }),
+      "user-prompt-submit " + JSON.stringify({ cwd: "/repo", session_id: MAIN, prompt: "" }),
+    ]);
+  } finally {
+    h.dispose();
+  }
+});
+
 test("session.error ends the turn and re-arms gating for the next one", async () => {
   const h = await loadPlugin();
   try {
