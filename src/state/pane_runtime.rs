@@ -35,6 +35,14 @@ pub struct PaneRuntimeState {
     pub window_task_since: Option<u64>,
     /// The most recent finished task awaiting the user's attention.
     pub window_finished: Option<WindowFinished>,
+    /// Epoch seconds at which this pane's current attention flag was
+    /// first observed (`None` while unflagged). Same observation-time
+    /// contract as [`Self::window_task_since`]. Drives the minimum-flash
+    /// grace for the agent Done pulse in `mark_focused_pane_seen`: a
+    /// finish that lands while the pane already holds tmux's
+    /// `pane_active` marker must at least render the pulse before the
+    /// "seen" tick consumes it.
+    pub attention_since: Option<u64>,
     pub ports: Vec<u16>,
     pub command: Option<String>,
     pub task_progress: Option<TaskProgress>,

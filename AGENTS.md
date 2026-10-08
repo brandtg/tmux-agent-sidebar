@@ -103,6 +103,15 @@ codesign --force --sign - ~/.tmux/plugins/tmux-agent-sidebar/bin/tmux-agent-side
 
 If tmux reports `terminated by signal 9` after a worktree build, you almost certainly skipped the `codesign` step. Clearing `com.apple.provenance` with `xattr -c` is not required — the kernel only cares about the signature flavor.
 
+## Safety: tmux server isolation (HARD RULE)
+
+This machine runs a live tmux server (el-default socket) with real work in it. Test reproductions are the only place tmux servers get created or killed.
+
+- NEVER run bare `tmux kill-server`, `tmux kill-session`, `tmux kill-pane`, `tmux kill-window`, or any other potentially destructive tmux command without an explicit socket scope (`-L <name>` or `-S <path>`). A bare `tmux` command operates on the user's live default-socket server.
+- Sandbox reproductions must use a dedicated scoped server, e.g. `tmux -L bugtest ...`. Cleaning it up is `tmux -L bugtest kill-server` — scoped flag always required.
+- Scope-aware hook testing: children spawned inside a `-L`-scoped server resolve the default socket (the live one), not the scoped one. For a faithful sim, run the scoped server with a socket file named `default` inside a private dir (`tmux -S /tmp/opencode/tsock/default` — the server exports `TMUX_TMPDIR` so in-pane `tmux` CLI calls resolve to the scoped socket), or never spawn hook-side tmux writes from within the sim at all.
+- `pkill`/`killall` patterns that can match the user's tmux server or sidebar are forbidden.
+
 ## Rust Edition
 
 This project uses Rust edition 2024 (`Cargo.toml`).
