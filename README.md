@@ -65,6 +65,19 @@ Full walkthroughs: [Claude Code setup](https://github.com/brandtg/tmux-agent-sid
 
 `prefix + e` toggles the sidebar in the current window, `prefix + E` toggles it everywhere — and records the choice system-wide, so windows and sessions created afterwards follow it (open-all also overrides `@sidebar_auto_create off`; close-all wins over `on`).
 
+### 4. Optional: track plain shell commands
+
+With `w`, the sidebar lists the non-agent panes in each repo, one row per pane. A long-running command (batch job, test suite, build) pulses as a task — and when it drops back to the shell, the row flashes a green hollow diamond until you focus the pane. A non-zero exit shows a red diamond with the exit code and lands in the `✕` (error) filter tab.
+
+Exit codes come from an optional shell-integration snippet (tmux alone never reports a foreground command's exit code). To install it for bash and zsh, add this to `~/.zshrc` / `~/.bashrc`:
+
+```sh
+[ -f "$HOME/.tmux/plugins/tmux-agent-sidebar/shell-exit.sh" ] && \
+  . "$HOME/.tmux/plugins/tmux-agent-sidebar/shell-exit.sh"
+```
+
+Without the snippet, finished tasks still flash green (exit treated as 0), but failures are not detected.
+
 ## Documentation
 
 The [documentation](https://github.com/brandtg/tmux-agent-sidebar/tree/main/website/src/content/docs) covers every feature and option:

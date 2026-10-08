@@ -83,6 +83,54 @@ impl StatusFilter {
             StatusFilter::Error => pane.status == crate::tmux::PaneStatus::Error,
         }
     }
+
+    /// Does a non-agent window pane pass this filter? Mirrors
+    /// [`Self::matches`]:
+    ///
+    /// - a Task-classified foreground command counts as running, and a
+    ///   finished-but-unseen task counts as attention, so both surface in
+    ///   the `Running` ("what's going on") view;
+    /// - a shell or an interactive program (editor, pager) counts as
+    ///   idle — the "nothing ran here" case stays separated from tasks;
+    /// - a finished task whose shell integration reported a non-zero
+    ///   exit code surfaces in `Error` with a red diamond;
+    /// - there is no non-agent analogue for the `Background` and
+    ///   `Waiting` buckets, which is fine: those express agent-session
+    ///   semantics.
+    pub fn matches_window(
+        self,
+        window: &crate::group::OtherWindow,
+        runtime: Option<&super::pane_runtime::PaneRuntimeState>,
+    ) -> bool {
+        let finished = runtime.and_then(|s| s.window_finished.as_ref());
+        let task_running = runtime
+            .map(|s| s.window_task_command.is_some())
+            .unwrap_or(false);
+        match self {
+            StatusFilter::All => true,
+            StatusFilter::Running => {
+                task_running
+                    || finished.is_some()
+                    // Fallback while runtime tracking has not caught up yet
+                    // (first tick after a sidebar restart): the pane's own
+                    // Task classification still reads as "running".
+                    || window.status == crate::tmux::WindowStatus::Task
+            }
+            StatusFilter::Background => false,
+            StatusFilter::Waiting => false,
+            StatusFilter::Idle => {
+                !task_running
+                    && finished.is_none()
+                    && matches!(
+                        window.status,
+                        crate::tmux::WindowStatus::Idle | crate::tmux::WindowStatus::Busy
+                    )
+            }
+            StatusFilter::Error => {
+                finished.is_some_and(|f| f.exit_code.is_some_and(|code| code != 0))
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -150,10 +198,66 @@ impl AppState {
                 }
             }
         }
+        // Non-agent window panes count into the same buckets when they
+        // would render (show_windows on, repo filter matched) and match
+        // the bucket's window rule. Note the counts are filter-view
+        // independent, like the agent counts above.
         // Counted per pane, not as a bucket sum: an attention-flagged
         // pane lands in both `running` and its status bucket above.
-        let all = self.pane_count();
+        for group in &self.repo_groups {
+            if !self.global.repo_filter.matches_group(&group.name) {
+                continue;
+            }
+            if !self.global.show_windows {
+                continue;
+            }
+            let key = crate::group::repo_group_key(group);
+            let Some(windows) = self.other_windows.get(key.as_str()) else {
+                continue;
+            };
+            for window in windows {
+                let runtime = self.pane_state(&window.pane_id);
+                if crate::state::StatusFilter::Running.matches_window(window, runtime) {
+                    running += 1;
+                }
+                if crate::state::StatusFilter::Idle.matches_window(window, runtime) {
+                    idle += 1;
+                }
+                if crate::state::StatusFilter::Error.matches_window(window, runtime) {
+                    error += 1;
+                }
+            }
+        }
+        let all = self.pane_count() + self.window_pane_count();
         (all, running, background, waiting, idle, error)
+    }
+
+    /// Total non-agent window panes that would render, mirroring the
+    /// renderer's gating (`show_windows` on and the repo filter matched).
+    fn window_pane_count(&self) -> usize {
+        if !self.global.show_windows {
+            return 0;
+        }
+        self.repo_groups
+            .iter()
+            .filter(|g| self.global.repo_filter.matches_group(&g.name))
+            .map(|g| {
+                let key = crate::group::repo_group_key(g);
+                let runtime = &self.pane_states;
+                self.other_windows
+                    .get(&key)
+                    .map(|windows| {
+                        windows
+                            .iter()
+                            .filter(|w| {
+                                crate::state::StatusFilter::All
+                                    .matches_window(w, runtime.get(&w.pane_id))
+                            })
+                            .count()
+                    })
+                    .unwrap_or(0)
+            })
+            .sum()
     }
 
     /// Total agent panes under the active repo filter.

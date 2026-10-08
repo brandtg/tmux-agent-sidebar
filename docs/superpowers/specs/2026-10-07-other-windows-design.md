@@ -1,5 +1,17 @@
 # Other windows in the agent list
 
+> **Update (2026-10-08):** the shipped feature deviates from the original
+> design in two ways. Grouping is one row **per pane**, not one
+> representative per window (`group_other_windows_by_repo` keys by pane
+> id), so two programs in two splits each get a row. Window rows also
+> participate in the status filters instead of rendering only under `All`,
+> and pane runtime state tracks task completion: when a Task-classified
+> foreground command drops back to a shell, the row flashes a green
+> hollow diamond until the pane gains focus; a non-zero exit code
+> (reported by the optional `shell-exit.sh` shell integration into
+> `@pane_last_cmd` / `@pane_last_exit`) marks the row with a red diamond
+> plus the exit code and surfaces it in the error filter.
+
 ## Goal
 
 Let the sidebar surface the non-agent tmux windows that live in the same
