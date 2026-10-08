@@ -63,7 +63,7 @@ Full walkthroughs: [Claude Code setup](https://github.com/brandtg/tmux-agent-sid
 
 ### 3. Toggle the sidebar
 
-`prefix + e` toggles the sidebar in the current window, `prefix + E` toggles it everywhere — and records the choice system-wide, so windows created afterwards follow it (open-all also overrides `@sidebar_auto_create off`; close-all wins over `on`).
+`prefix + e` toggles the sidebar in the current window, `prefix + E` toggles it everywhere — and records the choice system-wide, so windows and sessions created afterwards follow it (open-all also overrides `@sidebar_auto_create off`; close-all wins over `on`).
 
 ## Documentation
 
