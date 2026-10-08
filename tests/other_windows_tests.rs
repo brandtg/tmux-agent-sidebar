@@ -247,7 +247,7 @@ fn window_task_finishes_and_flashes_until_focused() {
     state.global.status_filter = StatusFilter::All;
     state.rebuild_row_targets();
     if let Some(finished) = state.pane_state_mut("%10").window_finished.as_mut() {
-        finished.finished_at = state.now.saturating_sub(6);
+        finished.finished_at = finished.finished_at.saturating_sub(6);
     }
     state.focus_state.sidebar_focused = false;
     state.focus_state.window_active = true;

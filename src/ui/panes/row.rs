@@ -1760,6 +1760,7 @@ mod tests {
         let finished = crate::state::WindowFinished {
             command: "cargo".into(),
             exit_code: None,
+            finished_at: 0,
         };
         let line = window_row(
             &w,
@@ -1793,6 +1794,7 @@ mod tests {
         let finished = crate::state::WindowFinished {
             command: "cargo".into(),
             exit_code: Some(1),
+            finished_at: 0,
         };
         let line = window_row(
             &w,
