@@ -188,6 +188,16 @@ fn classify_window_status(command: &str) -> WindowStatus
 - `command` is in the interactive allowlist (below) → `Busy` (steady green).
 - otherwise → `Task` (pulsing green, elapsed shown).
 
+A shell foreground is *promoted* to `Task` when the pane's process tree
+contains a non-shell descendant: `bash deploy.sh` and an idle prompt both
+read as `bash` from `pane_current_command` alone, and only the ps scan
+(`ProcessSnapshot::tree_has_non_shell`) tells them apart. `classify_pane_status`
+performs the promotion at parse time, so the row glyph, running filter, and
+task-finish tracking all see the same verdict. Trees holding nothing but
+shells — and transient `tmux`/`sudo`/`login` invocations, which the shell
+integration forks at every prompt — stay `Idle`. A pure-builtin script
+(shell-only tree) cannot be detected this way and remains idle.
+
 Rendering reuses the agent machinery: `running_icon_for`
 (`src/ui/panes/row.rs`, from `status`) and `spinner_frame` for the pulse;
 `theme.status_color` for idle/busy colors.
@@ -196,7 +206,8 @@ Interactive allowlist (a tunable `const`): `vim`, `nvim`, `vi`, `emacs`,
 `nano`, `less`, `more`, `man`, `htop`, `top`, `btop`, `ssh`, `mosh`,
 `fzf`, `lazygit`, and common REPLs (`python`, `python3`, `node`, `irb`,
 `psql`, `sqlite3`). The list exists only to keep the pulse meaningful;
-`pane_current_command` is the sole input.
+inputs are `pane_current_command` plus, for shell foregrounds, the
+pane's process tree.
 
 ## Layout
 

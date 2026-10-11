@@ -167,6 +167,14 @@ impl AppState {
     ///   one, skipping the one-frame shell gaps inside `a && b` chains.
     ///   Panes without the snippet confirm on the transition itself, and
     ///   their exit code is unknown (treated as success).
+    ///
+    /// The tracked status is the parse-time [`WindowStatus`], which is
+    /// process-tree backed: a script run (`bash deploy.sh`) reads as its
+    /// interpreter but arrives pre-promoted to `Task` when the pane's
+    /// tree shows non-shell work. Such a task arms under the
+    /// interpreter's name (`bash`), so the integration confirm also
+    /// accepts a non-shell recorded command — preexec captured the typed
+    /// line (`deploy.sh`), which is the script itself mid-run.
     fn refresh_window_tasks(&mut self, other_panes: &[crate::tmux::OtherPane]) {
         for pane in other_panes {
             let pane_id = pane.pane_id.clone();
@@ -178,57 +186,67 @@ impl AppState {
                 .pane_state(&pane_id)
                 .and_then(|s| s.window_finished.clone());
 
-            let (task_command, task_since, finished) =
-                match crate::tmux::classify_window_status(&pane.command) {
-                    WindowStatus::Task => {
-                        let base = command_basename(&pane.command).to_string();
-                        let prior = prior_task.as_deref();
-                        if prior_finished.is_some() || prior != Some(base.as_str()) {
-                            (Some(base), Some(self.now), None)
+            let (task_command, task_since, finished) = match pane.status {
+                WindowStatus::Task => {
+                    let base = command_basename(&pane.command).to_string();
+                    let prior = prior_task.as_deref();
+                    if prior_finished.is_some() || prior != Some(base.as_str()) {
+                        (Some(base), Some(self.now), None)
+                    } else {
+                        (prior_task, prior_since, None)
+                    }
+                }
+                WindowStatus::Idle | WindowStatus::Busy => match prior_task {
+                    None => (None, None, prior_finished),
+                    Some(task) => {
+                        let integration_active =
+                            pane.last_cmd.is_some() || pane.last_exit.is_some();
+                        let confirmed = if integration_active {
+                            match pane.last_cmd.as_deref() {
+                                Some(last) if last == task.as_str() => true,
+                                // A script task tracks under the interpreter
+                                // name (`bash`); preexec recorded the typed
+                                // line, so any non-shell last command is the
+                                // script mid-run, not a chain gap.
+                                Some(last) => {
+                                    crate::tmux::is_shell_basename(&task)
+                                        && !crate::tmux::is_shell_basename(last)
+                                }
+                                None => false,
+                            }
                         } else {
-                            (prior_task, prior_since, None)
+                            true
+                        };
+                        let ran_long_enough = prior_since.is_some_and(|since| {
+                            self.now.saturating_sub(since) >= TASK_MIN_RUN_SECS
+                        });
+                        if confirmed && ran_long_enough {
+                            (
+                                None,
+                                None,
+                                Some(WindowFinished {
+                                    command: task,
+                                    exit_code: pane.last_exit,
+                                    finished_at: self.now,
+                                }),
+                            )
+                        } else if confirmed {
+                            // A quick command finished while the user was
+                            // still looking at the pane — no flash is
+                            // warranted, so the task ends silently and
+                            // the row drops back to its plain status.
+                            (None, None, None)
+                        } else {
+                            // The last recorded command is not the tracked
+                            // task: a chained command's preexec fired between
+                            // the two polls. Drop the stale tracking; a later
+                            // poll catches the real completion (or the user's
+                            // next task re-arms).
+                            (None, None, None)
                         }
                     }
-                    WindowStatus::Idle | WindowStatus::Busy => match prior_task {
-                        None => (None, None, prior_finished),
-                        Some(task) => {
-                            let integration_active =
-                                pane.last_cmd.is_some() || pane.last_exit.is_some();
-                            let confirmed = if integration_active {
-                                pane.last_cmd.as_deref() == Some(task.as_str())
-                            } else {
-                                true
-                            };
-                            let ran_long_enough = prior_since.is_some_and(|since| {
-                                self.now.saturating_sub(since) >= TASK_MIN_RUN_SECS
-                            });
-                            if confirmed && ran_long_enough {
-                                (
-                                    None,
-                                    None,
-                                    Some(WindowFinished {
-                                        command: task,
-                                        exit_code: pane.last_exit,
-                                        finished_at: self.now,
-                                    }),
-                                )
-                            } else if confirmed {
-                                // A quick command finished while the user was
-                                // still looking at the pane — no flash is
-                                // warranted, so the task ends silently and
-                                // the row drops back to its plain status.
-                                (None, None, None)
-                            } else {
-                                // The last recorded command is not the tracked
-                                // task: a chained command's preexec fired between
-                                // the two polls. Drop the stale tracking; a later
-                                // poll catches the real completion (or the user's
-                                // next task re-arms).
-                                (None, None, None)
-                            }
-                        }
-                    },
-                };
+                },
+            };
 
             if task_command
                 == self

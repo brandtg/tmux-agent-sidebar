@@ -103,7 +103,9 @@ pub fn group_other_windows_by_repo(
             command: pane.command.clone(),
             path: pane.path.clone(),
             git_info,
-            status: crate::tmux::classify_window_status(&pane.command),
+            // Precomputed at parse time with the process snapshot, so a
+            // script running under a shell foreground arrives as `Task`.
+            status: pane.status,
         });
     }
 
@@ -742,6 +744,7 @@ mod tests {
             path: path.into(),
             command: command.into(),
             pane_pid: None,
+            status: crate::tmux::classify_window_status(command),
             last_cmd: None,
             last_exit: None,
         }

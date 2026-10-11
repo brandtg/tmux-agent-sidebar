@@ -38,7 +38,9 @@ pub use options::{
 pub(crate) use panes::pick_active_pane;
 pub use panes::{find_active_pane, focused_pane_path, get_pane_path, query_active_window_panes};
 pub(crate) use query::TmuxSnapshot;
+#[cfg(test)]
 pub(crate) use query::classify_window_status;
+pub(crate) use query::is_shell_basename;
 pub(crate) use query::query_session_snapshot;
 pub use query::query_sessions;
 pub(crate) use signal::broadcast_refresh;

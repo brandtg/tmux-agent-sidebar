@@ -103,6 +103,24 @@ impl ProcessSnapshot {
         })
     }
 
+    /// Whether any process under the seed pids runs a program that is
+    /// not a shell or a meta-invocation (`tmux`, `sudo`, `login`).
+    ///
+    /// A shell whose foreground command is another shell (`bash
+    /// deploy.sh`) is indistinguishable from an idle prompt by its tmux
+    /// command alone — both read as `bash`. A script doing work spawns
+    /// non-shell children (`sleep`, `rsync`, `gcc`), which this detects.
+    /// Trees that contain only shells (an idle prompt, or a script
+    /// spending its whole life in builtins) stay shell-classified.
+    pub(crate) fn tree_has_non_shell(&self, seed_pids: &[u32]) -> bool {
+        self.descendants(seed_pids).into_iter().any(|pid| {
+            self.info_by_pid
+                .get(&pid)
+                .map(|info| !is_meta_or_shell_comm(&info.comm))
+                .unwrap_or(false)
+        })
+    }
+
     pub(crate) fn command_lines_for_tree(&self, seed_pids: &[u32]) -> Vec<String> {
         self.descendants(seed_pids)
             .into_iter()
@@ -123,6 +141,19 @@ pub(crate) fn command_basename(command: &str) -> &str {
         .file_name()
         .and_then(|name| name.to_str())
         .unwrap_or(command)
+}
+
+/// Shell and meta-invocation names that never count as "work" when
+/// scanning a pane's process tree. The shell set is the same list
+/// [`crate::tmux::classify_window_status`] classifies with; `tmux`,
+/// `sudo`, and `login` are meta-invocations — the shell-integration
+/// snippet forks a transient `tmux` at every prompt, which must not
+/// read as a running task.
+fn is_meta_or_shell_comm(comm: &str) -> bool {
+    if crate::tmux::is_shell_basename(comm) {
+        return true;
+    }
+    matches!(command_basename(comm), "tmux" | "sudo" | "login")
 }
 
 pub(crate) fn process_matches_agent(info: &ProcessInfo, agent_name: &str) -> bool {
@@ -257,5 +288,35 @@ mod tests {
         );
 
         assert!(snapshot.tree_has_agent(&[100], &AgentType::Claude));
+    }
+
+    #[test]
+    fn tree_has_non_shell_detects_script_work() {
+        // A script run: the interpreter shells out to real programs.
+        let snapshot = ProcessSnapshot::from_ps_output(
+            "100 1 zsh zsh\n101 100 bash bash deploy.sh\n102 101 rsync rsync -a src/ dst/\n",
+        );
+        assert!(snapshot.tree_has_non_shell(&[100]));
+    }
+
+    #[test]
+    fn tree_has_non_shell_ignores_shell_only_trees() {
+        // An idle prompt: nothing but shells under the pane pid.
+        let snapshot = ProcessSnapshot::from_ps_output("100 1 zsh zsh\n");
+        assert!(!snapshot.tree_has_non_shell(&[100]));
+
+        // A script currently in a shell builtin loop: still shell-only.
+        let snapshot =
+            ProcessSnapshot::from_ps_output("100 1 zsh zsh\n101 100 bash bash loop.sh\n");
+        assert!(!snapshot.tree_has_non_shell(&[100]));
+    }
+
+    #[test]
+    fn tree_has_non_shell_ignores_meta_invocations() {
+        // The shell-integration snippet forks a transient `tmux` at every
+        // prompt; that must not read as a running task.
+        let snapshot =
+            ProcessSnapshot::from_ps_output("100 1 zsh zsh\n101 100 tmux tmux set-option -p x y\n");
+        assert!(!snapshot.tree_has_non_shell(&[100]));
     }
 }
