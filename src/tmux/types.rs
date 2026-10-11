@@ -172,6 +172,13 @@ pub struct OtherPane {
     pub path: String,
     pub command: String,
     pub pane_pid: Option<u32>,
+    /// Coarse status of the pane's foreground work, computed at parse
+    /// time with the process snapshot available (see
+    /// [`crate::tmux::classify_pane_status`]). A shell foreground with a
+    /// script running beneath it arrives pre-promoted to `Task`, so
+    /// every consumer (row glyph, running filter, sort rank) sees the
+    /// same verdict.
+    pub status: WindowStatus,
     /// Basename of the last foreground command the pane's shell recorded
     /// via the shell-integration snippet. Empty/None when no integration
     /// is active; then task-finish confirmation falls back to the plain

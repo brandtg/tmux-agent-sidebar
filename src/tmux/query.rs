@@ -175,7 +175,7 @@ fn build_session_snapshot(all_panes_output: &str, sidebar_pane: &str) -> TmuxSna
     let (sidebar_pane_active, sidebar_window_active, sidebar_window_panes) =
         extract_sidebar_window_info(all_panes_output, sidebar_pane);
     let process_snapshot = process_snapshot_for_panes(all_panes_output);
-    let other_panes = collect_other_panes(all_panes_output);
+    let other_panes = collect_other_panes(all_panes_output, process_snapshot.as_ref());
     let (mut sessions_map, codex_pids) =
         build_session_hierarchy(all_panes_output, process_snapshot.as_ref());
     if !codex_pids.is_empty()
@@ -199,7 +199,14 @@ fn build_session_snapshot(all_panes_output: &str, sidebar_pane: &str) -> TmuxSna
 /// non-agent siblings in the sidebar's window (a shell or editor split
 /// beside it) are kept, so a window the user jumps into still lists its
 /// other panes.
-fn collect_other_panes(all_panes_output: &str) -> Vec<OtherPane> {
+///
+/// `process_snapshot` upgrades the pane's status classification: a shell
+/// foreground with a script running beneath it is promoted to `Task`
+/// (see [`classify_pane_status`]).
+fn collect_other_panes(
+    all_panes_output: &str,
+    process_snapshot: Option<&ProcessSnapshot>,
+) -> Vec<OtherPane> {
     let mut out = Vec::new();
     for line in all_panes_output.lines() {
         let parts = split_tmux_fields(line, '|');
@@ -228,6 +235,11 @@ fn collect_other_panes(all_panes_output: &str) -> Vec<OtherPane> {
             path: pane_fields[pane_line_field::PANE_CURRENT_PATH].clone(),
             command: command.clone(),
             pane_pid: pane_fields[pane_line_field::PANE_PID].parse().ok(),
+            status: classify_pane_status(
+                command,
+                pane_fields[pane_line_field::PANE_PID].parse().ok(),
+                process_snapshot,
+            ),
             last_cmd: {
                 let raw = pane_fields[pane_line_field::LAST_CMD].as_str();
                 if raw.is_empty() {
@@ -585,29 +597,39 @@ fn clear_agent_pane_state(pane_id: &str) {
     let _ = std::fs::remove_file(log_path);
 }
 
-fn is_shell_command(command: &str) -> bool {
-    const SHELL_COMMANDS: &[&str] = &[
-        "ash",
-        "bash",
-        "csh",
-        "dash",
-        "elvish",
-        "fish",
-        "ksh",
-        "mksh",
-        "nu",
-        "oksh",
-        "pdksh",
-        "posh",
-        "powershell",
-        "powershell.exe",
-        "pwsh",
-        "sh",
-        "tcsh",
-        "xonsh",
-        "zsh",
-    ];
+/// Basenames that read as "a shell owns this pane". Shared by the
+/// foreground-command classification and the process-tree scan
+/// ([`ProcessSnapshot::tree_has_non_shell`]).
+const SHELL_COMMANDS: &[&str] = &[
+    "ash",
+    "bash",
+    "csh",
+    "dash",
+    "elvish",
+    "fish",
+    "ksh",
+    "mksh",
+    "nu",
+    "oksh",
+    "pdksh",
+    "posh",
+    "powershell",
+    "powershell.exe",
+    "pwsh",
+    "sh",
+    "tcsh",
+    "xonsh",
+    "zsh",
+];
 
+/// Basename-level shell check for ps `comm=` values, where the name is
+/// already an executable basename (no path, no arguments).
+pub(crate) fn is_shell_basename(name: &str) -> bool {
+    let base = command_basename(name).to_ascii_lowercase();
+    SHELL_COMMANDS.contains(&base.as_str())
+}
+
+fn is_shell_command(command: &str) -> bool {
     let Some(token) = command.split_whitespace().next() else {
         return false;
     };
@@ -632,6 +654,33 @@ pub fn classify_window_status(command: &str) -> WindowStatus {
         return WindowStatus::Busy;
     }
     WindowStatus::Task
+}
+
+/// [`classify_window_status`] backed by the process tree. A script run
+/// (`bash deploy.sh`) has a shell as its foreground process, so the
+/// command-only classification reads it `Idle` — indistinguishable from
+/// an idle prompt. When a ps snapshot is available and the pane's
+/// process tree contains any non-shell descendant (the script doing
+/// work), the pane is promoted to `Task` so it gets the pulsing diamond
+/// and, on exit, the completion flash. Without a snapshot (ps failure)
+/// the plain classification stands.
+pub(crate) fn classify_pane_status(
+    command: &str,
+    pane_pid: Option<u32>,
+    process_snapshot: Option<&ProcessSnapshot>,
+) -> WindowStatus {
+    let base = classify_window_status(command);
+    if base != WindowStatus::Idle || !is_shell_command(command) {
+        return base;
+    }
+    let promoted = pane_pid
+        .zip(process_snapshot)
+        .is_some_and(|(pid, snapshot)| snapshot.tree_has_non_shell(&[pid]));
+    if promoted {
+        WindowStatus::Task
+    } else {
+        WindowStatus::Idle
+    }
 }
 
 /// Foreground programs that should read as "busy" without pulsing: an
@@ -667,8 +716,15 @@ fn pane_output_needs_process_snapshot(all_panes_output: &str) -> bool {
             return false;
         }
         let pane_fields = &parts[session_line_field::PANE_LINE_OFFSET..];
-        AgentType::from_label(&pane_fields[pane_line_field::AGENT])
+        if AgentType::from_label(&pane_fields[pane_line_field::AGENT])
             .is_some_and(|agent| matches!(agent, AgentType::Codex | AgentType::OpenCode))
+        {
+            return true;
+        }
+        // A shell-foreground pane also needs the tree: `bash deploy.sh`
+        // and an idle prompt both read as "bash" from the command alone,
+        // and only the descendants tell them apart.
+        is_shell_command(&pane_fields[pane_line_field::PANE_CURRENT_COMMAND])
     })
 }
 
@@ -1262,7 +1318,7 @@ mod tests {
         segments.extend(&fields);
         let line = segments.join("|");
 
-        let panes = collect_other_panes(&line);
+        let panes = collect_other_panes(&line, None);
         assert_eq!(panes.len(), 1);
         assert_eq!(panes[0].pane_id, "%1");
         assert_eq!(panes[0].last_cmd.as_deref(), Some("cargo"));
@@ -1843,7 +1899,7 @@ mod tests {
         let agent = other_pane_line("@6", "0", "%8", "0", "claude", "/repo");
         let output = format!("{shell}\n{agent}\n");
 
-        let panes = collect_other_panes(&output);
+        let panes = collect_other_panes(&output, None);
 
         assert_eq!(panes.len(), 1, "only the shell pane is an 'other' pane");
         assert_eq!(panes[0].pane_id, "%7");
@@ -1862,10 +1918,27 @@ mod tests {
         let sidebar = "main|@5|1|editor|1|1|1|running|||@pane_name|/repo|zsh|sidebar|%9|prompt|src|100|wait|12345|sub|cwd|default|wt|wtb|sid|0|bg|title|/launch||";
         let sibling = other_pane_line("@5", "1", "%7", "1", "zsh", "/repo");
 
-        let panes = collect_other_panes(&format!("{sidebar}\n{sibling}"));
+        let panes = collect_other_panes(&format!("{sidebar}\n{sibling}"), None);
 
         assert_eq!(panes.len(), 1, "sidebar pane must be excluded");
         assert_eq!(panes[0].pane_id, "%7");
+    }
+
+    #[test]
+    fn collect_other_panes_promotes_script_run_with_snapshot() {
+        // The fixture pane runs pid 12345; a script interpreter with a
+        // real child beneath it promotes the row to Task at parse time.
+        let shell = other_pane_line("@5", "0", "%7", "0", "bash", "/repo/tests");
+        let ps_out = "12345 1 bash bash deploy.sh\n12346 12345 sleep sleep 300\n";
+        let snapshot = ProcessSnapshot::from_ps_output(ps_out);
+
+        let panes = collect_other_panes(&shell, Some(&snapshot));
+
+        assert_eq!(panes[0].status, WindowStatus::Task);
+
+        // Without tree backing, the same pane classifies as idle shell.
+        let panes = collect_other_panes(&shell, None);
+        assert_eq!(panes[0].status, WindowStatus::Idle);
     }
 
     // ─── classify_window_status ─────────────────────────────────────
@@ -1892,5 +1965,51 @@ mod tests {
             WindowStatus::Task
         );
         assert_eq!(classify_window_status("pytest"), WindowStatus::Task);
+    }
+
+    // ─── classify_pane_status ───────────────────────────────────────
+
+    #[test]
+    fn classify_pane_status_promotes_script_run_to_task() {
+        // `bash deploy.sh` reads as "bash" from the command alone; the
+        // non-shell descendant (the script's work) promotes it to Task.
+        let snapshot = ProcessSnapshot::from_ps_output(
+            "100 1 zsh zsh\n101 100 bash bash deploy.sh\n102 101 sleep sleep 300\n",
+        );
+
+        assert_eq!(
+            classify_pane_status("bash", Some(100), Some(&snapshot)),
+            WindowStatus::Task
+        );
+    }
+
+    #[test]
+    fn classify_pane_status_keeps_idle_shell_idle() {
+        let snapshot = ProcessSnapshot::from_ps_output("100 1 zsh zsh\n");
+
+        assert_eq!(
+            classify_pane_status("zsh", Some(100), Some(&snapshot)),
+            WindowStatus::Idle
+        );
+    }
+
+    #[test]
+    fn classify_pane_status_without_snapshot_stays_idle() {
+        // ps failure must degrade to the plain classification, not
+        // guesswork.
+        assert_eq!(
+            classify_pane_status("bash", Some(100), None),
+            WindowStatus::Idle
+        );
+    }
+
+    #[test]
+    fn classify_pane_status_leaves_non_shell_foregrounds_alone() {
+        let snapshot = ProcessSnapshot::from_ps_output("100 1 zsh zsh\n101 100 vim vim\n");
+
+        assert_eq!(
+            classify_pane_status("vim", Some(100), Some(&snapshot)),
+            WindowStatus::Busy
+        );
     }
 }

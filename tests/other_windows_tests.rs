@@ -176,6 +176,14 @@ fn tick_window(
         path: "/home/user/project".into(),
         command: command.into(),
         pane_pid: None,
+        // Mirror the parse-time classification: `zsh` is an idle shell;
+        // every other command arrives as `Task` (a non-shell foreground,
+        // or a script promoted by the process-tree scan).
+        status: if command == "zsh" {
+            tmux_agent_sidebar::tmux::WindowStatus::Idle
+        } else {
+            tmux_agent_sidebar::tmux::WindowStatus::Task
+        },
         last_cmd: if last_cmd.is_empty() {
             None
         } else {
@@ -327,6 +335,41 @@ fn window_task_chain_must_not_flash_between_commands() {
             .is_none_or(|s| s.window_finished.is_none()),
         "a mismatched recorded command must not confirm the tracked task"
     );
+}
+
+#[test]
+fn window_script_task_finishes_with_integration_confirm() {
+    // A script run arrives pre-promoted to Task (the process tree saw
+    // non-shell work beneath the interpreter). The tracked task arms
+    // under the interpreter name (`bash`) while preexec recorded the
+    // typed line (`deploy.sh`); the finish confirm must accept the
+    // non-shell recorded command, and the flash rides the normal path.
+    let state = &mut tmux_agent_sidebar::state::AppState::new("%99".into());
+    state.global.show_windows = true;
+
+    // Script starts: foreground reads "bash", preexec wrote "deploy.sh".
+    tick_window(state, "bash", "deploy.sh", None);
+    assert_eq!(
+        state
+            .pane_state("%10")
+            .unwrap()
+            .window_task_command
+            .as_deref(),
+        Some("bash"),
+        "a promoted script pane arms its task under the interpreter name"
+    );
+
+    // Script ends: back to zsh, preexec record still names the script.
+    state.now += 20; // past TASK_MIN_RUN_SECS
+    tick_window(state, "zsh", "deploy.sh", Some(0));
+
+    let runtime = state.pane_state("%10").unwrap();
+    assert_eq!(
+        runtime.window_finished.as_ref().map(|f| f.command.as_str()),
+        Some("bash"),
+        "the non-shell preexec record confirms the script finish"
+    );
+    assert_eq!(runtime.window_finished.as_ref().unwrap().exit_code, Some(0));
 }
 
 #[test]
