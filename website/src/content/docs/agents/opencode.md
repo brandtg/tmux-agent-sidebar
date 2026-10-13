@@ -11,20 +11,20 @@ surface is similar to Codex but with a different event source.
 ### Status and prompts
 
 - Live status from `session.created` / `session.status` / `session.idle`
-- Prompt text from `chat.message`
+- Prompt text from the `prompt` session hook
 - Response preview (`▷ ...`) from `stop`
 - Elapsed time for the current turn: starts at the last user prompt and keeps counting across responses, retries, and permission waits until OpenCode goes idle. Subagent runs (the `task` tool spawns them in child sessions) are part of the same turn — their lifecycle events are filtered out so they cannot stop the clock mid-turn or restart it after the turn ends
 
 ### Attention cues
 
-- Waiting status + wait reason from `permission.asked` and `question.asked`
-- The wait clears when OpenCode emits `permission.replied` / `question.replied` / `question.rejected`. While a prompt is open the pane stays `waiting` even if a parallel tool call finishes, so the cue cannot be missed
-- API failure reason from `session.error` / `session.status=error`
+- Waiting status + wait reason from `permission.asked` and `form.created` (OpenCode 2 surfaces the `question` tool as a form)
+- The wait clears when OpenCode emits `permission.replied` / `form.replied` / `form.cancelled`. While a prompt is open the pane stays `waiting` even if a parallel tool call finishes, so the cue cannot be missed
+- API failure reason from `session.execution.failed`
 - `notification` desktop alerts for permission and question prompts
 
 ### Activity log
 
-- Tool calls recorded from `tool.execute.after`
+- Tool calls recorded from the `execute.after` tool hook
 
 ### Git
 

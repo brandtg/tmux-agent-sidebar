@@ -1,3 +1,18 @@
+// OpenCode 2 plugin bridge for tmux-agent-sidebar.
+//
+// OpenCode 2 plugins default-export a definition with an `id` and a
+// `setup(ctx)` that registers hooks on the context domains (a named export
+// returning a hooks object is OpenCode 1 and is rejected at load time).
+// Mapping from the OpenCode 1 bridge:
+//
+//   chat.message        → ctx.session.hook("prompt")      (event.prompt.text)
+//   event bus           → ctx.event.subscribe()           (flat { type, data })
+//   tool.execute.after  → ctx.tool.hook("execute.after")
+//
+// The bus also renamed its members: session.updated → session.renamed,
+// session.error → session.execution.failed, and the question tool's
+// question.asked/replied/rejected → form.created/replied/cancelled.
+
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import { dirname, resolve } from "node:path";
@@ -26,9 +41,9 @@ const HOOK_COMMAND = (() => {
     : { cmd: "tmux-agent-sidebar", prefix: ["hook", "opencode"] };
 })();
 
-// Hook dispatch is serialized in program order: OpenCode fires the `event`
-// hook without awaiting it, so fire-and-forget spawns would race their tmux
-// writes — e.g. a first prompt's session-start (idle + clock clear) and
+// Hook dispatch is serialized in program order: hook callbacks fire without
+// awaiting the spawned process, so fire-and-forget spawns would race their
+// tmux writes — e.g. a first prompt's session-start (idle + clock clear) and
 // user-prompt-submit (running + clock stamp) landing interleaved, or a
 // queued follow-up's prompt stamp landing after the previous turn's stop
 // cleared it. Each link resolves when the spawned hook exits (bounded by a
@@ -60,80 +75,49 @@ const hook = (eventName, payload) => {
   );
 };
 
-const pickFirstString = (value, keys) => {
-  for (const key of keys) {
-    const candidate = value?.[key];
-    if (typeof candidate === "string" && candidate) {
-      return candidate;
-    }
-  }
-  return "";
-};
+const sessionIdOf = (value) => (typeof value === "string" && value ? value : "");
 
-const errorMessage = (err) => {
-  if (!err) return "";
-  if (typeof err === "string") return err;
-  if (typeof err === "object") {
-    return pickFirstString(err, ["message", "name"]) || JSON.stringify(err);
-  }
-  return String(err);
-};
+export default {
+  id: "tmux-agent-sidebar",
+  async setup(ctx) {
+    const cwd = sessionIdOf(ctx?.location?.directory);
 
-const extractPromptText = (parts) => {
-  if (!Array.isArray(parts)) return "";
-  const chunks = [];
-  for (const part of parts) {
-    if (!part || part.type !== "text") continue;
-    if (part.synthetic || part.ignored) continue;
-    if (typeof part.text === "string" && part.text) {
-      chunks.push(part.text);
-    }
-  }
-  return chunks.join("\n");
-};
+    // OpenCode runs every `task` subagent in a child session (its own
+    // sessionID, `parentID` pointing at the main session) whose bus events
+    // and prompt hook all reach this plugin instance. Only the main
+    // session's lifecycle may drive the pane's run state: a child's
+    // session.idle would stop the clock mid-turn (and flag the pane done),
+    // a child's prompt / session.status busy would restart it, and a
+    // child's tool results arriving after the main turn's stop would
+    // re-arm a cleared clock — a timer that never stops.
+    //
+    // `mainSession` is learned from top-level signals: a `session.created`
+    // without a parentID, or a prompt while no turn is active from a
+    // session not known to be a child (the prompt hook also fires for
+    // subagent prompts, but a background subagent can prompt between turns
+    // — so adoption must exclude sessions whose created event carried a
+    // parentID). `turnPromptSeen` marks an active main turn: set by the
+    // turn's prompt signal, cleared by stop/error.
+    let mainSession = "";
+    let turnPromptSeen = false;
+    const childSessions = new Set();
 
-export const TmuxAgentSidebar = async ({ directory }) => {
-  const cwd = typeof directory === "string" ? directory : "";
+    // While the main session is unknown every event passes through (the
+    // pre-gating behavior); once learned, foreign sessions are dropped.
+    const isMainSession = (session_id) =>
+      mainSession === "" || (session_id !== "" && session_id === mainSession);
 
-  // OpenCode runs every `task` subagent in a child session (its own
-  // sessionID, `parentID` pointing at the main session) whose session.*
-  // bus events and chat.message hook all reach this plugin instance.
-  // Only the main session's lifecycle may drive the pane's run state:
-  // a child's session.idle would stop the clock mid-turn (and flag the
-  // pane done), a child's chat.message / session.status busy would
-  // restart it, and a child's tool results arriving after the main
-  // turn's stop would re-arm a cleared clock — a timer that never stops.
-  //
-  // `mainSession` is learned from top-level signals: a `session.created`
-  // without a parentID, or a `chat.message` while no turn is active from a
-  // session not known to be a child (the hook also fires for subagent
-  // prompts, but a background subagent can prompt between turns — so
-  // adoption must exclude sessions whose created event carried a
-  // parentID). `turnPromptSeen` marks an active main turn: set by the
-  // turn's prompt signal, cleared by stop/error.
-  let mainSession = "";
-  let turnPromptSeen = false;
-  const childSessions = new Set();
-
-  // While the main session is unknown every event passes through (the
-  // pre-gating behavior); once learned, foreign sessions are dropped.
-  const isMainSession = (session_id) =>
-    mainSession === "" || (session_id !== "" && session_id === mainSession);
-
-  const isChildSession = (info) =>
-    Boolean(pickFirstString(info ?? {}, ["parentID", "parentId", "parent_id"]));
-
-  return {
-    "chat.message": async (input, output) => {
-      const session_id =
-        typeof input?.sessionID === "string" ? input.sessionID : "";
+    // Prompts admitted in the main session start (or restart) the turn;
+    // child-session prompts never do. The hook receives the admitted
+    // prompt text directly — no parts extraction like OpenCode 1.
+    await ctx.session.hook("prompt", async (event) => {
+      const session_id = sessionIdOf(event?.sessionID);
       // Subagent prompts route through the same hook as user prompts
-      // (task tool → ops.prompt → createUserMessage), and a background
-      // subagent can prompt between turns. With no active turn, a
-      // non-child session's message is a fresh or switched-to main
-      // session and (re)adopts the slot; known child prompts never do,
-      // and mid-turn foreign messages are child prompts that must not
-      // restart the run clock.
+      // (task tool → subagent admission), and a background subagent can
+      // prompt between turns. With no active turn, a non-child session's
+      // message is a fresh or switched-to main session and (re)adopts the
+      // slot; known child prompts never do, and mid-turn foreign messages
+      // are child prompts that must not restart the run clock.
       if (!turnPromptSeen && !childSessions.has(session_id)) {
         mainSession = session_id;
       }
@@ -141,129 +125,17 @@ export const TmuxAgentSidebar = async ({ directory }) => {
         return;
       }
       turnPromptSeen = true;
-      const prompt = extractPromptText(output?.parts);
-      hook("user-prompt-submit", { cwd, session_id, prompt });
-    },
+      hook("user-prompt-submit", {
+        cwd,
+        session_id,
+        prompt: typeof event?.prompt?.text === "string" ? event.prompt.text : "",
+      });
+    });
 
-    event: async ({ event }) => {
-      if (!event || !event.type) return;
-      const props = event.properties ?? {};
-      const session_id = pickFirstString(props, ["sessionID", "sessionId", "session_id"]);
-
-      switch (event.type) {
-        case "session.created":
-          // Child sessions must not claim the pane's identity or adopt
-          // the main-session slot. Remember them so a later prompt (a
-          // background subagent prompting between turns) cannot adopt
-          // the slot either.
-          if (isChildSession(props.info)) {
-            if (session_id) {
-              childSessions.add(session_id);
-            }
-            return;
-          }
-          if (session_id) {
-            mainSession = session_id;
-          }
-          hook("session-start", { cwd, session_id, source: "startup" });
-          hook("session-title", { cwd, session_id, title: props.info?.title ?? "" });
-          return;
-
-        // The session doc (including its title) changes outside of
-        // session.created — opencode auto-titles from the first
-        // exchange and applies manual renames later. Forward the
-        // current title on every update so the sidebar tracks it,
-        // but never let a subagent session's title take over the row.
-        case "session.updated":
-          if (isChildSession(props.info)) {
-            return;
-          }
-          hook("session-title", { cwd, session_id, title: props.info?.title ?? "" });
-          return;
-
-        case "session.status": {
-          // Status is a union: { type: "idle" | "busy" | "retry", ... }.
-          // `busy` is a secondary status-transition signal — the real prompt
-          // text is written via the `chat.message` hook, which fires with
-          // the UserMessage parts. Forward the empty-prompt submission only
-          // when a turn starts without a chat.message (retry recovery), so
-          // a missing run clock still gets stamped without re-stamping one
-          // that already spans the turn. `idle` needs no mapping: opencode
-          // publishes `session.idle` alongside every
-          // `session.status {idle}`, and that event already routes to
-          // `stop` — handling both would fire the stop hook twice per
-          // turn end.
-          if (!isMainSession(session_id)) {
-            return;
-          }
-          if (props.status?.type === "busy" && !turnPromptSeen) {
-            turnPromptSeen = true;
-            hook("user-prompt-submit", { cwd, session_id, prompt: "" });
-          }
-          return;
-        }
-
-        case "session.idle":
-          if (!isMainSession(session_id)) {
-            return;
-          }
-          turnPromptSeen = false;
-          hook("stop", { cwd, session_id, last_message: "" });
-          return;
-
-        case "session.error":
-          if (!isMainSession(session_id)) {
-            return;
-          }
-          turnPromptSeen = false;
-          hook("stop-failure", {
-            cwd,
-            session_id,
-            error: errorMessage(props.error) || "session.error",
-          });
-          return;
-
-        // Permission and question asks never touch the run clock, so they
-        // pass more freely: a subagent asking mid-turn still flips the pane
-        // to waiting (the whole turn is blocked on the answer), while
-        // between turns only main-session asks are forwarded so a
-        // background subagent cannot yank an idle pane around.
-        case "permission.asked":
-          if (!isMainSession(session_id) && !turnPromptSeen) {
-            return;
-          }
-          hook("notification", { cwd, session_id, wait_reason: "permission" });
-          return;
-
-        // OpenCode's `question` tool blocks the turn on a user answer the
-        // same way a permission prompt does. Without this the pane stayed
-        // `running` while the agent waited for the answer.
-        case "question.asked":
-          if (!isMainSession(session_id) && !turnPromptSeen) {
-            return;
-          }
-          hook("notification", { cwd, session_id, wait_reason: "question" });
-          return;
-
-        // The user answered (or rejected) a permission/question prompt.
-        // Re-submit an empty prompt to clear the wait and mark the pane
-        // running again — the same synthetic-resume signal the `busy`
-        // branch uses for retry recovery. The activity-log handler keeps a
-        // pending-action wait sticky, so a concurrent tool's result cannot
-        // clear it; this reply is what resumes the pane.
-        case "permission.replied":
-        case "question.replied":
-        case "question.rejected":
-          if (!isMainSession(session_id) && !turnPromptSeen) {
-            return;
-          }
-          hook("user-prompt-submit", { cwd, session_id, prompt: "" });
-          return;
-      }
-    },
-
-    // Dedicated hook for tool execution results. `event` bus does not carry
-    // tool.execute.* — those are surfaced only through these trigger hooks.
+    // Dedicated hook for tool execution results. The event bus carries
+    // tool.* deltas, but results land here: `result` holds the V2
+    // `{ output, content, metadata }` shape the activity log's label
+    // extractors read (`content[].text`).
     //
     // Child-session tool activity is shown while the main turn is active
     // (it is what the subagent is doing for the user), but dropped between
@@ -271,22 +143,153 @@ export const TmuxAgentSidebar = async ({ directory }) => {
     // running and stamps a missing run clock, so a background subagent's
     // results landing after the main turn's stop would leave the elapsed
     // timer ticking forever.
-    "tool.execute.after": async (input, output) => {
-      const session_id = input?.sessionID ?? "";
+    await ctx.tool.hook("execute.after", async (event) => {
+      const session_id = sessionIdOf(event?.sessionID);
       if (!isMainSession(session_id) && !turnPromptSeen) {
         return;
       }
       hook("activity-log", {
         cwd,
         session_id,
-        tool_name: input?.tool ?? "",
-        tool_input: input?.args ?? {},
-        tool_response: {
-          title: output?.title ?? "",
-          output: output?.output ?? "",
-          metadata: output?.metadata ?? null,
-        },
+        tool_name: typeof event?.tool === "string" ? event.tool : "",
+        tool_input: event?.input ?? {},
+        tool_response: event?.status === "completed" ? event?.result ?? null : null,
       });
-    },
-  };
+    });
+
+    // The bus is a plain subscription in OpenCode 2; abort it on unload.
+    const controller = new AbortController();
+    void (async () => {
+      for await (const event of ctx.event.subscribe({ signal: controller.signal })) {
+        if (!event || !event.type) continue;
+        const data = event.data ?? {};
+        const session_id = sessionIdOf(data.sessionID);
+
+        switch (event.type) {
+          // Child sessions must not claim the pane's identity or adopt
+          // the main-session slot. Remember them so a later prompt (a
+          // background subagent prompting between turns) cannot adopt
+          // the slot either.
+          case "session.created": {
+            if (sessionIdOf(data.parentID)) {
+              if (session_id) {
+                childSessions.add(session_id);
+              }
+              continue;
+            }
+            if (session_id) {
+              mainSession = session_id;
+            }
+            hook("session-start", { cwd, session_id, source: "startup" });
+            hook("session-title", { cwd, session_id, title: data.title ?? "" });
+            continue;
+          }
+
+          // The session doc's title changes via renames — opencode
+          // auto-titles from the first exchange and applies manual renames
+          // later. Forward the current title on every rename so the
+          // sidebar tracks it; a subagent session's rename is dropped so
+          // it cannot take over the row.
+          case "session.renamed":
+            if (!isMainSession(session_id)) {
+              continue;
+            }
+            hook("session-title", { cwd, session_id, title: data.title ?? "" });
+            continue;
+
+          // Status is a union: { type: "idle" | "busy" | "retry", ... }.
+          // `busy` is a secondary status-transition signal — the real
+          // prompt text is written via the `prompt` hook, which fires with
+          // the admitted prompt text. Forward the empty-prompt submission
+          // only when a turn starts without a prompt (retry recovery), so
+          // a missing run clock still gets stamped without re-stamping one
+          // that already spans the turn. `idle` needs no mapping here:
+          // opencode publishes `session.idle` alongside every
+          // `session.status {idle}`, and that event already routes to
+          // `stop` — handling both would fire the stop hook twice per
+          // turn end.
+          case "session.status": {
+            if (!isMainSession(session_id)) {
+              continue;
+            }
+            if (data.status?.type === "busy" && !turnPromptSeen) {
+              turnPromptSeen = true;
+              hook("user-prompt-submit", { cwd, session_id, prompt: "" });
+            }
+            continue;
+          }
+
+          case "session.idle":
+            if (!isMainSession(session_id)) {
+              continue;
+            }
+            turnPromptSeen = false;
+            hook("stop", { cwd, session_id, last_message: "" });
+            continue;
+
+          // Turn-level failure (OpenCode 1's session.error). Step-level
+          // failures are not mapped: they may be retried within the turn.
+          case "session.execution.failed":
+            if (!isMainSession(session_id)) {
+              continue;
+            }
+            turnPromptSeen = false;
+            hook("stop-failure", {
+              cwd,
+              session_id,
+              error:
+                data.error?.message || data.error?.type || "session.execution.failed",
+            });
+            continue;
+
+          // Permission and question (form) asks never touch the run clock,
+          // so they pass more freely: a subagent asking mid-turn still
+          // flips the pane to waiting (the whole turn is blocked on the
+          // answer), while between turns only main-session asks are
+          // forwarded so a background subagent cannot yank an idle pane
+          // around.
+          case "permission.asked":
+            if (!isMainSession(session_id) && !turnPromptSeen) {
+              continue;
+            }
+            hook("notification", { cwd, session_id, wait_reason: "permission" });
+            continue;
+
+          // OpenCode's `question` tool surfaces as a form; it blocks the
+          // turn on a user answer the same way a permission prompt does.
+          // Without this the pane stayed `running` while the agent waited
+          // for the answer. The sessionID lives on the form object.
+          case "form.created": {
+            const form_session = sessionIdOf(data.form?.sessionID);
+            if (!isMainSession(form_session) && !turnPromptSeen) {
+              continue;
+            }
+            hook("notification", {
+              cwd,
+              session_id: form_session,
+              wait_reason: "question",
+            });
+            continue;
+          }
+
+          // The user answered (or rejected) a permission/question prompt.
+          // Re-submit an empty prompt to clear the wait and mark the pane
+          // running again — the same synthetic-resume signal the `busy`
+          // branch uses for retry recovery. The activity-log handler keeps
+          // a pending-action wait sticky, so a concurrent tool's result
+          // cannot clear it; this reply is what resumes the pane.
+          case "permission.replied":
+          case "form.replied":
+          case "form.cancelled":
+            if (!isMainSession(session_id) && !turnPromptSeen) {
+              continue;
+            }
+            hook("user-prompt-submit", { cwd, session_id, prompt: "" });
+            continue;
+        }
+      }
+    })();
+
+    return () => controller.abort();
+  },
 };
