@@ -18,9 +18,13 @@ fn base(input: &Value) -> EventBase {
 /// label extractor in `src/cli/label.rs` keys off Claude-style PascalCase
 /// names. Normalise here so the activity log and its strategy table share
 /// a single vocabulary across agents.
+///
+/// 2.0.x renamed the shell tool to `shell` (1.x and some providers still
+/// say `bash`) — both map to the canonical Bash so its `command` label
+/// strategy fires.
 fn normalize_tool_name(raw: &str) -> String {
     let canonical = match raw {
-        "bash" => CanonicalTool::Bash,
+        "bash" | "shell" => CanonicalTool::Bash,
         "read" => CanonicalTool::Read,
         "write" => CanonicalTool::Write,
         "edit" | "multiedit" => CanonicalTool::Edit,
@@ -37,16 +41,17 @@ fn normalize_tool_name(raw: &str) -> String {
     canonical.as_str().to_string()
 }
 
-/// Translate OpenCode's camelCase tool arguments into the snake_case keys
-/// the Claude-style label extractor expects. Keys are added alongside the
-/// originals rather than replacing them so downstream consumers that want
-/// the raw payload still see it.
+/// Translate OpenCode's tool argument keys into the snake_case keys the
+/// Claude-style label extractor expects. 1.x used camelCase (`filePath`);
+/// 2.0.x renamed it to `path`. Keys are added alongside the originals
+/// rather than replacing them so downstream consumers that want the raw
+/// payload still see it.
 fn normalize_tool_input(tool_name: &str, input: Value) -> Value {
     let Value::Object(mut map) = input else {
         return input;
     };
     let rewrites: &[(&str, &str)] = match tool_name {
-        "Read" | "Write" | "Edit" => &[("filePath", "file_path")],
+        "Read" | "Write" | "Edit" => &[("filePath", "file_path"), ("path", "file_path")],
         _ => &[],
     };
     copy_keys(&mut map, rewrites);
@@ -248,6 +253,55 @@ mod tests {
                 assert_eq!(tool_name, "Read");
                 assert_eq!(tool_input["file_path"], "/home/user/src/main.rs");
                 assert_eq!(tool_input["filePath"], "/home/user/src/main.rs");
+            }
+            other => panic!("expected ActivityLog, got {:?}", other),
+        }
+    }
+
+    // 2.0.x renamed the shell tool to `shell` and dropped `filePath` for
+    // `path`. Without both mappings the activity rows degrade to bare tool
+    // names with no command/file label.
+    #[test]
+    fn activity_log_normalizes_v2_shell_tool() {
+        let adapter = OpenCodeAdapter;
+        let event = adapter
+            .parse(
+                "activity-log",
+                &json!({
+                    "tool_name": "shell",
+                    "tool_input": {"command": "cargo build --release"}
+                }),
+            )
+            .unwrap();
+        match event {
+            AgentEvent::ActivityLog { tool_name, .. } => {
+                assert_eq!(tool_name, "Bash");
+            }
+            other => panic!("expected ActivityLog, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn activity_log_normalizes_v2_path_key() {
+        let adapter = OpenCodeAdapter;
+        let event = adapter
+            .parse(
+                "activity-log",
+                &json!({
+                    "tool_name": "edit",
+                    "tool_input": {"path": "/home/user/src/main.rs", "oldString": "a", "newString": "b"}
+                }),
+            )
+            .unwrap();
+        match event {
+            AgentEvent::ActivityLog {
+                tool_name,
+                tool_input,
+                ..
+            } => {
+                assert_eq!(tool_name, "Edit");
+                assert_eq!(tool_input["file_path"], "/home/user/src/main.rs");
+                assert_eq!(tool_input["path"], "/home/user/src/main.rs");
             }
             other => panic!("expected ActivityLog, got {:?}", other),
         }
