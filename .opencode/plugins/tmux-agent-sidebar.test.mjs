@@ -64,7 +64,7 @@ fi
   // the fake subscribe's poll timer would keep the event loop alive.
   let cleanup = null;
   return {
-    async init(directory) {
+    async init(directory, projectID, sessionDirectory) {
       const { default: definition } = await mod;
 
       // Fake plugin context: capture registered hooks, queue bus events.
@@ -72,10 +72,22 @@ fi
       const toolHooks = [];
       const queue = [];
       const ctx = {
-        location: { directory },
+        location: projectID
+          ? { directory, project: { id: projectID } }
+          : { directory },
         session: {
           hook: async (name, cb) => {
             if (name === "prompt") promptHooks.push(cb);
+          },
+          // Server lookup for sessions this instance never saw created:
+          // the test harness resolves them to `sessionDirectory` (or 404s).
+          get: async ({ sessionID }) => {
+            if (!sessionDirectory) throw new Error("not found");
+            return {
+              id: sessionID,
+              projectID: projectID ?? "",
+              location: { directory: sessionDirectory },
+            };
           },
         },
         tool: {
@@ -305,18 +317,18 @@ test("subagent permission asks pass mid-turn but not between turns", async () =>
   }
 });
 
-test("question form asks map to a waiting notification like permissions", async () => {
+test("question asks map to a waiting notification like permissions", async () => {
   const h = await loadPlugin();
   try {
     const plugin = await h.init("/repo");
     await plugin.event({ type: "session.created", data: { sessionID: MAIN, title: "Main" } });
     await plugin.prompt({ sessionID: MAIN, prompt: { text: "go" } });
     // Mid-turn child question passes (the whole turn is blocked).
-    await plugin.event({ type: "form.created", data: { form: { sessionID: CHILD, id: "que_1", title: "q", fields: [] } } });
+    await plugin.event({ type: "question.asked", data: { sessionID: CHILD, id: "que_1" } });
     await plugin.event({ type: "session.idle", data: { sessionID: MAIN } });
     // Between turns a child question is dropped, a main question passes.
-    await plugin.event({ type: "form.created", data: { form: { sessionID: CHILD, id: "que_2", title: "q", fields: [] } } });
-    await plugin.event({ type: "form.created", data: { form: { sessionID: MAIN, id: "que_3", title: "q", fields: [] } } });
+    await plugin.event({ type: "question.asked", data: { sessionID: CHILD, id: "que_2" } });
+    await plugin.event({ type: "question.asked", data: { sessionID: MAIN, id: "que_3" } });
     await settle(h);
 
     assert.deepEqual(h.events(), [
@@ -338,8 +350,8 @@ test("permission and question replies resume the pane", async () => {
     const plugin = await h.init("/repo");
     await plugin.prompt({ sessionID: MAIN, prompt: { text: "go" } });
     await plugin.event({ type: "permission.replied", data: { sessionID: MAIN, requestID: "per_1", reply: "once" } });
-    await plugin.event({ type: "form.replied", data: { sessionID: MAIN, id: "que_1", answer: {} } });
-    await plugin.event({ type: "form.cancelled", data: { sessionID: MAIN, id: "que_2" } });
+    await plugin.event({ type: "question.replied", data: { sessionID: MAIN, requestID: "que_1", answers: [] } });
+    await plugin.event({ type: "question.rejected", data: { sessionID: MAIN, requestID: "que_2" } });
     await settle(h);
 
     assert.deepEqual(h.events(), [
@@ -374,19 +386,157 @@ test("session.execution.failed ends the turn and re-arms gating for the next one
   }
 });
 
-test("child renames never take over the row", async () => {
+test("renames arrive via session.updated and child renames never take over the row", async () => {
   const h = await loadPlugin();
   try {
     const plugin = await h.init("/repo");
     await plugin.event({ type: "session.created", data: { sessionID: MAIN, title: "Main" } });
-    await plugin.event({ type: "session.renamed", data: { sessionID: CHILD, title: "child" } });
-    await plugin.event({ type: "session.renamed", data: { sessionID: MAIN, title: "Renamed" } });
+    await plugin.event({ type: "session.updated", data: { sessionID: CHILD, info: { title: "child" } } });
+    await plugin.event({ type: "session.updated", data: { sessionID: MAIN, info: { title: "Renamed" } } });
     await settle(h);
 
     assert.deepEqual(h.events(), [
       "session-start " + JSON.stringify({ cwd: "/repo", session_id: MAIN, source: "startup" }),
       "session-title " + JSON.stringify({ cwd: "/repo", session_id: MAIN, title: "Main" }),
       "session-title " + JSON.stringify({ cwd: "/repo", session_id: MAIN, title: "Renamed" }),
+    ]);
+  } finally {
+    h.dispose();
+  }
+});
+
+// Regression: OpenCode 2.0.x ends turns with session.execution.* — it never
+// publishes session.idle / session.status, so the v1-era mapping left the
+// pane running (solid status dot) forever after the agent finished.
+test("a turn that ends with session.execution.succeeded stops the pane", async () => {
+  const h = await loadPlugin();
+  try {
+    const plugin = await h.init("/repo");
+    await plugin.prompt({ sessionID: MAIN, prompt: { text: "fix the bug" } });
+    await plugin.event({ type: "session.execution.started", data: { sessionID: MAIN } });
+    await plugin.event({ type: "session.execution.succeeded", data: { sessionID: MAIN } });
+    await settle(h);
+
+    assert.deepEqual(h.events(), [
+      "user-prompt-submit " + JSON.stringify({ cwd: "/repo", session_id: MAIN, prompt: "fix the bug" }),
+      // started re-submits an empty prompt: idempotent running signal that
+      // stamps a missing clock without restarting the prompt's own one.
+      "user-prompt-submit " + JSON.stringify({ cwd: "/repo", session_id: MAIN, prompt: "" }),
+      "stop " + JSON.stringify({ cwd: "/repo", session_id: MAIN, last_message: "" }),
+    ]);
+  } finally {
+    h.dispose();
+  }
+});
+
+test("an interrupted turn stops the pane", async () => {
+  const h = await loadPlugin();
+  try {
+    const plugin = await h.init("/repo");
+    await plugin.prompt({ sessionID: MAIN, prompt: { text: "go" } });
+    await plugin.event({ type: "session.execution.interrupted", data: { sessionID: MAIN, reason: "user" } });
+    await settle(h);
+
+    assert.deepEqual(h.events(), [
+      "user-prompt-submit " + JSON.stringify({ cwd: "/repo", session_id: MAIN, prompt: "go" }),
+      "stop " + JSON.stringify({ cwd: "/repo", session_id: MAIN, last_message: "" }),
+    ]);
+  } finally {
+    h.dispose();
+  }
+});
+
+test("execution.started without a prompt still stamps the running state", async () => {
+  const h = await loadPlugin();
+  try {
+    const plugin = await h.init("/repo");
+    await plugin.event({ type: "session.execution.started", data: { sessionID: MAIN } });
+    await plugin.event({ type: "session.execution.failed", data: { sessionID: MAIN, error: { type: "provider", message: "boom" } } });
+    await settle(h);
+
+    assert.deepEqual(h.events(), [
+      "user-prompt-submit " + JSON.stringify({ cwd: "/repo", session_id: MAIN, prompt: "" }),
+      "stop-failure " + JSON.stringify({ cwd: "/repo", session_id: MAIN, error: "boom" }),
+    ]);
+  } finally {
+    h.dispose();
+  }
+});
+
+// The event bus is server-global: sessions from other projects must not
+// claim the pane's identity or rename it. Adoption and forwarding gate on
+// the projectID learned from session.created.
+test("a foreign project's session.created is ignored entirely", async () => {
+  const h = await loadPlugin();
+  try {
+    const plugin = await h.init("/repo", "proj_mine");
+    await plugin.event({
+      type: "session.created",
+      data: { sessionID: "ses_foreign", projectID: "proj_other", title: "Other project" },
+    });
+    await plugin.event({ type: "session.execution.started", data: { sessionID: "ses_foreign" } });
+    await plugin.event({ type: "session.execution.succeeded", data: { sessionID: "ses_foreign" } });
+    // Our own session still works normally.
+    await plugin.event({ type: "session.created", data: { sessionID: MAIN, projectID: "proj_mine", title: "Main" } });
+    await settle(h);
+
+    assert.deepEqual(h.events(), [
+      "session-start " + JSON.stringify({ cwd: "/repo", session_id: MAIN, source: "startup" }),
+      "session-title " + JSON.stringify({ cwd: "/repo", session_id: MAIN, title: "Main" }),
+    ]);
+  } finally {
+    h.dispose();
+  }
+});
+
+test("a known foreign session cannot adopt the main slot via the prompt hook", async () => {
+  const h = await loadPlugin();
+  try {
+    const plugin = await h.init("/repo", "proj_mine");
+    await plugin.event({
+      type: "session.created",
+      data: { sessionID: "ses_foreign", projectID: "proj_other", title: "Other project" },
+    });
+    await plugin.prompt({ sessionID: "ses_foreign", prompt: { text: "foreign turn" } });
+    // The main session is only adopted once a belonging prompt arrives.
+    await plugin.prompt({ sessionID: MAIN, prompt: { text: "mine" } });
+    await settle(h);
+
+    assert.deepEqual(h.events(), [
+      "user-prompt-submit " + JSON.stringify({ cwd: "/repo", session_id: MAIN, prompt: "mine" }),
+    ]);
+  } finally {
+    h.dispose();
+  }
+});
+
+// Sessions that predate the plugin load (service restart mid-session) are
+// never seen in session.created; the bridge attributes them with a one-time
+// session.get lookup instead of trusting every unknown sessionID.
+test("an unknown session is attributed via a server lookup before adoption", async () => {
+  const h = await loadPlugin();
+  try {
+    // Lookups resolve to a directory outside the instance's project tree.
+    const plugin = await h.init("/repo", undefined, "/elsewhere");
+    await plugin.prompt({ sessionID: "ses_foreign", prompt: { text: "foreign turn" } });
+    await plugin.event({ type: "session.execution.succeeded", data: { sessionID: "ses_foreign" } });
+    await settle(h);
+
+    assert.deepEqual(h.events(), []);
+  } finally {
+    h.dispose();
+  }
+});
+
+test("an unknown session resolving inside the instance directory is adopted", async () => {
+  const h = await loadPlugin();
+  try {
+    const plugin = await h.init("/repo/sub", undefined, "/repo/sub");
+    await plugin.prompt({ sessionID: "ses_recovered", prompt: { text: "after restart" } });
+    await settle(h);
+
+    assert.deepEqual(h.events(), [
+      "user-prompt-submit " + JSON.stringify({ cwd: "/repo/sub", session_id: "ses_recovered", prompt: "after restart" }),
     ]);
   } finally {
     h.dispose();

@@ -6,12 +6,26 @@
 // Mapping from the OpenCode 1 bridge:
 //
 //   chat.message        → ctx.session.hook("prompt")      (event.prompt.text)
-//   event bus           → ctx.event.subscribe()           (flat { type, data })
+//   event bus           → ctx.event.subscribe()           ({ type, data })
 //   tool.execute.after  → ctx.tool.hook("execute.after")
 //
-// The bus also renamed its members: session.updated → session.renamed,
-// session.error → session.execution.failed, and the question tool's
-// question.asked/replied/rejected → form.created/replied/cancelled.
+// Bus payloads are flat: every event is `{ type, data: {...} }` and the
+// per-type fields live on `data` (sessionID, title, error, ...). Turn
+// lifecycle in 2.0.x is `session.execution.started` / `succeeded` /
+// `failed` / `interrupted` — the v1-era `session.idle` / `session.status`
+// events are still understood (schema keeps them) but a 2.0.27 server
+// never emits them, so `session.idle` alone left panes running forever.
+// Title changes arrive as `session.updated` (data.info.title), and the
+// question tool surfaces as `question.asked` / `question.replied` /
+// `question.rejected` with a flat `data.sessionID`.
+//
+// The bus is server-global: a plugin instance receives events for every
+// session on the service, including other projects. `session.created`
+// carries the new session's `data.projectID` / `data.location.directory`,
+// which gates adoption and forwarding; lifecycle events for sessions we
+// have not seen created are attributed with a one-time `session.get`
+// lookup (cached per sessionID), so a foreign project's turn can never
+// touch the pane — not even after a service restart mid-session.
 //
 // Pane resolution: unlike Claude Code / Codex, OpenCode 2 does NOT run its
 // plugins inside the tmux pane that hosts the session — plugins execute in
@@ -239,6 +253,58 @@ export default {
     let turnPromptSeen = false;
     const childSessions = new Set();
 
+    // sessionID → { projectID, directory }, learned from session.created
+    // and from a one-time `session.get` lookup for sessions this instance
+    // never saw created (the service restarts mid-session, sessions
+    // predate the plugin load). The bus is server-global, so lifecycle
+    // events for sessions belonging to other projects must not drive the
+    // pane.
+    const sessionProjects = new Map();
+    const myProjectID = ctx?.location?.project?.id ?? "";
+    const myDirectory = typeof ctx?.location?.directory === "string" ? ctx.location.directory : "";
+    const belongsToInstance = (info) => {
+      if (!info) return true; // unknown session: keep the pre-gating behavior
+      const { projectID, directory } = info;
+      if (projectID && myProjectID) return projectID === myProjectID;
+      if (projectID || myProjectID) return false; // only one side known: cannot confirm
+      if (!directory || !myDirectory) return true;
+      return directory === myDirectory || directory.startsWith(`${myDirectory}/`);
+    };
+    const lookupSessionInfo = async (session_id) => {
+      if (sessionProjects.has(session_id)) return sessionProjects.get(session_id);
+      let info = null;
+      try {
+        const session = await ctx.session.get({ sessionID: session_id });
+        if (session && typeof session === "object") {
+          info = {
+            projectID: typeof session.projectID === "string" ? session.projectID : "",
+            directory:
+              typeof session.location?.directory === "string" ? session.location.directory : "",
+          };
+        }
+      } catch {}
+      // Cache misses too, so a deleted/foreign session is not re-queried
+      // on every event.
+      sessionProjects.set(session_id, info);
+      return info;
+    };
+    // Synchronous check for already-known sessions; null = not seen yet.
+    const cachedBelongs = (session_id) => {
+      if (!session_id || !sessionProjects.has(session_id)) return null;
+      const cached = sessionProjects.get(session_id);
+      return cached ? belongsToInstance(cached) : true;
+    };
+    // Awaitable gate: resolves unknown sessions once via the server and
+    // caches the answer, so cross-project events are dropped even when
+    // this instance never observed the session's creation.
+    const knownSessionBelongs = async (session_id) => {
+      if (!session_id) return true;
+      const cached = cachedBelongs(session_id);
+      if (cached !== null) return cached;
+      const info = await lookupSessionInfo(session_id);
+      return info ? belongsToInstance(info) : true;
+    };
+
     // While the main session is unknown every event passes through (the
     // pre-gating behavior); once learned, foreign sessions are dropped.
     const isMainSession = (session_id) =>
@@ -254,8 +320,14 @@ export default {
       // prompt between turns. With no active turn, a non-child session's
       // message is a fresh or switched-to main session and (re)adopts the
       // slot; known child prompts never do, and mid-turn foreign messages
-      // are child prompts that must not restart the run clock.
-      if (!turnPromptSeen && !childSessions.has(session_id)) {
+      // are child prompts that must not restart the run clock. A session
+      // this instance knows belongs to another project never adopts the
+      // slot (the bus delivers every project's prompts).
+      if (
+        !turnPromptSeen &&
+        !childSessions.has(session_id) &&
+        (await knownSessionBelongs(session_id))
+      ) {
         mainSession = session_id;
       }
       if (session_id !== mainSession) {
@@ -282,6 +354,9 @@ export default {
     // timer ticking forever.
     await ctx.tool.hook("execute.after", async (event) => {
       const session_id = sessionIdOf(event?.sessionID);
+      if (!(await knownSessionBelongs(session_id))) {
+        return;
+      }
       if (!isMainSession(session_id) && !turnPromptSeen) {
         return;
       }
@@ -306,33 +381,58 @@ export default {
           // Child sessions must not claim the pane's identity or adopt
           // the main-session slot. Remember them so a later prompt (a
           // background subagent prompting between turns) cannot adopt
-          // the slot either.
+          // the slot either. Every created session is recorded with its
+          // project so later lifecycle events can be attributed; only
+          // sessions belonging to this instance adopt/forward.
           case "session.created": {
-            if (sessionIdOf(data.parentID)) {
+            const session_id = sessionIdOf(data.sessionID);
+            sessionProjects.set(session_id, {
+              projectID: typeof data.projectID === "string" ? data.projectID : "",
+              directory:
+                typeof data.location?.directory === "string" ? data.location.directory : "",
+            });
+            const parentID =
+              sessionIdOf(data.parentID) ||
+              sessionIdOf(data.info?.parentID);
+            if (parentID) {
               if (session_id) {
                 childSessions.add(session_id);
               }
+              continue;
+            }
+            if (!belongsToInstance(sessionProjects.get(session_id))) {
               continue;
             }
             if (session_id) {
               mainSession = session_id;
             }
             hook("session-start", { cwd, session_id, source: "startup" });
-            hook("session-title", { cwd, session_id, title: data.title ?? "" });
+            hook("session-title", {
+              cwd,
+              session_id,
+              title: data.title ?? data.info?.title ?? "",
+            });
             continue;
           }
 
           // The session doc's title changes via renames — opencode
           // auto-titles from the first exchange and applies manual renames
-          // later. Forward the current title on every rename so the
-          // sidebar tracks it; a subagent session's rename is dropped so
-          // it cannot take over the row.
-          case "session.renamed":
+          // later. `session.updated` carries the refreshed session info;
+          // forward its current title so the sidebar tracks it. A
+          // subagent session's rename is dropped so it cannot take over
+          // the row.
+          case "session.updated": {
             if (!isMainSession(session_id)) {
               continue;
             }
-            hook("session-title", { cwd, session_id, title: data.title ?? "" });
+            const title = data.info?.title ?? data.title;
+            hook("session-title", {
+              cwd,
+              session_id,
+              title: typeof title === "string" ? title : "",
+            });
             continue;
+          }
 
           // Status is a union: { type: "idle" | "busy" | "retry", ... }.
           // `busy` is a secondary status-transition signal — the real
@@ -341,12 +441,12 @@ export default {
           // only when a turn starts without a prompt (retry recovery), so
           // a missing run clock still gets stamped without re-stamping one
           // that already spans the turn. `idle` needs no mapping here:
-          // opencode publishes `session.idle` alongside every
-          // `session.status {idle}`, and that event already routes to
-          // `stop` — handling both would fire the stop hook twice per
-          // turn end.
+          // terminal turn state routes through the session.execution.*
+          // events below (and session.idle on older servers), and handling
+          // it too would fire the stop hook twice per turn end — harmless
+          // (the notification dedups) but pointless.
           case "session.status": {
-            if (!isMainSession(session_id)) {
+            if (!(await knownSessionBelongs(session_id)) || !isMainSession(session_id)) {
               continue;
             }
             if (data.status?.type === "busy" && !turnPromptSeen) {
@@ -356,8 +456,25 @@ export default {
             continue;
           }
 
+          // Turn lifecycle on 2.0.x. `started` marks the run clock even
+          // when the prompt hook was missed (retry recovery); the
+          // terminal events clear it and stop the pane. `interrupted`
+          // covers user aborts and shutdowns — the turn is over either
+          // way. `session.idle` is kept below as a legacy fallback for
+          // servers that still publish it; a double stop dedups on the
+          // notification side.
+          case "session.execution.started":
+            if (!(await knownSessionBelongs(session_id)) || !isMainSession(session_id)) {
+              continue;
+            }
+            turnPromptSeen = true;
+            hook("user-prompt-submit", { cwd, session_id, prompt: "" });
+            continue;
+
+          case "session.execution.succeeded":
+          case "session.execution.interrupted":
           case "session.idle":
-            if (!isMainSession(session_id)) {
+            if (!(await knownSessionBelongs(session_id)) || !isMainSession(session_id)) {
               continue;
             }
             turnPromptSeen = false;
@@ -367,7 +484,7 @@ export default {
           // Turn-level failure (OpenCode 1's session.error). Step-level
           // failures are not mapped: they may be retried within the turn.
           case "session.execution.failed":
-            if (!isMainSession(session_id)) {
+            if (!(await knownSessionBelongs(session_id)) || !isMainSession(session_id)) {
               continue;
             }
             turnPromptSeen = false;
@@ -386,24 +503,29 @@ export default {
           // forwarded so a background subagent cannot yank an idle pane
           // around.
           case "permission.asked":
+            if (!(await knownSessionBelongs(session_id))) {
+              continue;
+            }
             if (!isMainSession(session_id) && !turnPromptSeen) {
               continue;
             }
             hook("notification", { cwd, session_id, wait_reason: "permission" });
             continue;
 
-          // OpenCode's `question` tool surfaces as a form; it blocks the
-          // turn on a user answer the same way a permission prompt does.
-          // Without this the pane stayed `running` while the agent waited
-          // for the answer. The sessionID lives on the form object.
-          case "form.created": {
-            const form_session = sessionIdOf(data.form?.sessionID);
-            if (!isMainSession(form_session) && !turnPromptSeen) {
+          // OpenCode's `question` tool blocks the turn on a user answer
+          // the same way a permission prompt does. Without this the pane
+          // stayed `running` while the agent waited for the answer. The
+          // sessionID is flat on the event data.
+          case "question.asked": {
+            if (!(await knownSessionBelongs(session_id))) {
+              continue;
+            }
+            if (!isMainSession(session_id) && !turnPromptSeen) {
               continue;
             }
             hook("notification", {
               cwd,
-              session_id: form_session,
+              session_id,
               wait_reason: "question",
             });
             continue;
@@ -416,8 +538,11 @@ export default {
           // a pending-action wait sticky, so a concurrent tool's result
           // cannot clear it; this reply is what resumes the pane.
           case "permission.replied":
-          case "form.replied":
-          case "form.cancelled":
+          case "question.replied":
+          case "question.rejected":
+            if (!(await knownSessionBelongs(session_id))) {
+              continue;
+            }
             if (!isMainSession(session_id) && !turnPromptSeen) {
               continue;
             }
