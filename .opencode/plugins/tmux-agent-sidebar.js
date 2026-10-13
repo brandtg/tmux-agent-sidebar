@@ -12,9 +12,24 @@
 // The bus also renamed its members: session.updated → session.renamed,
 // session.error → session.execution.failed, and the question tool's
 // question.asked/replied/rejected → form.created/replied/cancelled.
+//
+// Pane resolution: unlike Claude Code / Codex, OpenCode 2 does NOT run its
+// plugins inside the tmux pane that hosts the session — plugins execute in
+// a shared service daemon (`opencode serve --service`) whose inherited
+// TMUX_PANE is either unset, stale (its pane may have closed), or points
+// at whichever pane happened to boot the daemon. Writing to that env pane
+// silently fails ("no such pane") or lands on the wrong row, so every hook
+// payload carries `cwd` (the plugin instance's location directory) and
+// `session_id`, and `hook()` resolves the real pane per event and injects
+// it into the spawned hook's TMUX_PANE. Resolution asks tmux itself:
+// panes currently running `opencode` whose working directory matches the
+// session's directory (nearest ancestor wins), disambiguated by the
+// @pane_session_id binding this bridge wrote earlier. A valid inherited
+// TMUX_PANE is only used when nothing better matches, so in-pane setups
+// (OpenCode 1 style, or a local server) keep working unchanged.
 
 import { spawn } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, realpathSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -51,28 +66,150 @@ const HOOK_COMMAND = (() => {
 // gets its fire-and-forget dispatch semantics — the chain drains in the
 // background.
 let hookChain = Promise.resolve();
+
+// One `tmux list-panes -a` snapshot, tab-separated so fields parse cleanly:
+// pane_id, pane_current_command, pane_current_path, @pane_session_id.
+// Resolves with "" when tmux is unavailable; never rejects.
+function listPanes() {
+  return new Promise((resolvePromise) => {
+    let settled = false;
+    const finish = (value) => {
+      if (settled) return;
+      settled = true;
+      resolvePromise(value);
+    };
+    try {
+      const child = spawn(
+        "tmux",
+        [
+          "list-panes",
+          "-a",
+          "-F",
+          "#{pane_id}\t#{pane_current_command}\t#{pane_current_path}\t#{@pane_session_id}",
+        ],
+        { stdio: ["ignore", "pipe", "ignore"] },
+      );
+      let out = "";
+      child.stdout.on("data", (chunk) => {
+        out += chunk;
+      });
+      child.on("error", () => finish(""));
+      child.on("exit", () => finish(out));
+      // A wedged tmux client must not stall the serialized hook chain.
+      setTimeout(() => {
+        try {
+          child.kill();
+        } catch {}
+        finish("");
+      }, 1500).unref?.();
+    } catch {
+      finish("");
+    }
+  });
+}
+
+// Map a hook payload (session location + session id) to the tmux pane that
+// hosts it. Preference order:
+//   1. panes running `opencode` whose working directory equals the session
+//      directory (or is its nearest ancestor — sessions can run inside
+//      worktrees or subdirectories of the launched project), most specific
+//      first;
+//   2. when that match is ambiguous, the candidate whose @pane_session_id
+//      equals the payload's session (a binding an earlier event wrote);
+//   3. when nothing matches, the inherited TMUX_PANE — but only if tmux
+//      confirms it still exists (the shared daemon's value is often stale).
+// The cache only collapses bursts of events for the same session; every
+// miss re-queries so a reopened or moved pane self-heals.
+let paneCache = { key: "", pane: "", at: 0 };
+const PANE_CACHE_MS = 2000;
+async function resolvePaneId(cwd, sessionId) {
+  if (typeof cwd !== "string" || cwd === "") return "";
+  const key = `${cwd}|${sessionId}`;
+  const now = Date.now();
+  if (paneCache.key === key && now - paneCache.at < PANE_CACHE_MS) {
+    return paneCache.pane;
+  }
+  const out = await listPanes();
+  const panes = out
+    .split("\n")
+    .filter((line) => line !== "")
+    .map((line) => line.split("\t"));
+  const agent = process.env?.OPENCODE_PANE_COMMAND ?? "opencode";
+  const candidates = panes.filter((p) => p[1] === agent);
+
+  let realCwd = "";
+  try {
+    realCwd = realpathSync(cwd);
+  } catch {}
+
+  const pathMatches = candidates
+    .filter((p) => {
+      const panePath = p[2] ?? "";
+      if (panePath === "") return false;
+      return (
+        panePath === cwd ||
+        (realCwd !== "" && panePath === realCwd) ||
+        cwd.startsWith(`${panePath}/`) ||
+        (realCwd !== "" && realCwd.startsWith(`${panePath}/`))
+      );
+    })
+    // Nearest ancestor first.
+    .sort((a, b) => (b[2]?.length ?? 0) - (a[2]?.length ?? 0));
+
+  let chosen = "";
+  if (pathMatches.length === 1) {
+    chosen = pathMatches[0][0];
+  } else if (pathMatches.length > 1) {
+    const bound =
+      sessionId !== ""
+        ? pathMatches.find((p) => p[3] === sessionId)
+        : undefined;
+    chosen = (bound ?? pathMatches[0])[0];
+  } else if (sessionId !== "") {
+    const bound = candidates.filter((p) => p[3] === sessionId);
+    if (bound.length === 1) chosen = bound[0][0];
+  }
+
+  if (
+    chosen === "" &&
+    typeof process.env?.TMUX_PANE === "string" &&
+    process.env.TMUX_PANE !== "" &&
+    panes.some((p) => p[0] === process.env.TMUX_PANE)
+  ) {
+    chosen = process.env.TMUX_PANE;
+  }
+
+  paneCache = { key, pane: chosen, at: now };
+  return chosen;
+}
+
 const hook = (eventName, payload) => {
-  hookChain = hookChain.then(
-    () =>
-      Promise.race([
-        new Promise((resolve) => {
-          try {
-            const child = spawn(HOOK_COMMAND.cmd, [...HOOK_COMMAND.prefix, eventName], {
-              stdio: ["pipe", "ignore", "ignore"],
-            });
-            child.on("error", () => resolve());
-            child.on("exit", () => resolve());
-            child.stdin.on("error", () => {});
-            child.stdin.end(JSON.stringify(payload));
-          } catch {
-            // OpenCode should keep running even if the bridge is missing
-            // or the sidebar binary is unavailable.
-            resolve();
-          }
-        }),
-        new Promise((resolve) => setTimeout(resolve, 3000)),
-      ]),
-  );
+  hookChain = hookChain.then(async () => {
+    // The daemon has no trustworthy TMUX_PANE; inject the resolved one into
+    // the spawned hook's environment. With no match, inherit the inherited
+    // environment unchanged so non-daemon setups behave exactly as before.
+    const paneId = await resolvePaneId(payload?.cwd, payload?.session_id ?? "");
+    const env = paneId === "" ? undefined : { ...process.env, TMUX_PANE: paneId };
+    await Promise.race([
+      new Promise((resolve) => {
+        try {
+          const child = spawn(HOOK_COMMAND.cmd, [...HOOK_COMMAND.prefix, eventName], {
+            stdio: ["pipe", "ignore", "ignore"],
+            env,
+          });
+          child.on("error", () => resolve());
+          child.on("exit", () => resolve());
+          child.stdin.on("error", () => {});
+          child.stdin.end(JSON.stringify(payload));
+        } catch {
+          // OpenCode should keep running even if the bridge is missing
+          // or the sidebar binary is unavailable.
+          resolve();
+        }
+      }),
+      new Promise((resolve) => setTimeout(resolve, 3000)),
+    ]);
+  });
 };
 
 const sessionIdOf = (value) => (typeof value === "string" && value ? value : "");

@@ -15,6 +15,12 @@
 // fresh temp tree, and therefore a fresh module instance with clean
 // session-gating state.
 //
+// Since the bridge now resolves the target pane itself (OpenCode 2 runs
+// plugins in a shared daemon whose TMUX_PANE cannot be trusted), the harness
+// also shadows `tmux` on PATH with a script that prints a canned
+// `list-panes -a` snapshot. Set `TMUX_RECORD_ENV=1` in a test to make the
+// fake hook.sh additionally record the TMUX_PANE it was spawned with.
+//
 // The plugin is driven through its OpenCode 2 surface: a fake plugin
 // context capturing the `prompt` / `execute.after` hooks and an event
 // subscription backed by a FIFO queue, mirroring
@@ -28,16 +34,30 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 
 const PLUGIN_SRC = fileURLToPath(new URL("./tmux-agent-sidebar.js", import.meta.url));
 
-async function loadPlugin() {
+async function loadPlugin({ panes = "" } = {}) {
   const root = mkdtempSync(join(tmpdir(), "oc-bridge-test-"));
   const deep = join(root, "a", "b", "plugins");
   mkdirSync(deep, { recursive: true });
   writeFileSync(join(deep, "tmux-agent-sidebar.js"), readFileSync(PLUGIN_SRC, "utf8"), { mode: 0o755 });
   writeFileSync(
     join(root, "hook.sh"),
-    `#!/usr/bin/env bash\npayload=$(cat)\nprintf '%s %s\\n' "$2" "$payload" >> ${JSON.stringify(join(root, "events.log"))}\n`,
+    `#!/usr/bin/env bash
+payload=$(cat)
+if [ "\${TMUX_RECORD_ENV-}" = "1" ]; then
+  printf '%s %s env=%s\\n' "$2" "$payload" "\${TMUX_PANE-unset}" >> ${JSON.stringify(join(root, "events.log"))}
+else
+  printf '%s %s\\n' "$2" "$payload" >> ${JSON.stringify(join(root, "events.log"))}
+fi
+`,
     { mode: 0o755 },
   );
+  // Shadow tmux with a script printing the canned pane snapshot, so the
+  // bridge's pane resolution is exercised without a real tmux server.
+  const bindir = join(root, "bin");
+  mkdirSync(bindir, { recursive: true });
+  writeFileSync(join(bindir, "tmux"), `#!/usr/bin/env sh\ncat <<'PANES'\n${panes}PANES\n`, { mode: 0o755 });
+  const savedPath = process.env.PATH;
+  process.env.PATH = `${bindir}:${savedPath ?? ""}`;
 
   const mod = import(pathToFileURL(join(deep, "tmux-agent-sidebar.js")));
   // Setup's cleanup (set by init) aborts the bus subscription; without it
@@ -122,6 +142,7 @@ async function loadPlugin() {
     },
     dispose() {
       Promise.resolve(cleanup).then((fn) => fn?.());
+      process.env.PATH = savedPath;
       rmSync(root, { recursive: true, force: true });
     },
   };
@@ -388,6 +409,103 @@ test("failed tool results log the call with a null response", async () => {
       "stop " + JSON.stringify({ cwd: "/repo", session_id: MAIN, last_message: "" }),
     ]);
   } finally {
+    h.dispose();
+  }
+});
+
+// The daemon's inherited TMUX_PANE must never win over a pane the bridge
+// resolved from the pane table itself.
+const STALE_PANES = "%1\tbash\t/repo\t\n%2\topencode\t/elsewhere\t\n";
+
+test("a valid inherited TMUX_PANE is kept when no opencode pane matches better", async () => {
+  const h = await loadPlugin({ panes: STALE_PANES });
+  try {
+    process.env.TMUX_RECORD_ENV = "1";
+    process.env.TMUX_PANE = "%1";
+    const plugin = await h.init("/repo");
+    await plugin.prompt({ sessionID: MAIN, prompt: { text: "go" } });
+    await settle(h);
+
+    // %2 is an opencode pane but in the wrong directory; the inherited %1
+    // still exists in the pane table, so it is kept — the bridge cannot
+    // know better (this is what makes plain in-pane setups keep working).
+    assert.deepEqual(h.events(), [
+      "user-prompt-submit " + JSON.stringify({ cwd: "/repo", session_id: MAIN, prompt: "go" }) + " env=%1",
+    ]);
+  } finally {
+    delete process.env.TMUX_RECORD_ENV;
+    delete process.env.TMUX_PANE;
+    h.dispose();
+  }
+});
+
+test("pane resolution injects the matching pane's id into the hook env", async () => {
+  const h = await loadPlugin({ panes: "%9\tbash\t/repo\t\n%2\topencode\t/repo\t\n" });
+  try {
+    process.env.TMUX_RECORD_ENV = "1";
+    process.env.TMUX_PANE = "%9";
+    const plugin = await h.init("/repo");
+    await plugin.prompt({ sessionID: MAIN, prompt: { text: "go" } });
+    await settle(h);
+
+    assert.match(h.events()[0], / env=%2$/);
+  } finally {
+    delete process.env.TMUX_RECORD_ENV;
+    delete process.env.TMUX_PANE;
+    h.dispose();
+  }
+});
+
+test("pane resolution matches opencode panes in ancestor directories", async () => {
+  const h = await loadPlugin({ panes: "%7\topencode\t/repo\t\n" });
+  try {
+    process.env.TMUX_RECORD_ENV = "1";
+    // Session running in a subdirectory (or worktree) of the launched
+    // project; the /repo pane is the nearest match.
+    const plugin = await h.init("/repo/sub");
+    await plugin.prompt({ sessionID: MAIN, prompt: { text: "go" } });
+    await settle(h);
+
+    assert.match(h.events()[0], / env=%7$/);
+  } finally {
+    delete process.env.TMUX_RECORD_ENV;
+    h.dispose();
+  }
+});
+
+test("pane resolution uses the session binding to disambiguate same-directory panes", async () => {
+  const h = await loadPlugin({
+    panes: "%2\topencode\t/repo\t\n%4\topencode\t/repo\tses_main\n",
+  });
+  try {
+    process.env.TMUX_RECORD_ENV = "1";
+    const plugin = await h.init("/repo");
+    await plugin.prompt({ sessionID: MAIN, prompt: { text: "go" } });
+    await settle(h);
+
+    // Both panes match /repo; @pane_session_id=ses_main pins %4.
+    assert.match(h.events()[0], / env=%4$/);
+  } finally {
+    delete process.env.TMUX_RECORD_ENV;
+    h.dispose();
+  }
+});
+
+test("a valid inherited TMUX_PANE is kept when no pane matches", async () => {
+  const h = await loadPlugin({ panes: "" });
+  try {
+    process.env.TMUX_RECORD_ENV = "1";
+    process.env.TMUX_PANE = "%5";
+    const plugin = await h.init("/repo");
+    await plugin.prompt({ sessionID: MAIN, prompt: { text: "go" } });
+    await settle(h);
+
+    // No panes at all: the inherited value cannot be validated, so it is
+    // left untouched (in-pane setups keep working).
+    assert.match(h.events()[0], / env=%5$/);
+  } finally {
+    delete process.env.TMUX_RECORD_ENV;
+    delete process.env.TMUX_PANE;
     h.dispose();
   }
 });
