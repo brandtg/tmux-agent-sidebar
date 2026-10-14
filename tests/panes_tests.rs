@@ -355,6 +355,50 @@ fn test_window_switch_reset_returns_list_to_top() {
     );
 }
 
+// ─── Agents: sidebar focus gain selects the tmux context ────────────
+
+#[test]
+fn test_focus_gain_selects_context_agent_and_scrolls_it_into_view() {
+    // When the user jumps into the sidebar, `app::run` calls
+    // `select_focused_context_row` on the sidebar_focused false→true
+    // transition: the agent matching the pane the user came from is
+    // selected instead of the top row, and the auto-scroll brings that
+    // row into view.
+    let mut panes = Vec::new();
+    for i in 0..10 {
+        let mut pane = make_pane(AgentType::Claude, PaneStatus::Idle);
+        pane.pane_id = format!("%{}", i);
+        panes.push(pane);
+    }
+
+    let mut state = make_state(vec![SessionInfo {
+        session_name: "main".into(),
+        windows: vec![WindowInfo {
+            window_id: "@1".into(),
+            window_name: "project".into(),
+            window_active: true,
+            auto_rename: false,
+            panes: panes.clone(),
+        }],
+    }]);
+    state.repo_groups = vec![make_repo_group("project", panes)];
+    state.focus_state.focus = Focus::Panes;
+    state.rebuild_row_targets();
+
+    // The pane that held focus in this window just before the jump,
+    // preserved across the focus-gain tick by `find_focused_pane_from`.
+    state.focus_state.focused_pane_id = Some("%9".into());
+
+    assert!(state.select_focused_context_row());
+    assert_eq!(state.global.selected_pane_row, 9);
+
+    let _ = render_to_string(&mut state, 28, 26);
+    assert!(
+        state.scrolls.panes.offset > 0,
+        "the context agent should be scrolled into view"
+    );
+}
+
 #[test]
 fn test_empty_view_clamps_scroll_and_resets_cursor() {
     // Switching to a status view with no matching agents must not keep a

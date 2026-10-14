@@ -115,7 +115,16 @@ pub fn run(
                 state.apply_auto_minimize(size.height);
             }
             let previous_focused_pane_id = state.focus_state.focused_pane_id.clone();
+            let previous_sidebar_focused = state.focus_state.sidebar_focused;
             let is_window_active = state.refresh();
+            // The sidebar pane becoming the active pane (user jumped into
+            // the sidebar) is the one transition this loop acts on: select
+            // the agent matching the tmux context instead of re-anchoring
+            // at the top. Popup mode forces `sidebar_focused` true from its
+            // startup refresh on, so its context selection happens in
+            // `setup::init_state` and this never fires there.
+            let sidebar_gained_focus =
+                !previous_sidebar_focused && state.focus_state.sidebar_focused;
             if state.focus_state.focused_pane_id != previous_focused_pane_id {
                 // The seven-git-call fetch for the newly focused pane runs
                 // on the focus-fetch worker; the result arrives on `git_rx`
@@ -171,8 +180,23 @@ pub fn run(
                 // A window/pane switch reloads the shared cursor, which
                 // another window may have moved. Re-anchor this sidebar at
                 // the top so the switch shows every agent instead of
-                // auto-scrolling to the adopted row.
-                state.reset_pane_scroll();
+                // auto-scrolling to the adopted row — except when the
+                // sidebar itself just gained focus, where the context
+                // selection below replaces the blanket reset.
+                if !sidebar_gained_focus {
+                    state.reset_pane_scroll();
+                }
+            }
+            if sidebar_gained_focus {
+                // Focus normally arrives via the after-select-pane/window
+                // hook, so this rides the same tick as the refresh that
+                // observed it; the periodic tick is the safety net for a
+                // missed signal. Runs after `rebuild_row_targets` so the
+                // row index matches the filtered list this frame renders,
+                // and `compute_scroll_offset` brings the row into view.
+                if !state.select_focused_context_row() {
+                    state.reset_pane_scroll();
+                }
             }
             if is_window_active {
                 window_inactive_count = 0;

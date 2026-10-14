@@ -26,15 +26,23 @@ a sidebar whose window leads an unfocused session never registers a
 hidden→visible transition, and multi-client setups keep several windows
 "active" at once. Cursor updates are deliberately not broadcast — they
 fire on every navigation keystroke. On the SIGUSR1 focus-change reload the
-shared cursor is loaded, but the agent list is then re-anchored at the top
+shared cursor is loaded, and the agent list is then re-anchored at the top
 (`reset_pane_scroll`), so switching windows or panes always shows the list
 from its first row instead of auto-scrolling down to a cursor left by
-another window.
+another window. The one exception is the sidebar itself gaining focus: the
+transition tick instead selects the row of the pane that held focus in
+this window just before the jump (`select_focused_context_row`), so the
+list opens on the agent matching the current tmux context — with the
+auto-scroll bringing that row into view. Popups get the same treatment at
+startup, pinned to the pane they were opened from. A focus event is not a
+user choice, so the selection is not persisted to `@sidebar_cursor`; when
+the context pane is unknown or filtered out of the list, the reset to the
+first row applies as usual.
 
 | Field | Tmux Variable | Update Trigger | Description |
 |-------|--------------|----------------|-------------|
 | `status_filter` | `@sidebar_filter` | User input (left/right key) | Active status filter (All/Running/Background/Waiting/Idle/Error); startup landing view comes from `@sidebar_default_view` |
-| `selected_pane_row` | `@sidebar_cursor` | User input (j/k key); tmux write flushed after a short debounce | Cursor position in agent list; re-anchored to the first row on a window/pane (focus-change) reload |
+| `selected_pane_row` | `@sidebar_cursor` | User input (j/k key); tmux write flushed after a short debounce | Cursor position in agent list; re-anchored to the first row on a window/pane (focus-change) reload, or to the row of the pre-focus context pane when the sidebar itself gains focus |
 | `repo_filter` | `@sidebar_repo_filter` | User input (repo popup) | Repository filter (All or specific repo) |
 | `compact` | `@sidebar_compact` | User input (`c` key) | Compact one-line-per-pane rendering; the live value is shared by all open sidebars, and `@sidebar_default_compact_view` seeds it only before the first toggle |
 | sidebar mode | `@sidebar_mode` | `toggle-all` sweep | System-level `open`/`closed` intent; consulted by the new-window and new-session hooks (falling back to `@sidebar_auto_create` while unset) so toggle-all covers windows and sessions created afterwards |

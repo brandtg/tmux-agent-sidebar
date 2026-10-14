@@ -40,6 +40,16 @@ pub(super) fn init_state(tmux_pane: String) -> AppState {
     state.sessions.names = session::scan_session_names();
     state.refresh();
 
+    // A popup never sees the event loop's focus-gain transition: it has
+    // no pane of its own, `TMUX_PANE` is pinned to the window's active
+    // pane at popup-open time, and `refresh` forces `sidebar_focused`
+    // true from this first pass on. Select the tmux context (the pane
+    // the popup was opened from) here instead — the same treatment a
+    // pane-mode sidebar gets when the user jumps into it.
+    if state.popup_mode {
+        state.select_focused_context_row();
+    }
+
     super::render::refresh_git_for_focused_pane(&mut state);
 
     // Resolve the installed Claude Code plugin status once at startup,
