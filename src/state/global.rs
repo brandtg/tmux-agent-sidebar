@@ -24,6 +24,13 @@ pub struct GlobalState {
     /// `@sidebar_default_show_windows` only seeds the mode when no live
     /// value exists yet.
     pub show_windows: bool,
+    /// User's explicit bottom-panel minimize choice from `m`, shared
+    /// across open sidebars via `@sidebar_bottom_minimized` so the
+    /// collapsed/expanded state is sticky everywhere. `None` means no
+    /// pin: each sidebar follows its own viewport height. Unlike
+    /// compact/show-windows there is no landing default — a sidebar
+    /// opened later adopts the pin as-is.
+    pub bottom_minimize_override: Option<bool>,
     /// Pane id of the sidebar instance owning this state. Used to skip
     /// self-signaling when broadcasting shared-option changes.
     owner_pane: String,
@@ -33,6 +40,8 @@ pub struct GlobalState {
     last_saved_cursor: usize,
     /// Last repo filter value successfully written to tmux.
     last_saved_repo_filter: RepoFilter,
+    /// Last bottom-minimize pin successfully written to tmux.
+    last_saved_bottom_minimize: Option<bool>,
     /// When the selected cursor was last changed and still needs persisting.
     pending_cursor_save_since: Option<Instant>,
 }
@@ -51,10 +60,12 @@ impl GlobalState {
             repo_filter: RepoFilter::All,
             compact: false,
             show_windows: false,
+            bottom_minimize_override: None,
             owner_pane,
             last_saved_filter: StatusFilter::All,
             last_saved_cursor: 0,
             last_saved_repo_filter: RepoFilter::All,
+            last_saved_bottom_minimize: None,
             pending_cursor_save_since: None,
         }
     }
@@ -194,6 +205,37 @@ impl GlobalState {
         .is_some()
     }
 
+    /// Pin (or release) the shared bottom-panel minimize choice and
+    /// broadcast the new value to every open sidebar via
+    /// `@sidebar_bottom_minimized`. `None` unsets the option so every
+    /// sidebar returns to viewport-driven auto-minimize.
+    pub fn set_bottom_minimize_override(&mut self, next: Option<bool>) {
+        self.bottom_minimize_override = next;
+        if self.save_bottom_minimize() {
+            self.broadcast_change();
+        }
+    }
+
+    /// Save the bottom-minimize pin to tmux. Returns `true` when tmux
+    /// accepted the write. The tri-state maps to the option's lifecycle:
+    /// `Some` writes `1`/`0`, `None` unsets it (no pin → auto-minimize).
+    pub fn save_bottom_minimize(&mut self) -> bool {
+        let ok = match self.bottom_minimize_override {
+            Some(minimized) => tmux::run_tmux(&[
+                "set",
+                "-g",
+                tmux::SIDEBAR_BOTTOM_MINIMIZED,
+                if minimized { "1" } else { "0" },
+            ])
+            .is_some(),
+            None => tmux::run_tmux(&["set", "-gu", tmux::SIDEBAR_BOTTOM_MINIMIZED]).is_some(),
+        };
+        if ok {
+            self.last_saved_bottom_minimize = self.bottom_minimize_override;
+        }
+        ok
+    }
+
     /// Load all global state from tmux variables.
     /// Called at startup and on SIGUSR1 (pane focus change).
     pub fn load_from_tmux(&mut self) {
@@ -294,6 +336,17 @@ impl GlobalState {
         }
         if let Some(show_windows_str) = opts.get(tmux::SIDEBAR_SHOW_WINDOWS) {
             self.show_windows = show_windows_str.trim() == "1";
+        }
+        if let Some(minimized_str) = opts.get(tmux::SIDEBAR_BOTTOM_MINIMIZED) {
+            let tmux_minimize = match minimized_str.trim() {
+                "1" => Some(true),
+                "0" => Some(false),
+                _ => None,
+            };
+            if tmux_minimize != self.last_saved_bottom_minimize {
+                self.bottom_minimize_override = tmux_minimize;
+                self.last_saved_bottom_minimize = tmux_minimize;
+            }
         }
     }
 }

@@ -168,11 +168,13 @@ impl AppState {
     }
 
     /// Re-evaluate auto-minimize against the current terminal height. A user
-    /// override from `m` pins the choice; otherwise the panel minimizes when
-    /// the viewport is too short to fit the configured panel plus
-    /// [`crate::ui::AUTO_MINIMIZE_MIN_LIST_ROWS`] list rows.
+    /// override from `m` — shared across sidebars via
+    /// [`GlobalState::bottom_minimize_override`] — pins the choice;
+    /// otherwise the panel minimizes when the viewport is too short to fit
+    /// the configured panel plus [`crate::ui::AUTO_MINIMIZE_MIN_LIST_ROWS`]
+    /// list rows.
     pub fn apply_auto_minimize(&mut self, term_height: u16) {
-        if self.bottom_minimize_override.is_none() {
+        if self.global.bottom_minimize_override.is_none() {
             let needed = self
                 .bottom_panel_height
                 .saturating_add(crate::ui::AUTO_MINIMIZE_MIN_LIST_ROWS);
@@ -181,15 +183,27 @@ impl AppState {
     }
 
     /// Toggle the bottom panel between expanded and minimized, pinning the
-    /// choice so it no longer follows the viewport. No-op when the panel is
-    /// hidden entirely (`@sidebar_bottom_height 0`).
+    /// choice so it no longer follows the viewport. The pin is saved to the
+    /// `@sidebar_bottom_minimized` tmux global and broadcast, so every open
+    /// sidebar (and any opened later) collapses or expands in lockstep.
+    /// No-op when the panel is hidden entirely (`@sidebar_bottom_height 0`).
     pub fn toggle_bottom_minimized(&mut self) {
         if self.bottom_panel_height == 0 {
             return;
         }
         let next = !self.bottom_minimized;
         self.bottom_minimized = next;
-        self.bottom_minimize_override = Some(next);
+        self.global.set_bottom_minimize_override(Some(next));
+    }
+
+    /// Re-apply the shared minimize pin after a `GlobalState` sync. A pin
+    /// written by another sidebar must land on the effective collapsed
+    /// state immediately — the periodic auto-minimize pass is a no-op
+    /// while a pin exists, so without this the toggle would lag a tick.
+    pub fn adopt_shared_bottom_minimize(&mut self) {
+        if let Some(minimized) = self.global.bottom_minimize_override {
+            self.bottom_minimized = minimized;
+        }
     }
 }
 
@@ -694,10 +708,28 @@ mod tests {
         let mut state = AppState::new("%99".into());
         state.toggle_bottom_minimized();
         assert!(state.bottom_minimized);
-        assert_eq!(state.bottom_minimize_override, Some(true));
+        assert_eq!(state.global.bottom_minimize_override, Some(true));
         state.toggle_bottom_minimized();
         assert!(!state.bottom_minimized);
-        assert_eq!(state.bottom_minimize_override, Some(false));
+        assert_eq!(state.global.bottom_minimize_override, Some(false));
+    }
+
+    #[test]
+    fn shared_minimize_pin_is_adopted_on_sync() {
+        let mut state = AppState::new("%99".into());
+        // Another sidebar pinned minimized; the sync lands it here even
+        // though this viewport is tall enough to stay expanded.
+        state.global.bottom_minimize_override = Some(true);
+        state.adopt_shared_bottom_minimize();
+        assert!(state.bottom_minimized);
+
+        // No pin (viewport-driven mode): adoption must not touch the
+        // effective state — the next auto-minimize pass owns it.
+        let mut state = AppState::new("%99".into());
+        state.bottom_minimized = true;
+        state.global.bottom_minimize_override = None;
+        state.adopt_shared_bottom_minimize();
+        assert!(state.bottom_minimized);
     }
 
     #[test]
@@ -706,6 +738,6 @@ mod tests {
         state.bottom_panel_height = 0;
         state.toggle_bottom_minimized();
         assert!(!state.bottom_minimized);
-        assert_eq!(state.bottom_minimize_override, None);
+        assert_eq!(state.global.bottom_minimize_override, None);
     }
 }

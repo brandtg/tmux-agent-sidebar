@@ -134,6 +134,13 @@ pub const SIDEBAR_SHOW_WINDOWS: &str = "@sidebar_show_windows";
 /// `off`, default `off`). Read once at startup; the live
 /// [`SIDEBAR_SHOW_WINDOWS`] value is never restored on reopen.
 pub const SIDEBAR_DEFAULT_SHOW_WINDOWS: &str = "@sidebar_default_show_windows";
+/// Live bottom-panel minimize pin (`1`/`0`), written when a sidebar
+/// toggles the panel with `m`. Shared across every open sidebar like
+/// [`SIDEBAR_COMPACT`], and unlike it the value persists: a sidebar that
+/// opens later adopts the pin too, so the collapsed/expanded choice is
+/// sticky across sessions. Unset means no pin — each sidebar follows its
+/// own viewport height (auto-minimize).
+pub const SIDEBAR_BOTTOM_MINIMIZED: &str = "@sidebar_bottom_minimized";
 pub const SIDEBAR_BOTTOM_HEIGHT: &str = "@sidebar_bottom_height";
 /// Windows narrower than this many columns open the sidebar as a tmux
 /// popup instead of a split pane (mobile viewports). `0` disables the

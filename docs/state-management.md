@@ -111,8 +111,8 @@ Per-pane file-based state:
 | `activity.log_cache` | Every 1s | `(focused_pane_id, mtime)` of the last-rendered activity log; skips re-reads when unchanged |
 | `git` | Every 2s (bg thread) | Branch, diff stats, ahead/behind, PR number |
 | `bottom_tab` | On user input / auto-switch | Current bottom panel tab |
-| `bottom_minimized` | On viewport resize / `m` key | Whether the Activity/Git panel is collapsed to just its tab header row. While `bottom_minimize_override` is `None` it follows the terminal height — auto-minimized when the viewport can't fit the configured panel plus `AUTO_MINIMIZE_MIN_LIST_ROWS` (10) list rows, so short viewports keep space for the agent list |
-| `bottom_minimize_override` | `m` key | User's explicit minimize choice (`Some`) or `None` to follow the viewport. Set by `m`; not persisted to tmux, so it resets on the next sidebar launch |
+| `bottom_minimized` | On viewport resize / `m` key / cross-instance sync | Whether the Activity/Git panel is collapsed to just its tab header row. While `global.bottom_minimize_override` is `None` it follows the terminal height — auto-minimized when the viewport can't fit the configured panel plus `AUTO_MINIMIZE_MIN_LIST_ROWS` (10) list rows, so short viewports keep space for the agent list |
+| `global.bottom_minimize_override` | `m` key / `GlobalState::apply_all` | User's explicit minimize choice (`Some`), shared across all open sidebars via the `@sidebar_bottom_minimized` tmux global so the collapsed state is sticky everywhere and across sidebar relaunches. `None` (option unset) means every sidebar follows its own viewport |
 | `theme` | Once at startup | Color theme from tmux `@sidebar_color_*` variables |
 | `popup` | On user input / render | `PopupState` enum: `None` / `Repo { selected, area }` / `Notices { area }`. Enforces "at most one popup open" via the type system |
 | `layout` | Every frame (render) | `FrameLayout` sub-struct bundling the ephemeral fields the UI rewrites every frame for click hit-testing: `pane_row_targets`, `line_to_row`, `repo_button_col`, `repo_spawn_targets`, `spawn_remove_targets`, `hyperlink_overlays` |
