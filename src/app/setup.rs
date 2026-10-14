@@ -26,6 +26,11 @@ pub(super) fn init_state(tmux_pane: String) -> AppState {
         state.bottom_panel_height = 0;
     }
     state.global.load_from_tmux();
+    // A minimize pin persisted by a previous sidebar is sticky across
+    // launches: adopt it before the first frame. `apply_auto_minimize`
+    // (called just after this in `app::run`) is a no-op while a pin
+    // exists, so the adopted choice survives the startup viewport check.
+    state.adopt_shared_bottom_minimize();
     // A new sidebar lands on `@sidebar_default_view` rather than the last
     // filter some other window persisted; see GlobalState::apply_default_view.
     state.global.apply_default_view_from_tmux();

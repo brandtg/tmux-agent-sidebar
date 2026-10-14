@@ -163,6 +163,10 @@ pub fn run(
             // transition for the second branch to catch.
             if sigusr1 || (is_window_active && window_inactive_count >= 2) {
                 state.global.load_from_tmux();
+                // The sync may have delivered a bottom-panel minimize pin
+                // written by another sidebar; land it on the effective
+                // collapsed state before the next render.
+                state.adopt_shared_bottom_minimize();
                 state.rebuild_row_targets();
                 // A window/pane switch reloads the shared cursor, which
                 // another window may have moved. Re-anchor this sidebar at

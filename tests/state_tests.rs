@@ -1076,6 +1076,60 @@ fn default_compact_view_is_case_insensitive() {
     assert!(g.compact);
 }
 
+// ─── bottom-panel minimize pin tests ────────────────────────────────
+// The `m` pin is shared via `@sidebar_bottom_minimized` so the collapsed
+// state is sticky across every sidebar. Unset means no pin: each sidebar
+// follows its own viewport (auto-minimize). Unlike compact there is no
+// landing default — a sidebar opened later adopts the pin as-is.
+
+#[test]
+fn bottom_minimize_defaults_to_no_pin() {
+    let g = make_global();
+    assert_eq!(
+        g.bottom_minimize_override, None,
+        "no pin by default: the panel follows the viewport"
+    );
+}
+
+#[test]
+fn bottom_minimize_syncs_from_tmux_when_changed_by_other_instance() {
+    let mut g = make_global();
+
+    g.apply_all(&make_opts(&[(tmux::SIDEBAR_BOTTOM_MINIMIZED, "1")]));
+    assert_eq!(
+        g.bottom_minimize_override,
+        Some(true),
+        "another sidebar pinned minimized; must sync in"
+    );
+
+    g.apply_all(&make_opts(&[(tmux::SIDEBAR_BOTTOM_MINIMIZED, "0")]));
+    assert_eq!(
+        g.bottom_minimize_override,
+        Some(false),
+        "another sidebar pinned expanded; must sync in"
+    );
+}
+
+#[test]
+fn bottom_minimize_ignores_unrecognized_value() {
+    let mut g = make_global();
+
+    g.apply_all(&make_opts(&[(tmux::SIDEBAR_BOTTOM_MINIMIZED, "maybe")]));
+    assert_eq!(g.bottom_minimize_override, None);
+}
+
+#[test]
+fn bottom_minimize_absent_option_leaves_existing_pin_alone() {
+    let mut g = make_global();
+
+    // Adopt a pin, then simulate a sync where the option vanished (fresh
+    // server, failed unset). The last-saved guard keeps the current pin
+    // instead of flapping back to viewport mode.
+    g.apply_all(&make_opts(&[(tmux::SIDEBAR_BOTTOM_MINIMIZED, "1")]));
+    g.apply_all(&std::collections::HashMap::new());
+    assert_eq!(g.bottom_minimize_override, Some(true));
+}
+
 // ─── show-windows tests ─────────────────────────────────────────────
 // Mirrors the compact-mode contract: `w` toggles a shared live value in
 // `@sidebar_show_windows`; `@sidebar_default_show_windows` only seeds the
