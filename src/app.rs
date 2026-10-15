@@ -117,6 +117,20 @@ pub fn run(
             let previous_focused_pane_id = state.focus_state.focused_pane_id.clone();
             let previous_sidebar_focused = state.focus_state.sidebar_focused;
             let is_window_active = state.refresh();
+            // A sidebar whose window has no panes left besides itself
+            // would render as a full-window sidebar. The `auto-close`
+            // hook cannot always repair that (its pane-exited
+            // `#{window_id}` expands against the wrong window when the
+            // exiting pane is removed before the hook's format runs, and
+            // the last-window guard preserves a shared session), so the
+            // instance closes itself the same way `q` does: exit the
+            // process, which closes the pane and — when it was the last
+            // one — the window with it. Sidebars in other windows and
+            // sessions are never touched. The `quit_requested` check at
+            // the top of the loop runs the normal teardown.
+            if state.window_has_no_other_panes {
+                state.quit_requested = true;
+            }
             // The sidebar pane becoming the active pane (user jumped into
             // the sidebar) is the one transition this loop acts on: select
             // the agent matching the tmux context instead of re-anchoring

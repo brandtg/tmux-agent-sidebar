@@ -120,6 +120,8 @@ impl AppState {
         self.prune_pane_states_to_current_panes();
         self.rebuild_row_targets();
         self.find_focused_pane_from(&sidebar_window_panes);
+        self.window_has_no_other_panes =
+            !self.popup_mode && window_has_only_own_pane(&sidebar_window_panes, &self.tmux_pane);
     }
 
     /// Same "seen" contract as [`Self::mark_focused_pane_seen`], extended
@@ -796,6 +798,24 @@ fn ps_line_matches_cmd(normalized_line: &str, cmd: &str) -> bool {
         let after_ok = end == bytes.len() || !is_cmd_token_byte(bytes[end]);
         before_ok && after_ok
     })
+}
+
+/// True when `panes` — every pane sharing the sidebar's window, captured
+/// in one `list-panes` pass — lists no pane besides `own_pane`. Output
+/// missing `own_pane` (including an empty list from a query that raced
+/// the sidebar pane's own removal) returns `false`: the self-close path
+/// must fire only on positive evidence that this instance is the
+/// window's last pane, never on a snapshot that simply failed to see it.
+fn window_has_only_own_pane(panes: &[(String, bool, String)], own_pane: &str) -> bool {
+    let mut saw_own_pane = false;
+    for (pane_id, _, _) in panes {
+        if pane_id == own_pane {
+            saw_own_pane = true;
+        } else {
+            return false;
+        }
+    }
+    saw_own_pane
 }
 
 fn is_cmd_token_byte(b: u8) -> bool {
@@ -1633,5 +1653,73 @@ mod tests {
             state.repo_groups[0].panes[0].0.attention,
             PaneAttention::Notification
         );
+    }
+
+    // ─── window_has_only_own_pane (stranded-sidebar self-close) ──────
+
+    #[test]
+    fn window_has_only_own_pane_true_when_sidebar_is_alone() {
+        let panes = vec![("%9".to_string(), true, "/tmp".to_string())];
+        assert!(window_has_only_own_pane(&panes, "%9"));
+    }
+
+    #[test]
+    fn window_has_only_own_pane_false_with_sibling_pane() {
+        let panes = vec![
+            ("%9".to_string(), false, "/tmp".to_string()),
+            ("%1".to_string(), true, "/tmp".to_string()),
+        ];
+        assert!(!window_has_only_own_pane(&panes, "%9"));
+    }
+
+    #[test]
+    fn window_has_only_own_pane_false_when_own_pane_missing() {
+        // A snapshot that raced the sidebar pane's own removal lists no
+        // panes at all — or other panes without ours. Either way the
+        // self-close must not fire: only positive evidence counts.
+        assert!(!window_has_only_own_pane(&[], "%9"));
+        let panes = vec![("%1".to_string(), true, "/tmp".to_string())];
+        assert!(!window_has_only_own_pane(&panes, "%9"));
+    }
+
+    #[test]
+    fn apply_session_snapshot_sets_stranded_flag_when_sidebar_is_last_pane() {
+        let mut state = AppState::new("%99".into());
+
+        // Window still has a sibling pane: no self-close.
+        state.apply_session_snapshot(
+            Vec::new(),
+            Vec::new(),
+            vec![
+                ("%99".to_string(), false, "/tmp".to_string()),
+                ("%1".to_string(), true, "/tmp".to_string()),
+            ],
+        );
+        assert!(!state.window_has_no_other_panes);
+
+        // Sibling gone: the sidebar is now the window's only pane.
+        state.apply_session_snapshot(
+            Vec::new(),
+            Vec::new(),
+            vec![("%99".to_string(), true, "/tmp".to_string())],
+        );
+        assert!(state.window_has_no_other_panes);
+    }
+
+    #[test]
+    fn apply_session_snapshot_never_sets_stranded_flag_in_popup_mode() {
+        // A popup has no pane of its own — `tmux_pane` is the anchor
+        // pane captured at open time. Its window legitimately contains
+        // just that one pane, which must not pop the sidebar down.
+        let mut state = AppState::new("%99".into());
+        state.popup_mode = true;
+
+        state.apply_session_snapshot(
+            Vec::new(),
+            Vec::new(),
+            vec![("%99".to_string(), true, "/tmp".to_string())],
+        );
+
+        assert!(!state.window_has_no_other_panes);
     }
 }

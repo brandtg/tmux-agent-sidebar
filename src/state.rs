@@ -154,6 +154,16 @@ pub struct AppState {
     /// the bottom panel (activity/git tabs) to keep the compact viewport
     /// readable.
     pub popup_mode: bool,
+    /// Whether the sidebar's window currently contains no pane other than
+    /// the sidebar's own pane. Recomputed on every session snapshot;
+    /// always false in popup mode (a popup has no pane of its own). The
+    /// event loop self-closes the instance on this — a stranded sidebar
+    /// would otherwise render full-window — because the pane-exited
+    /// hook's `#{window_id}` expansion is unreliable: when the exiting
+    /// pane is removed before the hook's format runs, it expands
+    /// against the session's current window instead of the exited
+    /// pane's window.
+    pub window_has_no_other_panes: bool,
     /// Set when the user presses `q` anywhere in the TUI. The event loop
     /// checks this after draining input and exits; `display-popup -E`
     /// tears the popup down when the process exits, and the pane-mode
@@ -211,6 +221,7 @@ impl AppState {
             sessions: SessionNamesState::default(),
             pet_enabled: false,
             popup_mode: false,
+            window_has_no_other_panes: false,
             quit_requested: false,
         };
         crate::state::pet::reseed_pet_idle_motion(&mut state);
