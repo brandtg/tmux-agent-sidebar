@@ -457,13 +457,13 @@ fn full_output_has_expected_top_level_keys() {
     let agents = v.get("agents").and_then(Value::as_object).unwrap();
     let mut keys: Vec<&str> = agents.keys().map(String::as_str).collect();
     keys.sort();
-    assert_eq!(keys, vec!["claude", "codex"]);
+    assert_eq!(keys, vec!["claude", "codex", "hermes"]);
 }
 
 #[test]
 fn full_output_snippet_matches_single_agent_snippet() {
     let full = build_setup_output(FAKE_HOOK);
-    for agent in ["claude", "codex"] {
+    for agent in ["claude", "codex", "hermes"] {
         let from_full = full
             .pointer(&format!("/agents/{}/snippet", agent))
             .unwrap_or_else(|| panic!("missing snippet for {}", agent));
@@ -478,6 +478,7 @@ fn full_output_normalized_hooks_count_matches_table() {
     for (agent, table_len) in [
         ("claude", ClaudeAdapter::HOOK_REGISTRATIONS.len()),
         ("codex", CodexAdapter::HOOK_REGISTRATIONS.len()),
+        ("hermes", HermesAdapter::HOOK_REGISTRATIONS.len()),
     ] {
         let hooks = full
             .pointer(&format!("/agents/{}/hooks", agent))
@@ -521,6 +522,11 @@ fn full_output_config_paths() {
         full.pointer("/agents/codex/config_path")
             .and_then(Value::as_str),
         Some("~/.codex/hooks.json")
+    );
+    assert_eq!(
+        full.pointer("/agents/hermes/config_path")
+            .and_then(Value::as_str),
+        Some("~/.hermes/config.yaml")
     );
 }
 
@@ -906,6 +912,169 @@ const EXPECTED_FULL_OUTPUT: &str = r#"{
           ]
         }
       }
+    },
+    "hermes": {
+      "config_path": "~/.hermes/config.yaml",
+      "hooks": [
+        {
+          "command": "bash /fake/hook.sh hermes session-start",
+          "event": "session-start",
+          "matcher": null,
+          "trigger": "on_session_start"
+        },
+        {
+          "command": "bash /fake/hook.sh hermes user-prompt-submit",
+          "event": "user-prompt-submit",
+          "matcher": null,
+          "trigger": "pre_llm_call"
+        },
+        {
+          "command": "bash /fake/hook.sh hermes stop",
+          "event": "stop",
+          "matcher": null,
+          "trigger": "post_llm_call"
+        },
+        {
+          "command": "bash /fake/hook.sh hermes activity-log",
+          "event": "activity-log",
+          "matcher": null,
+          "trigger": "post_tool_call"
+        },
+        {
+          "command": "bash /fake/hook.sh hermes notification",
+          "event": "notification",
+          "matcher": null,
+          "trigger": "on_human_input_request"
+        },
+        {
+          "command": "bash /fake/hook.sh hermes user-prompt-submit",
+          "event": "user-prompt-submit",
+          "matcher": null,
+          "trigger": "on_human_input_resolved"
+        },
+        {
+          "command": "bash /fake/hook.sh hermes session-end",
+          "event": "session-end",
+          "matcher": null,
+          "trigger": "on_session_finalize"
+        },
+        {
+          "command": "bash /fake/hook.sh hermes subagent-start",
+          "event": "subagent-start",
+          "matcher": null,
+          "trigger": "subagent_start"
+        },
+        {
+          "command": "bash /fake/hook.sh hermes subagent-stop",
+          "event": "subagent-stop",
+          "matcher": null,
+          "trigger": "subagent_stop"
+        }
+      ],
+      "snippet": {
+        "hooks": {
+          "on_human_input_request": [
+            {
+              "hooks": [
+                {
+                  "command": "bash /fake/hook.sh hermes notification",
+                  "type": "command"
+                }
+              ],
+              "matcher": ""
+            }
+          ],
+          "on_human_input_resolved": [
+            {
+              "hooks": [
+                {
+                  "command": "bash /fake/hook.sh hermes user-prompt-submit",
+                  "type": "command"
+                }
+              ],
+              "matcher": ""
+            }
+          ],
+          "on_session_finalize": [
+            {
+              "hooks": [
+                {
+                  "command": "bash /fake/hook.sh hermes session-end",
+                  "type": "command"
+                }
+              ],
+              "matcher": ""
+            }
+          ],
+          "on_session_start": [
+            {
+              "hooks": [
+                {
+                  "command": "bash /fake/hook.sh hermes session-start",
+                  "type": "command"
+                }
+              ],
+              "matcher": ""
+            }
+          ],
+          "post_llm_call": [
+            {
+              "hooks": [
+                {
+                  "command": "bash /fake/hook.sh hermes stop",
+                  "type": "command"
+                }
+              ],
+              "matcher": ""
+            }
+          ],
+          "post_tool_call": [
+            {
+              "hooks": [
+                {
+                  "command": "bash /fake/hook.sh hermes activity-log",
+                  "type": "command"
+                }
+              ],
+              "matcher": ""
+            }
+          ],
+          "pre_llm_call": [
+            {
+              "hooks": [
+                {
+                  "command": "bash /fake/hook.sh hermes user-prompt-submit",
+                  "type": "command"
+                }
+              ],
+              "matcher": ""
+            }
+          ],
+          "subagent_start": [
+            {
+              "hooks": [
+                {
+                  "command": "bash /fake/hook.sh hermes subagent-start",
+                  "type": "command"
+                }
+              ],
+              "matcher": ""
+            }
+          ],
+          "subagent_stop": [
+            {
+              "hooks": [
+                {
+                  "command": "bash /fake/hook.sh hermes subagent-stop",
+                  "type": "command"
+                }
+              ],
+              "matcher": ""
+            }
+          ]
+        }
+      },
+      "yaml_snippet": "hooks:\n  on_session_start:\n    - command: \"bash /fake/hook.sh hermes session-start\"\n  pre_llm_call:\n    - command: \"bash /fake/hook.sh hermes user-prompt-submit\"\n  post_llm_call:\n    - command: \"bash /fake/hook.sh hermes stop\"\n  post_tool_call:\n    - command: \"bash /fake/hook.sh hermes activity-log\"\n  on_human_input_request:\n    - command: \"bash /fake/hook.sh hermes notification\"\n  on_human_input_resolved:\n    - command: \"bash /fake/hook.sh hermes user-prompt-submit\"\n  on_session_finalize:\n    - command: \"bash /fake/hook.sh hermes session-end\"\n  subagent_start:\n    - command: \"bash /fake/hook.sh hermes subagent-start\"\n  subagent_stop:\n    - command: \"bash /fake/hook.sh hermes subagent-stop\"\n"
     }
   },
   "hook_script": "/fake/hook.sh",
@@ -940,4 +1109,51 @@ fn full_output_normalized_command_matches_snippet_command() {
             );
         }
     }
+}
+
+// ─── hermes ──────────────────────────────────────────────────────────────────
+
+#[test]
+fn snippet_hermes_uses_upstream_trigger_names() {
+    let v = build_agent_snippet("hermes", FAKE_HOOK).unwrap();
+    for reg in HermesAdapter::HOOK_REGISTRATIONS {
+        let entry = v
+            .pointer(&format!("/hooks/{}/0", reg.trigger))
+            .unwrap_or_else(|| panic!("missing hermes trigger {}", reg.trigger));
+        assert_eq!(
+            entry.pointer("/hooks/0/command").and_then(Value::as_str),
+            Some(&*format!(
+                "bash {} hermes {}",
+                FAKE_HOOK,
+                reg.kind.external_name()
+            )),
+            "wrong command for {}",
+            reg.trigger
+        );
+        assert_eq!(entry.get("matcher"), Some(&json!("")));
+    }
+}
+
+#[test]
+fn hermes_yaml_snippet_is_valid_shape() {
+    let yaml = build_hermes_yaml_snippet(FAKE_HOOK);
+    assert!(yaml.starts_with("hooks:\n"));
+    for reg in HermesAdapter::HOOK_REGISTRATIONS {
+        let line = format!("  {}:\n", reg.trigger);
+        assert!(yaml.contains(&line), "yaml missing {}", reg.trigger);
+    }
+    // Every command is double-quoted on its own entry line.
+    assert!(yaml.contains(&format!(
+        "    - command: \"bash {FAKE_HOOK} hermes session-start\""
+    )));
+}
+
+#[test]
+fn hermes_yaml_snippet_quotes_paths_with_spaces() {
+    let yaml = build_hermes_yaml_snippet("/path with spaces/hook.sh");
+    // shell_quote wraps the script in single quotes; the YAML scalar is
+    // double-quoted around it.
+    assert!(
+        yaml.contains("    - command: \"bash '/path with spaces/hook.sh' hermes session-start\"")
+    );
 }

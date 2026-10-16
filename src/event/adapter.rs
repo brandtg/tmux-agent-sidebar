@@ -2,7 +2,7 @@ use serde_json::Value;
 
 use super::AgentEvent;
 use crate::adapter;
-use crate::tmux::{CLAUDE_AGENT, CODEX_AGENT, OPENCODE_AGENT};
+use crate::tmux::{CLAUDE_AGENT, CODEX_AGENT, HERMES_AGENT, OPENCODE_AGENT};
 
 /// Adapter that converts external agent events into internal `AgentEvent`.
 pub trait EventAdapter {
@@ -14,6 +14,7 @@ pub fn resolve_adapter(agent_name: &str) -> Option<Box<dyn EventAdapter>> {
         CLAUDE_AGENT => Some(Box::new(adapter::claude::ClaudeAdapter)),
         CODEX_AGENT => Some(Box::new(adapter::codex::CodexAdapter)),
         OPENCODE_AGENT => Some(Box::new(adapter::opencode::OpenCodeAdapter)),
+        HERMES_AGENT => Some(Box::new(adapter::hermes::HermesAdapter)),
         _ => None,
     }
 }
@@ -46,6 +47,12 @@ mod tests {
     #[test]
     fn resolve_opencode() {
         let adapter = resolve_adapter("opencode");
+        assert!(adapter.is_some());
+    }
+
+    #[test]
+    fn resolve_hermes() {
+        let adapter = resolve_adapter("hermes");
         assert!(adapter.is_some());
     }
 
@@ -89,6 +96,21 @@ mod tests {
             .unwrap();
         match event {
             AgentEvent::UserPromptSubmit { agent, .. } => assert_eq!(agent, "opencode"),
+            other => panic!("expected UserPromptSubmit, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn hermes_adapter_sets_agent_hermes() {
+        let adapter = resolve_adapter("hermes").unwrap();
+        let event = adapter
+            .parse(
+                "user-prompt-submit",
+                &json!({"hook_event_name": "pre_llm_call", "extra": {"user_message": "hi"}}),
+            )
+            .unwrap();
+        match event {
+            AgentEvent::UserPromptSubmit { agent, .. } => assert_eq!(agent, "hermes"),
             other => panic!("expected UserPromptSubmit, got {:?}", other),
         }
     }

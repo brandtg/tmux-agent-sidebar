@@ -156,9 +156,9 @@ pub const SIDEBAR_SAVED_LAYOUT: &str = "@sidebar_saved_layout";
 pub const SIDEBAR_PET: &str = "@sidebar_pet";
 pub const SIDEBAR_NOTIFICATIONS: &str = "@sidebar_notifications";
 pub const SIDEBAR_NOTIFICATIONS_EVENTS: &str = "@sidebar_notifications_events";
-/// Comma-separated allow-list of agents (`claude`, `codex`, `opencode`)
-/// the ⓘ notices evaluates for hook-setup problems. Unset/empty means
-/// "no restriction". Parsed by `state::notices::parse_enabled_agents`.
+/// Comma-separated allow-list of agents (`claude`, `codex`, `opencode`,
+/// `hermes`) the ⓘ notices evaluates for hook-setup problems. Unset/empty
+/// means "no restriction". Parsed by `state::notices::parse_enabled_agents`.
 pub const SIDEBAR_AGENTS: &str = "@sidebar_agents";
 
 pub const SIDEBAR_COLOR_ACCENT: &str = "@sidebar_color_accent";
@@ -184,6 +184,7 @@ pub const SIDEBAR_COLOR_FILTER_INACTIVE: &str = "@sidebar_color_filter_inactive"
 pub const SIDEBAR_COLOR_AGENT_CLAUDE: &str = "@sidebar_color_agent_claude";
 pub const SIDEBAR_COLOR_AGENT_CODEX: &str = "@sidebar_color_agent_codex";
 pub const SIDEBAR_COLOR_AGENT_OPENCODE: &str = "@sidebar_color_agent_opencode";
+pub const SIDEBAR_COLOR_AGENT_HERMES: &str = "@sidebar_color_agent_hermes";
 pub const SIDEBAR_COLOR_PET_BODY: &str = "@sidebar_color_pet_body";
 pub const SIDEBAR_COLOR_PET_EYE: &str = "@sidebar_color_pet_eye";
 pub const SIDEBAR_COLOR_TEXT_ACTIVE: &str = "@sidebar_color_text_active";

@@ -1,5 +1,6 @@
 pub mod claude;
 pub mod codex;
+pub mod hermes;
 pub mod opencode;
 
 use crate::event::{AgentEvent, AgentEventKind, WorktreeInfo};

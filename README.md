@@ -1,6 +1,6 @@
 <h1 align="center">tmux-agent-sidebar</h1>
 
-<p align="center">One tmux sidebar that tracks every Claude Code, Codex, and OpenCode pane across every session and window. See status, background shells, prompts, Git state, activity, and worktrees without switching windows.</p>
+<p align="center">One tmux sidebar that tracks every Claude Code, Codex, OpenCode, and Hermes pane across every session and window. See status, background shells, prompts, Git state, activity, and worktrees without switching windows.</p>
 
 <p align="center"><img src="website/src/assets/captures/hero.png" alt="tmux-agent-sidebar hero" /></p>
 
@@ -13,7 +13,7 @@
 ## Features
 
 - **Every pane, one view** 
-  — tracks Claude Code, Codex, and OpenCode panes across all tmux sessions and windows
+  — tracks Claude Code, Codex, OpenCode, and Hermes panes across all tmux sessions and windows
 - **Live metadata** 
   — prompts, tool calls, response previews, background shell state, wait reasons, task progress, and subagent trees refresh as the agents work
 - **Worktrees, included** 
@@ -22,6 +22,8 @@
   — native alerts when an agent finishes, needs permission, or errors out
 
 OpenCode uses a small local plugin bridge instead of per-event hook config. The plugin lives at `.opencode/plugins/tmux-agent-sidebar.js` and can be symlinked as a single file into `~/.config/opencode/plugins/` so it coexists with any existing plugins.
+
+Hermes uses its built-in shell hooks: a generated `hooks:` block is merged into `~/.hermes/config.yaml` (see [Hermes setup](https://github.com/brandtg/tmux-agent-sidebar/blob/main/website/src/content/docs/getting-started/hermes.md)).
 
 ## Requirements
 
@@ -59,7 +61,13 @@ Reload tmux (`tmux source ~/.tmux.conf`), then press `prefix + I`. The install w
     ~/.config/opencode/plugins/tmux-agent-sidebar.js
   ```
 
-Full walkthroughs: [Claude Code setup](https://github.com/brandtg/tmux-agent-sidebar/blob/main/website/src/content/docs/getting-started/claude-code.md) · [Codex setup](https://github.com/brandtg/tmux-agent-sidebar/blob/main/website/src/content/docs/getting-started/codex.md) · [OpenCode setup](https://github.com/brandtg/tmux-agent-sidebar/blob/main/website/src/content/docs/getting-started/opencode.md)
+- **Hermes** — merge the generated `hooks:` block into `~/.hermes/config.yaml` (create the key if missing), then consent + restart per the [setup guide](https://github.com/brandtg/tmux-agent-sidebar/blob/main/website/src/content/docs/getting-started/hermes.md):
+
+  ```sh
+  tmux-agent-sidebar setup hermes
+  ```
+
+Full walkthroughs: [Claude Code setup](https://github.com/brandtg/tmux-agent-sidebar/blob/main/website/src/content/docs/getting-started/claude-code.md) · [Codex setup](https://github.com/brandtg/tmux-agent-sidebar/blob/main/website/src/content/docs/getting-started/codex.md) · [OpenCode setup](https://github.com/brandtg/tmux-agent-sidebar/blob/main/website/src/content/docs/getting-started/opencode.md) · [Hermes setup](https://github.com/brandtg/tmux-agent-sidebar/blob/main/website/src/content/docs/getting-started/hermes.md)
 
 ### 3. Toggle the sidebar
 
