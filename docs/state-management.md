@@ -79,7 +79,7 @@ Pane options written to tmux:
 | `@pane_worktree_name` | SessionStart | Worktree name (if applicable) |
 | `@pane_worktree_branch` | SessionStart | Worktree branch (if applicable) |
 | `@pane_session_id` | SessionStart, UserPromptSubmit, Notification, Stop, StopFailure, PermissionDenied, CwdChanged | Agent-reported session id (skipped when subagents are active) |
-| `@pane_session_title` | opencode `session.created` / `session.updated` (via the plugin shim) | Agent session title. Parsed straight into `PaneInfo.session_name` and rendered as the row title; takes precedence over the `/rename` name map, which only covers Claude Code. Cleared when the pane switches sessions or its metadata is torn down. |
+| `@pane_session_title` | opencode `session.created` / `session.updated` (via the plugin shim) | Agent session title. Parsed straight into `PaneInfo.session_name` and rendered as the row title; takes precedence over the polled name map (Claude `/rename` labels plus Hermes session titles). Cleared when the pane switches sessions or its metadata is torn down. |
 
 In-memory per-pane runtime state. Every field lives inside
 `PaneRuntimeState` so the whole record is dropped together when its
@@ -136,7 +136,7 @@ Per-pane file-based state:
 | `tmux_pane` | Once at startup | This sidebar's own tmux pane ID |
 | `pane_states.seen` | Every 1s | Set of pane IDs that have been seen as agents (bundled with `pane_states.map` under the `PaneRuntimeMap` wrapper) |
 | `version_notice` | Once at startup (bg fetch) | GitHub release update notice, `None` when up-to-date |
-| `sessions.names` | Every 10s (background thread) | `session_id → session name` map; scanned by `session_poll_loop` in `app/workers.rs` so the TUI thread never blocks on filesystem I/O. Re-applied to every pane on every tick because the snapshot rebuild wipes labels |
+| `sessions.names` | Every 10s (background thread) | `session_id → session name` map; scanned by `session_poll_loop` in `app/workers.rs` so the TUI thread never blocks on filesystem/subprocess I/O. Covers Claude `/rename` labels (`~/.claude/sessions/*.json`) and Hermes session titles (`~/.hermes/state.db` via a read-only `sqlite3` probe). Re-applied to every pane on every tick because the snapshot rebuild wipes labels |
 
 ---
 
@@ -316,7 +316,8 @@ struct ActivityState {
 }
 
 /// Session-name map scanned by a background thread so the TUI thread
-/// never blocks on `~/.claude/sessions/*.json` reads.
+/// never blocks on `~/.claude/sessions/*.json` reads or the Hermes
+/// session-store probe.
 struct SessionNamesState {
     names: HashMap<String, String>,
 }

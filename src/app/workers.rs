@@ -157,9 +157,10 @@ pub(super) fn port_scan_loop(
     }
 }
 
-/// Session name polling thread. Scans `~/.claude/sessions/*.json` every 10
-/// seconds so the main TUI thread never performs blocking filesystem I/O
-/// to refresh `/rename`-assigned labels.
+/// Session name polling thread. Refreshes the `session_id → name` map every
+/// 10 seconds — Claude `/rename` labels from `~/.claude/sessions/*.json` and
+/// Hermes session titles from `~/.hermes/state.db` — so the main TUI thread
+/// never performs blocking filesystem/subprocess I/O to refresh labels.
 pub(super) fn session_poll_loop(tx: &mpsc::Sender<HashMap<String, String>>) {
     loop {
         std::thread::sleep(Duration::from_secs(10));

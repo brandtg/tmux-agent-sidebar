@@ -74,8 +74,8 @@ pub const PANE_ROLE: &str = "@pane_role";
 pub const PANE_SESSION_ID: &str = "@pane_session_id";
 /// Agent-provided session title (opencode's `session.created` /
 /// `session.updated` carry it). Rendered as the row title; takes
-/// precedence over the `/rename` label map, which only covers
-/// Claude Code.
+/// precedence over the polled label map, which covers Claude
+/// `/rename` and Hermes session titles.
 pub const PANE_SESSION_TITLE: &str = "@pane_session_title";
 /// Epoch-seconds timestamp of the current run's start — drives
 /// the "running for Xs" label.

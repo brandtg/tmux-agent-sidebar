@@ -1,7 +1,8 @@
 use std::collections::HashMap;
 
 /// Session-name map scanned by a background thread so the TUI thread never
-/// blocks on `~/.claude/sessions/*.json` reads.
+/// blocks on `~/.claude/sessions/*.json` reads or the Hermes session-store
+/// probe.
 ///
 /// The map is re-applied to every pane on every tick rather than gated by a
 /// change flag: `apply_session_snapshot` rebuilds `repo_groups` with an empty
