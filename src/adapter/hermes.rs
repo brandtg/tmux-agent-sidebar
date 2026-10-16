@@ -174,14 +174,15 @@ impl EventAdapter for HermesAdapter {
             // Hermes' UserPromptSubmit equivalent (it even documents Claude
             // Code's UserPromptSubmit as "use pre_llm_call here");
             // `on_human_input_resolved` is the reply to a blocking prompt —
-            // the agent resumes, so clear the wait. A withdrawn turn
-            // (`cancelled` outcome) must not flip the pane back to running.
+            // the wait is over either way. A `cancelled` outcome (the
+            // prompt never reached a human: callback raised, interrupted
+            // read, …) still ENDS the wait, so it must clear the
+            // attention ring and wait reason; dropping the event used to
+            // leave the pane flagged `waiting` until the next hook. The
+            // empty prompt keeps the run clock running instead of
+            // restarting it.
             "user-prompt-submit" => {
                 if upstream_event(input) == "on_human_input_resolved" {
-                    let outcome = extra_str(input, "outcome");
-                    if outcome == "cancelled" {
-                        return None;
-                    }
                     return Some(base(input).user_prompt_submit(String::new()));
                 }
                 Some(base(input).user_prompt_submit(json_str(&extra(input), "user_message").into()))
@@ -352,20 +353,26 @@ mod tests {
     }
 
     #[test]
-    fn human_input_resolved_cancelled_is_dropped() {
-        // A withdrawn turn must not flip the pane back to running.
+    fn human_input_resolved_cancelled_still_clears_the_wait() {
+        // A `cancelled` outcome means the prompt never reached a human
+        // (callback raised, interrupted read, …) — but the wait IS over.
+        // The event must still clear the attention ring and wait reason;
+        // dropping it used to leave the pane flagged `waiting` until the
+        // next hook fired.
         let adapter = HermesAdapter;
-        assert!(
-            adapter
-                .parse(
-                    "user-prompt-submit",
-                    &payload(
-                        "on_human_input_resolved",
-                        json!({"kind": "approval", "outcome": "cancelled"}),
-                    )
-                )
-                .is_none()
-        );
+        let event = adapter
+            .parse(
+                "user-prompt-submit",
+                &payload(
+                    "on_human_input_resolved",
+                    json!({"kind": "approval", "outcome": "cancelled"}),
+                ),
+            )
+            .expect("cancelled resolution must still map to an event");
+        match event {
+            AgentEvent::UserPromptSubmit { prompt, .. } => assert_eq!(prompt, ""),
+            other => panic!("expected UserPromptSubmit, got {:?}", other),
+        }
     }
 
     #[test]

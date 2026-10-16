@@ -1,5 +1,5 @@
 use crate::debug;
-use crate::event::{AgentEvent, resolve_adapter};
+use crate::event::{AgentEvent, AgentEventKind, resolve_adapter};
 
 use super::{read_stdin_json, tmux_pane};
 
@@ -68,7 +68,17 @@ pub(crate) fn cmd_hook(args: &[String]) -> i32 {
         event.session_id(),
         event.kind()
     ));
-    handle_event(&pane, agent_name, event)
+    let kind = event.kind();
+    let exit = handle_event(&pane, agent_name, event);
+    // Hook-written pane options reach the sidebar on its next 1s poll.
+    // State-changing events poke the sidebars in this pane's window so a
+    // freshly opened agent row or a landed attention ring renders on the
+    // next frame. Activity-log events only append to the log file — not
+    // worth a tmux query on every tool call.
+    if exit == 0 && kind != AgentEventKind::ActivityLog {
+        super::notify_focus::notify_sidebars_of_pane(&pane);
+    }
+    exit
 }
 
 /// Single-line, size-capped rendering of a hook payload for the debug

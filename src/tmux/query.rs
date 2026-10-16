@@ -752,8 +752,36 @@ fn pane_output_needs_process_snapshot(all_panes_output: &str) -> bool {
         // A shell-foreground pane also needs the tree: `bash deploy.sh`
         // and an idle prompt both read as "bash" from the command alone,
         // and only the descendants tell them apart.
-        is_shell_command(&pane_fields[pane_line_field::PANE_CURRENT_COMMAND])
+        if is_shell_command(&pane_fields[pane_line_field::PANE_CURRENT_COMMAND]) {
+            return true;
+        }
+        // An unregistered pane behind a runtime shim needs the tree too:
+        // hermes' launcher execs `python3 -I -c …`, so the pane reads as
+        // `python3` until the first hook fires, and only the descendants
+        // (comm renamed to `hermes`) can identify it. Without this the row
+        // stays invisible until the user sends the first message.
+        AgentType::from_label(&pane_fields[pane_line_field::AGENT]).is_none()
+            && is_runtime_shim_command(&pane_fields[pane_line_field::PANE_CURRENT_COMMAND])
     })
+}
+
+/// Foreground commands that can hide an agent behind a generic runtime
+/// name. Hermes launches as `python3 -I -c …` and renames its `comm` to
+/// `hermes`, but tmux's `pane_current_command` keeps reporting the
+/// interpreter — so the shim detection ([`detect_shimmed_agent`], which
+/// needs a process snapshot) must be armed for python-foreground panes.
+/// Scoped to the interpreter names the hermes launcher can produce; other
+/// runtimes surface their agent name as argv0 and never need the walk.
+fn is_runtime_shim_command(command: &str) -> bool {
+    let Some(token) = command.split_whitespace().next() else {
+        return false;
+    };
+    let executable = Path::new(token)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or(token)
+        .to_ascii_lowercase();
+    executable == "python" || executable == "python3" || executable.starts_with("python3.")
 }
 
 fn apply_codex_permission_modes(
@@ -1226,6 +1254,62 @@ mod tests {
         fields[6] = "claude";
         let pane = parse_pane_line(&make_pane_line(&fields)).expect("claude command should parse");
         assert_eq!(pane.agent, AgentType::Claude);
+    }
+
+    #[test]
+    fn parse_pane_line_bootstraps_unregistered_hermes_pane() {
+        // Hermes launches as `python3 -I -c …` with the process comm
+        // renamed to `hermes`; tmux's pane_current_command keeps reading
+        // `python3`, so the argv0 fallback can never match. The process
+        // tree is the only pre-hook identification, and it needs the
+        // snapshot that `pane_output_needs_process_snapshot` arms for
+        // shim-foreground panes — without it the row stayed invisible
+        // until the first message fired a hook.
+        let mut fields = full_fields();
+        fields[3] = ""; // @pane_agent unset
+        fields[1] = ""; // @pane_status unset
+        fields[pane_line_field::PANE_CURRENT_COMMAND] = "python3";
+        let fields = field_strings(&fields);
+        let snapshot =
+            process_snapshot("12345 1 zsh zsh\n100 12345 hermes python3 -I -c import hermes\n");
+
+        let pane = parse_pane_fields_with_processes(&fields, Some(&snapshot))
+            .expect("hermes should parse");
+        assert_eq!(pane.agent, AgentType::Hermes);
+        assert_eq!(pane.status, PaneStatus::Idle);
+        assert_eq!(pane.permission_mode, PermissionMode::Default);
+    }
+
+    #[test]
+    fn pane_output_needs_process_snapshot_arms_for_python_shim_panes() {
+        let line = |agent: &str, command: &str| {
+            let mut fields = full_fields();
+            fields[pane_line_field::AGENT] = agent;
+            fields[pane_line_field::PANE_CURRENT_COMMAND] = command;
+            // Prefix the 6 window-level fields the raw list-panes line
+            // carries ahead of the pane-line suffix.
+            let mut segments: Vec<&str> = vec!["main", "@5", "1", "editor", "0", "1"];
+            segments.extend(&fields);
+            segments.join("|")
+        };
+        // Unregistered python3 foreground: the hermes launcher shim.
+        assert!(pane_output_needs_process_snapshot(&line("", "python3")));
+        assert!(pane_output_needs_process_snapshot(&line(
+            "",
+            "/usr/bin/python3.13 -I -c x"
+        )));
+        assert!(pane_output_needs_process_snapshot(&line(
+            "",
+            "python script.py"
+        )));
+        // Registered hermes pane: no tree needed for detection.
+        assert!(!pane_output_needs_process_snapshot(&line(
+            "hermes", "python3"
+        )));
+        // Unregistered non-shim foreground (htop): no tree needed.
+        assert!(!pane_output_needs_process_snapshot(&line("", "htop")));
+        // Shell foreground is armed by the existing rule.
+        assert!(pane_output_needs_process_snapshot(&line("", "zsh")));
     }
 
     #[test]
