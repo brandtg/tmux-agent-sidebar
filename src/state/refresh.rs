@@ -129,22 +129,20 @@ impl AppState {
     /// user's eye and is dropped once its pane has focus — but not before
     /// the minimum-flash grace ([`ATTENTION_MIN_FLASH_SECS`]), so the
     /// flash is actually rendered when the task ends under the user's
-    /// gaze. Goes through `focus_state.focused_pane_id` like the agent
+    /// gaze. Goes through the resolved seen-pane id like the agent
     /// path — that id is plain `pane_active` from tmux, so a window pane
     /// the user jumped to clears here too.
-    fn mark_window_finished_seen(&mut self) {
-        let Some(pane_id) = self.focus_state.focused_pane_id.as_ref() else {
-            return;
-        };
+    fn mark_window_finished_seen(&mut self, pane_id: &str) {
+        let pane_id = pane_id.to_string();
         let is_window_pane = self
             .other_windows
             .values()
-            .any(|windows| windows.iter().any(|w| &w.pane_id == pane_id));
+            .any(|windows| windows.iter().any(|w| w.pane_id == pane_id));
         if !is_window_pane {
             return;
         }
         let now = self.now;
-        if let Some(runtime) = self.pane_states.get_mut(pane_id) {
+        if let Some(runtime) = self.pane_states.get_mut(&pane_id) {
             let fresh = runtime.window_finished.as_ref().is_some_and(|finished| {
                 now.saturating_sub(finished.finished_at) < ATTENTION_MIN_FLASH_SECS
             });
@@ -320,13 +318,28 @@ impl AppState {
     /// before the sidebar started are aged (stamp set on first sight) so
     /// they clear immediately.
     pub fn mark_focused_pane_seen(&mut self, sidebar_window_active: bool) {
-        if self.focus_state.sidebar_focused || !sidebar_window_active {
+        if !sidebar_window_active {
             return;
         }
-        self.mark_window_finished_seen();
-        let Some(pane_id) = self.focus_state.focused_pane_id.clone() else {
+        // Popup mode pins `TMUX_PANE` to the window's active pane and
+        // forces `sidebar_focused` true (the popup holds keyboard focus),
+        // so the split-mode focus resolution below would always skip and
+        // attention flags would never be consumed — the ring would keep
+        // flashing no matter how long the user works in the agent pane.
+        // The pinned pane is still "where the user is": treat it as the
+        // seen pane, with the same grace rules as a focused split pane.
+        let seen_pane_id = if self.popup_mode {
+            Some(self.tmux_pane.clone())
+        } else {
+            if self.focus_state.sidebar_focused {
+                return;
+            }
+            self.focus_state.focused_pane_id.clone()
+        };
+        let Some(pane_id) = seen_pane_id else {
             return;
         };
+        self.mark_window_finished_seen(&pane_id);
         let Some(pane) = self.pane_by_id(&pane_id) else {
             return;
         };
@@ -1587,6 +1600,57 @@ mod tests {
         assert_eq!(
             state.repo_groups[0].panes[0].0.attention,
             PaneAttention::Done
+        );
+    }
+
+    #[test]
+    fn mark_focused_pane_seen_in_popup_mode_uses_the_pinned_pane() {
+        // Popup mode pins TMUX_PANE to the window's active pane and forces
+        // sidebar_focused true (the popup holds keyboard focus), so the
+        // split-mode focus resolution would skip and flags would never be
+        // consumed — the ring would flash forever no matter how long the
+        // user works in the agent pane. The pinned pane is the seen pane.
+        let _guard = tmux::test_mock::install();
+        let pane_id = "%POPUP_PINNED";
+        tmux::test_mock::set(pane_id, tmux::PANE_ATTENTION, "done");
+        let mut state = state_with_panes(vec![pane_with_attention(pane_id, PaneAttention::Done)]);
+        state.popup_mode = true;
+        state.tmux_pane = pane_id.to_string();
+        state.focus_state.sidebar_focused = true; // forced by refresh() in popup mode
+        state.focus_state.focused_pane_id = None; // pinned pane is excluded from resolution
+
+        state.mark_focused_pane_seen(true);
+
+        assert!(
+            !tmux::test_mock::contains(pane_id, tmux::PANE_ATTENTION),
+            "popup mode must consume the pinned pane's done flag"
+        );
+        assert_eq!(
+            state.repo_groups[0].panes[0].0.attention,
+            PaneAttention::None
+        );
+    }
+
+    #[test]
+    fn mark_focused_pane_seen_in_popup_mode_honors_the_done_grace() {
+        // Same popup setup, but the flag was observed just now: the
+        // min-flash grace applies so the pulse is actually rendered.
+        let _guard = tmux::test_mock::install();
+        let pane_id = "%POPUP_GRACE";
+        tmux::test_mock::set(pane_id, tmux::PANE_ATTENTION, "done");
+        let mut state = state_with_panes(vec![pane_with_attention(pane_id, PaneAttention::Done)]);
+        state.popup_mode = true;
+        state.tmux_pane = pane_id.to_string();
+        state.now = 10_000;
+        state.focus_state.sidebar_focused = true;
+        state.focus_state.focused_pane_id = None;
+        state.pane_state_mut(pane_id).attention_since = Some(state.now);
+
+        state.mark_focused_pane_seen(true);
+
+        assert!(
+            tmux::test_mock::contains(pane_id, tmux::PANE_ATTENTION),
+            "a fresh done flag must survive even in popup mode"
         );
     }
 
