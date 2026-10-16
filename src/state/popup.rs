@@ -62,6 +62,11 @@ pub enum PopupState {
         /// so spawn failures stay visually attached to the input the
         /// user was editing. Cleared on the next edit / field change.
         error: Option<String>,
+        /// Set while the spawn runs on a worker thread: the popup stays
+        /// visible with a one-line status and swallows all input until
+        /// the result arrives on the popup-op channel. `Some` carries
+        /// the status text; the error row is not shown while in flight.
+        working: Option<&'static str>,
         area: Option<ratatui::layout::Rect>,
     },
     /// Confirmation prompt shown when the user presses `x` on a
@@ -74,8 +79,22 @@ pub enum PopupState {
         branch: String,
         warning: Vec<String>,
         error: Option<String>,
+        /// Set while the removal runs on a worker thread — same
+        /// contract as [`PopupState::SpawnInput::working`].
+        working: Option<&'static str>,
         area: Option<ratatui::layout::Rect>,
     },
+}
+
+/// Result of a popup-driven worktree operation, produced on a
+/// per-operation worker thread and drained by the TUI event loop
+/// (`app::run`), which hands it to [`AppState::apply_popup_op_result`].
+#[derive(Debug)]
+pub enum PopupOpResult {
+    /// `worktree::spawn` finished: the new branch name or the error.
+    Spawn(Result<String, String>),
+    /// `worktree::remove` finished.
+    Remove(Result<(), String>),
 }
 
 impl PopupState {
@@ -222,6 +241,7 @@ impl AppState {
             field: SpawnField::Task,
             anchor_y,
             error: None,
+            working: None,
             area: None,
         };
     }
@@ -350,28 +370,117 @@ impl AppState {
         }
     }
 
-    fn set_remove_error(&mut self, msg: impl Into<String>) {
-        if let PopupState::RemoveConfirm { error, .. } = &mut self.popup {
-            *error = Some(msg.into());
+    /// Whether the spawn popup is waiting for its worker thread.
+    pub fn is_spawn_input_working(&self) -> bool {
+        matches!(
+            self.popup,
+            PopupState::SpawnInput {
+                working: Some(_),
+                ..
+            }
+        )
+    }
+
+    /// Whether the remove-confirm popup is waiting for its worker thread.
+    pub fn is_remove_confirm_working(&self) -> bool {
+        matches!(
+            self.popup,
+            PopupState::RemoveConfirm {
+                working: Some(_),
+                ..
+            }
+        )
+    }
+
+    /// Hand a worktree operation to a fresh worker thread and park the
+    /// popup in its working state. The event loop drains the result and
+    /// calls [`AppState::apply_popup_op_result`]; repeated confirm
+    /// presses are ignored while `working` is set, so an op can never
+    /// be submitted twice. Without a channel (unit-test builds) the
+    /// call is a no-op so no real git/tmux side effects can fire.
+    fn start_popup_op(
+        &mut self,
+        working: &'static str,
+        op: impl FnOnce() -> PopupOpResult + Send + 'static,
+    ) {
+        let Some(tx) = self.popup_op_tx.clone() else {
+            return;
+        };
+        match &mut self.popup {
+            PopupState::SpawnInput {
+                working: state,
+                error,
+                ..
+            }
+            | PopupState::RemoveConfirm {
+                working: state,
+                error,
+                ..
+            } => {
+                *state = Some(working);
+                *error = None;
+            }
+            _ => return,
+        }
+        std::thread::spawn(move || {
+            let result = op();
+            let _ = tx.send(result);
+        });
+    }
+
+    /// Apply a finished popup operation delivered by its worker thread.
+    /// Success closes the popup exactly as the synchronous path did;
+    /// failure returns the popup to its editable state with the error
+    /// surfaced inline. No-ops if the popup moved on meanwhile.
+    pub fn apply_popup_op_result(&mut self, result: PopupOpResult) {
+        match result {
+            PopupOpResult::Spawn(Ok(_)) => {
+                if matches!(self.popup, PopupState::SpawnInput { .. }) {
+                    self.popup = PopupState::None;
+                }
+            }
+            PopupOpResult::Remove(Ok(())) => {
+                if matches!(self.popup, PopupState::RemoveConfirm { .. }) {
+                    self.popup = PopupState::None;
+                }
+            }
+            PopupOpResult::Spawn(Err(e)) => {
+                if let PopupState::SpawnInput { working, error, .. } = &mut self.popup {
+                    *working = None;
+                    *error = Some(e);
+                }
+            }
+            PopupOpResult::Remove(Err(e)) => {
+                if let PopupState::RemoveConfirm { working, error, .. } = &mut self.popup {
+                    *working = None;
+                    *error = Some(e);
+                }
+            }
         }
     }
 
-    /// Run the spawn flow against the repo stored in the popup, using
-    /// the agent / mode the user picked. On success the popup closes
-    /// silently (the new window appearing in the sidebar is the
-    /// feedback). On failure the error is surfaced inside the popup
-    /// and the modal stays open so the user can retry.
+    /// Validate the spawn input and hand the spawn flow to a worker
+    /// thread (it can spend minutes in git under a hung/stale repo —
+    /// see `pick_unique_slug` — which used to freeze the render loop).
+    /// On success the popup closes when the result arrives; on failure
+    /// the error is surfaced inside the popup and the modal stays open
+    /// so the user can retry.
     pub fn confirm_spawn_input(&mut self) {
         let PopupState::SpawnInput {
             input,
             target_repo_root,
             agent_idx,
             mode_idx,
+            working,
             ..
         } = &self.popup
         else {
             return;
         };
+        // A second Enter while an op is in flight must not spawn twice.
+        if working.is_some() {
+            return;
+        }
         let task_name = input.trim().to_string();
         if task_name.is_empty() {
             self.set_spawn_error("name is empty");
@@ -401,10 +510,9 @@ impl AppState {
             agent,
             mode,
         };
-        match crate::worktree::spawn(&req) {
-            Ok(_) => self.popup = PopupState::None,
-            Err(e) => self.set_spawn_error(e),
-        }
+        self.start_popup_op("creating worktree…", move || {
+            PopupOpResult::Spawn(crate::worktree::spawn(&req))
+        });
     }
 
     // ─── Remove confirm popup (x key) ────────────────────────────────────
@@ -452,22 +560,37 @@ impl AppState {
             branch,
             warning: crate::worktree::removal_warnings(&markers.worktree_path),
             error: None,
+            working: None,
             area: None,
         };
     }
 
-    /// Run the remove flow on the pane stored in the confirmation popup.
-    /// Success silently closes the popup; failures are surfaced inside
-    /// the popup so the user can retry.
+    /// Run the remove flow for the pane stored in the confirmation
+    /// popup, on a worker thread (same reasoning as the spawn path —
+    /// the git steps can hang the render loop). Success closes the
+    /// popup when the result arrives; failures are surfaced inside the
+    /// popup so the user can retry.
     pub fn confirm_remove(&mut self, mode: crate::worktree::RemoveMode) {
         let pane_id = match &self.popup {
-            PopupState::RemoveConfirm { pane_id, .. } => pane_id.clone(),
+            PopupState::RemoveConfirm {
+                pane_id, working, ..
+            } => {
+                // A second confirm while an op is in flight must not
+                // remove twice.
+                if working.is_some() {
+                    return;
+                }
+                pane_id.clone()
+            }
             _ => return,
         };
-        match crate::worktree::remove(&pane_id, mode) {
-            Ok(_) => self.popup = PopupState::None,
-            Err(e) => self.set_remove_error(e),
-        }
+        let status = match mode {
+            crate::worktree::RemoveMode::WindowOnly => "closing window…",
+            crate::worktree::RemoveMode::WindowAndWorktree => "removing worktree…",
+        };
+        self.start_popup_op(status, move || {
+            PopupOpResult::Remove(crate::worktree::remove(&pane_id, mode))
+        });
     }
 }
 
@@ -690,6 +813,7 @@ mod tests {
             field,
             anchor_y,
             error,
+            working,
             area,
         } = &state.popup
         {
@@ -701,6 +825,7 @@ mod tests {
             assert_eq!(*field, SpawnField::Task);
             assert_eq!(*anchor_y, Some(7));
             assert!(error.is_none());
+            assert!(working.is_none());
             assert!(area.is_none());
         } else {
             panic!("expected SpawnInput, got {:?}", state.popup);
@@ -820,6 +945,16 @@ mod tests {
         }
     }
 
+    /// Read the inline popup error for assertions.
+    fn popup_error(state: &AppState) -> Option<String> {
+        match &state.popup {
+            PopupState::SpawnInput { error, .. } | PopupState::RemoveConfirm { error, .. } => {
+                error.clone()
+            }
+            _ => None,
+        }
+    }
+
     #[test]
     fn confirm_spawn_input_empty_sets_error() {
         let mut state = AppState::new("%99".into());
@@ -832,6 +967,149 @@ mod tests {
         }
     }
 
+    #[test]
+    fn confirm_spawn_input_ignores_confirm_while_working() {
+        // The no-double-spawn guard must run before any dispatch, so a
+        // second Enter while an op is in flight is a synchronous no-op.
+        let mut state = AppState::new("%99".into());
+        state.open_spawn_input_for_repo("alpha".into(), "/tmp/alpha".into(), None);
+        if let PopupState::SpawnInput { working, .. } = &mut state.popup {
+            *working = Some("creating worktree…");
+        }
+        state.confirm_spawn_input();
+        assert!(
+            state.is_spawn_input_working(),
+            "guard must keep the popup in flight"
+        );
+    }
+
+    #[test]
+    fn start_popup_op_without_channel_is_a_noop() {
+        // Test builds have no channel wired, so dispatch must leave the
+        // popup untouched rather than flip it into an unreachable
+        // working state (and definitely not run the operation).
+        let mut state = AppState::new("%99".into());
+        state.popup = PopupState::RemoveConfirm {
+            pane_id: "%1".into(),
+            branch: "agent/x".into(),
+            warning: Vec::new(),
+            error: None,
+            working: None,
+            area: None,
+        };
+        state.start_popup_op("removing worktree…", || PopupOpResult::Remove(Ok(())));
+        assert!(!state.is_remove_confirm_working());
+        assert!(state.is_remove_confirm_open());
+    }
+
+    #[test]
+    fn confirm_remove_dispatches_once_and_applies_result() {
+        // Real channel: the worker runs `worktree::remove` against a
+        // pane with no spawn markers, which fails fast without touching
+        // git or tmux — enough to exercise the async round trip.
+        let (tx, rx) = std::sync::mpsc::channel();
+        let mut state = AppState::new("%99".into());
+        state.popup_op_tx = Some(tx);
+        state.popup = PopupState::RemoveConfirm {
+            pane_id: "%1".into(),
+            branch: "agent/x".into(),
+            warning: Vec::new(),
+            error: None,
+            working: None,
+            area: None,
+        };
+
+        state.confirm_remove(crate::worktree::RemoveMode::WindowOnly);
+        assert!(
+            state.is_remove_confirm_working(),
+            "popup must park in working state"
+        );
+        assert!(
+            popup_error(&state).is_none(),
+            "starting an op must clear a stale inline error"
+        );
+
+        // A second confirm while in flight must not queue a second op.
+        state.confirm_remove(crate::worktree::RemoveMode::WindowAndWorktree);
+
+        let mut results = Vec::new();
+        while let Ok(result) = rx.recv_timeout(std::time::Duration::from_secs(2)) {
+            results.push(result);
+        }
+        assert_eq!(results.len(), 1, "exactly one operation must be dispatched");
+
+        match results.remove(0) {
+            PopupOpResult::Remove(Err(_)) => {}
+            other => panic!("expected a failed remove for an unknown pane, got {other:?}"),
+        }
+
+        // ... but the failing result was never applied to the second
+        // confirm's state; apply it and check the popup returns to an
+        // editable state with the error inline.
+        state.popup = PopupState::RemoveConfirm {
+            pane_id: "%1".into(),
+            branch: "agent/x".into(),
+            warning: Vec::new(),
+            error: None,
+            working: Some("closing window…"),
+            area: None,
+        };
+        state.apply_popup_op_result(PopupOpResult::Remove(Err(
+            "pane was not created by sidebar spawn".into(),
+        )));
+        assert!(!state.is_remove_confirm_working());
+        assert_eq!(
+            popup_error(&state).as_deref(),
+            Some("pane was not created by sidebar spawn")
+        );
+    }
+
+    #[test]
+    fn apply_popup_op_result_success_closes_popup() {
+        let mut state = AppState::new("%99".into());
+        state.popup = PopupState::SpawnInput {
+            input: "task".into(),
+            target_repo: "alpha".into(),
+            target_repo_root: "/tmp/alpha".into(),
+            agent_idx: 0,
+            mode_idx: 0,
+            field: SpawnField::Task,
+            anchor_y: None,
+            error: None,
+            working: Some("creating worktree…"),
+            area: None,
+        };
+        state.apply_popup_op_result(PopupOpResult::Spawn(Ok("agent/task".into())));
+        assert!(!state.is_spawn_input_open(), "success must close the popup");
+
+        state.popup = PopupState::RemoveConfirm {
+            pane_id: "%1".into(),
+            branch: "agent/x".into(),
+            warning: Vec::new(),
+            error: None,
+            working: Some("removing worktree…"),
+            area: None,
+        };
+        state.apply_popup_op_result(PopupOpResult::Remove(Ok(())));
+        assert!(
+            !state.is_remove_confirm_open(),
+            "success must close the popup"
+        );
+    }
+
+    #[test]
+    fn apply_popup_op_result_ignores_moved_on_popup() {
+        // If the result lands after the popup moved on (not reachable
+        // through input today — keys are swallowed while working — the
+        // application must not resurrect or mutate the wrong popup).
+        let mut state = AppState::new("%99".into());
+        state.popup = PopupState::Notices { area: None };
+        state.apply_popup_op_result(PopupOpResult::Spawn(Err("boom".into())));
+        assert!(matches!(state.popup, PopupState::Notices { .. }));
+        state.apply_popup_op_result(PopupOpResult::Spawn(Ok("agent/task".into())));
+        assert!(matches!(state.popup, PopupState::Notices { .. }));
+    }
+
     // ─── Remove confirm popup ────────────────────────────────────────
 
     #[test]
@@ -842,6 +1120,7 @@ mod tests {
             branch: "feature/x".into(),
             warning: Vec::new(),
             error: None,
+            working: None,
             area: Some(ratatui::layout::Rect::new(0, 0, 20, 5)),
         };
         assert!(state.is_remove_confirm_open());

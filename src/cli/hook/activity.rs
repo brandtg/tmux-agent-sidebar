@@ -38,7 +38,10 @@ pub(super) fn write_activity_entry(pane: &str, tool_name: &str, label: &str) {
     // The lock is released when the fd closes.
 }
 
-fn lock_exclusive(file: &std::fs::File) -> bool {
+/// Exclusive flock on an open file; false if the lock could not be
+/// taken. Shared by the activity-log append/trim and the subagent-list
+/// read-modify-write, which serialize independent hook processes.
+pub(in crate::cli::hook) fn lock_exclusive(file: &std::fs::File) -> bool {
     use std::os::fd::AsRawFd;
     unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) == 0 }
 }
@@ -116,10 +119,13 @@ pub(super) fn handle_activity_log(
         ));
     if current_status != "running" && !current_status.is_empty() && !pending_action {
         set_status(pane, "running");
-        if current_status == "waiting" {
-            tmux::unset_pane_option(pane, tmux::PANE_ATTENTION);
-            tmux::unset_pane_option(pane, tmux::PANE_WAIT_REASON);
-        }
+        // Any resume into `running` clears a stale wait reason, not just
+        // resumes from `waiting`: `on_stop_failure` stores error text in
+        // @pane_wait_reason under status `error`, and the renderer shows
+        // the reason row for every status. The OpenCode pending-action
+        // guard above is what keeps a live prompt intact, not this gate.
+        tmux::unset_pane_option(pane, tmux::PANE_ATTENTION);
+        tmux::unset_pane_option(pane, tmux::PANE_WAIT_REASON);
         let existing_started = tmux::get_pane_option_value(pane, tmux::PANE_STARTED_AT);
         if existing_started.is_empty() {
             tmux::set_pane_option(pane, tmux::PANE_STARTED_AT, &now_epoch_secs().to_string());
@@ -455,6 +461,40 @@ mod tests {
         );
         assert!(!tmux::test_mock::contains(pane_id, tmux::PANE_ATTENTION));
         assert!(!tmux::test_mock::contains(pane_id, tmux::PANE_WAIT_REASON));
+        fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn handle_activity_log_error_transitions_to_running_clears_wait_reason() {
+        // Regression: `on_stop_failure` stores the error text in
+        // @pane_wait_reason while status is `error`, and the renderer
+        // shows the reason row for any status. The next tool use must
+        // clear it, not only when resuming from `waiting`.
+        let _guard = tmux::test_mock::install();
+        let pane_id = "%CLI_ERR_TO_RUN";
+        let path = crate::activity::log_file_path(pane_id);
+        let _ = fs::remove_file(&path);
+        tmux::test_mock::set(pane_id, tmux::PANE_STATUS, "error");
+        tmux::test_mock::set(pane_id, tmux::PANE_ATTENTION, "notification");
+        tmux::test_mock::set(pane_id, tmux::PANE_WAIT_REASON, "rate_limit");
+
+        handle_activity_log(
+            pane_id,
+            "claude",
+            "Read",
+            &json!({"file_path": "/home/user/src/main.rs"}),
+            &Value::Null,
+        );
+
+        assert_eq!(
+            tmux::test_mock::get(pane_id, tmux::PANE_STATUS).as_deref(),
+            Some("running")
+        );
+        assert!(
+            !tmux::test_mock::contains(pane_id, tmux::PANE_WAIT_REASON),
+            "stale error wait_reason must not survive the resume to running"
+        );
+        assert!(!tmux::test_mock::contains(pane_id, tmux::PANE_ATTENTION));
         fs::remove_file(&path).ok();
     }
 

@@ -116,6 +116,7 @@ pub(super) fn render_spawn_input_popup(frame: &mut Frame, state: &mut AppState, 
         field,
         anchor_y,
         error,
+        working,
         ..
     } = &state.popup
     else {
@@ -125,6 +126,7 @@ pub(super) fn render_spawn_input_popup(frame: &mut Frame, state: &mut AppState, 
     let field = *field;
     let anchor_y = *anchor_y;
     let error = error.clone();
+    let working = *working;
     let agent = crate::worktree::AGENTS
         .get(*agent_idx)
         .copied()
@@ -138,8 +140,9 @@ pub(super) fn render_spawn_input_popup(frame: &mut Frame, state: &mut AppState, 
     let popup_width = area.width.min(32).max(area.width.min(14));
     let compact = area.height < SPAWN_MODAL_EXPANDED_MIN_HEIGHT;
     let content_rows: u16 = if compact { 4 } else { 10 };
-    let error_rows: u16 = if error.is_some() { 1 } else { 0 };
-    let popup_height = content_rows + error_rows + POPUP_BORDER_ROWS;
+    // The bottom row is either the in-flight status or the inline error.
+    let status_rows: u16 = u16::from(working.is_some() || error.is_some());
+    let popup_height = content_rows + status_rows + POPUP_BORDER_ROWS;
     let popup_rect = match anchor_y {
         Some(y) => anchor_below(area, y, popup_width, popup_height),
         None => center_popup(area, popup_width, popup_height),
@@ -203,12 +206,22 @@ pub(super) fn render_spawn_input_popup(frame: &mut Frame, state: &mut AppState, 
     }
     let agent_value = truncate_to_width(agent, content_width);
     let mode_value = truncate_to_width(mode, content_width);
-    let error_spans = error.as_ref().map(|err| {
-        vec![Span::styled(
-            truncate_to_width(err, content_width),
-            Style::default().fg(theme.status_error),
-        )]
-    });
+    // A working status renders in the muted color at the same row the
+    // inline error uses; the two never show together (dispatch clears
+    // the error, and keys are swallowed until the result lands).
+    let status_spans = if let Some(status) = working {
+        Some(vec![Span::styled(
+            truncate_to_width(status, content_width),
+            Style::default().fg(theme.text_muted),
+        )])
+    } else {
+        error.as_ref().map(|err| {
+            vec![Span::styled(
+                truncate_to_width(err, content_width),
+                Style::default().fg(theme.status_error),
+            )]
+        })
+    };
 
     if compact {
         render_at(frame, COMPACT_TASK_Y, task_spans);
@@ -222,8 +235,8 @@ pub(super) fn render_spawn_input_popup(frame: &mut Frame, state: &mut AppState, 
             COMPACT_MODE_Y,
             vec![Span::styled(mode_value, value_style(SpawnField::Mode))],
         );
-        if let Some(err) = error_spans {
-            render_at(frame, COMPACT_ERROR_Y, err);
+        if let Some(status) = status_spans {
+            render_at(frame, COMPACT_ERROR_Y, status);
         }
     } else {
         render_at(
@@ -252,8 +265,8 @@ pub(super) fn render_spawn_input_popup(frame: &mut Frame, state: &mut AppState, 
             EXP_MODE_VALUE_Y,
             vec![Span::styled(mode_value, value_style(SpawnField::Mode))],
         );
-        if let Some(err) = error_spans {
-            render_at(frame, EXP_ERROR_Y, err);
+        if let Some(status) = status_spans {
+            render_at(frame, EXP_ERROR_Y, status);
         }
     }
 }
@@ -287,21 +300,25 @@ fn tail_fit(text: &str, max_width: usize) -> String {
 }
 
 pub(super) fn render_remove_confirm_popup(frame: &mut Frame, state: &mut AppState, area: Rect) {
-    let (branch, warning, error) = match &state.popup {
+    let (branch, warning, error, working) = match &state.popup {
         PopupState::RemoveConfirm {
             branch,
             warning,
             error,
+            working,
             ..
-        } => (branch.clone(), warning.clone(), error.clone()),
+        } => (branch.clone(), warning.clone(), error.clone(), *working),
         _ => return,
     };
     let theme = &state.theme;
 
     // Narrow-friendly: put the branch in the title, keep option rows
     // short enough to fit in ~16 columns. The consequence block grows
-    // the popup; an inline error reserves one more row.
-    let popup_height: u16 = 5 + warning.len() as u16 + u16::from(error.is_some());
+    // the popup; an in-flight status or inline error reserves one more
+    // row (the two never show together — same contract as the spawn
+    // modal).
+    let popup_height: u16 =
+        5 + warning.len() as u16 + u16::from(error.is_some() || working.is_some());
     let popup_rect = center_popup(area, area.width.min(28), popup_height);
     state.popup.set_remove_confirm_area(Some(popup_rect));
     frame.render_widget(Clear, popup_rect);
@@ -351,7 +368,17 @@ pub(super) fn render_remove_confirm_popup(frame: &mut Frame, state: &mut AppStat
     for (i, line) in warning.iter().enumerate() {
         render_row(frame, 3 + i as u16, line, warning_style);
     }
-    if let Some(err) = error {
+    // The bottom row is either the in-flight status or the inline error —
+    // same contract as the spawn modal (dispatch clears the error before
+    // the operation starts, and keys are swallowed until the result lands).
+    if let Some(status) = working {
+        render_row(
+            frame,
+            3 + warning.len() as u16,
+            status,
+            Style::default().fg(theme.text_muted),
+        );
+    } else if let Some(err) = error {
         render_row(frame, 3 + warning.len() as u16, &err, warning_style);
     }
 }

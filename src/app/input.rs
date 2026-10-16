@@ -83,6 +83,12 @@ pub(super) fn handle_key_event(
         return true;
     }
     if state.is_spawn_input_open() {
+        // While the spawn runs on its worker thread the modal must not
+        // accept input: no double-submit, no edits the result would
+        // clobber, no dismissal that strands the feedback.
+        if state.is_spawn_input_working() {
+            return true;
+        }
         match key.code {
             KeyCode::Esc => state.close_spawn_input(),
             KeyCode::Enter => state.confirm_spawn_input(),
@@ -97,6 +103,9 @@ pub(super) fn handle_key_event(
         return true;
     }
     if state.is_remove_confirm_open() {
+        if state.is_remove_confirm_working() {
+            return true;
+        }
         match key.code {
             KeyCode::Esc | KeyCode::Char('n') => state.close_remove_confirm(),
             KeyCode::Char('c') => state.confirm_remove(RemoveMode::WindowOnly),
@@ -396,6 +405,7 @@ mod tests {
             field: SpawnField::Task,
             anchor_y: None,
             error: None,
+            working: None,
             area: None,
         };
         let flag = AtomicBool::new(false);
@@ -491,6 +501,7 @@ mod tests {
             field: SpawnField::Task,
             anchor_y: None,
             error: None,
+            working: None,
             area: None,
         };
         let flag = AtomicBool::new(false);
@@ -527,6 +538,7 @@ mod tests {
             branch: "agent/x".into(),
             warning: Vec::new(),
             error: None,
+            working: None,
             area: None,
         };
         let flag = AtomicBool::new(false);

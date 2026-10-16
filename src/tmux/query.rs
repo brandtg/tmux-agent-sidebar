@@ -491,12 +491,19 @@ fn parse_pane_fields_with_processes(
         AgentType::Codex | AgentType::OpenCode | AgentType::Hermes
     ) && is_shell_command(current_command)
     {
-        let agent_still_alive = pane_pid
-            .and_then(|pid| {
-                process_snapshot.map(|snapshot| snapshot.tree_has_agent(&[pid], &agent))
-            })
-            .unwrap_or(false);
-        if !agent_still_alive {
+        // Wipe only on positive evidence the agent is gone: a parsed
+        // pane pid plus a snapshot whose process tree lacks the agent.
+        // A missing snapshot (`ps` spawn failure, 5s timeout under load)
+        // or an unparsable pid is "unknown", not "dead" — treating it as
+        // dead wiped all `@pane_*` options plus the activity log of a
+        // live agent on a single missed observation. Mirrors the
+        // REQUIRED_DEAD_SCANS streak in `apply_process_snapshot`, which
+        // owns the repeated-dead case at the TUI level.
+        let agent_dead = match (pane_pid, process_snapshot) {
+            (Some(pid), Some(snapshot)) => !snapshot.tree_has_agent(&[pid], &agent),
+            _ => false,
+        };
+        if agent_dead {
             clear_agent_pane_state(&parts[pane_line_field::PANE_ID]);
             return None;
         }
@@ -1555,9 +1562,12 @@ mod tests {
         let mut fields = full_fields();
         fields[3] = "codex";
         fields[6] = "zsh";
-        let line = make_pane_line(&fields);
+        let fields = field_strings(&fields);
+        // A present snapshot whose tree lacks the agent is the only
+        // positive death signal; a missing one must not wipe.
+        let snapshot = process_snapshot("12345 1 zsh zsh\n");
         assert!(
-            parse_pane_line(&line).is_none(),
+            parse_pane_fields_with_processes(&fields, Some(&snapshot)).is_none(),
             "codex metadata on a shell pane should be treated as stale"
         );
     }
@@ -1567,9 +1577,10 @@ mod tests {
         let mut fields = full_fields();
         fields[3] = "codex";
         fields[6] = "/usr/local/bin/PwSh -l";
-        let line = make_pane_line(&fields);
+        let fields = field_strings(&fields);
+        let snapshot = process_snapshot("12345 1 pwsh pwsh -l\n");
         assert!(
-            parse_pane_line(&line).is_none(),
+            parse_pane_fields_with_processes(&fields, Some(&snapshot)).is_none(),
             "shell detection should handle paths, args, and case differences"
         );
     }
@@ -1657,6 +1668,42 @@ mod tests {
     }
 
     #[test]
+    fn parse_pane_fields_keeps_stale_pane_when_snapshot_is_missing() {
+        // Regression: a failed `ps` scan (None snapshot) is "unknown",
+        // not "dead". Forcing `agent_still_alive = false` on a missing
+        // snapshot wiped all `@pane_*` options plus the activity log of
+        // a live Codex/OpenCode/Hermes pane on a single missed
+        // observation; the pane must survive until a real scan says dead.
+        let _guard = test_mock::install();
+        let pane = "%CODEX_NO_SCAN";
+        test_mock::set(pane, PANE_AGENT, "codex");
+        test_mock::set(pane, PANE_PROMPT, "keep me");
+        let log = crate::activity::log_file_path(pane);
+        let _ = std::fs::create_dir_all(log.parent().unwrap());
+        std::fs::write(&log, "1234|Bash|pytest\n").unwrap();
+
+        let mut fields = full_fields();
+        fields[pane_line_field::PANE_ID] = pane;
+        fields[pane_line_field::AGENT] = "codex";
+        fields[pane_line_field::PANE_CURRENT_COMMAND] = "zsh";
+        let fields = field_strings(&fields);
+
+        let pane_info = parse_pane_fields_with_processes(&fields, None)
+            .expect("a missing process snapshot must not wipe the pane");
+        assert_eq!(pane_info.agent, AgentType::Codex);
+        assert!(test_mock::contains(pane, PANE_AGENT));
+        assert_eq!(
+            test_mock::get(pane, PANE_PROMPT).as_deref(),
+            Some("keep me"),
+            "stale-state teardown must wait for a present snapshot, not a failed scan"
+        );
+        assert!(log.exists(), "activity log must survive a missing snapshot");
+
+        // Cleanup: the log was never removed (that is the point).
+        std::fs::remove_file(&log).ok();
+    }
+
+    #[test]
     fn parse_pane_line_wipes_stale_state_for_codex_shell_pane() {
         // Codex shares the same shell-fallback sweep path as OpenCode —
         // neither fires a reliable process-exit hook, so the Rust poller
@@ -1679,9 +1726,10 @@ mod tests {
         fields[pane_line_field::PANE_ID] = pane;
         fields[pane_line_field::AGENT] = "codex";
         fields[pane_line_field::PANE_CURRENT_COMMAND] = "zsh";
-        let line = make_pane_line(&fields);
+        let fields = field_strings(&fields);
+        let snapshot = process_snapshot("12345 1 zsh zsh\n");
 
-        assert!(parse_pane_line(&line).is_none());
+        assert!(parse_pane_fields_with_processes(&fields, Some(&snapshot)).is_none());
         for key in &[
             PANE_AGENT,
             PANE_PROMPT,
@@ -1726,9 +1774,10 @@ mod tests {
         fields[pane_line_field::PANE_ID] = pane;
         fields[pane_line_field::AGENT] = "opencode";
         fields[pane_line_field::PANE_CURRENT_COMMAND] = "fish";
-        let line = make_pane_line(&fields);
+        let fields = field_strings(&fields);
+        let snapshot = process_snapshot("12345 1 fish fish\n");
 
-        assert!(parse_pane_line(&line).is_none());
+        assert!(parse_pane_fields_with_processes(&fields, Some(&snapshot)).is_none());
         for key in &[
             PANE_AGENT,
             PANE_PROMPT,

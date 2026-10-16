@@ -28,7 +28,7 @@ pub(crate) use notices::debug_forced_display;
 pub(crate) use notices::parse_enabled_agents;
 pub use notices::{ClaudePluginNotice, NoticesCopyTarget, NoticesMissingHookGroup, NoticesState};
 pub use pane_runtime::{PaneRuntimeMap, PaneRuntimeState, WindowFinished};
-pub use popup::{PopupState, SpawnField};
+pub use popup::{PopupOpResult, PopupState, SpawnField};
 #[cfg(test)]
 pub(crate) use refresh::{TaskProgressDecision, classify_task_progress};
 pub use scroll::{ScrollState, ScrollStates};
@@ -83,6 +83,12 @@ pub struct AppState {
     /// Current popup state. At most one popup is open at a time; the enum
     /// variant encodes both which popup is open and its per-popup data.
     pub popup: PopupState,
+    /// Sender for popup-driven worktree operations (spawn/remove). The
+    /// event loop wires it before the first frame; results come back on
+    /// its receiver and are applied via
+    /// [`AppState::apply_popup_op_result`]. `None` in unit-test builds,
+    /// where dispatch is a no-op so no real git/tmux side effects fire.
+    pub popup_op_tx: Option<std::sync::mpsc::Sender<PopupOpResult>>,
     /// All fields related to the ⓘ notices button and its popup — the button
     /// click region, cached hook/plugin diagnostics, per-agent copy targets,
     /// and the transient "copied" feedback label.
@@ -195,6 +201,7 @@ impl AppState {
             pane_states: PaneRuntimeMap::new(),
             timers: RefreshTimers::default(),
             popup: PopupState::None,
+            popup_op_tx: None,
             notices: NoticesState::default(),
             pet_state: crate::ui::pet::PetState::Idle,
             pet_x: crate::ui::pet::PET_HOME_X,

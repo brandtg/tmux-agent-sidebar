@@ -133,6 +133,16 @@ fn parse_lsof_listening_ports(lsof_output: &str) -> Vec<(u32, u16)> {
     out
 }
 
+/// Listening ports from lsof output, or an empty set when lsof is
+/// unavailable or failed — a missing binary degrades to "no port data",
+/// never to a failed scan.
+fn listening_ports(lsof_output: Option<String>) -> Vec<(u32, u16)> {
+    match lsof_output {
+        Some(output) => parse_lsof_listening_ports(&output),
+        None => Vec::new(),
+    }
+}
+
 /// Scan per-pane process state for the provided pane targets.
 /// The lookup starts from each pane's PID and walks the process tree, so it can
 /// pick up child dev servers spawned by an agent shell and detect when the
@@ -178,8 +188,15 @@ pub(crate) fn scan_pane_processes(targets: &[PaneScanTarget]) -> Option<PaneProc
         }
     }
 
-    let lsof_output = run_command("lsof", &["-iTCP", "-sTCP:LISTEN", "-nP", "-F", "pn"])?;
-    let listening = parse_lsof_listening_ports(&lsof_output);
+    // lsof is optional: a missing or failed binary only means "no
+    // listening-port data", never "the whole scan failed". Returning
+    // None here would also freeze dead-scan streaks (the caller drops
+    // None snapshots), silently disabling teardown on hosts without
+    // lsof. The process-tree data above is the load-bearing half.
+    let listening = listening_ports(run_command(
+        "lsof",
+        &["-iTCP", "-sTCP:LISTEN", "-nP", "-F", "pn"],
+    ));
 
     let mut ports_by_pane: HashMap<String, BTreeSet<u16>> = HashMap::new();
     for (pid, port) in listening {
@@ -222,6 +239,17 @@ mod tests {
         assert_eq!(
             parse_lsof_listening_ports(sample),
             vec![(123, 3000), (456, 5173)]
+        );
+    }
+
+    #[test]
+    fn listening_ports_fails_open_when_lsof_is_unavailable() {
+        // A missing/failed lsof yields empty port data, not a failed scan —
+        // the caller must still get a snapshot so dead-scan streaks advance.
+        assert!(listening_ports(None).is_empty());
+        assert_eq!(
+            listening_ports(Some("p1\nn*:3000\n".into())),
+            vec![(1, 3000)]
         );
     }
 
