@@ -1,5 +1,32 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::process::Command;
+use std::time::Duration;
+
+use crate::subprocess;
+
+/// Deadline for the `sqlite3` probe against Hermes' session store — same bound
+/// as the git subprocesses, so a wedged read cannot stall the polling thread.
+const HERMES_QUERY_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Cap on the Hermes titles fetched per scan. Recency-ordered, so this only
+/// bites on DBs holding more sessions than could plausibly be open in panes.
+const HERMES_TITLE_LIMIT: usize = 2000;
+
+/// Scan the agents' session stores for `session_id → title` labels.
+///
+/// Two sources share one map because the key spaces never collide: Claude
+/// Code ids are UUIDs (`~/.claude/sessions/*.json`), Hermes ids are
+/// `YYYYMMDD_HHMMSS_hex` (the `sessions` table of `~/.hermes/state.db`) — and
+/// those are the same ids Hermes puts in its hook payloads, so the map keys
+/// match `@pane_session_id` on the pane.
+pub fn scan_session_names() -> HashMap<String, String> {
+    let mut map = scan_claude_session_names();
+    for (session_id, name) in scan_hermes_session_titles() {
+        map.insert(session_id, name);
+    }
+    map
+}
 
 /// Return the path to Claude Code's sessions directory.
 fn sessions_dir() -> Option<PathBuf> {
@@ -8,8 +35,7 @@ fn sessions_dir() -> Option<PathBuf> {
     if dir.is_dir() { Some(dir) } else { None }
 }
 
-/// Scan `~/.claude/sessions/*.json` for session names.
-pub fn scan_session_names() -> HashMap<String, String> {
+fn scan_claude_session_names() -> HashMap<String, String> {
     let mut map = HashMap::new();
     let Some(dir) = sessions_dir() else {
         return map;
@@ -25,6 +51,66 @@ pub fn scan_session_names() -> HashMap<String, String> {
         if let Some((session_id, name)) = parse_session_file(&path) {
             map.insert(session_id, name);
         }
+    }
+    map
+}
+
+/// Return the path to Hermes' session store, when present.
+fn hermes_state_db() -> Option<PathBuf> {
+    let home = std::env::var("HOME").ok()?;
+    let db = PathBuf::from(home).join(".hermes").join("state.db");
+    if db.is_file() { Some(db) } else { None }
+}
+
+/// Read `(id, title)` pairs from Hermes' SQLite session store via the
+/// `sqlite3` CLI in JSON mode. Hermes auto-titles sessions off the opening
+/// message after the first turn (no hook event carries the title), so a
+/// background read of the store is the only way to pick titles up.
+///
+/// Missing `sqlite3` binary, unreadable DB, or any query failure yields an
+/// empty map: Hermes rows then keep the plain agent label. `-readonly` keeps
+/// the probe from taking write locks on the live WAL database.
+fn scan_hermes_session_titles() -> HashMap<String, String> {
+    let Some(db) = hermes_state_db() else {
+        return HashMap::new();
+    };
+    let mut command = Command::new("sqlite3");
+    command.arg("-json").arg("-readonly").arg(&db).arg(format!(
+        "SELECT id, title FROM sessions WHERE title IS NOT NULL \
+             ORDER BY started_at DESC LIMIT {HERMES_TITLE_LIMIT}"
+    ));
+    let Ok(output) = subprocess::run_with_timeout(&mut command, HERMES_QUERY_TIMEOUT) else {
+        return HashMap::new();
+    };
+    if !output.status.success() {
+        return HashMap::new();
+    }
+    parse_hermes_titles(&String::from_utf8_lossy(&output.stdout))
+}
+
+/// Parse `sqlite3 -json` output (`[{"id": "...", "title": "..."}, ...]`).
+/// Empty results print as nothing at all; malformed output, a non-array
+/// payload, and rows missing either field all degrade to "skip" rather than
+/// erroring, so a schema change upstream can never break the scan.
+fn parse_hermes_titles(json: &str) -> HashMap<String, String> {
+    let Ok(rows) = serde_json::from_str::<serde_json::Value>(json.trim()) else {
+        return HashMap::new();
+    };
+    let Some(rows) = rows.as_array() else {
+        return HashMap::new();
+    };
+    let mut map = HashMap::new();
+    for row in rows {
+        let (Some(id), Some(title)) = (
+            row.get("id").and_then(|v| v.as_str()).map(str::trim),
+            row.get("title").and_then(|v| v.as_str()).map(str::trim),
+        ) else {
+            continue;
+        };
+        if id.is_empty() || title.is_empty() {
+            continue;
+        }
+        map.insert(id.to_string(), title.to_string());
     }
     map
 }
@@ -118,5 +204,44 @@ mod tests {
     fn parse_session_file_nonexistent() {
         let path = std::env::temp_dir().join("session_test_nonexistent/99999.json");
         assert!(parse_session_file(&path).is_none());
+    }
+
+    #[test]
+    fn parse_hermes_titles_reads_rows() {
+        let map = parse_hermes_titles(
+            r#"[{"id":"20261016_120317_dc6c9a","title":"Fix the login flow"},
+                {"id":"20261015_195041_6b2d8f","title":"Sync config"}]"#,
+        );
+        assert_eq!(map.len(), 2);
+        assert_eq!(map["20261016_120317_dc6c9a"], "Fix the login flow");
+        assert_eq!(map["20261015_195041_6b2d8f"], "Sync config");
+    }
+
+    #[test]
+    fn parse_hermes_titles_empty_output_is_empty_map() {
+        // `sqlite3 -json` prints nothing at all for an empty result set.
+        assert!(parse_hermes_titles("").is_empty());
+        assert!(parse_hermes_titles("[]").is_empty());
+    }
+
+    #[test]
+    fn parse_hermes_titles_malformed_output_is_empty_map() {
+        assert!(parse_hermes_titles("not json").is_empty());
+        // A schema change upstream must degrade, not panic.
+        assert!(parse_hermes_titles("{\"id\":\"x\"}").is_empty());
+    }
+
+    #[test]
+    fn parse_hermes_titles_skips_incomplete_rows() {
+        let map = parse_hermes_titles(
+            r#"[{"id":"a"},
+                {"id":"","title":"empty id"},
+                {"id":"  ","title":"blank id"},
+                {"title":"no id"},
+                {"id":"b","title":"  padded  "},
+                {"id":"c","title":""}]"#,
+        );
+        assert_eq!(map.len(), 1);
+        assert_eq!(map["b"], "padded");
     }
 }

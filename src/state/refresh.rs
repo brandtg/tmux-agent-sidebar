@@ -460,14 +460,15 @@ impl AppState {
     }
 
     /// Apply the current `session_id → name` map to each pane so the
-    /// sidebar can render `/rename`-assigned labels. The map itself is
-    /// refreshed off-thread by `session_poll_loop` in `main.rs`; this
-    /// function only consumes the cached snapshot.
+    /// sidebar can render session labels (Claude `/rename`, Hermes
+    /// auto-titles). The map itself is refreshed off-thread by
+    /// `session_poll_loop` in `main.rs`; this function only consumes the
+    /// cached snapshot.
     ///
     /// A pane whose `session_name` is already non-empty carries a
     /// hook-provided title (`@pane_session_title`, e.g. opencode) that
-    /// the tmux parse filled in; it outranks the map, which only covers
-    /// Claude Code, so it is left untouched.
+    /// the tmux parse filled in; it outranks the map, so it is left
+    /// untouched.
     fn refresh_session_names(&mut self) {
         for group in &mut self.repo_groups {
             for (pane, _) in &mut group.panes {

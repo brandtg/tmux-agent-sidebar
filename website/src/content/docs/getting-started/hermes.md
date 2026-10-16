@@ -64,6 +64,18 @@ it to the sidebar binary, which writes the pane's tmux options. The mapping:
 `on_session_end` is deliberately not wired — despite its name it fires after
 every turn; `on_session_finalize` is the real teardown hook.
 
+## Pane titles
+
+Hermes auto-titles each session after the first turn (visible in
+`hermes sessions list`), but no shell hook carries the title — so the sidebar
+does not learn it through the hooks above. Instead it polls the session store
+directly: every 10 seconds it runs a read-only query against the `sessions`
+table of `~/.hermes/state.db` and matches rows to panes by session id.
+
+This needs the `sqlite3` CLI on `PATH` (present by default on macOS and most
+Linux distributions). If it is missing, or the database cannot be read, Hermes
+panes keep showing the plain `hermes` label — everything else keeps working.
+
 ## Pane discovery without hooks
 
 The sidebar can also detect a Hermes pane before any hook fires. Hermes'

@@ -135,8 +135,9 @@ pub struct AppState {
     /// [`GlobalState::bottom_minimize_override`] — the shared, sticky
     /// `m`-pin — is `None`.
     pub bottom_minimized: bool,
-    /// Maps session_id → session name, refreshed periodically from
-    /// `~/.claude/sessions/*.json` files by `session_poll_loop`.
+    /// Maps session_id → session name, refreshed periodically by
+    /// `session_poll_loop` (Claude `/rename` labels plus Hermes session
+    /// titles).
     ///
     /// The map is re-applied to every pane on every tick: `apply_session_snapshot`
     /// rebuilds `repo_groups` with an empty `session_name`, so `refresh` has to
