@@ -8,11 +8,14 @@ use std::path::PathBuf;
 use crate::adapter::HookRegistration;
 use crate::adapter::claude::ClaudeAdapter;
 use crate::adapter::codex::CodexAdapter;
+use crate::adapter::hermes::HermesAdapter;
 
 #[allow(dead_code)]
 const _CLAUDE_TABLE_REACHABLE: &[HookRegistration] = ClaudeAdapter::HOOK_REGISTRATIONS;
 #[allow(dead_code)]
 const _CODEX_TABLE_REACHABLE: &[HookRegistration] = CodexAdapter::HOOK_REGISTRATIONS;
+#[allow(dead_code)]
+const _HERMES_TABLE_REACHABLE: &[HookRegistration] = HermesAdapter::HOOK_REGISTRATIONS;
 
 /// POSIX-quote a string for safe use as a single shell argument.
 ///
@@ -65,6 +68,7 @@ pub(crate) fn build_agent_snippet(agent: &str, hook_script: &str) -> Option<serd
     let table: &[HookRegistration] = match agent {
         "claude" => ClaudeAdapter::HOOK_REGISTRATIONS,
         "codex" => CodexAdapter::HOOK_REGISTRATIONS,
+        "hermes" => HermesAdapter::HOOK_REGISTRATIONS,
         _ => return None,
     };
 
@@ -87,6 +91,45 @@ pub(crate) fn build_agent_snippet(agent: &str, hook_script: &str) -> Option<serd
     }
 
     Some(serde_json::json!({ "hooks": serde_json::Value::Object(hooks) }))
+}
+
+/// Quote a string as a YAML double-quoted scalar so shell quoting inside the
+/// hook command survives the paste into `config.yaml`.
+fn yaml_quote(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 2);
+    out.push('"');
+    for c in s.chars() {
+        if c == '"' || c == '\\' {
+            out.push('\\');
+        }
+        out.push(c);
+    }
+    out.push('"');
+    out
+}
+
+/// Build the ready-to-paste `hooks:` YAML block for Hermes' `config.yaml`.
+///
+/// Hermes shell hooks are declared per upstream event name (`pre_llm_call`,
+/// `post_tool_call`, …) and receive the sidebar event as part of the command
+/// arguments, so the block is generated from the same `HOOK_REGISTRATIONS`
+/// table as the JSON snippets. `matcher` is omitted — Hermes only applies
+/// matchers to pre/post tool events and the sidebar wants every tool.
+///
+/// The emitted command strings must be mirrored verbatim into
+/// `~/.hermes/shell-hooks-allowlist.json` (consent is keyed on the exact
+/// command) — see the hermes setup docs.
+pub(crate) fn build_hermes_yaml_snippet(hook_script: &str) -> String {
+    let mut out = String::from("hooks:\n");
+    for reg in HermesAdapter::HOOK_REGISTRATIONS {
+        let command = format_hook_command(hook_script, "hermes", reg.kind.external_name());
+        out.push_str(&format!(
+            "  {}:\n    - command: {}\n",
+            reg.trigger,
+            yaml_quote(&command)
+        ));
+    }
+    out
 }
 
 #[allow(dead_code)]
@@ -283,6 +326,22 @@ pub(crate) fn build_setup_output(hook_script: &str) -> serde_json::Value {
         CodexAdapter::HOOK_REGISTRATIONS,
         hook_script,
     );
+    // Hermes config is YAML, not JSON, so its entry additionally carries the
+    // ready-to-paste `hooks:` block under `yaml_snippet`.
+    let hermes = serde_json::json!({
+        "config_path": "~/.hermes/config.yaml",
+        "hooks": HermesAdapter::HOOK_REGISTRATIONS.iter().map(|reg| {
+            serde_json::json!({
+                "trigger": reg.trigger,
+                "matcher": serde_json::Value::Null,
+                "event": reg.kind.external_name(),
+                "command": format_hook_command(hook_script, "hermes", reg.kind.external_name()),
+            })
+        }).collect::<Vec<_>>(),
+        "snippet": build_agent_snippet("hermes", hook_script)
+            .expect("hermes must be handled by build_agent_snippet"),
+        "yaml_snippet": build_hermes_yaml_snippet(hook_script),
+    });
 
     serde_json::json!({
         "version": crate::VERSION,
@@ -290,6 +349,7 @@ pub(crate) fn build_setup_output(hook_script: &str) -> serde_json::Value {
         "agents": {
             "claude": claude,
             "codex": codex,
+            "hermes": hermes,
         },
     })
 }
@@ -401,6 +461,7 @@ pub(crate) fn config_path_for_agent(agent: &str) -> Option<PathBuf> {
     match agent {
         "claude" => Some(home.join(".claude/settings.json")),
         "codex" => Some(home.join(".codex/hooks.json")),
+        "hermes" => Some(home.join(".hermes/config.yaml")),
         _ => None,
     }
 }
@@ -431,14 +492,14 @@ fn run_setup(args: &[String], hook_script: &str) -> (i32, Option<serde_json::Val
             Some(snippet) => (0, Some(snippet)),
             None => {
                 eprintln!(
-                    "error: unknown agent '{}' (expected 'claude' or 'codex')",
+                    "error: unknown agent '{}' (expected 'claude', 'codex', or 'hermes')",
                     args[0]
                 );
                 (2, None)
             }
         },
         _ => {
-            eprintln!("usage: tmux-agent-sidebar setup [claude|codex]");
+            eprintln!("usage: tmux-agent-sidebar setup [claude|codex|hermes]");
             (2, None)
         }
     }
@@ -453,6 +514,23 @@ pub(crate) fn cmd_setup(args: &[String]) -> i32 {
              elsewhere, hand-edit the 'command' values before pasting.",
             resolved.path
         );
+    }
+    // Hermes config is YAML, so the paste-ready artifact is the `hooks:`
+    // block itself rather than the JSON representation used by the
+    // JSON-config agents (claude settings.json, codex hooks.json).
+    if args.len() == 1 && args[0] == "hermes" {
+        if build_agent_snippet("hermes", &resolved.path).is_none() {
+            eprintln!("error: hermes setup unavailable");
+            return 2;
+        }
+        print!("{}", build_hermes_yaml_snippet(&resolved.path));
+        eprint!(
+            "\n# Consent: hermes prompts once per (event, command) pair on first use.\n\
+             # For non-interactive setup, mirror each command string verbatim into\n\
+             # ~/.hermes/shell-hooks-allowlist.json ({{\"approvals\": [{{\"event\": ..., \"command\": ...}}]}})\n\
+             # or set hooks_auto_accept: true in ~/.hermes/config.yaml.\n"
+        );
+        return 0;
     }
     let (code, json) = run_setup(args, &resolved.path);
     if let Some(v) = json {

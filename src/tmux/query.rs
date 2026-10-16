@@ -462,7 +462,8 @@ fn parse_pane_fields_with_processes(
             // command so the row appears right away; hooks refine the
             // state once they fire, and the row drops out on its own
             // when the agent exits and the command reverts to the shell.
-            let agent = AgentType::from_label(current_command)?;
+            let agent = AgentType::from_label(current_command)
+                .or_else(|| detect_shimmed_agent(parts, process_snapshot))?;
             let raw_status = &parts[pane_line_field::PANE_STATUS];
             let status = if raw_status.is_empty() {
                 PaneStatus::Idle
@@ -474,16 +475,21 @@ fn parse_pane_fields_with_processes(
     };
     let pane_pid: Option<u32> = parts[pane_line_field::PANE_PID].parse().ok();
 
-    // Codex / OpenCode panes can leave stale tmux metadata behind after the
-    // agent exits and the pane falls back to the user's shell. Neither
-    // agent exposes a reliable "process exit" hook (Codex has no such
-    // hook, OpenCode runs under Bun where `process.on("exit")` does not
-    // fire our handlers), so the Rust polling side must own teardown:
-    // wipe pane options + activity log the first poll after the agent
-    // is gone. Subsequent polls short-circuit at the `AgentType::from_label`
+    // Codex / OpenCode / Hermes panes can leave stale tmux metadata behind
+    // after the agent exits and the pane falls back to the user's shell.
+    // None of them expose a reliable "process exit" hook for every path —
+    // Codex has no such hook, OpenCode runs under Bun where
+    // `process.on("exit")` does not fire our handlers, and Hermes'
+    // `on_session_finalize` only covers graceful exits (not crashes or
+    // killed panes) — so the Rust polling side must own teardown: wipe
+    // pane options + activity log the first poll after the agent is
+    // gone. Subsequent polls short-circuit at the `AgentType::from_label`
     // check above once `@pane_agent` has been cleared. Claude is excluded
     // because its SessionEnd hook drives cleanup instead.
-    if matches!(agent, AgentType::Codex | AgentType::OpenCode) && is_shell_command(current_command)
+    if matches!(
+        agent,
+        AgentType::Codex | AgentType::OpenCode | AgentType::Hermes
+    ) && is_shell_command(current_command)
     {
         let agent_still_alive = pane_pid
             .and_then(|pid| {
@@ -561,14 +567,36 @@ fn parse_pane_fields_with_processes(
     })
 }
 
+/// Detect an agent whose pane command hides its name behind a generic
+/// runtime shim. Hermes' official launcher is a Python wrapper
+/// (`python3 -I -c …`) that renames its process (`comm` = `hermes`), so
+/// tmux's `pane_current_command` stays `python3` and the argv0 fallback
+/// above can never match. Walk the pane's process tree instead, using the
+/// same comm/argv matching as the stale-state sweep.
+///
+/// Deliberately scoped to Hermes: claude, codex, and opencode all surface
+/// their name as argv0, so extending the walk to them would only add
+/// false-positive rows (e.g. transient `npx claude --version` runs) for
+/// agents that don't need it.
+fn detect_shimmed_agent(
+    parts: &[String],
+    process_snapshot: Option<&ProcessSnapshot>,
+) -> Option<AgentType> {
+    let pid: u32 = parts[pane_line_field::PANE_PID].parse().ok()?;
+    let snapshot = process_snapshot?;
+    let agent = AgentType::Hermes;
+    snapshot.tree_has_agent(&[pid], &agent).then_some(agent)
+}
+
 /// Wipe all agent-tracked tmux pane options and the activity log file for
-/// `pane_id`. Triggered by `parse_pane_fields` when it detects a Codex or
-/// OpenCode pane that has dropped back to the user's shell, since neither
-/// CLI fires a reliable process-exit hook. Claude panes are never routed
-/// here because Claude has its own SessionEnd hook. The set of keys
-/// mirrors `clear_all_meta` + `clear_run_state` + status/attention clears
-/// in `src/cli/hook/context.rs`; keep them in sync when a new `@pane_*`
-/// key is added.
+/// `pane_id`. Triggered by `parse_pane_fields` when it detects a Codex,
+/// OpenCode, or Hermes pane that has dropped back to the user's shell,
+/// since none of these fire a reliable process-exit hook on every exit
+/// path. Claude panes are never routed here because Claude has its own
+/// SessionEnd hook. The set of keys mirrors `clear_all_meta` +
+/// `clear_run_state` + status/attention clears in
+/// `src/cli/hook/context.rs`; keep them in sync when a new `@pane_*` key
+/// is added.
 fn clear_agent_pane_state(pane_id: &str) {
     const KEYS: &[&str] = &[
         PANE_AGENT,
