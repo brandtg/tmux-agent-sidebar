@@ -201,6 +201,17 @@ fn restore_window_layout(window_id: &str) {
     if layout.is_empty() {
         return;
     }
+    if !saved_layout_matches_window(window_id, &layout) {
+        // Stale-size snapshot: another client was the latest active one
+        // when the sidebar opened, and the window has since changed size.
+        // Replaying the layout would pin the panes at the snapshot's
+        // dimensions inside the current window, leaving the dotted
+        // dead-space border around them until the terminal is resized
+        // again (and shrinking the window outright when no bigger client
+        // is attached). Skip the restore; tmux's default redistribution
+        // of the killed pane's space is size-safe.
+        return;
+    }
     let restored = tmux::run_tmux(&["select-layout", "-t", window_id, &layout]).is_some();
     if restored {
         let _ = tmux::run_tmux(&[
@@ -216,6 +227,40 @@ fn restore_window_layout(window_id: &str) {
 
 fn saved_window_layout(window_id: &str) -> String {
     tmux::display_message(window_id, &format!("#{{{}}}", tmux::SIDEBAR_SAVED_LAYOUT))
+}
+
+/// Parse a `WxH` pair such as `180x53`.
+fn parse_dimensions(s: &str) -> Option<(u32, u32)> {
+    let (width, height) = s.split_once('x')?;
+    Some((width.trim().parse().ok()?, height.trim().parse().ok()?))
+}
+
+/// Dimensions a tmux layout string was captured at. Layouts serialize as
+/// `checksum,WxH,cells...`, so the pair right after the checksum is the
+/// window size the layout belongs to. Returns `None` for anything that
+/// does not match that grammar.
+fn layout_dimensions(layout: &str) -> Option<(u32, u32)> {
+    parse_dimensions(layout.split(',').nth(1)?)
+}
+
+/// Pure core of [`saved_layout_matches_window`] so the comparison is
+/// unit-testable without a tmux server.
+fn dimensions_match(current: &str, layout: &str) -> bool {
+    match (parse_dimensions(current), layout_dimensions(layout)) {
+        (Some(current), Some(saved)) => current == saved,
+        _ => false,
+    }
+}
+
+/// Whether the saved layout can still be applied to `window_id` as it is
+/// now. The snapshot is taken at open time, but the window can change
+/// size while the sidebar is up (a smaller client attached, became the
+/// latest active one, and detached again). A size mismatch means the
+/// snapshot is stale and must not be replayed — see
+/// [`restore_window_layout`].
+fn saved_layout_matches_window(window_id: &str, layout: &str) -> bool {
+    let current = tmux::display_message(window_id, "#{window_width}x#{window_height}");
+    dimensions_match(&current, layout)
 }
 
 /// Restore the saved layout after the TUI's own pane is gone. The TUI
@@ -244,10 +289,23 @@ pub(crate) fn schedule_restore_after_pane_exit(pane_id: &str) {
 /// (digits, `x`, `,`, `[`, `]`, `{`, `}`, checksum hex), so single-quote
 /// wrapping is safe.
 fn scheduled_restore_command(window_id: &str, layout: &str) -> String {
-    format!(
-        "sleep 0.3 && tmux select-layout -t {window_id} '{layout}' && tmux set -wu -t {window_id} -- {}",
+    let restore = format!(
+        "tmux select-layout -t {window_id} '{layout}' && tmux set -wu -t {window_id} -- {}",
         tmux::SIDEBAR_SAVED_LAYOUT
-    )
+    );
+    // Guard with the snapshot's own dimensions: by the time the job fires
+    // the window may have changed size (see restore_window_layout). A
+    // failed guard skips both the restore and the clear, which also
+    // preserves a snapshot written by a concurrent re-open — same
+    // contract as the inline path's failed `select-layout`.
+    match layout_dimensions(layout) {
+        Some((width, height)) => format!(
+            "sleep 0.3 && [ \"$(tmux display-message -t {window_id} -p '#{{window_width}}x#{{window_height}}')\" = \"{width}x{height}\" ] && {restore}"
+        ),
+        // Unparseable layout: keep the historical unconditional restore.
+        // `select-layout` still rejects it if the cell count drifted.
+        None => format!("sleep 0.3 && {restore}"),
+    }
 }
 
 /// What `toggle --create-only` (new-window hook, toggle-all sweep)
@@ -843,9 +901,59 @@ mod tests {
         let command = scheduled_restore_command("@5", "b2c4,237x58,0,0[237x58,0,0,0]");
         assert_eq!(
             command,
-            "sleep 0.3 && tmux select-layout -t @5 'b2c4,237x58,0,0[237x58,0,0,0]' \
+            "sleep 0.3 && [ \"$(tmux display-message -t @5 -p '#{window_width}x#{window_height}')\" = \"237x58\" ] \
+             && tmux select-layout -t @5 'b2c4,237x58,0,0[237x58,0,0,0]' \
              && tmux set -wu -t @5 -- @sidebar_saved_layout"
         );
+    }
+
+    #[test]
+    fn scheduled_restore_command_without_dimensions_restores_unconditionally() {
+        // A layout that defies tmux's own serialization grammar has no
+        // size to guard with; the historical behavior (restore, and let
+        // `select-layout` reject a drifted cell count) applies.
+        let command = scheduled_restore_command("@5", "not-a-layout");
+        assert_eq!(
+            command,
+            "sleep 0.3 && tmux select-layout -t @5 'not-a-layout' \
+             && tmux set -wu -t @5 -- @sidebar_saved_layout"
+        );
+    }
+
+    // ─── stale layout size guard ──────────────────────────────────────
+
+    #[test]
+    fn layout_dimensions_parses_size_after_checksum() {
+        assert_eq!(
+            layout_dimensions("b2c4,237x58,0,0[237x58,0,0,0]"),
+            Some((237, 58))
+        );
+        // Nested cells (two panes) keep the same checksum,WxH prefix.
+        assert_eq!(
+            layout_dimensions("cebf,180x53,0,0{33x53,0,0,16,146x53,34,0,5}"),
+            Some((180, 53))
+        );
+    }
+
+    #[test]
+    fn layout_dimensions_rejects_malformed_strings() {
+        assert_eq!(layout_dimensions(""), None);
+        assert_eq!(layout_dimensions("onlyonefield"), None);
+        assert_eq!(layout_dimensions("chk,notdims,0,0"), None);
+        assert_eq!(layout_dimensions("chk,180xnope,0,0"), None);
+    }
+
+    #[test]
+    fn dimensions_match_requires_the_snapshot_size() {
+        assert!(dimensions_match("226x62", "ba1d,226x62,0,0,0"));
+        // The regression this guards: window grew past the snapshot after
+        // a small client detached, and replaying pinned the panes at the
+        // stale 180x52 cells inside the larger window.
+        assert!(!dimensions_match("226x62", "b67d,180x52,0,0,0"));
+        // Unresolvable current size (window gone / tmux hiccup) never
+        // restores.
+        assert!(!dimensions_match("", "ba1d,226x62,0,0,0"));
+        assert!(!dimensions_match("226x62", "garbage"));
     }
 
     #[test]
