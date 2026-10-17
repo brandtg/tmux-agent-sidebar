@@ -133,19 +133,28 @@ function listPanes() {
 //      worktrees or subdirectories of the launched project), most specific
 //      first;
 //   2. when that match is ambiguous, the candidate whose @pane_session_id
-//      equals the payload's session (a binding an earlier event wrote);
+//      equals the payload's session (a binding an earlier event wrote) —
+//      or, when no candidate is bound to it, an unbound candidate, so
+//      concurrent same-directory sessions each claim their own pane
+//      instead of one starving the other;
 //   3. when nothing matches, the inherited TMUX_PANE — but only if tmux
 //      confirms it still exists (the shared daemon's value is often stale).
 // The cache only collapses bursts of events for the same session; every
 // miss re-queries so a reopened or moved pane self-heals.
-let paneCache = { key: "", pane: "", at: 0 };
+// `cwd|session_id` → { pane, at }. A map, not a single slot: concurrent
+// sessions in one directory interleave events, and a single entry would
+// thrash (a list-panes spawn per event). Insertion-ordered and capped, with
+// the oldest entries evicted.
+const paneCache = new Map();
 const PANE_CACHE_MS = 2000;
+const PANE_CACHE_MAX = 64;
 async function resolvePaneId(cwd, sessionId) {
   if (typeof cwd !== "string" || cwd === "") return "";
   const key = `${cwd}|${sessionId}`;
   const now = Date.now();
-  if (paneCache.key === key && now - paneCache.at < PANE_CACHE_MS) {
-    return paneCache.pane;
+  const cached = paneCache.get(key);
+  if (cached && now - cached.at < PANE_CACHE_MS) {
+    return cached.pane;
   }
   const out = await listPanes();
   const panes = out
@@ -182,7 +191,19 @@ async function resolvePaneId(cwd, sessionId) {
       sessionId !== ""
         ? pathMatches.find((p) => p[3] === sessionId)
         : undefined;
-    chosen = (bound ?? pathMatches[0])[0];
+    if (bound) {
+      chosen = bound[0];
+    } else {
+      // No binding for this session yet (its first event, or the bound
+      // pane closed): claim an unbound pane rather than stealing a bound
+      // one. A plain first-match tie-break routed every event to one pane
+      // and starved the other same-directory session (which could never
+      // acquire a binding of its own). Equal-path matches are checked in
+      // list-panes order; fall back to the first match when every
+      // candidate is already bound.
+      const free = pathMatches.find((p) => p[3] === "");
+      chosen = (free ?? pathMatches[0])[0];
+    }
   } else if (sessionId !== "") {
     const bound = candidates.filter((p) => p[3] === sessionId);
     if (bound.length === 1) chosen = bound[0][0];
@@ -197,7 +218,11 @@ async function resolvePaneId(cwd, sessionId) {
     chosen = process.env.TMUX_PANE;
   }
 
-  paneCache = { key, pane: chosen, at: now };
+  paneCache.set(key, { pane: chosen, at: now });
+  if (paneCache.size > PANE_CACHE_MAX) {
+    const oldest = paneCache.keys().next().value;
+    if (oldest !== undefined) paneCache.delete(oldest);
+  }
   return chosen;
 }
 
@@ -239,23 +264,32 @@ export default {
 
     // OpenCode runs every `task` subagent in a child session (its own
     // sessionID, `parentID` pointing at the main session) whose bus events
-    // and prompt hook all reach this plugin instance. Only the main
-    // session's lifecycle may drive the pane's run state: a child's
-    // session.idle would stop the clock mid-turn (and flag the pane done),
-    // a child's prompt / session.status busy would restart it, and a
-    // child's tool results arriving after the main turn's stop would
-    // re-arm a cleared clock — a timer that never stops.
+    // and prompt hook all reach this plugin instance. Only main-session
+    // lifecycle may drive a pane's run state: a child's session.idle would
+    // stop the clock mid-turn (and flag the pane done), a child's prompt /
+    // session.status busy would restart it, and a child's tool results
+    // arriving after the main turn's stop would re-arm a cleared clock —
+    // a timer that never stops.
     //
-    // `mainSession` is learned from top-level signals: a `session.created`
-    // without a parentID, or a prompt while no turn is active from a
+    // One instance can host several concurrent main sessions (two TUIs in
+    // one project share this plugin), so mains are tracked as a set and
+    // turn state per session — never a single slot. A single slot made
+    // concurrent sessions steal each other's events, landing one session's
+    // prompt text and run clock on the other pane and starving the loser
+    // from its very first event. Main sessions are learned from top-level
+    // signals: a `session.created` without a parentID, or a prompt from a
     // session not known to be a child (the prompt hook also fires for
     // subagent prompts, but a background subagent can prompt between turns
-    // — so adoption must exclude sessions whose created event carried a
-    // parentID). `turnPromptSeen` marks an active main turn: set by the
-    // turn's prompt signal, cleared by stop/error.
-    let mainSession = "";
-    let turnPromptSeen = false;
+    // — so adoption excludes sessions whose parentID is known, from
+    // session.created or a one-time session.get lookup). `activeTurns`
+    // holds the main sessions with a turn in flight: added by the turn's
+    // prompt / busy / started signal, cleared by stop / error.
+    const mainSessions = new Set();
+    const activeTurns = new Set();
     const childSessions = new Set();
+    // child sessionID → parent sessionID, from session.created and the
+    // prompt-time session.get lookup.
+    const parents = new Map();
 
     // sessionID → { projectID, directory }, learned from session.created
     // and from a one-time `session.get` lookup for sessions this instance
@@ -291,6 +325,7 @@ export default {
           info = {
             projectID: typeof session.projectID === "string" ? session.projectID : "",
             directory,
+            parentID: sessionIdOf(session.parentID),
           };
         }
       } catch {}
@@ -316,35 +351,51 @@ export default {
       return info ? belongsToInstance(info) : true;
     };
 
-    // While the main session is unknown every event passes through (the
-    // pre-gating behavior); once learned, foreign sessions are dropped.
+    // While no main session is known every event passes through (the
+    // pre-gating behavior); once one is learned, foreign sessions are
+    // dropped. Concurrent mains all pass — each routes to its own pane.
     const isMainSession = (session_id) =>
-      mainSession === "" || (session_id !== "" && session_id === mainSession);
+      mainSessions.size === 0 ||
+      (session_id !== "" && mainSessions.has(session_id));
 
-    // Prompts admitted in the main session start (or restart) the turn;
-    // child-session prompts never do. The hook receives the admitted
+    // Whether a turn is active that this session's child activity belongs
+    // to: a known child tracks its own parent's turn; anything else falls
+    // back to "any main turn is active" (the pre-per-session behavior).
+    const turnActiveFor = (session_id) => {
+      const parent = parents.get(session_id);
+      return parent ? activeTurns.has(parent) : activeTurns.size > 0;
+    };
+
+    // Prompts admitted in a main session start (or restart) that session's
+    // turn; child-session prompts never do. The hook receives the admitted
     // prompt text directly — no parts extraction like OpenCode 1.
     await ctx.session.hook("prompt", async (event) => {
       const session_id = sessionIdOf(event?.sessionID);
       // Subagent prompts route through the same hook as user prompts
       // (task tool → subagent admission), and a background subagent can
-      // prompt between turns. With no active turn, a non-child session's
-      // message is a fresh or switched-to main session and (re)adopts the
-      // slot; known child prompts never do, and mid-turn foreign messages
-      // are child prompts that must not restart the run clock. A session
-      // this instance knows belongs to another project never adopts the
-      // slot (the bus delivers every project's prompts).
-      if (
-        !turnPromptSeen &&
-        !childSessions.has(session_id) &&
-        (await knownSessionBelongs(session_id))
-      ) {
-        mainSession = session_id;
+      // prompt between turns. A session not known to be a child adopts as
+      // a main; known child prompts never do. Adoption also resolves
+      // parentID via the cached session.get lookup, so a subagent whose
+      // created event was never seen is remembered as a child instead of
+      // stealing a main slot. A session this instance knows belongs to
+      // another project never adopts (the bus delivers every project's
+      // prompts).
+      if (session_id && !childSessions.has(session_id)) {
+        const info = await lookupSessionInfo(session_id);
+        if (info && info.parentID) {
+          childSessions.add(session_id);
+          parents.set(session_id, info.parentID);
+        } else if (belongsToInstance(info)) {
+          mainSessions.add(session_id);
+        }
       }
-      if (session_id !== mainSession) {
+      // Strict membership: unlike the bus gates (which pass everything
+      // while no main is known), an admitted prompt must belong to a
+      // learned main session — a known-foreign prompt is dropped here.
+      if (!mainSessions.has(session_id)) {
         return;
       }
-      turnPromptSeen = true;
+      activeTurns.add(session_id);
       hook("user-prompt-submit", {
         cwd,
         session_id,
@@ -368,7 +419,7 @@ export default {
       if (!(await knownSessionBelongs(session_id))) {
         return;
       }
-      if (!isMainSession(session_id) && !turnPromptSeen) {
+      if (!isMainSession(session_id) && !turnActiveFor(session_id)) {
         return;
       }
       hook("activity-log", {
@@ -406,6 +457,8 @@ export default {
             // shapes carry the fields flat; read both.
             const info =
               data?.info && typeof data.info === "object" ? data.info : data;
+            const parentID =
+              sessionIdOf(info?.parentID) || sessionIdOf(data.parentID);
             sessionProjects.set(session_id, {
               projectID: typeof info?.projectID === "string" ? info.projectID : "",
               directory:
@@ -414,12 +467,12 @@ export default {
                   : typeof info?.location?.directory === "string"
                     ? info.location.directory
                     : "",
+              parentID,
             });
-            const parentID =
-              sessionIdOf(info?.parentID) || sessionIdOf(data.parentID);
             if (parentID) {
               if (session_id) {
                 childSessions.add(session_id);
+                parents.set(session_id, parentID);
               }
               continue;
             }
@@ -427,7 +480,7 @@ export default {
               continue;
             }
             if (session_id) {
-              mainSession = session_id;
+              mainSessions.add(session_id);
             }
             hook("session-start", { cwd, session_id, source: "startup" });
             hook("session-title", {
@@ -472,8 +525,8 @@ export default {
             if (!(await knownSessionBelongs(session_id)) || !isMainSession(session_id)) {
               continue;
             }
-            if (data.status?.type === "busy" && !turnPromptSeen) {
-              turnPromptSeen = true;
+            if (data.status?.type === "busy" && !activeTurns.has(session_id)) {
+              activeTurns.add(session_id);
               hook("user-prompt-submit", { cwd, session_id, prompt: "" });
             }
             continue;
@@ -490,7 +543,7 @@ export default {
             if (!(await knownSessionBelongs(session_id)) || !isMainSession(session_id)) {
               continue;
             }
-            turnPromptSeen = true;
+            activeTurns.add(session_id);
             hook("user-prompt-submit", { cwd, session_id, prompt: "" });
             continue;
 
@@ -500,7 +553,7 @@ export default {
             if (!(await knownSessionBelongs(session_id)) || !isMainSession(session_id)) {
               continue;
             }
-            turnPromptSeen = false;
+            activeTurns.delete(session_id);
             hook("stop", { cwd, session_id, last_message: "" });
             continue;
 
@@ -510,7 +563,7 @@ export default {
             if (!(await knownSessionBelongs(session_id)) || !isMainSession(session_id)) {
               continue;
             }
-            turnPromptSeen = false;
+            activeTurns.delete(session_id);
             hook("stop-failure", {
               cwd,
               session_id,
@@ -529,7 +582,7 @@ export default {
             if (!(await knownSessionBelongs(session_id))) {
               continue;
             }
-            if (!isMainSession(session_id) && !turnPromptSeen) {
+            if (!isMainSession(session_id) && !turnActiveFor(session_id)) {
               continue;
             }
             hook("notification", { cwd, session_id, wait_reason: "permission" });
@@ -543,7 +596,7 @@ export default {
             if (!(await knownSessionBelongs(session_id))) {
               continue;
             }
-            if (!isMainSession(session_id) && !turnPromptSeen) {
+            if (!isMainSession(session_id) && !turnActiveFor(session_id)) {
               continue;
             }
             hook("notification", {
@@ -566,7 +619,7 @@ export default {
             if (!(await knownSessionBelongs(session_id))) {
               continue;
             }
-            if (!isMainSession(session_id) && !turnPromptSeen) {
+            if (!isMainSession(session_id) && !turnActiveFor(session_id)) {
               continue;
             }
             hook("user-prompt-submit", { cwd, session_id, prompt: "" });

@@ -360,9 +360,14 @@ pub(crate) fn cmd_toggle_all(_args: &[String]) -> i32 {
         .unwrap_or(false);
 
     if has_sidebar {
-        close_all_sidebars();
+        close_all_sidebars(false);
     } else {
         let _ = tmux::run_tmux(&["set", "-g", tmux::SIDEBAR_MODE, "open"]);
+        // An explicit open supersedes any pending mobile-takeover restore:
+        // the user is asking for sidebars everywhere right now, and a
+        // stale marker must not resurrect a second wave on the next
+        // upward width crossing.
+        clear_mobile_takeover_state();
         let all_windows = tmux::run_tmux(&[
             "list-panes",
             "-a",
@@ -397,7 +402,19 @@ pub(crate) fn cmd_toggle_all(_args: &[String]) -> i32 {
 /// the maintain-width mobile takeover: both mean "sidebars off
 /// everywhere", and recording the mode first keeps windows created while
 /// the sweep runs sidebar-less too.
-fn close_all_sidebars() {
+///
+/// `record_restore` distinguishes the two callers: the mobile takeover
+/// passes `true` so [`maybe_release_mobile_takeover`] can undo it when a
+/// desktop viewport returns, while a deliberate `toggle-all` close passes
+/// `false` — the user asked for "off everywhere" and nothing should
+/// resurrect it automatically (and any stale takeover marker from a
+/// previous takeover is dropped so it can never fire retroactively).
+fn close_all_sidebars(record_restore: bool) {
+    if record_restore {
+        record_mobile_takeover_state();
+    } else {
+        clear_mobile_takeover_state();
+    }
     let _ = tmux::run_tmux(&["set", "-g", tmux::SIDEBAR_MODE, "closed"]);
     let all_panes =
         tmux::run_tmux(&["list-panes", "-a", "-F", &pane_window_role_format()]).unwrap_or_default();
@@ -406,6 +423,156 @@ fn close_all_sidebars() {
             close_sidebar(&sidebar_pane, &window_id);
         }
     }
+}
+
+/// Snapshot the pre-takeover state so [`maybe_release_mobile_takeover`]
+/// can reverse the sweep: which windows had sidebars, and what
+/// `@sidebar_mode` was. Must run before the caller writes `closed`.
+fn record_mobile_takeover_state() {
+    let all_panes =
+        tmux::run_tmux(&["list-panes", "-a", "-F", &pane_window_role_format()]).unwrap_or_default();
+    let mut windows: Vec<String> = all_panes
+        .lines()
+        .filter_map(parse_sidebar_close_target)
+        .map(|(_, window_id)| window_id)
+        .collect();
+    windows.sort();
+    windows.dedup();
+    let prior_mode = read_global_option(tmux::SIDEBAR_MODE);
+    set_global_option(
+        tmux::SIDEBAR_MOBILE_RESTORE,
+        &tmux::sanitize_option_value(&windows.join(",")),
+    );
+    set_global_option(tmux::SIDEBAR_MOBILE_PRIOR_MODE, prior_mode.trim());
+}
+
+/// Drop the takeover marker. Called when the restore has run and when a
+/// deliberate `toggle-all` close supersedes any pending marker.
+fn clear_mobile_takeover_state() {
+    let _ = tmux::run_tmux(&["set", "-gu", tmux::SIDEBAR_MOBILE_RESTORE]);
+    let _ = tmux::run_tmux(&["set", "-gu", tmux::SIDEBAR_MOBILE_PRIOR_MODE]);
+}
+
+/// Reverse the mobile takeover when the desktop comes back.
+///
+/// The takeover records its state via [`record_mobile_takeover_state`];
+/// this path watches for the mirror-image signal — a window climbing back
+/// to the popup threshold or beyond, i.e. a big viewport is driving again
+/// — and only acts when every marker lines up:
+///
+/// - `@sidebar_mode` is `closed` (the takeover wrote it),
+/// - the restore marker exists (only the takeover writes it — a
+///   deliberate `toggle-all` close is sticky, as documented),
+/// - no client narrower than the threshold is attached. While the phone
+///   is still connected it can re-shrink windows at any moment and
+///   re-trigger the sweep; restoring under those conditions would just
+///   feed a close/open flap between the two clients.
+///
+/// Windows still below the threshold (the narrow client's session) are
+/// skipped — reopening there would strand a sliver — and dropped from the
+/// restore set. The recorded pre-takeover mode is restored verbatim so a
+/// takeover that fired while mode was unset does not leave an `open` pin
+/// overriding `@sidebar_auto_create`.
+fn maybe_release_mobile_takeover(last_width: Option<u32>, current: u32, threshold: u32) {
+    let mode = read_global_option(tmux::SIDEBAR_MODE);
+    let marker_present = tmux::run_tmux(&["show", "-g", tmux::SIDEBAR_MOBILE_RESTORE]).is_some();
+    let narrowest_client = narrowest_client_width();
+    if !should_release_takeover(
+        last_width,
+        current,
+        threshold,
+        &mode,
+        marker_present,
+        narrowest_client,
+    ) {
+        return;
+    }
+    let restore = read_global_option(tmux::SIDEBAR_MOBILE_RESTORE);
+    for window_id in parse_restore_windows(&restore) {
+        let width: u32 = tmux::display_message(&window_id, "#{window_width}")
+            .parse()
+            .unwrap_or(0);
+        if width < threshold {
+            continue;
+        }
+        let Some(path) = window_pane_path(&window_id) else {
+            continue;
+        };
+        cmd_toggle(&[
+            "--create-only".to_string(),
+            "--force-split".to_string(),
+            window_id,
+            path,
+        ]);
+    }
+
+    let prior_mode = read_global_option(tmux::SIDEBAR_MOBILE_PRIOR_MODE);
+    let prior_mode = prior_mode.trim();
+    if prior_mode.is_empty() {
+        let _ = tmux::run_tmux(&["set", "-gu", tmux::SIDEBAR_MODE]);
+    } else {
+        let _ = tmux::run_tmux(&["set", "-g", tmux::SIDEBAR_MODE, prior_mode]);
+    }
+    clear_mobile_takeover_state();
+}
+
+/// Pure decision core of [`maybe_release_mobile_takeover`]: a completed
+/// upward crossing of the threshold, a `closed` mode, a takeover marker,
+/// and no attached client narrower than the threshold.
+fn should_release_takeover(
+    last_width: Option<u32>,
+    current: u32,
+    threshold: u32,
+    mode: &str,
+    marker_present: bool,
+    narrowest_client: Option<u32>,
+) -> bool {
+    let crossed_up = match last_width {
+        Some(last) => threshold > 0 && current > 0 && last < threshold && current >= threshold,
+        None => false,
+    };
+    crossed_up
+        && mode.trim() == "closed"
+        && marker_present
+        && narrowest_client.is_none_or(|width| width >= threshold)
+}
+
+/// Parse the takeover marker's comma-separated window-id list.
+fn parse_restore_windows(raw: &str) -> Vec<String> {
+    raw.split(',')
+        .map(str::trim)
+        .filter(|id| id.starts_with('@'))
+        .map(str::to_string)
+        .collect()
+}
+
+/// Narrowest attached client width, `None` when no clients (or the query
+/// fails) — treated as "no narrow client" by the release gate.
+fn narrowest_client_width() -> Option<u32> {
+    tmux::run_tmux(&["list-clients", "-F", "#{client_width}"])?
+        .lines()
+        .filter_map(|line| line.trim().parse().ok())
+        .min()
+}
+
+/// First pane's `#{pane_current_path}` in `window_id`, for re-opening a
+/// recorded sidebar at its original working directory.
+fn window_pane_path(window_id: &str) -> Option<String> {
+    tmux::run_tmux(&["list-panes", "-t", window_id, "-F", "#{pane_current_path}"])
+        .unwrap_or_default()
+        .lines()
+        .next()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+}
+
+fn read_global_option(key: &str) -> String {
+    tmux::run_tmux(&["show", "-gv", key]).unwrap_or_default()
+}
+
+fn set_global_option(key: &str, value: &str) {
+    let _ = tmux::run_tmux(&["set", "-g", key, &tmux::sanitize_option_value(value)]);
 }
 
 /// Kill every sidebar pane beyond the first in its window, restoring
@@ -498,9 +665,15 @@ pub(crate) fn cmd_maintain_width(args: &[String]) -> i32 {
         // sweep — every split-pane sidebar comes down and the recorded
         // `closed` mode keeps auto-create from re-seeding them. The
         // width recording above already ran, so the layout churn this
-        // sweep causes re-fires this hook as a no-op everywhere.
-        close_all_sidebars();
+        // sweep causes re-fires this hook as a no-op everywhere. The
+        // restore marker written here is what lets
+        // `maybe_release_mobile_takeover` undo the whole thing when the
+        // desktop client returns.
+        close_all_sidebars(true);
+        return 0;
     }
+
+    maybe_release_mobile_takeover(last_width, current_width, threshold);
 
     0
 }
@@ -1382,6 +1555,145 @@ mod tests {
         assert!(!auto_hide_enabled("off"));
         assert!(!auto_hide_enabled("0"));
         assert!(!auto_hide_enabled("garbage"));
+    }
+
+    // ─── mobile takeover release ─────────────────────────────────────
+
+    #[test]
+    fn release_fires_on_upward_crossing_with_marker_and_no_narrow_client() {
+        assert!(should_release_takeover(
+            Some(58),
+            295,
+            100,
+            "closed",
+            true,
+            Some(295)
+        ));
+        // No clients at all (query failed / everything detached) is not a
+        // blocker: nothing attached can re-shrink the window.
+        assert!(should_release_takeover(
+            Some(58),
+            295,
+            100,
+            "closed",
+            true,
+            None
+        ));
+    }
+
+    #[test]
+    fn release_requires_an_upward_crossing() {
+        // No crossing at all (last == current).
+        assert!(!should_release_takeover(
+            Some(295),
+            295,
+            100,
+            "closed",
+            true,
+            None
+        ));
+        // Downward crossing is the takeover's job, not the release's.
+        assert!(!should_release_takeover(
+            Some(295),
+            58,
+            100,
+            "closed",
+            true,
+            None
+        ));
+        // Missing observation proves no crossing.
+        assert!(!should_release_takeover(
+            None, 295, 100, "closed", true, None
+        ));
+        // Degenerate thresholds/widths.
+        assert!(!should_release_takeover(
+            Some(58),
+            295,
+            0,
+            "closed",
+            true,
+            None
+        ));
+        assert!(!should_release_takeover(
+            Some(58),
+            0,
+            100,
+            "closed",
+            true,
+            None
+        ));
+    }
+
+    #[test]
+    fn release_requires_closed_mode_and_takeover_marker() {
+        // A deliberate toggle-all close writes `closed` but no marker:
+        // sticky, as documented.
+        assert!(!should_release_takeover(
+            Some(58),
+            295,
+            100,
+            "closed",
+            false,
+            None
+        ));
+        // A marker without the closed mode is a stale leftover (e.g. mode
+        // was re-opened by hand); the release must not fire.
+        assert!(!should_release_takeover(
+            Some(58),
+            295,
+            100,
+            "open",
+            true,
+            None
+        ));
+        assert!(!should_release_takeover(Some(58), 295, 100, "", true, None));
+    }
+
+    #[test]
+    fn release_waits_until_the_narrow_client_detaches() {
+        // The phone is still attached: restoring now would feed a
+        // close/open flap between the two clients.
+        assert!(!should_release_takeover(
+            Some(58),
+            295,
+            100,
+            "closed",
+            true,
+            Some(58)
+        ));
+        assert!(!should_release_takeover(
+            Some(58),
+            295,
+            100,
+            "closed",
+            true,
+            Some(99)
+        ));
+        // At exactly the threshold the client is not "narrow" — popups are
+        // a below-threshold concept.
+        assert!(should_release_takeover(
+            Some(58),
+            295,
+            100,
+            "closed",
+            true,
+            Some(100)
+        ));
+    }
+
+    #[test]
+    fn parse_restore_windows_keeps_window_ids_only() {
+        assert_eq!(
+            parse_restore_windows(" @1,@7, @28 "),
+            vec!["@1".to_string(), "@7".to_string(), "@28".to_string()]
+        );
+        assert!(parse_restore_windows("").is_empty());
+        assert!(parse_restore_windows(",,").is_empty());
+        assert_eq!(
+            parse_restore_windows("%5,@2"),
+            vec!["@2".to_string()],
+            "pane ids are not window ids"
+        );
     }
 
     // ─── should_kill_window ───────────────────────────────────────────

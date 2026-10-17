@@ -16,7 +16,7 @@ description: Every shortcut in the sidebar, the worktree spawn modal, and the cl
 | `r`            | Open repo filter popup                                        |
 | `Enter`        | Jump to the selected pane                                     |
 | `Tab`          | Cycle status filter                                           |
-| `Shift+Tab`    | Switch bottom panel tab (Activity ⇄ Git)                      |
+| `Shift+Tab`    | Switch bottom panel tab (Feed ⇄ Repos); `←`/`→` also switch while the bottom panel has focus |
 | `c`            | Toggle compact view (one line per agent)                      |
 | `m`            | Minimize / expand the bottom panel (collapses to the tab header); shared across all open sidebars |
 | `Esc`          | Return focus or close the popup                               |

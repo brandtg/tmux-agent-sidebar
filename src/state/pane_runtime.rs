@@ -2,7 +2,6 @@ use std::collections::{HashMap, HashSet};
 
 use super::AppState;
 use crate::activity::TaskProgress;
-use crate::state::BottomTab;
 
 /// The completed foreground task of a non-agent window pane, kept until
 /// the user focuses the pane (or a new task starts, or the pane dies),
@@ -48,11 +47,6 @@ pub struct PaneRuntimeState {
     pub task_progress: Option<TaskProgress>,
     pub task_dismissed_total: Option<usize>,
     pub inactive_since: Option<u64>,
-    /// Last bottom tab the user selected while this pane was focused.
-    /// `None` until the user changes tabs at least once. Cleaned up
-    /// automatically by `prune_pane_states_to_current_panes` when the
-    /// pane disappears, so a relaunched pane starts fresh.
-    pub tab_pref: Option<BottomTab>,
     /// Last observed mtime of this pane's activity log (runtime dir,
     /// see `crate::paths`). Used by `refresh_task_progress` to skip the
     /// (potentially expensive) re-parse when the log has not been touched
@@ -208,7 +202,6 @@ mod tests {
         assert!(state.task_progress.is_none());
         assert!(state.task_dismissed_total.is_none());
         assert!(state.inactive_since.is_none());
-        assert!(state.tab_pref.is_none());
         assert!(state.task_progress_log_mtime.is_none());
     }
 

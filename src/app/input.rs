@@ -1,5 +1,4 @@
 use std::io;
-use std::sync::atomic::{AtomicBool, Ordering};
 
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEventKind};
 use ratatui::{Terminal, backend::CrosstermBackend};
@@ -15,11 +14,10 @@ use crate::worktree::RemoveMode;
 pub(super) fn handle_event(
     ev: Event,
     state: &mut AppState,
-    git_tab_active: &AtomicBool,
     terminal: &Terminal<CrosstermBackend<io::Stdout>>,
 ) -> bool {
     match ev {
-        Event::Key(key) => handle_key_event(key, state, git_tab_active),
+        Event::Key(key) => handle_key_event(key, state),
         Event::Mouse(mouse) => match mouse.kind {
             MouseEventKind::Down(MouseButton::Left) => {
                 let term_height = terminal.size().map(|s| s.height).unwrap_or(0);
@@ -29,12 +27,6 @@ pub(super) fn handle_event(
                     state.handle_mouse_click(mouse.row, mouse.column);
                 } else if mouse.row == bottom_start {
                     state.handle_bottom_tab_click(mouse.column);
-                    // Keep the background git poller in sync immediately — the
-                    // keyboard `BackTab` path does the same update. Without this,
-                    // clicking into Git Status leaves polling disabled until the
-                    // next refresh tick and the tab renders stale data.
-                    git_tab_active
-                        .store(state.bottom_tab == BottomTab::GitStatus, Ordering::Relaxed);
                 }
                 true
             }
@@ -71,11 +63,7 @@ pub(super) fn handle_event(
 /// unit tests can drive the keyboard path without constructing a real
 /// terminal handle (the [`Terminal`] argument is only needed for mouse
 /// coordinate conversion).
-pub(super) fn handle_key_event(
-    key: KeyEvent,
-    state: &mut AppState,
-    git_tab_active: &AtomicBool,
-) -> bool {
+pub(super) fn handle_key_event(key: KeyEvent, state: &mut AppState) -> bool {
     if state.is_notices_popup_open() {
         if key.code == KeyCode::Esc {
             state.close_notices_popup();
@@ -132,7 +120,7 @@ pub(super) fn handle_key_event(
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
     match key.code {
         KeyCode::Esc => {
-            if state.focus_state.focus == Focus::ActivityLog
+            if state.focus_state.focus == Focus::BottomPanel
                 || state.focus_state.focus == Focus::Filter
             {
                 state.focus_state.focus = Focus::Panes;
@@ -143,20 +131,25 @@ pub(super) fn handle_key_event(
         KeyCode::Char('n') if ctrl => pane_nav_down(state),
         KeyCode::Char('k') | KeyCode::Up => pane_nav_up(state),
         KeyCode::Char('p') if ctrl => pane_nav_up(state),
-        KeyCode::Char('h') | KeyCode::Left => {
-            if state.focus_state.focus == Focus::Filter {
+        KeyCode::Char('h') | KeyCode::Left => match state.focus_state.focus {
+            Focus::Filter => {
                 state.global.status_filter = state.global.status_filter.prev();
                 state.global.save_filter();
                 state.rebuild_row_targets();
             }
-        }
-        KeyCode::Char('l') | KeyCode::Right => {
-            if state.focus_state.focus == Focus::Filter {
+            // Two tabs, so both directions cycle the same pair.
+            Focus::BottomPanel => state.next_bottom_tab(),
+            _ => {}
+        },
+        KeyCode::Char('l') | KeyCode::Right => match state.focus_state.focus {
+            Focus::Filter => {
                 state.global.status_filter = state.global.status_filter.next();
                 state.global.save_filter();
                 state.rebuild_row_targets();
             }
-        }
+            Focus::BottomPanel => state.next_bottom_tab(),
+            _ => {}
+        },
         KeyCode::Char('r') => {
             if state.focus_state.focus == Focus::Filter {
                 state.toggle_repo_popup();
@@ -207,7 +200,6 @@ pub(super) fn handle_key_event(
         }
         KeyCode::BackTab => {
             state.next_bottom_tab();
-            git_tab_active.store(state.bottom_tab == BottomTab::GitStatus, Ordering::Relaxed);
         }
         _ => {}
     }
@@ -223,10 +215,10 @@ fn pane_nav_down(state: &mut AppState) {
             if state.move_pane_selection(1) {
                 state.global.queue_cursor_save();
             } else {
-                state.focus_state.focus = Focus::ActivityLog;
+                state.focus_state.focus = Focus::BottomPanel;
             }
         }
-        Focus::ActivityLog => state.scroll_bottom(1),
+        Focus::BottomPanel => state.scroll_bottom(1),
     }
 }
 
@@ -240,10 +232,10 @@ fn pane_nav_up(state: &mut AppState) {
                 state.focus_state.focus = Focus::Filter;
             }
         }
-        Focus::ActivityLog => {
+        Focus::BottomPanel => {
             let at_top = match state.bottom_tab {
-                BottomTab::Activity => state.activity.scroll.offset == 0,
-                BottomTab::GitStatus => state.scrolls.git.offset == 0,
+                BottomTab::Feed => state.feed.scroll.offset == 0,
+                BottomTab::Repos => state.scrolls.repos.offset == 0,
             };
             if at_top {
                 state.focus_state.focus = Focus::Panes;
@@ -331,10 +323,9 @@ mod tests {
     #[test]
     fn ctrl_n_moves_pane_selection_down() {
         let mut state = state_with_three_panes();
-        let flag = AtomicBool::new(false);
-        handle_key_event(ctrl_key('n'), &mut state, &flag);
+        handle_key_event(ctrl_key('n'), &mut state);
         assert_eq!(state.global.selected_pane_row, 1);
-        handle_key_event(ctrl_key('n'), &mut state, &flag);
+        handle_key_event(ctrl_key('n'), &mut state);
         assert_eq!(state.global.selected_pane_row, 2);
     }
 
@@ -342,21 +333,47 @@ mod tests {
     fn ctrl_p_moves_pane_selection_up() {
         let mut state = state_with_three_panes();
         state.global.selected_pane_row = 2;
-        let flag = AtomicBool::new(false);
-        handle_key_event(ctrl_key('p'), &mut state, &flag);
+        handle_key_event(ctrl_key('p'), &mut state);
         assert_eq!(state.global.selected_pane_row, 1);
-        handle_key_event(ctrl_key('p'), &mut state, &flag);
+        handle_key_event(ctrl_key('p'), &mut state);
         assert_eq!(state.global.selected_pane_row, 0);
     }
 
     #[test]
     fn bare_j_and_k_still_navigate_panes() {
         let mut state = state_with_three_panes();
-        let flag = AtomicBool::new(false);
-        handle_key_event(key(KeyCode::Char('j')), &mut state, &flag);
+        handle_key_event(key(KeyCode::Char('j')), &mut state);
         assert_eq!(state.global.selected_pane_row, 1);
-        handle_key_event(key(KeyCode::Char('k')), &mut state, &flag);
+        handle_key_event(key(KeyCode::Char('k')), &mut state);
         assert_eq!(state.global.selected_pane_row, 0);
+    }
+
+    #[test]
+    fn arrows_switch_bottom_tab_while_panel_focused() {
+        let mut state = state_with_three_panes();
+        state.focus_state.focus = Focus::BottomPanel;
+        assert_eq!(state.bottom_tab, BottomTab::Feed);
+
+        handle_key_event(key(KeyCode::Right), &mut state);
+        assert_eq!(state.bottom_tab, BottomTab::Repos);
+        handle_key_event(key(KeyCode::Left), &mut state);
+        assert_eq!(state.bottom_tab, BottomTab::Feed);
+
+        // h/l mirror the arrows, matching j/k pane navigation.
+        handle_key_event(key(KeyCode::Char('l')), &mut state);
+        assert_eq!(state.bottom_tab, BottomTab::Repos);
+        handle_key_event(key(KeyCode::Char('h')), &mut state);
+        assert_eq!(state.bottom_tab, BottomTab::Feed);
+    }
+
+    #[test]
+    fn arrows_do_not_switch_tabs_from_panes_focus() {
+        let mut state = state_with_three_panes();
+        assert_eq!(state.focus_state.focus, Focus::Panes);
+
+        handle_key_event(key(KeyCode::Right), &mut state);
+        handle_key_event(key(KeyCode::Left), &mut state);
+        assert_eq!(state.bottom_tab, BottomTab::Feed);
     }
 
     #[test]
@@ -366,8 +383,7 @@ mod tests {
         // git metadata, exercised elsewhere) — only that it does NOT
         // shadow the Ctrl-N navigation arm.
         let mut state = state_with_three_panes();
-        let flag = AtomicBool::new(false);
-        handle_key_event(key(KeyCode::Char('n')), &mut state, &flag);
+        handle_key_event(key(KeyCode::Char('n')), &mut state);
         assert_eq!(state.global.selected_pane_row, 0);
     }
 
@@ -375,8 +391,7 @@ mod tests {
     fn bare_p_is_unbound_in_panes_focus() {
         let mut state = state_with_three_panes();
         state.global.selected_pane_row = 1;
-        let flag = AtomicBool::new(false);
-        handle_key_event(key(KeyCode::Char('p')), &mut state, &flag);
+        handle_key_event(key(KeyCode::Char('p')), &mut state);
         assert_eq!(state.global.selected_pane_row, 1);
     }
 
@@ -386,8 +401,7 @@ mod tests {
         // loop breaks on `quit_requested`, which closes a popup (via
         // `display-popup -E`) or ends the pane-mode sidebar.
         let mut state = state_with_three_panes();
-        let flag = AtomicBool::new(false);
-        handle_key_event(key(KeyCode::Char('q')), &mut state, &flag);
+        handle_key_event(key(KeyCode::Char('q')), &mut state);
         assert!(state.quit_requested);
     }
 
@@ -408,8 +422,7 @@ mod tests {
             working: None,
             area: None,
         };
-        let flag = AtomicBool::new(false);
-        handle_key_event(key(KeyCode::Char('q')), &mut state, &flag);
+        handle_key_event(key(KeyCode::Char('q')), &mut state);
         assert!(!state.quit_requested);
         assert!(state.is_spawn_input_open());
         if let PopupState::SpawnInput { input, .. } = &state.popup {
@@ -420,13 +433,12 @@ mod tests {
     #[test]
     fn ctrl_n_navigates_repo_popup_down() {
         let mut state = state_with_repo_popup_open();
-        let flag = AtomicBool::new(false);
-        handle_key_event(ctrl_key('n'), &mut state, &flag);
+        handle_key_event(ctrl_key('n'), &mut state);
         assert_eq!(state.repo_popup_selected(), 1);
-        handle_key_event(ctrl_key('n'), &mut state, &flag);
+        handle_key_event(ctrl_key('n'), &mut state);
         assert_eq!(state.repo_popup_selected(), 2);
         // Past the last entry the popup nav helper is a no-op.
-        handle_key_event(ctrl_key('n'), &mut state, &flag);
+        handle_key_event(ctrl_key('n'), &mut state);
         assert_eq!(state.repo_popup_selected(), 2);
     }
 
@@ -434,13 +446,12 @@ mod tests {
     fn ctrl_p_navigates_repo_popup_up() {
         let mut state = state_with_repo_popup_open();
         state.set_repo_popup_selected(2);
-        let flag = AtomicBool::new(false);
-        handle_key_event(ctrl_key('p'), &mut state, &flag);
+        handle_key_event(ctrl_key('p'), &mut state);
         assert_eq!(state.repo_popup_selected(), 1);
-        handle_key_event(ctrl_key('p'), &mut state, &flag);
+        handle_key_event(ctrl_key('p'), &mut state);
         assert_eq!(state.repo_popup_selected(), 0);
         // Below 0 the popup nav helper is a no-op.
-        handle_key_event(ctrl_key('p'), &mut state, &flag);
+        handle_key_event(ctrl_key('p'), &mut state);
         assert_eq!(state.repo_popup_selected(), 0);
     }
 
@@ -449,17 +460,16 @@ mod tests {
         // `c` is global (any non-modal focus) so the toggle works from the
         // activity log or filter bar too, not just Panes focus.
         let mut state = state_with_three_panes();
-        let flag = AtomicBool::new(false);
         assert!(!state.global.compact);
 
-        handle_key_event(key(KeyCode::Char('c')), &mut state, &flag);
+        handle_key_event(key(KeyCode::Char('c')), &mut state);
         assert!(state.global.compact);
         assert_eq!(
             state.flash.as_ref().map(|(text, _)| text.as_str()),
             Some("Compact view: on")
         );
 
-        handle_key_event(key(KeyCode::Char('c')), &mut state, &flag);
+        handle_key_event(key(KeyCode::Char('c')), &mut state);
         assert!(!state.global.compact);
         assert_eq!(
             state.flash.as_ref().map(|(text, _)| text.as_str()),
@@ -471,17 +481,16 @@ mod tests {
     fn w_toggles_show_windows_and_sets_flash() {
         // `w` is global like `c`, and the flash reports the window count.
         let mut state = state_with_three_panes();
-        let flag = AtomicBool::new(false);
         assert!(!state.global.show_windows);
 
-        handle_key_event(key(KeyCode::Char('w')), &mut state, &flag);
+        handle_key_event(key(KeyCode::Char('w')), &mut state);
         assert!(state.global.show_windows);
         assert_eq!(
             state.flash.as_ref().map(|(text, _)| text.as_str()),
             Some("Windows: on (0)")
         );
 
-        handle_key_event(key(KeyCode::Char('w')), &mut state, &flag);
+        handle_key_event(key(KeyCode::Char('w')), &mut state);
         assert!(!state.global.show_windows);
         assert_eq!(
             state.flash.as_ref().map(|(text, _)| text.as_str()),
@@ -504,8 +513,7 @@ mod tests {
             working: None,
             area: None,
         };
-        let flag = AtomicBool::new(false);
-        handle_key_event(key(KeyCode::Char('w')), &mut state, &flag);
+        handle_key_event(key(KeyCode::Char('w')), &mut state);
         assert!(!state.global.show_windows, "popup must swallow the key");
         if let PopupState::SpawnInput { input, .. } = &state.popup {
             assert_eq!(input, "w");
@@ -517,14 +525,13 @@ mod tests {
         // `m` is global (any non-modal focus) like `c`, so the panel can be
         // minimized without first returning to the pane list.
         let mut state = state_with_three_panes();
-        let flag = AtomicBool::new(false);
         assert!(!state.bottom_minimized);
 
-        handle_key_event(key(KeyCode::Char('m')), &mut state, &flag);
+        handle_key_event(key(KeyCode::Char('m')), &mut state);
         assert!(state.bottom_minimized);
         assert!(state.flash.is_none(), "no toggle feedback expected");
 
-        handle_key_event(key(KeyCode::Char('m')), &mut state, &flag);
+        handle_key_event(key(KeyCode::Char('m')), &mut state);
         assert!(!state.bottom_minimized);
     }
 
@@ -541,8 +548,7 @@ mod tests {
             working: None,
             area: None,
         };
-        let flag = AtomicBool::new(false);
-        handle_key_event(key(KeyCode::Char('c')), &mut state, &flag);
+        handle_key_event(key(KeyCode::Char('c')), &mut state);
         assert!(!state.global.compact, "popup must swallow the key");
         assert!(state.flash.is_none(), "no toggle feedback expected");
     }

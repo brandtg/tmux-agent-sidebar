@@ -3,6 +3,7 @@ use crate::desktop_notification;
 use crate::desktop_notification::DesktopNotificationKind;
 use crate::tmux;
 
+use super::super::activity::write_activity_entry;
 use super::super::context::{AgentContext, set_agent_meta};
 use super::super::notifications::{
     NotifyLabels, NotifyPayload, notification_body, notification_fingerprint, notify_lifecycle,
@@ -30,6 +31,11 @@ pub(in crate::cli::hook) fn on_notification(
         tmux::unset_pane_option(pane, tmux::PANE_WAIT_REASON);
     } else {
         tmux::set_pane_option(pane, tmux::PANE_WAIT_REASON, wait_reason);
+        // Feed visibility: a notification (permission prompt, question,
+        // waiting for input) is exactly the "something needs you" class
+        // the Feed tab badges for. `Notify` is a sidebar pseudo-tool —
+        // see `FeedKind::classify`.
+        write_activity_entry(pane, "Notify", wait_reason);
     }
     let _ = notify_lifecycle(
         pane,
@@ -55,6 +61,7 @@ pub(in crate::cli::hook) fn on_permission_denied(
     set_status(pane, "waiting");
     set_attention(pane, "notification");
     tmux::set_pane_option(pane, tmux::PANE_WAIT_REASON, "permission_denied");
+    write_activity_entry(pane, "Permission", "permission denied");
     let _ = notify_lifecycle(
         pane,
         NotifyLabels::FromCtx(ctx),

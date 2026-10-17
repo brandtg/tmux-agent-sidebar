@@ -29,7 +29,6 @@ Hermes uses its built-in shell hooks: a generated `hooks:` block is merged into 
 
 - tmux 3.0+
 - [TPM](https://github.com/tmux-plugins/tpm) (or the manual install in [Installation](https://github.com/brandtg/tmux-agent-sidebar/blob/main/website/src/content/docs/getting-started/installation.md))
-- [GitHub CLI](https://cli.github.com/) (optional — required only for PR numbers in the Git tab)
 
 ## Quick Start
 
@@ -86,13 +85,114 @@ Exit codes come from an optional shell-integration snippet (tmux alone never rep
 
 Without the snippet, finished tasks still flash green (exit treated as 0), but failures are not detected.
 
+## Configuration
+
+All options are tmux options set in `~/.tmux.conf`, before the plugin loads (before `run '~/.tmux/plugins/tpm/tpm'` when using TPM). Color values accept xterm 256-color numbers (`0`-`255`) or six-digit hex (`#RRGGBB`); icon values accept any Unicode glyph. A few options are written and managed by the plugin itself (`@sidebar_pid`, `@sidebar_mode`, `@sidebar_filter`, …) and never need touching. The full reference with detailed notes: [tmux options](https://github.com/brandtg/tmux-agent-sidebar/blob/main/website/src/content/docs/reference/tmux-options.md).
+
+### Behavior
+
+| Option | Default | Description |
+| --- | --- | --- |
+| `@sidebar_key` | `e` | Prefix keybinding to toggle the sidebar in the current window |
+| `@sidebar_key_all` | `E` | Prefix keybinding to toggle the sidebar in all windows |
+| `@sidebar_width` | `15%` | Width in columns or as a percentage of window width |
+| `@sidebar_position` | `left` | Sidebar placement: `left` or `right` |
+| `@sidebar_bottom_height` | `20` | Bottom Feed/Repos panel height in lines (`0` hides it). Auto-minimizes to the tab header on short terminals; `m` toggles it manually |
+| `@sidebar_default_view` | `all` | Status filter a newly opened sidebar lands on: `all`, `running`, `background`, `waiting`, `idle`, or `error` |
+| `@sidebar_group_by` | `repo` | How the agents panel groups panes: `repo` (git repo root) or `session` (tmux session name; with `w` enabled, an agent-forward session manager). Set before the sidebar opens |
+| `@sidebar_default_compact_view` | `off` | Whether a newly opened sidebar starts in compact mode (one line per agent). Toggle live with `c`; not restored on reopen |
+| `@sidebar_default_show_windows` | `off` | Whether a newly opened sidebar starts with plain (non-agent) windows listed. Toggle live with `w`; not restored on reopen |
+| `@sidebar_auto_create` | `on` | Auto-create the sidebar on new windows and sessions (`off` disables). Only consulted while no toggle-all sweep has recorded a mode |
+| `@sidebar_auto_create_delay` | `0` | Seconds to defer auto-create after a window/session opens (fractional allowed), so declaratively-built windows (e.g. tmuxinator) finish first |
+| `@sidebar_popup_max_width` | `100` | Windows narrower than this open the sidebar as a tmux popup instead of a split pane — for phones and small SSH viewports. `0` always uses a split pane |
+| `@sidebar_auto_hide` | `on` | Auto-hide split-pane sidebars when a window shrinks below `@sidebar_popup_max_width` (e.g. a phone client attaches); the next toggle opens the modal popup |
+| `@sidebar_notifications` | `on` | Master switch for desktop notifications |
+| `@sidebar_notifications_events` | unset | Comma-separated event allow-list (e.g. `stop,notification`); unset fires every event except `task_completed`. See [Notifications](https://github.com/brandtg/tmux-agent-sidebar/blob/main/website/src/content/docs/features/notifications.mdx) |
+| `@sidebar_agents` | unset | Comma-separated agents (`claude`, `codex`, `opencode`, `hermes`) the ⓘ hook-setup notices evaluate for; unset checks every agent |
+| `@sidebar_pet` | `off` | Show the animated pet in a band above the bottom panel |
+
+### Worktree spawns
+
+| Option | Default | Description |
+| --- | --- | --- |
+| `@agent-sidebar-default-agent` | `claude` | Agent launched by `n`: `claude`, `codex`, or `opencode` |
+| `@agent-sidebar-branch-prefix` | `agent/` | Branch prefix for new worktrees |
+| `@agent-sidebar-worktree-dir` | `.worktrees` | Repo-relative directory for sidebar-spawned worktrees; absolute paths and `..` are rejected |
+
+### Colors
+
+| Option | Default | What it paints |
+| --- | --- | --- |
+| `@sidebar_color_accent` | `153` | Active pane marker, focused repo header / bottom panel border / popup border — the brand color |
+| `@sidebar_color_border` | `240` | Unfocused panel borders and tab separators |
+| `@sidebar_color_session` | `39` | Session name |
+| `@sidebar_color_selection` | `239` | Selected row background |
+| `@sidebar_color_all` | `111` | Selected "all" filter icon |
+| `@sidebar_color_running` | `114` | Selected running/background filter icon and running/background pane status |
+| `@sidebar_color_waiting` | `221` | Selected waiting filter icon, waiting pane status, version banner |
+| `@sidebar_color_idle` | `110` | Selected idle filter icon and idle pane status |
+| `@sidebar_color_error` | `167` | Selected error filter icon and error pane status |
+| `@sidebar_color_filter_inactive` | `245` | Unselected status filter icons and zero counts |
+| `@sidebar_color_agent_claude` | `174` | Claude brand color |
+| `@sidebar_color_agent_codex` | `141` | Codex brand color |
+| `@sidebar_color_agent_opencode` | `117` | OpenCode brand color |
+| `@sidebar_color_agent_hermes` | `214` | Hermes brand color |
+| `@sidebar_color_pet_body` | `208` | Pet body |
+| `@sidebar_color_pet_eye` | `114` | Pet eyes |
+| `@sidebar_color_text_active` | `255` | Primary text — active rows, counts, filtered repo label |
+| `@sidebar_color_text_muted` | `252` | Secondary text — tree branches, empty states, inactive bottom tabs, activity labels |
+| `@sidebar_color_text_inactive` | `244` | Body text of unfocused pane rows — prompt / response, idle hint |
+| `@sidebar_color_port` | `246` | Port numbers |
+| `@sidebar_color_wait_reason` | `221` | Wait reason text |
+| `@sidebar_color_response_arrow` | `81` | Response arrow |
+| `@sidebar_color_task_progress` | `223` | Task progress summary |
+| `@sidebar_color_subagent` | `73` | Sub-agent tree |
+| `@sidebar_color_branch` | `109` | Git branch name (Repos tab) |
+| `@sidebar_color_diff_added` | `114` | Ahead arrows (Repos tab) |
+| `@sidebar_color_diff_deleted` | `174` | Behind arrows (Repos tab) |
+| `@sidebar_color_section_title` | `109` | Section titles |
+| `@sidebar_color_activity_timestamp` | `109` | Feed timestamps |
+
+### Icons
+
+`@sidebar_icon_set` swaps the whole palette at once: `nerd` (Nerd Fonts glyphs, fitted to the cell by the patched font) or `ascii` (`=` `*` `+` `~` `-` `x` `.`). Per-icon options below always win over the preset.
+
+| Option | Default | Meaning |
+| --- | --- | --- |
+| `@sidebar_icon_all` | `≡` | Status filter bar "all" icon |
+| `@sidebar_icon_running` | `●` | Running status icon |
+| `@sidebar_icon_background` | `◎` | Background shell status icon |
+| `@sidebar_icon_waiting` | `◐` | Waiting status icon |
+| `@sidebar_icon_idle` | `○` | Idle status icon |
+| `@sidebar_icon_error` | `✕` | Error status icon |
+| `@sidebar_icon_unknown` | `·` | Unknown status icon |
+
+### Example
+
+```tmux
+set -g @sidebar_key T
+set -g @sidebar_width 32
+set -g @sidebar_position right
+set -g @sidebar_bottom_height 25
+set -g @sidebar_default_view running
+set -g @sidebar_notifications_events "stop,notification"
+set -g @agent-sidebar-default-agent codex
+
+set -g @sidebar_color_accent 117
+set -g @sidebar_color_agent_claude "#d97757"
+set -g @sidebar_icon_set nerd
+set -g @sidebar_icon_running '▶'
+
+set -g @plugin 'brandtg/tmux-agent-sidebar'
+```
+
 ## Documentation
 
 The [documentation](https://github.com/brandtg/tmux-agent-sidebar/tree/main/website/src/content/docs) covers every feature and option:
 
 - [Agent pane breakdown](https://github.com/brandtg/tmux-agent-sidebar/blob/main/website/src/content/docs/features/agent-pane.mdx)
 - [Worktree lifecycle](https://github.com/brandtg/tmux-agent-sidebar/blob/main/website/src/content/docs/features/worktree.mdx)
-- [Activity log](https://github.com/brandtg/tmux-agent-sidebar/blob/main/website/src/content/docs/features/activity-log.mdx) · [Git tab](https://github.com/brandtg/tmux-agent-sidebar/blob/main/website/src/content/docs/features/git-status.mdx) · [Notifications](https://github.com/brandtg/tmux-agent-sidebar/blob/main/website/src/content/docs/features/notifications.mdx)
+- [Feed](https://github.com/brandtg/tmux-agent-sidebar/blob/main/website/src/content/docs/features/activity-log.mdx) · [Repos](https://github.com/brandtg/tmux-agent-sidebar/blob/main/website/src/content/docs/features/git-status.mdx) · [Notifications](https://github.com/brandtg/tmux-agent-sidebar/blob/main/website/src/content/docs/features/notifications.mdx)
 - [Agent support matrix](https://github.com/brandtg/tmux-agent-sidebar/blob/main/website/src/content/docs/agents/index.md)
 - [Keybindings](https://github.com/brandtg/tmux-agent-sidebar/blob/main/website/src/content/docs/reference/keybindings.md) · [tmux options](https://github.com/brandtg/tmux-agent-sidebar/blob/main/website/src/content/docs/reference/tmux-options.md) · [Scripting](https://github.com/brandtg/tmux-agent-sidebar/blob/main/website/src/content/docs/reference/scripting.md)
 

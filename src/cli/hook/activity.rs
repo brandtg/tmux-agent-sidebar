@@ -117,7 +117,11 @@ pub(super) fn handle_activity_log(
             pane,
             tmux::PANE_WAIT_REASON,
         ));
-    if current_status != "running" && !current_status.is_empty() && !pending_action {
+    // An empty status is promoted too: a tool just ran in this pane, so the
+    // agent is unambiguously active. The old empty-status guard left
+    // bootstrapped OpenCode panes (claimed without a run-state event, e.g.
+    // when two same-directory sessions raced for bindings) blue forever.
+    if current_status != "running" && !pending_action {
         set_status(pane, "running");
         // Any resume into `running` clears a stale wait reason, not just
         // resumes from `waiting`: `on_stop_failure` stores error text in
@@ -461,6 +465,33 @@ mod tests {
         );
         assert!(!tmux::test_mock::contains(pane_id, tmux::PANE_ATTENTION));
         assert!(!tmux::test_mock::contains(pane_id, tmux::PANE_WAIT_REASON));
+        fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn handle_activity_log_empty_status_transitions_to_running() {
+        // Regression: an empty @pane_status stayed blue forever — the
+        // empty-status guard refused the promotion even though a tool just
+        // ran, so a bootstrapped OpenCode pane (claimed without a
+        // run-state event) never went green.
+        let _guard = tmux::test_mock::install();
+        let pane_id = "%CLI_EMPTY_TO_RUN";
+        let path = crate::activity::log_file_path(pane_id);
+        let _ = fs::remove_file(&path);
+
+        handle_activity_log(
+            pane_id,
+            "opencode",
+            "Read",
+            &json!({"file_path": "/home/user/src/main.rs"}),
+            &Value::Null,
+        );
+
+        assert_eq!(
+            tmux::test_mock::get(pane_id, tmux::PANE_STATUS).as_deref(),
+            Some("running")
+        );
+        assert!(tmux::test_mock::contains(pane_id, tmux::PANE_STARTED_AT));
         fs::remove_file(&path).ok();
     }
 

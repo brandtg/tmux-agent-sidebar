@@ -10,6 +10,13 @@ pub struct PaneGitInfo {
     pub branch: Option<String>,
     pub is_worktree: bool,
     pub worktree_name: Option<String>,
+    /// Uncommitted changes (staged + unstaged + untracked) counted from
+    /// `git status --porcelain`. 0 until the resolver has answered, which
+    /// is indistinguishable from "clean" for one refresh cycle.
+    pub dirty_count: usize,
+    /// `(ahead, behind)` versus the upstream of HEAD. `None` when the
+    /// branch has no upstream (or the count could not be resolved).
+    pub ahead_behind: Option<(usize, usize)>,
 }
 
 /// A group of panes working in the same repository (or directory).
@@ -205,11 +212,37 @@ pub fn resolve_pane_git_info(path: &str) -> PaneGitInfo {
         })
         .or_else(|| run_git(path, &["rev-parse", "--show-toplevel"]));
 
+    // Working-tree health for the Repos tab. Both queries are local git
+    // (no network) and bounded by the shared subprocess timeout; they run
+    // on the resolver worker thread, TTL-gated like the branch probe.
+    let dirty_count = run_git(path, &["status", "--porcelain"])
+        .map(|output| {
+            output
+                .lines()
+                .filter(|line| !line.trim().is_empty())
+                .count()
+        })
+        .unwrap_or(0);
+    let ahead_behind = run_git(
+        path,
+        &["rev-list", "--left-right", "--count", "HEAD...@{upstream}"],
+    )
+    .and_then(|output| {
+        let parts: Vec<&str> = output.split_whitespace().collect();
+        if parts.len() == 2 {
+            Some((parts[0].parse().unwrap_or(0), parts[1].parse().unwrap_or(0)))
+        } else {
+            None
+        }
+    });
+
     PaneGitInfo {
         repo_root,
         branch,
         is_worktree,
         worktree_name: None,
+        dirty_count,
+        ahead_behind,
     }
 }
 
@@ -716,6 +749,7 @@ mod tests {
                 branch: Some("cached-branch".into()),
                 is_worktree: false,
                 worktree_name: None,
+                ..Default::default()
             },
         );
         let sessions = vec![test_session(vec![test_window(vec![pane], true)])];

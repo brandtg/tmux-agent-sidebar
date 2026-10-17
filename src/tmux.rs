@@ -31,10 +31,11 @@ pub use options::{
     SIDEBAR_DEFAULT_VIEW, SIDEBAR_FILTER, SIDEBAR_GROUP_BY, SIDEBAR_ICON_ALL,
     SIDEBAR_ICON_BACKGROUND, SIDEBAR_ICON_ERROR, SIDEBAR_ICON_IDLE, SIDEBAR_ICON_RUNNING,
     SIDEBAR_ICON_SET, SIDEBAR_ICON_UNKNOWN, SIDEBAR_ICON_WAITING, SIDEBAR_LAST_WINDOW_WIDTH,
-    SIDEBAR_MODE, SIDEBAR_NOTIFICATIONS, SIDEBAR_NOTIFICATIONS_EVENTS, SIDEBAR_PET, SIDEBAR_PID,
-    SIDEBAR_POPUP_MAX_WIDTH, SIDEBAR_POSITION, SIDEBAR_REPO_FILTER, SIDEBAR_SAVED_LAYOUT,
-    SIDEBAR_SHOW_WINDOWS, SIDEBAR_WIDTH, append_pane_option, get_all_global_options, get_option,
-    get_pane_option_value, sanitize_option_value, set_pane_option, unset_pane_option,
+    SIDEBAR_MOBILE_PRIOR_MODE, SIDEBAR_MOBILE_RESTORE, SIDEBAR_MODE, SIDEBAR_NOTIFICATIONS,
+    SIDEBAR_NOTIFICATIONS_EVENTS, SIDEBAR_PET, SIDEBAR_PID, SIDEBAR_POPUP_MAX_WIDTH,
+    SIDEBAR_POSITION, SIDEBAR_REPO_FILTER, SIDEBAR_SAVED_LAYOUT, SIDEBAR_SHOW_WINDOWS,
+    SIDEBAR_WIDTH, append_pane_option, get_all_global_options, get_option, get_pane_option_value,
+    sanitize_option_value, set_pane_option, unset_pane_option,
 };
 pub(crate) use panes::pick_active_pane;
 pub use panes::{find_active_pane, focused_pane_path, get_pane_path, query_active_window_panes};

@@ -12,7 +12,6 @@ use crossterm::event::{self};
 use ratatui::{Terminal, backend::CrosstermBackend};
 
 use crate::SPINNER_PULSE;
-use crate::state::BottomTab;
 
 mod input;
 mod render;
@@ -48,11 +47,8 @@ pub fn run(
 
     let workers = workers::spawn(&state);
     let workers::Workers {
-        git_rx,
         session_rx,
         version_rx,
-        git_tab_active,
-        focus_git_tx,
         git_info_tx,
         git_info_rx,
         port_scan_tx,
@@ -83,7 +79,7 @@ pub fn run(
         if event::poll(timeout)? {
             loop {
                 let ev = event::read()?;
-                if input::handle_event(ev, &mut state, &git_tab_active, terminal) {
+                if input::handle_event(ev, &mut state, terminal) {
                     needs_redraw = true;
                 }
                 if !event::poll(Duration::ZERO)? {
@@ -122,7 +118,6 @@ pub fn run(
             if let Ok(size) = terminal.size() {
                 state.apply_auto_minimize(size.height);
             }
-            let previous_focused_pane_id = state.focus_state.focused_pane_id.clone();
             let previous_sidebar_focused = state.focus_state.sidebar_focused;
             let is_window_active = state.refresh();
             // A sidebar whose window has no panes left besides itself
@@ -147,14 +142,6 @@ pub fn run(
             // `setup::init_state` and this never fires there.
             let sidebar_gained_focus =
                 !previous_sidebar_focused && state.focus_state.sidebar_focused;
-            if state.focus_state.focused_pane_id != previous_focused_pane_id {
-                // The seven-git-call fetch for the newly focused pane runs
-                // on the focus-fetch worker; the result arrives on `git_rx`
-                // a frame later instead of stalling this tick.
-                if let Some(pane_id) = state.focus_state.focused_pane_id.clone() {
-                    let _ = focus_git_tx.send(pane_id);
-                }
-            }
             // Hand the queued port scan (if due) to its worker.
             if let Some(targets) = state.take_pending_port_scan() {
                 let _ = port_scan_tx.send(targets);
@@ -225,13 +212,7 @@ pub fn run(
             } else {
                 window_inactive_count = window_inactive_count.saturating_add(1);
             }
-            git_tab_active.store(state.bottom_tab == BottomTab::GitStatus, Ordering::Relaxed);
             last_refresh = std::time::Instant::now();
-        }
-
-        while let Ok(data) = git_rx.try_recv() {
-            state.apply_git_data(data);
-            needs_redraw = true;
         }
 
         if let Ok(names) = session_rx.try_recv() {
