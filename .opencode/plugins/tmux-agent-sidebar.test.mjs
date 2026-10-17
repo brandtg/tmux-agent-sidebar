@@ -34,7 +34,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 
 const PLUGIN_SRC = fileURLToPath(new URL("./tmux-agent-sidebar.js", import.meta.url));
 
-async function loadPlugin({ panes = "" } = {}) {
+async function loadPlugin({ panes = "", titles = {} } = {}) {
   const root = mkdtempSync(join(tmpdir(), "oc-bridge-test-"));
   const deep = join(root, "a", "b", "plugins");
   mkdirSync(deep, { recursive: true });
@@ -44,7 +44,7 @@ async function loadPlugin({ panes = "" } = {}) {
     `#!/usr/bin/env bash
 payload=$(cat)
 if [ "\${TMUX_RECORD_ENV-}" = "1" ]; then
-  printf '%s %s env=%s\\n' "$2" "$payload" "\${TMUX_PANE-unset}" >> ${JSON.stringify(join(root, "events.log"))}
+  printf '%s %s env=%s bind=%s\\n' "$2" "$payload" "\${TMUX_PANE-unset}" "\${TMUX_AGENT_SIDEBAR_BIND_SESSION-unset}" >> ${JSON.stringify(join(root, "events.log"))}
 else
   printf '%s %s\\n' "$2" "$payload" >> ${JSON.stringify(join(root, "events.log"))}
 fi
@@ -80,13 +80,15 @@ fi
             if (name === "prompt") promptHooks.push(cb);
           },
           // Server lookup for sessions this instance never saw created:
-          // the test harness resolves them to `sessionDirectory` (or 404s).
+          // the test harness resolves them to `sessionDirectory` (or 404s)
+          // and `titles[sessionID]` when a test needs a known title.
           get: async ({ sessionID }) => {
             if (!sessionDirectory) throw new Error("not found");
             return {
               id: sessionID,
               projectID: projectID ?? "",
               location: { directory: sessionDirectory },
+              title: titles[sessionID] ?? "",
             };
           },
         },
@@ -671,7 +673,8 @@ test("a valid inherited TMUX_PANE is kept when no opencode pane matches better",
     // still exists in the pane table, so it is kept — the bridge cannot
     // know better (this is what makes plain in-pane setups keep working).
     assert.deepEqual(h.events(), [
-      "user-prompt-submit " + JSON.stringify({ cwd: "/repo", session_id: MAIN, prompt: "go" }) + " env=%1",
+      "user-prompt-submit " + JSON.stringify({ cwd: "/repo", session_id: MAIN, prompt: "go" }) +
+        " env=%1 bind=unset",
     ]);
   } finally {
     delete process.env.TMUX_RECORD_ENV;
@@ -689,7 +692,7 @@ test("pane resolution injects the matching pane's id into the hook env", async (
     await plugin.prompt({ sessionID: MAIN, prompt: { text: "go" } });
     await settle(h);
 
-    assert.match(h.events()[0], / env=%2$/);
+    assert.match(h.events()[0], / env=%2 bind=unset$/);
   } finally {
     delete process.env.TMUX_RECORD_ENV;
     delete process.env.TMUX_PANE;
@@ -707,7 +710,7 @@ test("pane resolution matches opencode panes in ancestor directories", async () 
     await plugin.prompt({ sessionID: MAIN, prompt: { text: "go" } });
     await settle(h);
 
-    assert.match(h.events()[0], / env=%7$/);
+    assert.match(h.events()[0], / env=%7 bind=unset$/);
   } finally {
     delete process.env.TMUX_RECORD_ENV;
     h.dispose();
@@ -725,7 +728,7 @@ test("pane resolution uses the session binding to disambiguate same-directory pa
     await settle(h);
 
     // Both panes match /repo; @pane_session_id=ses_main pins %4.
-    assert.match(h.events()[0], / env=%4$/);
+    assert.match(h.events()[0], / env=%4 bind=unset$/);
   } finally {
     delete process.env.TMUX_RECORD_ENV;
     h.dispose();
@@ -743,7 +746,7 @@ test("a valid inherited TMUX_PANE is kept when no pane matches", async () => {
 
     // No panes at all: the inherited value cannot be validated, so it is
     // left untouched (in-pane setups keep working).
-    assert.match(h.events()[0], / env=%5$/);
+    assert.match(h.events()[0], / env=%5 bind=unset$/);
   } finally {
     delete process.env.TMUX_RECORD_ENV;
     delete process.env.TMUX_PANE;
@@ -766,7 +769,7 @@ test("a second same-directory session claims the unbound pane instead of stealin
     await settle(h);
 
     // %2 is bound to ses_a; the unbound %4 must take session B's events.
-    assert.match(h.events()[0], / env=%4$/);
+    assert.match(h.events()[0], / env=%4 bind=unset$/);
   } finally {
     delete process.env.TMUX_RECORD_ENV;
     h.dispose();
@@ -801,6 +804,141 @@ test("concurrent main sessions route their turns independently", async () => {
       "stop " + JSON.stringify({ cwd: "/repo", session_id: "ses_b", last_message: "" }),
     ]);
   } finally {
+    h.dispose();
+  }
+});
+
+// The opencode TUI stamps the active session's title into the pane title
+// ("OC | <title>"). When no binding exists yet, that per-pane ground truth
+// routes the session even if every candidate is bound to something else —
+// and it proves a binding stale when the bound session's title no longer
+// matches what the pane's TUI displays (restarted or switched TUI; nothing
+// else ever clears @pane_session_id).
+test("a pane title pins the session's pane when no binding exists", async () => {
+  const h = await loadPlugin({
+    panes:
+      "%2\topencode\t/repo\tses_old\tOC | Old work\n" +
+      "%4\topencode\t/repo\tses_other\tOC | Converter fixes\n",
+  });
+  try {
+    process.env.TMUX_RECORD_ENV = "1";
+    const plugin = await h.init("/repo");
+    await plugin.event({
+      type: "session.created",
+      data: { sessionID: "ses_new", info: { directory: "/repo", title: "Converter fixes" } },
+    });
+    await plugin.prompt({ sessionID: "ses_new", prompt: { text: "go" } });
+    await settle(h);
+
+    const routed = h.events().filter((line) => line.startsWith("user-prompt-submit"));
+    assert.equal(routed.length, 1);
+    // %4's TUI is hosting ses_new (title match); the guess would have been
+    // %2 and would have arrived flagged bind=0.
+    assert.match(routed[0], / env=%4 bind=unset$/);
+  } finally {
+    delete process.env.TMUX_RECORD_ENV;
+    h.dispose();
+  }
+});
+
+test("a truncated pane title prefix-matches the full session title", async () => {
+  const h = await loadPlugin({
+    panes:
+      "%2\topencode\t/repo\tses_a\tOC | Fix opencode session status swap in T…\n" +
+      "%4\topencode\t/repo\tses_b\tOC | Unrelated work\n",
+    titles: { ses_new: "Fix opencode session status swap in Tmux sidebar" },
+  });
+  try {
+    process.env.TMUX_RECORD_ENV = "1";
+    const plugin = await h.init("/repo", undefined, "/repo");
+    await plugin.prompt({ sessionID: "ses_new", prompt: { text: "go" } });
+    await settle(h);
+
+    assert.match(h.events()[0], / env=%2 bind=unset$/);
+  } finally {
+    delete process.env.TMUX_RECORD_ENV;
+    h.dispose();
+  }
+});
+
+// Regression: opencode has no session-end event, so a pane whose TUI was
+// restarted or switched sessions keeps the dead session's binding forever.
+// With every candidate bound, the old tie-break collapsed all new sessions
+// onto the first pane and starved the rest. The stale binding is now
+// reclaimable because the pane's current title no longer matches the bound
+// session's title — while a live binding (title still matching) is never
+// stolen.
+test("a stale binding is reclaimed instead of collapsing onto the first pane", async () => {
+  const h = await loadPlugin({
+    panes:
+      "%2\topencode\t/repo\tses_dead\tOC | Fresh start\n" +
+      "%4\topencode\t/repo\tses_live\tOC | Live work\n",
+    titles: { ses_dead: "Dead work", ses_live: "Live work" },
+  });
+  try {
+    process.env.TMUX_RECORD_ENV = "1";
+    const plugin = await h.init("/repo", undefined, "/repo");
+    await plugin.prompt({ sessionID: "ses_new", prompt: { text: "go" } });
+    await settle(h);
+
+    // %2 is bound to the dead ses_dead ("Dead work" ≠ its TUI's "Fresh
+    // start"); %4's binding is still live and must not be touched.
+    assert.match(h.events()[0], / env=%2 bind=unset$/);
+  } finally {
+    delete process.env.TMUX_RECORD_ENV;
+    h.dispose();
+  }
+});
+
+// A binding can survive a TUI restart or session switch while naming a
+// session that is still live — the pane's own title is what proves it no
+// longer hosts that session. When a title-matched pane exists, it wins
+// over the contradicting binding, exactly like the reclaim path does for
+// dead bindings.
+test("a binding contradicted by the pane title loses to the title match", async () => {
+  const h = await loadPlugin({
+    panes:
+      "%2\topencode\t/repo\tses_convert\tOC | Expand Clocks tab columns to full width\n" +
+      "%4\topencode\t/repo\tses_live\tOC | Convert tab errors and style issues\n",
+    titles: {
+      ses_convert: "Convert tab errors and style issues",
+      ses_live: "Live work",
+    },
+  });
+  try {
+    process.env.TMUX_RECORD_ENV = "1";
+    const plugin = await h.init("/repo", undefined, "/repo");
+    await plugin.prompt({ sessionID: "ses_convert", prompt: { text: "go" } });
+    await settle(h);
+
+    // %2 is bound to ses_convert, but its TUI shows the Clocks session's
+    // title; %4's title names ses_convert. The binding was left behind by
+    // a restart/switch (or by the pre-title-match bridge) and must lose.
+    assert.match(h.events()[0], / env=%4 bind=unset$/);
+  } finally {
+    delete process.env.TMUX_RECORD_ENV;
+    h.dispose();
+  }
+});
+
+// When nothing better matches — every candidate bound and no title
+// evidence — the first match is a guess that must not record a binding on
+// a pane that may belong to another live session.
+test("a last-resort guess routes the event but flags the binding as uncommitted", async () => {
+  const h = await loadPlugin({
+    panes:
+      "%2\topencode\t/repo\tses_a\t\n" +
+      "%4\topencode\t/repo\tses_b\t\n",
+  });
+  try {
+    process.env.TMUX_RECORD_ENV = "1";
+    const plugin = await h.init("/repo");
+    await plugin.prompt({ sessionID: "ses_new", prompt: { text: "go" } });
+    await settle(h);
+
+    assert.match(h.events()[0], / env=%2 bind=0$/);
+  } finally {
+    delete process.env.TMUX_RECORD_ENV;
     h.dispose();
   }
 });

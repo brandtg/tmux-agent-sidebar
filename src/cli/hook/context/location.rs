@@ -71,6 +71,23 @@ pub(in crate::cli::hook) fn sync_launch_anchor(
     tmux::set_pane_option(pane, tmux::PANE_LAUNCH_CWD, resolve_cwd(cwd, worktree));
 }
 
+/// Whether this hook event may record `@pane_session_id` on the pane.
+///
+/// The OpenCode bridge resolves the target pane per event and commits the
+/// resolution unless it had to guess (every candidate pane bound, none
+/// provably stale). A guessed pane can belong to another live session, and
+/// recording the binding there would permanently misroute that session's
+/// later events — so the bridge flags guesses with
+/// `TMUX_AGENT_SIDEBAR_BIND_SESSION=0` and the binding write is skipped.
+/// Every other agent and in-pane setups never set the variable and keep
+/// the unconditional write.
+fn session_bind_allowed() -> bool {
+    match std::env::var("TMUX_AGENT_SIDEBAR_BIND_SESSION") {
+        Ok(value) => value != "0",
+        Err(_) => true,
+    }
+}
+
 pub(in crate::cli::hook) fn sync_pane_location(
     pane: &str,
     cwd: &str,
@@ -86,20 +103,24 @@ pub(in crate::cli::hook) fn sync_pane_location(
     if !should_update_cwd(&current_subagents) {
         return;
     }
-    match session_id.as_deref() {
-        Some(sid) if !sid.is_empty() => {
-            // Pane switched sessions: drop the previous session's title so
-            // it cannot outlive the session that set it. The replacement
-            // arrives via a later session-title event.
-            let prev = tmux::get_pane_option_value(pane, tmux::PANE_SESSION_ID);
-            if !prev.is_empty() && prev != sid {
+    // A bridge-guessed pane must not have its session identity rewritten:
+    // the binding is what later events route by (see session_bind_allowed).
+    if session_bind_allowed() {
+        match session_id.as_deref() {
+            Some(sid) if !sid.is_empty() => {
+                // Pane switched sessions: drop the previous session's title so
+                // it cannot outlive the session that set it. The replacement
+                // arrives via a later session-title event.
+                let prev = tmux::get_pane_option_value(pane, tmux::PANE_SESSION_ID);
+                if !prev.is_empty() && prev != sid {
+                    tmux::unset_pane_option(pane, tmux::PANE_SESSION_TITLE);
+                }
+                tmux::set_pane_option(pane, tmux::PANE_SESSION_ID, sid);
+            }
+            _ => {
+                tmux::unset_pane_option(pane, tmux::PANE_SESSION_ID);
                 tmux::unset_pane_option(pane, tmux::PANE_SESSION_TITLE);
             }
-            tmux::set_pane_option(pane, tmux::PANE_SESSION_ID, sid);
-        }
-        _ => {
-            tmux::unset_pane_option(pane, tmux::PANE_SESSION_ID);
-            tmux::unset_pane_option(pane, tmux::PANE_SESSION_TITLE);
         }
     }
     if !cwd.is_empty() {
@@ -124,6 +145,11 @@ pub(in crate::cli::hook) fn pane_writes_allowed(pane: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // std::env is process-global and cargo runs tests in parallel threads;
+    // every test that touches TMUX_AGENT_SIDEBAR_BIND_SESSION holds this so
+    // concurrent sync_pane_location tests cannot observe the flag.
+    static BIND_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     #[test]
     fn resolve_cwd_prefers_worktree_original_repo_dir() {
@@ -170,6 +196,7 @@ mod tests {
     #[test]
     fn sync_pane_location_skips_worktree_writes_while_subagents_active() {
         let _guard = tmux::test_mock::install();
+        let _env = BIND_ENV_LOCK.lock().unwrap();
         let pane = "%PARENT";
         // Parent state: real worktree owned by the parent agent.
         tmux::test_mock::set(pane, tmux::PANE_SUBAGENTS, "Explore:sub-1");
@@ -218,6 +245,7 @@ mod tests {
     #[test]
     fn sync_pane_location_writes_worktree_when_no_subagents() {
         let _guard = tmux::test_mock::install();
+        let _env = BIND_ENV_LOCK.lock().unwrap();
         let pane = "%LONE";
         let wt = Some(WorktreeInfo {
             name: "feat-x".into(),
@@ -363,9 +391,65 @@ mod tests {
     #[test]
     fn pane_writes_allowed_tracks_subagent_presence() {
         let _guard = tmux::test_mock::install();
+        let _env = BIND_ENV_LOCK.lock().unwrap();
         let pane = "%ALLOWED";
         assert!(pane_writes_allowed(pane));
         tmux::test_mock::set(pane, tmux::PANE_SUBAGENTS, "Explore:sub-1");
         assert!(!pane_writes_allowed(pane));
+    }
+
+    #[test]
+    fn session_bind_allowed_defaults_to_true_without_the_bridge_flag() {
+        let _env = BIND_ENV_LOCK.lock().unwrap();
+        // SAFETY: single-threaded w.r.t. this variable — every test that
+        // touches TMUX_AGENT_SIDEBAR_BIND_SESSION holds BIND_ENV_LOCK.
+        unsafe { std::env::remove_var("TMUX_AGENT_SIDEBAR_BIND_SESSION") };
+        assert!(session_bind_allowed());
+    }
+
+    #[test]
+    fn session_bind_allowed_is_false_only_for_an_explicit_zero() {
+        let _env = BIND_ENV_LOCK.lock().unwrap();
+        // SAFETY: see session_bind_allowed_defaults_to_true_without_the_bridge_flag.
+        unsafe { std::env::set_var("TMUX_AGENT_SIDEBAR_BIND_SESSION", "0") };
+        assert!(!session_bind_allowed());
+        unsafe { std::env::set_var("TMUX_AGENT_SIDEBAR_BIND_SESSION", "1") };
+        assert!(session_bind_allowed());
+        unsafe { std::env::remove_var("TMUX_AGENT_SIDEBAR_BIND_SESSION") };
+    }
+
+    // Regression: the bridge's last-resort pane guess flags the spawn with
+    // TMUX_AGENT_SIDEBAR_BIND_SESSION=0. The guessed pane can belong to
+    // another live session — recording the binding there would permanently
+    // misroute that session's later events, so the write must be skipped
+    // while the rest of the location sync (cwd, worktree) still applies.
+    #[test]
+    fn sync_pane_location_preserves_the_binding_on_a_guessed_pane() {
+        let _guard = tmux::test_mock::install();
+        let _env = BIND_ENV_LOCK.lock().unwrap();
+        let pane = "%GUESSED";
+        tmux::test_mock::set(pane, tmux::PANE_SESSION_ID, "live-session");
+        tmux::test_mock::set(pane, tmux::PANE_SESSION_TITLE, "Live work");
+        // SAFETY: see session_bind_allowed_defaults_to_true_without_the_bridge_flag.
+        unsafe { std::env::set_var("TMUX_AGENT_SIDEBAR_BIND_SESSION", "0") };
+
+        sync_pane_location(pane, "/repo", &None, &Some("guessed-session".into()));
+
+        unsafe { std::env::remove_var("TMUX_AGENT_SIDEBAR_BIND_SESSION") };
+        assert_eq!(
+            tmux::test_mock::get(pane, tmux::PANE_SESSION_ID).as_deref(),
+            Some("live-session"),
+            "a guessed pane's binding must not be overwritten"
+        );
+        assert_eq!(
+            tmux::test_mock::get(pane, tmux::PANE_SESSION_TITLE).as_deref(),
+            Some("Live work"),
+            "the guessed session's title must not take over either"
+        );
+        // Non-identity fields still sync: the event has to land somewhere.
+        assert_eq!(
+            tmux::test_mock::get(pane, tmux::PANE_CWD).as_deref(),
+            Some("/repo")
+        );
     }
 }

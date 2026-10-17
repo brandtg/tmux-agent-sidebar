@@ -41,10 +41,28 @@
 // `session_id`, and `hook()` resolves the real pane per event and injects
 // it into the spawned hook's TMUX_PANE. Resolution asks tmux itself:
 // panes currently running `opencode` whose working directory matches the
-// session's directory (nearest ancestor wins), disambiguated by the
-// @pane_session_id binding this bridge wrote earlier. A valid inherited
-// TMUX_PANE is only used when nothing better matches, so in-pane setups
-// (OpenCode 1 style, or a local server) keep working unchanged.
+// session's directory (nearest ancestor wins), disambiguated by:
+//   1. the @pane_session_id binding this bridge wrote earlier, unless the
+//      pane's own title contradicts it (see 2) — a restart, a session
+//      switch, or an older buggy bridge can leave a binding naming a
+//      session that pane no longer hosts;
+//   2. the pane title — the opencode TUI stamps its active session's title
+//      into the terminal title ("OC | <title>"), which is per-pane ground
+//      truth from the process actually hosting the session; when it names
+//      this session it wins over a contradicting binding, and when it
+//      contradicts a binding that binding is treated as stale;
+//   3. an unbound candidate, so concurrent same-directory sessions each
+//      claim their own pane instead of one starving the other;
+//   4. a provably-stale binding — the bound session's title no longer
+//      matches the pane's current title (the TUI was restarted or switched
+//      sessions, and nothing else ever clears @pane_session_id, so without
+//      this the pane could never be reclaimed);
+//   5. a last-resort first match, which is a GUESS: the spawned hook is
+//      flagged TMUX_AGENT_SIDEBAR_BIND_SESSION=0 so the CLI does not record
+//      the binding on a pane that may belong to another live session.
+// A valid inherited TMUX_PANE is only used when nothing better matches, so
+// in-pane setups (OpenCode 1 style, or a local server) keep working
+// unchanged.
 
 import { spawn } from "node:child_process";
 import { existsSync, realpathSync } from "node:fs";
@@ -86,8 +104,8 @@ const HOOK_COMMAND = (() => {
 let hookChain = Promise.resolve();
 
 // One `tmux list-panes -a` snapshot, tab-separated so fields parse cleanly:
-// pane_id, pane_current_command, pane_current_path, @pane_session_id.
-// Resolves with "" when tmux is unavailable; never rejects.
+// pane_id, pane_current_command, pane_current_path, @pane_session_id,
+// pane_title. Resolves with "" when tmux is unavailable; never rejects.
 function listPanes() {
   return new Promise((resolvePromise) => {
     let settled = false;
@@ -103,7 +121,7 @@ function listPanes() {
           "list-panes",
           "-a",
           "-F",
-          "#{pane_id}\t#{pane_current_command}\t#{pane_current_path}\t#{@pane_session_id}",
+          "#{pane_id}\t#{pane_current_command}\t#{pane_current_path}\t#{@pane_session_id}\t#{pane_title}",
         ],
         { stdio: ["ignore", "pipe", "ignore"] },
       );
@@ -141,28 +159,79 @@ function listPanes() {
 //      confirms it still exists (the shared daemon's value is often stale).
 // The cache only collapses bursts of events for the same session; every
 // miss re-queries so a reopened or moved pane self-heals.
-// `cwd|session_id` → { pane, at }. A map, not a single slot: concurrent
-// sessions in one directory interleave events, and a single entry would
-// thrash (a list-panes spawn per event). Insertion-ordered and capped, with
-// the oldest entries evicted.
+// `cwd|session_id` → { pane, committed, at }. A map, not a single slot:
+// concurrent sessions in one directory interleave events, and a single
+// entry would thrash (a list-panes spawn per event). Insertion-ordered and
+// capped, with the oldest entries evicted. `committed` is whether the CLI
+// may record the session binding on the resolved pane (see below).
 const paneCache = new Map();
 const PANE_CACHE_MS = 2000;
 const PANE_CACHE_MAX = 64;
+
+// Set by setup(): async sessionID → the session's current title ("" when
+// unknown). Backed by the sessionProjects cache and a one-time server
+// lookup, so repeated resolutions never re-query.
+let resolveSessionTitle = null;
+
+async function sessionTitleOf(sessionId) {
+  if (sessionId === "" || typeof resolveSessionTitle !== "function") return "";
+  try {
+    return await resolveSessionTitle(sessionId);
+  } catch {
+    return "";
+  }
+}
+
+// The opencode TUI stamps its pane title with the active session's title
+// ("OC | <title>"), ellipsis-truncated to the terminal width. Strip the
+// prefix and any trailing ellipsis so a truncated pane title prefix-matches
+// the full session title. An unparseable title simply never matches.
+function paneTitlePart(rawTitle) {
+  let title = (rawTitle ?? "").trim();
+  if (title.startsWith("OC | ")) {
+    title = title.slice("OC | ".length);
+  }
+  return title.replace(/\u2026$/, "").replace(/\.\.\.$/, "").trim();
+}
+
+function titlesMatch(paneTitle, sessionTitle) {
+  const pane = paneTitlePart(paneTitle);
+  const session = (sessionTitle ?? "").trim();
+  if (pane === "" || session === "") return false;
+  if (pane === session) return true;
+  // Prefix matches need enough characters to be meaningful — a truncated
+  // pane title is a prefix of the full session title.
+  return pane.length >= 8 && session.startsWith(pane);
+}
+
 async function resolvePaneId(cwd, sessionId) {
-  if (typeof cwd !== "string" || cwd === "") return "";
+  if (typeof cwd !== "string" || cwd === "") {
+    return { pane: "", committed: true };
+  }
   const key = `${cwd}|${sessionId}`;
   const now = Date.now();
   const cached = paneCache.get(key);
   if (cached && now - cached.at < PANE_CACHE_MS) {
-    return cached.pane;
+    return cached;
   }
   const out = await listPanes();
   const panes = out
     .split("\n")
     .filter((line) => line !== "")
-    .map((line) => line.split("\t"));
+    .map((line) => {
+      // Titles may contain tabs; everything after the fourth field is
+      // the title.
+      const [id, command, path, boundSession, ...rest] = line.split("\t");
+      return {
+        id,
+        command,
+        path: path ?? "",
+        sessionId: boundSession ?? "",
+        title: rest.join("\t"),
+      };
+    });
   const agent = process.env?.OPENCODE_PANE_COMMAND ?? "opencode";
-  const candidates = panes.filter((p) => p[1] === agent);
+  const candidates = panes.filter((p) => p.command === agent);
 
   let realCwd = "";
   try {
@@ -171,7 +240,7 @@ async function resolvePaneId(cwd, sessionId) {
 
   const pathMatches = candidates
     .filter((p) => {
-      const panePath = p[2] ?? "";
+      const panePath = p.path ?? "";
       if (panePath === "") return false;
       return (
         panePath === cwd ||
@@ -181,49 +250,103 @@ async function resolvePaneId(cwd, sessionId) {
       );
     })
     // Nearest ancestor first.
-    .sort((a, b) => (b[2]?.length ?? 0) - (a[2]?.length ?? 0));
+    .sort((a, b) => (b.path?.length ?? 0) - (a.path?.length ?? 0));
 
+  // `committed` marks resolutions the spawned hook may record: a bound
+  // pane, a title-matched pane, a free claim, or a provably-stale reclaim.
+  // The last-resort first match is a guess — the pane may belong to another
+  // live session — and recording the binding there would permanently
+  // misroute the session that owns it (its next event could never find a
+  // binding of its own). Guesses are flagged so the CLI skips the write.
   let chosen = "";
+  let committed = true;
   if (pathMatches.length === 1) {
-    chosen = pathMatches[0][0];
+    chosen = pathMatches[0].id;
   } else if (pathMatches.length > 1) {
+    // Title evidence first: the TUI actually hosting this session stamps
+    // its title into the pane title. Sessions are titled lazily (auto-title
+    // after the first exchange), so this is often absent for a brand-new
+    // session's first event.
+    const myTitle = await sessionTitleOf(sessionId);
+    const titled =
+      myTitle !== ""
+        ? pathMatches.find((p) => titlesMatch(p.title, myTitle))
+        : undefined;
     const bound =
       sessionId !== ""
-        ? pathMatches.find((p) => p[3] === sessionId)
+        ? pathMatches.find((p) => p.sessionId === sessionId)
         : undefined;
-    if (bound) {
-      chosen = bound[0];
+
+    if (titled && (!bound || bound.id === titled.id)) {
+      // No binding, or the binding agrees with the pane's own title.
+      chosen = titled.id;
+    } else if (bound && !titled) {
+      // Bound pane with no contradicting title evidence (session untitled,
+      // or no pane title matches): the binding is the best signal there is.
+      chosen = bound.id;
+    } else if (titled) {
+      // A binding exists but points at a pane whose TUI displays a
+      // different session — a restart or session switch (or a binding
+      // written by an older, buggy bridge) — while another pane's title
+      // names this one. The pane title is per-pane ground truth, so it
+      // wins; the binding rewrite below re-points it.
+      chosen = titled.id;
     } else {
-      // No binding for this session yet (its first event, or the bound
+      // 1. No binding for this session yet (its first event, or the bound
       // pane closed): claim an unbound pane rather than stealing a bound
       // one. A plain first-match tie-break routed every event to one pane
       // and starved the other same-directory session (which could never
       // acquire a binding of its own). Equal-path matches are checked in
       // list-panes order; fall back to the first match when every
       // candidate is already bound.
-      const free = pathMatches.find((p) => p[3] === "");
-      chosen = (free ?? pathMatches[0])[0];
+      const free = pathMatches.find((p) => p.sessionId === "");
+      if (free) {
+        chosen = free.id;
+      } else {
+        // 2. Reclaim a provably-stale binding. Nothing ever clears
+        // @pane_session_id (opencode has no session-end hook event), so a
+        // pane whose TUI was restarted or switched sessions keeps the dead
+        // session's binding forever — unclaimable by both the bound and
+        // the free checks above, which collapsed every new same-directory
+        // session onto the first pane. The pane's own title is the proof
+        // of staleness: the bound session's title no longer matches what
+        // its TUI displays. Sessions whose title is unknown are left
+        // alone.
+        for (const p of pathMatches) {
+          if (p.sessionId === "" || p.title.trim() === "") continue;
+          const boundTitle = await sessionTitleOf(p.sessionId);
+          if (boundTitle !== "" && !titlesMatch(p.title, boundTitle)) {
+            chosen = p.id;
+            break;
+          }
+        }
+      }
+      // 3. Last resort: the first match, uncommitted.
+      if (chosen === "") {
+        chosen = pathMatches[0].id;
+        committed = false;
+      }
     }
   } else if (sessionId !== "") {
-    const bound = candidates.filter((p) => p[3] === sessionId);
-    if (bound.length === 1) chosen = bound[0][0];
+    const bound = candidates.filter((p) => p.sessionId === sessionId);
+    if (bound.length === 1) chosen = bound[0].id;
   }
 
   if (
     chosen === "" &&
     typeof process.env?.TMUX_PANE === "string" &&
     process.env.TMUX_PANE !== "" &&
-    panes.some((p) => p[0] === process.env.TMUX_PANE)
+    panes.some((p) => p.id === process.env.TMUX_PANE)
   ) {
     chosen = process.env.TMUX_PANE;
   }
 
-  paneCache.set(key, { pane: chosen, at: now });
+  paneCache.set(key, { pane: chosen, committed, at: now });
   if (paneCache.size > PANE_CACHE_MAX) {
     const oldest = paneCache.keys().next().value;
     if (oldest !== undefined) paneCache.delete(oldest);
   }
-  return chosen;
+  return { pane: chosen, committed };
 }
 
 const hook = (eventName, payload) => {
@@ -231,8 +354,20 @@ const hook = (eventName, payload) => {
     // The daemon has no trustworthy TMUX_PANE; inject the resolved one into
     // the spawned hook's environment. With no match, inherit the inherited
     // environment unchanged so non-daemon setups behave exactly as before.
-    const paneId = await resolvePaneId(payload?.cwd, payload?.session_id ?? "");
-    const env = paneId === "" ? undefined : { ...process.env, TMUX_PANE: paneId };
+    // A guessed resolution (every candidate bound, none provably stale)
+    // flags the spawn so the CLI does not record the session binding on a
+    // pane that may belong to another live session.
+    const resolved = await resolvePaneId(payload?.cwd, payload?.session_id ?? "");
+    const env =
+      resolved.pane === ""
+        ? undefined
+        : {
+            ...process.env,
+            TMUX_PANE: resolved.pane,
+            ...(resolved.committed
+              ? {}
+              : { TMUX_AGENT_SIDEBAR_BIND_SESSION: "0" }),
+          };
     await Promise.race([
       new Promise((resolve) => {
         try {
@@ -255,7 +390,7 @@ const hook = (eventName, payload) => {
   });
 };
 
-const sessionIdOf = (value) => (typeof value === "string" && value ? value : "");
+    const sessionIdOf = (value) => (typeof value === "string" && value ? value : "");
 
 export default {
   id: "tmux-agent-sidebar",
@@ -326,6 +461,7 @@ export default {
             projectID: typeof session.projectID === "string" ? session.projectID : "",
             directory,
             parentID: sessionIdOf(session.parentID),
+            title: typeof session.title === "string" ? session.title : "",
           };
         }
       } catch {}
@@ -349,6 +485,16 @@ export default {
       if (cached !== null) return cached;
       const info = await lookupSessionInfo(session_id);
       return info ? belongsToInstance(info) : true;
+    };
+
+    // sessionID → current title, for pane-title matching in resolvePaneId.
+    // Served from the sessionProjects cache (session.created + renames via
+    // session.updated) with a one-time session.get fallback, so repeated
+    // resolutions never re-query.
+    resolveSessionTitle = async (session_id) => {
+      if (session_id === "") return "";
+      const info = await lookupSessionInfo(session_id);
+      return info?.title ?? "";
     };
 
     // While no main session is known every event passes through (the
@@ -468,6 +614,7 @@ export default {
                     ? info.location.directory
                     : "",
               parentID,
+              title: typeof info?.title === "string" ? info.title : "",
             });
             if (parentID) {
               if (session_id) {
@@ -502,6 +649,13 @@ export default {
               continue;
             }
             const title = data.info?.title ?? data.title;
+            // Track renames so pane-title matching in resolvePaneId stays
+            // current: the TUI restamps its pane title with the new title,
+            // and the cached session record must follow.
+            const cached = sessionProjects.get(session_id);
+            if (cached && typeof title === "string" && title !== "") {
+              cached.title = title;
+            }
             hook("session-title", {
               cwd,
               session_id,
