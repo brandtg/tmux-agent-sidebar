@@ -360,16 +360,7 @@ pub(crate) fn cmd_toggle_all(_args: &[String]) -> i32 {
         .unwrap_or(false);
 
     if has_sidebar {
-        // Record the system-level mode BEFORE the sweep so windows
-        // created while it runs already follow the new intent.
-        let _ = tmux::run_tmux(&["set", "-g", tmux::SIDEBAR_MODE, "closed"]);
-        let all_panes = tmux::run_tmux(&["list-panes", "-a", "-F", &pane_window_role_format()])
-            .unwrap_or_default();
-        for line in all_panes.lines() {
-            if let Some((sidebar_pane, window_id)) = parse_sidebar_close_target(line) {
-                close_sidebar(&sidebar_pane, &window_id);
-            }
-        }
+        close_all_sidebars();
     } else {
         let _ = tmux::run_tmux(&["set", "-g", tmux::SIDEBAR_MODE, "open"]);
         let all_windows = tmux::run_tmux(&[
@@ -400,6 +391,23 @@ pub(crate) fn cmd_toggle_all(_args: &[String]) -> i32 {
     0
 }
 
+/// Record the system-level `closed` mode, then close every role-tagged
+/// sidebar pane across all sessions and windows, restoring each window's
+/// layout via the normal close path. Shared by the toggle-all sweep and
+/// the maintain-width mobile takeover: both mean "sidebars off
+/// everywhere", and recording the mode first keeps windows created while
+/// the sweep runs sidebar-less too.
+fn close_all_sidebars() {
+    let _ = tmux::run_tmux(&["set", "-g", tmux::SIDEBAR_MODE, "closed"]);
+    let all_panes =
+        tmux::run_tmux(&["list-panes", "-a", "-F", &pane_window_role_format()]).unwrap_or_default();
+    for line in all_panes.lines() {
+        if let Some((sidebar_pane, window_id)) = parse_sidebar_close_target(line) {
+            close_sidebar(&sidebar_pane, &window_id);
+        }
+    }
+}
+
 /// Kill every sidebar pane beyond the first in its window, restoring
 /// each removed pane's window layout via the normal close path, and
 /// pin the surviving sidebar back to the configured width. The restore
@@ -426,9 +434,16 @@ fn dedupe_window_sidebars() {
 /// tmux `window-layout-changed` and `client-resized` hooks. When a
 /// window with a split-pane sidebar shrinks below the popup threshold —
 /// a phone client attached, or an existing small client shrank the
-/// window — the split pane degenerates into a sliver, so the sidebar is
-/// closed; the next toggle press then opens the modal popup (mobile
-/// takeover, see `cmd_toggle`).
+/// window — the split pane degenerates into a sliver. That window is
+/// proof a mobile viewport is attached, so the response is server-wide:
+/// the toggle-all close sweep (see `close_all_sidebars`) takes down
+/// every split-pane sidebar in every session, not just this window's.
+/// Closing only the local pane is not enough — a phone client sees all
+/// sessions, and the other sessions' sidebars would linger as slivers
+/// with no hook ever firing in them (switching sessions changes no
+/// layout). The next toggle press then opens the modal popup (mobile
+/// takeover, see `cmd_toggle`), and `@sidebar_mode=closed` keeps
+/// auto-create from re-seeding sidebars until the next toggle-all.
 ///
 /// Deliberately cheap and side-effect-free when it does nothing: a
 /// couple of `display-message` queries, one `list-panes`, and at most
@@ -475,10 +490,16 @@ pub(crate) fn cmd_maintain_width(args: &[String]) -> i32 {
     // case, hidden sidebar or not.
     record_last_window_width(window_id, current_width);
 
-    if should_auto_hide(last_width, current_width, threshold, sidebar_pane.is_some())
-        && let Some(sidebar_pane) = sidebar_pane
-    {
-        close_sidebar(&sidebar_pane, window_id);
+    if should_auto_hide(last_width, current_width, threshold, sidebar_pane.is_some()) {
+        // Mobile viewport detected. Don't just close this window's
+        // sidebar: the phone client sees every session, so the other
+        // sessions' sidebars would linger as slivers (no layout hook
+        // fires in them on a session switch). Run the toggle-all close
+        // sweep — every split-pane sidebar comes down and the recorded
+        // `closed` mode keeps auto-create from re-seeding them. The
+        // width recording above already ran, so the layout churn this
+        // sweep causes re-fires this hook as a no-op everywhere.
+        close_all_sidebars();
     }
 
     0
@@ -493,10 +514,15 @@ fn auto_hide_enabled(setting: &str) -> bool {
     setting.is_empty() || setting.eq_ignore_ascii_case("on")
 }
 
-/// Pure decision core of [`cmd_maintain_width`]: auto-hide fires only on
+/// Pure decision core of [`cmd_maintain_width`]: the sweep fires only on
 /// a *downward crossing* of the popup threshold — the window was at
 /// least `threshold` wide when last observed and is now strictly below
-/// it — while a role-tagged split-pane sidebar exists.
+/// it — while a role-tagged split-pane sidebar exists in the crossing
+/// window. The sidebar gate keeps the (server-wide) response
+/// conservative: a window shrinking below the threshold without a
+/// sidebar is just as likely a desktop user resizing a spare terminal,
+/// and tearing down every sidebar on the server off that signal alone
+/// would be hostile.
 ///
 /// Why crossing detection: `toggle-all --force-split` deliberately
 /// creates split panes on narrow windows, and this command fires on

@@ -146,10 +146,12 @@ pub const SIDEBAR_BOTTOM_HEIGHT: &str = "@sidebar_bottom_height";
 /// popup instead of a split pane (mobile viewports). `0` disables the
 /// popup path entirely. Read by the `toggle` subcommand.
 pub const SIDEBAR_POPUP_MAX_WIDTH: &str = "@sidebar_popup_max_width";
-/// Whether the `maintain-width` hook may auto-hide a split-pane sidebar
-/// whose window shrinks below [`SIDEBAR_POPUP_MAX_WIDTH`] (`on` / `off`,
-/// default `on` via agent-sidebar.conf seeding). Read by the
-/// `maintain-width` subcommand; empty is treated as `on`.
+/// Whether the `maintain-width` hook may auto-hide split-pane sidebars
+/// when a window shrinks below [`SIDEBAR_POPUP_MAX_WIDTH`] (`on` / `off`,
+/// default `on` via agent-sidebar.conf seeding). The hide is the
+/// toggle-all close sweep: every split-pane sidebar on the server comes
+/// down. Read by the `maintain-width` subcommand; empty is treated as
+/// `on`.
 pub const SIDEBAR_AUTO_HIDE: &str = "@sidebar_auto_hide";
 /// Window-scoped `#{window_layout}` snapshot taken immediately before the
 /// sidebar split is created. The close paths replay it with
@@ -173,13 +175,14 @@ pub const SIDEBAR_NOTIFICATIONS_EVENTS: &str = "@sidebar_notifications_events";
 pub const SIDEBAR_AGENTS: &str = "@sidebar_agents";
 
 pub const SIDEBAR_COLOR_ACCENT: &str = "@sidebar_color_accent";
-/// System-level sidebar mode written by `toggle-all` (`open` / `closed`).
-/// New windows consult it at creation time (via the auto-create hook and
-/// the `toggle --create-only` decision), so prefix+E means "sidebars
-/// always on/off everywhere", including windows created afterwards.
-/// Unset means no mode recorded: creation is governed by
-/// [`SIDEBAR_AUTO_CREATE`] alone. Per-window `toggle` presses ignore the
-/// mode — they remain explicit user actions.
+/// System-level sidebar mode written by `toggle-all` and by the
+/// `maintain-width` mobile takeover (`open` / `closed`). New windows
+/// consult it at creation time (via the auto-create hook and the
+/// `toggle --create-only` decision), so prefix+E means "sidebars always
+/// on/off everywhere", including windows created afterwards. Unset means
+/// no mode recorded: creation is governed by [`SIDEBAR_AUTO_CREATE`]
+/// alone. Per-window `toggle` presses ignore the mode — they remain
+/// explicit user actions.
 pub const SIDEBAR_MODE: &str = "@sidebar_mode";
 /// Whether a sidebar is created automatically for new windows (`on` /
 /// `off`, default `on` via agent-sidebar.conf seeding). Consulted at
