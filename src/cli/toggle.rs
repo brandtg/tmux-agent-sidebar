@@ -74,18 +74,7 @@ pub(crate) fn cmd_toggle(args: &[String]) -> i32 {
     let use_popup = !force_split && should_use_popup(&popup_max_width, window_width);
 
     // Check for existing sidebar
-    let pane_id_role_format = pane_id_role_format();
-    let panes_output = tmux::run_tmux(&["list-panes", "-t", window_id, "-F", &pane_id_role_format])
-        .unwrap_or_default();
-
-    let existing_sidebar = panes_output.lines().find_map(|line| {
-        let parts: Vec<&str> = line.splitn(2, '|').collect();
-        if parts.len() >= 2 && parts[1] == "sidebar" {
-            Some(parts[0].to_string())
-        } else {
-            None
-        }
-    });
+    let existing_sidebar = find_window_sidebar(window_id);
 
     if let Some(sidebar_pane) = existing_sidebar {
         if create_only {
@@ -97,6 +86,7 @@ pub(crate) fn cmd_toggle(args: &[String]) -> i32 {
         // viewport lands on a live split-pane sidebar. Reopen it as the
         // popup right away instead of demanding a second press.
         if use_popup {
+            record_last_window_width(window_id, window_width);
             return open_popup(window_id, pane_path);
         }
         return 0;
@@ -106,6 +96,7 @@ pub(crate) fn cmd_toggle(args: &[String]) -> i32 {
         if create_only {
             return 0;
         }
+        record_last_window_width(window_id, window_width);
         return open_popup(window_id, pane_path);
     }
 
@@ -128,6 +119,14 @@ pub(crate) fn cmd_toggle(args: &[String]) -> i32 {
     // Snapshot the layout before splitting so the close path can put
     // every pane back where it was (see restore_window_layout).
     save_window_layout(window_id);
+
+    // Record the width the sidebar is created at BEFORE the split (which
+    // fires the maintain-width hook): with the recording already
+    // committed, the hook sees last == current and cannot insta-hide the
+    // pane this command is about to create — relevant for the toggle-all
+    // sweep, which force-splits windows a small client may already have
+    // shrunk.
+    record_last_window_width(window_id, window_width);
 
     // Find our own binary path
     let self_bin = std::env::current_exe()
@@ -165,6 +164,24 @@ pub(crate) fn cmd_toggle(args: &[String]) -> i32 {
     }
 
     0
+}
+
+/// First role-tagged sidebar pane in `window_id`, or `None`. Panes
+/// without the `@pane_role = sidebar` tag are never returned. Shared by
+/// the toggle paths and the maintain-width hook.
+fn find_window_sidebar(window_id: &str) -> Option<String> {
+    let pane_id_role_format = pane_id_role_format();
+    let panes_output = tmux::run_tmux(&["list-panes", "-t", window_id, "-F", &pane_id_role_format])
+        .unwrap_or_default();
+
+    panes_output.lines().find_map(|line| {
+        let parts: Vec<&str> = line.splitn(2, '|').collect();
+        if parts.len() >= 2 && parts[1] == "sidebar" {
+            Some(parts[0].to_string())
+        } else {
+            None
+        }
+    })
 }
 
 /// Kill the sidebar pane, then replay the layout snapshot captured at
@@ -401,6 +418,129 @@ fn dedupe_window_sidebars() {
             let _ = tmux::run_tmux(&["resize-pane", "-t", &survivor_pane, "-x", &target]);
         }
     }
+}
+
+// ─── maintain-width (auto-hide a split sidebar on a shrink) ─────────
+
+/// Auto-hide entry point (`maintain-width <window_id>`), wired to the
+/// tmux `window-layout-changed` and `client-resized` hooks. When a
+/// window with a split-pane sidebar shrinks below the popup threshold —
+/// a phone client attached, or an existing small client shrank the
+/// window — the split pane degenerates into a sliver, so the sidebar is
+/// closed; the next toggle press then opens the modal popup (mobile
+/// takeover, see `cmd_toggle`).
+///
+/// Deliberately cheap and side-effect-free when it does nothing: a
+/// couple of `display-message` queries, one `list-panes`, and at most
+/// one `set-option` plus one close. It fires on every layout change.
+pub(crate) fn cmd_maintain_width(args: &[String]) -> i32 {
+    let Some(window_id) = args.first().map(String::as_str) else {
+        return 0;
+    };
+
+    // `@sidebar_auto_hide` gates everything. Unset/empty means on (the
+    // conf seeds it, but hand-rolled configs may not); anything but an
+    // explicit `on` switches the feature off.
+    let auto_hide = tmux::display_message(window_id, &format!("#{{{}}}", tmux::SIDEBAR_AUTO_HIDE));
+    if !auto_hide_enabled(&auto_hide) {
+        return 0;
+    }
+
+    let current_width: u32 = tmux::display_message(window_id, "#{window_width}")
+        .parse()
+        .unwrap_or(0);
+    if current_width == 0 {
+        // Window gone (or tmux too busy to answer): nothing to measure,
+        // and a 0 recording would poison the next crossing decision.
+        return 0;
+    }
+
+    let sidebar_pane = find_window_sidebar(window_id);
+    let last_width = tmux::display_message(
+        window_id,
+        &format!("#{{{}}}", tmux::SIDEBAR_LAST_WINDOW_WIDTH),
+    )
+    .trim()
+    .parse()
+    .ok();
+    let threshold = popup_max_width_from_setting(&tmux::display_message(
+        window_id,
+        &format!("#{{{}}}", tmux::SIDEBAR_POPUP_MAX_WIDTH),
+    ));
+
+    // Record the observation before acting: the close below changes the
+    // layout, which re-fires this hook, and the recording turns that
+    // second run into a no-op (last == current, no crossing). It also
+    // keeps the last-seen width tracking the latest observation in every
+    // case, hidden sidebar or not.
+    record_last_window_width(window_id, current_width);
+
+    if should_auto_hide(last_width, current_width, threshold, sidebar_pane.is_some())
+        && let Some(sidebar_pane) = sidebar_pane
+    {
+        close_sidebar(&sidebar_pane, window_id);
+    }
+
+    0
+}
+
+/// Parse `@sidebar_auto_hide`. Empty (unset) means on — the conf seeds
+/// `on`, but a hand-rolled config may omit the option — and only an
+/// explicit, case-insensitive `on` enables the feature; anything else
+/// (`off`, garbage) disables it.
+fn auto_hide_enabled(setting: &str) -> bool {
+    let setting = setting.trim();
+    setting.is_empty() || setting.eq_ignore_ascii_case("on")
+}
+
+/// Pure decision core of [`cmd_maintain_width`]: auto-hide fires only on
+/// a *downward crossing* of the popup threshold — the window was at
+/// least `threshold` wide when last observed and is now strictly below
+/// it — while a role-tagged split-pane sidebar exists.
+///
+/// Why crossing detection: `toggle-all --force-split` deliberately
+/// creates split panes on narrow windows, and this command fires on
+/// every layout change — a plain "narrow && sidebar exists" rule would
+/// kill the sweep's sidebar the moment the layout settles. At creation
+/// time the recorded width equals the current one, so no crossing is
+/// seen. It also debounces the hook: only an actual threshold crossing
+/// acts, not every firing while the window stays narrow.
+///
+/// A missing last width (nothing recorded yet) never hides — no crossing
+/// is provable. A zero threshold (`@sidebar_popup_max_width` = 0, popup
+/// mode disabled) and a zero current width (failed `#{window_width}`
+/// query) suppress the hide as well.
+fn should_auto_hide(
+    last_width: Option<u32>,
+    current: u32,
+    threshold: u32,
+    has_sidebar: bool,
+) -> bool {
+    match last_width {
+        Some(last) => {
+            threshold > 0 && current > 0 && has_sidebar && last >= threshold && current < threshold
+        }
+        None => false,
+    }
+}
+
+/// Store `width` in the window-scoped [`SIDEBAR_LAST_WINDOW_WIDTH`]
+/// option — the maintain-width hook's memory of the last width it
+/// observed. Written on every hook firing and whenever a toggle opens a
+/// split sidebar or a popup, so each crossing decision is measured from
+/// the latest observation and a stale recording can never insta-hide a
+/// freshly created sidebar.
+fn record_last_window_width(window_id: &str, width: u32) {
+    if width == 0 {
+        // A failed `#{window_width}` query must not be recorded: the
+        // next crossing would be measured from a phantom zero.
+        return;
+    }
+    let _ = tmux::set_window_option(
+        window_id,
+        tmux::SIDEBAR_LAST_WINDOW_WIDTH,
+        &tmux::sanitize_option_value(&width.to_string()),
+    );
 }
 
 /// Resolve `@sidebar_width` into absolute cells for `window_id`,
@@ -1144,6 +1284,78 @@ mod tests {
             args.last().map(String::as_str),
             Some("/bin/tmux-agent-sidebar")
         );
+    }
+
+    // ─── maintain-width (auto-hide on shrink) ─────────────────────────
+
+    #[test]
+    fn auto_hide_fires_on_downward_crossing_with_sidebar() {
+        assert!(should_auto_hide(Some(120), 99, 100, true));
+        // Last seen exactly at the threshold counts as "wide": a
+        // split-pane sidebar is correct AT the threshold, only strictly
+        // below it is popup territory.
+        assert!(should_auto_hide(Some(100), 99, 100, true));
+    }
+
+    #[test]
+    fn auto_hide_never_fires_without_a_downward_crossing() {
+        // Staying below the threshold — the common case, since the hook
+        // fires on every layout change while the window stays narrow.
+        assert!(!should_auto_hide(Some(80), 79, 100, true));
+        assert!(!should_auto_hide(Some(80), 80, 100, true));
+        // Growing back above the threshold.
+        assert!(!should_auto_hide(Some(80), 150, 100, true));
+        // No movement at all.
+        assert!(!should_auto_hide(Some(100), 100, 100, true));
+    }
+
+    #[test]
+    fn auto_hide_requires_a_sidebar_pane() {
+        // A crossing on a sidebar-less window only records the width.
+        assert!(!should_auto_hide(Some(120), 80, 100, false));
+    }
+
+    #[test]
+    fn auto_hide_skips_when_no_last_width_recorded() {
+        // Nothing recorded yet (fresh install, option cleared): no
+        // crossing is provable, so never hide.
+        assert!(!should_auto_hide(None, 80, 100, true));
+    }
+
+    #[test]
+    fn auto_hide_skips_on_query_failure_or_disabled_popup() {
+        // A failed `#{window_width}` query (parsed as 0) must not hide a
+        // live sidebar on a transient tmux hiccup.
+        assert!(!should_auto_hide(Some(120), 0, 100, true));
+        // `@sidebar_popup_max_width` = 0 disables popup mode outright:
+        // there is no threshold to cross and no popup the next toggle
+        // could open, so the split pane stays.
+        assert!(!should_auto_hide(Some(120), 80, 0, true));
+    }
+
+    #[test]
+    fn auto_hide_threshold_defaults_from_popup_max_width() {
+        // The threshold is resolved through popup_max_width_from_setting,
+        // so an unset/invalid `@sidebar_popup_max_width` falls back to
+        // the default of 100 and the crossing compares against that.
+        let threshold = popup_max_width_from_setting("");
+        assert!(should_auto_hide(Some(100), 99, threshold, true));
+        assert!(!should_auto_hide(Some(99), 98, threshold, true));
+        let zero = popup_max_width_from_setting("0");
+        assert!(!should_auto_hide(Some(50), 40, zero, true));
+    }
+
+    #[test]
+    fn auto_hide_setting_defaults_on_and_rejects_non_on() {
+        assert!(auto_hide_enabled(""), "unset option means default on");
+        assert!(auto_hide_enabled("on"));
+        assert!(
+            auto_hide_enabled("  ON  "),
+            "case-insensitive, trim-tolerant"
+        );
+        assert!(!auto_hide_enabled("off"));
+        assert!(!auto_hide_enabled("0"));
+        assert!(!auto_hide_enabled("garbage"));
     }
 
     // ─── should_kill_window ───────────────────────────────────────────
