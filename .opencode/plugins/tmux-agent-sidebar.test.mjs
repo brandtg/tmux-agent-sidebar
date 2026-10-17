@@ -470,14 +470,18 @@ test("a foreign project's session.created is ignored entirely", async () => {
   const h = await loadPlugin();
   try {
     const plugin = await h.init("/repo", "proj_mine");
+    // Real 2.0.x bus shape: the session record nests under `info`.
     await plugin.event({
       type: "session.created",
-      data: { sessionID: "ses_foreign", projectID: "proj_other", title: "Other project" },
+      data: { sessionID: "ses_foreign", info: { projectID: "proj_other", directory: "/other", title: "Other project" } },
     });
     await plugin.event({ type: "session.execution.started", data: { sessionID: "ses_foreign" } });
     await plugin.event({ type: "session.execution.succeeded", data: { sessionID: "ses_foreign" } });
     // Our own session still works normally.
-    await plugin.event({ type: "session.created", data: { sessionID: MAIN, projectID: "proj_mine", title: "Main" } });
+    await plugin.event({
+      type: "session.created",
+      data: { sessionID: MAIN, info: { projectID: "proj_mine", directory: "/repo", title: "Main" } },
+    });
     await settle(h);
 
     assert.deepEqual(h.events(), [
@@ -495,7 +499,7 @@ test("a known foreign session cannot adopt the main slot via the prompt hook", a
     const plugin = await h.init("/repo", "proj_mine");
     await plugin.event({
       type: "session.created",
-      data: { sessionID: "ses_foreign", projectID: "proj_other", title: "Other project" },
+      data: { sessionID: "ses_foreign", info: { projectID: "proj_other", directory: "/other", title: "Other project" } },
     });
     await plugin.prompt({ sessionID: "ses_foreign", prompt: { text: "foreign turn" } });
     // The main session is only adopted once a belonging prompt arrives.
@@ -505,6 +509,93 @@ test("a known foreign session cannot adopt the main slot via the prompt hook", a
     assert.deepEqual(h.events(), [
       "user-prompt-submit " + JSON.stringify({ cwd: "/repo", session_id: MAIN, prompt: "mine" }),
     ]);
+  } finally {
+    h.dispose();
+  }
+});
+
+// Regression: 2.0.x nests the session record under `data.info`. Reading
+// `data.projectID` flat left every session's project unknown, so the gate
+// default-allowed and the newest created session stole `mainSession` in
+// every instance — the real session's lifecycle events (session-start /
+// user-prompt-submit / stop) were then dropped and its pane never left
+// "Waiting for prompt…", while tool activity kept flowing.
+test("a foreign session.created nested under info cannot steal the main slot", async () => {
+  const h = await loadPlugin();
+  try {
+    const plugin = await h.init("/repo", "proj_mine");
+    // Foreign project's session created first, ours second (newest on the
+    // bus must not win the slot).
+    await plugin.event({
+      type: "session.created",
+      data: { sessionID: "ses_foreign", info: { projectID: "proj_other", directory: "/other", title: "Foreign" } },
+    });
+    await plugin.event({
+      type: "session.created",
+      data: { sessionID: MAIN, info: { projectID: "proj_mine", directory: "/repo", title: "Main" } },
+    });
+    await plugin.prompt({ sessionID: "ses_foreign", prompt: { text: "foreign turn" } });
+    await plugin.tool({ sessionID: "ses_foreign", tool: "read", input: {}, status: "completed", result: { output: "o", metadata: null } });
+    await plugin.prompt({ sessionID: MAIN, prompt: { text: "mine" } });
+    await settle(h);
+
+    assert.deepEqual(h.events(), [
+      "session-start " + JSON.stringify({ cwd: "/repo", session_id: MAIN, source: "startup" }),
+      "session-title " + JSON.stringify({ cwd: "/repo", session_id: MAIN, title: "Main" }),
+      "user-prompt-submit " + JSON.stringify({ cwd: "/repo", session_id: MAIN, prompt: "mine" }),
+    ]);
+  } finally {
+    h.dispose();
+  }
+});
+
+// Shared-daemon flavor: the instance has no project identity, only a
+// directory. A foreign session carrying its projectID must be dropped
+// entirely (it used to be adopted and misroute events into panes of the
+// wrong project), while a project-less record can still be attributed by
+// directory.
+test("a projectless instance gates nested creations by directory", async () => {
+  const h = await loadPlugin();
+  try {
+    const plugin = await h.init("/repo");
+    await plugin.event({
+      type: "session.created",
+      data: { sessionID: "ses_foreign", info: { projectID: "proj_other", directory: "/other", title: "Foreign" } },
+    });
+    await plugin.prompt({ sessionID: "ses_foreign", prompt: { text: "foreign turn" } });
+    await plugin.tool({ sessionID: "ses_foreign", tool: "read", input: {}, status: "completed", result: { output: "o", metadata: null } });
+    // No projectID on the record: the directory gate attributes it.
+    await plugin.event({
+      type: "session.created",
+      data: { sessionID: MAIN, info: { directory: "/repo", title: "Main" } },
+    });
+    await plugin.prompt({ sessionID: MAIN, prompt: { text: "mine" } });
+    await settle(h);
+
+    assert.deepEqual(h.events(), [
+      "session-start " + JSON.stringify({ cwd: "/repo", session_id: MAIN, source: "startup" }),
+      "session-title " + JSON.stringify({ cwd: "/repo", session_id: MAIN, title: "Main" }),
+      "user-prompt-submit " + JSON.stringify({ cwd: "/repo", session_id: MAIN, prompt: "mine" }),
+    ]);
+  } finally {
+    h.dispose();
+  }
+});
+
+// Older shapes carried the attribution flat on `data`; the hedge must
+// keep gating on it.
+test("a flat-shape foreign session.created is still gated", async () => {
+  const h = await loadPlugin();
+  try {
+    const plugin = await h.init("/repo", "proj_mine");
+    await plugin.event({
+      type: "session.created",
+      data: { sessionID: "ses_foreign", projectID: "proj_other", title: "Other project" },
+    });
+    await plugin.prompt({ sessionID: "ses_foreign", prompt: { text: "foreign turn" } });
+    await settle(h);
+
+    assert.deepEqual(h.events(), []);
   } finally {
     h.dispose();
   }

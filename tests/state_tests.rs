@@ -5,7 +5,8 @@ use test_helpers::*;
 use tmux_agent_sidebar::activity::ActivityEntry;
 use tmux_agent_sidebar::group::{PaneGitInfo, RepoGroup};
 use tmux_agent_sidebar::state::{
-    AppState, BottomTab, Focus, GlobalState, PopupState, RepoFilter, RowTarget, StatusFilter,
+    AppState, BottomTab, Focus, GlobalState, GroupBy, PopupState, RepoFilter, RowTarget,
+    StatusFilter,
 };
 use tmux_agent_sidebar::tmux::{
     self, AgentType, PaneAttention, PaneInfo, PaneStatus, SessionInfo, WindowInfo, WorktreeMetadata,
@@ -1128,6 +1129,33 @@ fn bottom_minimize_absent_option_leaves_existing_pin_alone() {
     g.apply_all(&make_opts(&[(tmux::SIDEBAR_BOTTOM_MINIMIZED, "1")]));
     g.apply_all(&std::collections::HashMap::new());
     assert_eq!(g.bottom_minimize_override, Some(true));
+}
+
+// ─── group-by tests ─────────────────────────────────────────────────
+// A config-time choice set in tmux.conf (`@sidebar_group_by`): read on
+// every sync, unknown values fall back to repo, no runtime toggle.
+
+#[test]
+fn group_by_defaults_to_repo() {
+    let g = make_global();
+    assert_eq!(g.group_by, GroupBy::Repo);
+}
+
+#[test]
+fn group_by_parses_session_label() {
+    let mut g = make_global();
+    g.apply_all(&make_opts(&[(tmux::SIDEBAR_GROUP_BY, "session")]));
+    assert_eq!(g.group_by, GroupBy::Session);
+
+    g.apply_all(&make_opts(&[(tmux::SIDEBAR_GROUP_BY, "SESSION")]));
+    assert_eq!(g.group_by, GroupBy::Session, "labels are case-insensitive");
+}
+
+#[test]
+fn group_by_unknown_value_falls_back_to_repo() {
+    let mut g = make_global();
+    g.apply_all(&make_opts(&[(tmux::SIDEBAR_GROUP_BY, "banana")]));
+    assert_eq!(g.group_by, GroupBy::Repo);
 }
 
 // ─── show-windows tests ─────────────────────────────────────────────

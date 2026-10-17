@@ -41,7 +41,7 @@ pub(super) fn collect(state: &AppState, width: u16) -> CollectedRows {
         // `error`, an idle shell under `idle`), in which case the group
         // header and window section render without agent rows.
         let matched_windows: Vec<&crate::group::OtherWindow> = if state.global.show_windows {
-            let key = crate::group::repo_group_key(group);
+            let key = crate::group::group_window_key(state.global.group_by, group);
             state
                 .other_windows
                 .get(&key)
@@ -76,9 +76,11 @@ pub(super) fn collect(state: &AppState, width: u16) -> CollectedRows {
             .as_ref()
             .is_some_and(|fid| group.panes.iter().any(|(p, _)| p.pane_id == *fid));
 
-        // Plain repo header at column 0, with a `[+]` spawn button
-        // right-aligned on the same row. Only rendered when the group
-        // has a resolved repo_root — panes outside a git repo get a
+        // Plain group header at column 0. In repo mode a `[+]` spawn
+        // button rides right-aligned on the same row, rendered only when
+        // the group has a resolved repo_root — panes outside a git repo
+        // get a plain title. Session groups are not a spawn target (a
+        // session is not a repo to spawn into), so they always render a
         // plain title.
         let title = &group.name;
         let title_color = if group_has_focused_pane {
@@ -86,10 +88,13 @@ pub(super) fn collect(state: &AppState, width: u16) -> CollectedRows {
         } else {
             theme.text_active
         };
-        let repo_root = group
-            .panes
-            .iter()
-            .find_map(|(_, git)| git.repo_root.clone());
+        let repo_root = match state.global.group_by {
+            crate::state::GroupBy::Repo => group
+                .panes
+                .iter()
+                .find_map(|(_, git)| git.repo_root.clone()),
+            crate::state::GroupBy::Session => None,
+        };
         let spans: Vec<Span<'static>> = if let Some(ref root) = repo_root {
             // The `+` button must stay visible: the title is truncated to
             // the space left of the button. An untruncated long repo name
@@ -231,7 +236,7 @@ pub(super) fn collect(state: &AppState, width: u16) -> CollectedRows {
 mod tests {
     use super::*;
     use crate::group::{PaneGitInfo, RepoGroup};
-    use crate::state::{AppState, StatusFilter};
+    use crate::state::{AppState, GroupBy, StatusFilter};
     use crate::tmux::{
         AgentType, PaneAttention, PaneInfo, PaneStatus, PermissionMode, WorktreeMetadata,
     };
@@ -353,6 +358,61 @@ mod tests {
         assert!(
             !text.contains("cargo test") && !text.contains('\u{25C6}'),
             "window section must be hidden:\n{text}"
+        );
+    }
+
+    #[test]
+    fn collect_session_mode_renders_agentless_session_windows() {
+        // The w-mode session-manager view: a session without agents still
+        // renders its header and its plain windows, and is not a spawn
+        // target (a session is not a repo to spawn into).
+        let mut state = AppState::new("%0".into());
+        state.global.group_by = GroupBy::Session;
+        state.global.show_windows = true;
+        state.repo_groups = vec![RepoGroup {
+            name: "solo".into(),
+            has_focus: false,
+            panes: vec![],
+        }];
+        state.other_windows.insert(
+            "solo".into(),
+            vec![other_window("%10", "cargo test", "cargo")],
+        );
+
+        let collected = collect(&state, 40);
+        let text = collected
+            .lines
+            .iter()
+            .map(line_text)
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        assert!(text.contains("solo"), "session header missing:\n{text}");
+        assert!(text.contains("cargo test"), "window row missing:\n{text}");
+        assert!(
+            collected.pending_spawn.is_empty(),
+            "session headers must not register spawn targets"
+        );
+    }
+
+    #[test]
+    fn collect_session_mode_hides_agentless_sessions_when_windows_off() {
+        let mut state = AppState::new("%0".into());
+        state.global.group_by = GroupBy::Session;
+        state.repo_groups = vec![RepoGroup {
+            name: "solo".into(),
+            has_focus: false,
+            panes: vec![],
+        }];
+        state.other_windows.insert(
+            "solo".into(),
+            vec![other_window("%10", "cargo test", "cargo")],
+        );
+
+        let collected = collect(&state, 40);
+        assert!(
+            collected.lines.is_empty(),
+            "w off keeps agent-less sessions out of the list"
         );
     }
 

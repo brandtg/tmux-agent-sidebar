@@ -10,18 +10,22 @@
 //   tool.execute.after  → ctx.tool.hook("execute.after")
 //
 // Bus payloads are flat: every event is `{ type, data: {...} }` and the
-// per-type fields live on `data` (sessionID, title, error, ...). Turn
-// lifecycle in 2.0.x is `session.execution.started` / `succeeded` /
-// `failed` / `interrupted` — the v1-era `session.idle` / `session.status`
-// events are still understood (schema keeps them) but a 2.0.27 server
-// never emits them, so `session.idle` alone left panes running forever.
-// Title changes arrive as `session.updated` (data.info.title), and the
-// question tool surfaces as `question.asked` / `question.replied` /
-// `question.rejected` with a flat `data.sessionID`.
+// per-type fields live on `data` (sessionID, title, error, ...). The
+// session lifecycle events nest the session record under `data.info`
+// (2.0.x: `{ sessionID, info: { projectID, directory, parentID, title, ... } }`)
+// — reading those fields flat on `data` silently yielded undefined and
+// disabled the project gate. Turn lifecycle in 2.0.x is
+// `session.execution.started` / `succeeded` / `failed` / `interrupted` —
+// the v1-era `session.idle` / `session.status` events are still understood
+// (schema keeps them) but a 2.0.27 server never emits them, so
+// `session.idle` alone left panes running forever. Title changes arrive as
+// `session.updated` (data.info.title), and the question tool surfaces as
+// `question.asked` / `question.replied` / `question.rejected` with a flat
+// `data.sessionID`.
 //
 // The bus is server-global: a plugin instance receives events for every
 // session on the service, including other projects. `session.created`
-// carries the new session's `data.projectID` / `data.location.directory`,
+// carries the new session's `data.info.projectID` / `data.info.directory`,
 // which gates adoption and forwarding; lifecycle events for sessions we
 // have not seen created are attributed with a one-time `session.get`
 // lookup (cached per sessionID), so a foreign project's turn can never
@@ -276,10 +280,17 @@ export default {
       try {
         const session = await ctx.session.get({ sessionID: session_id });
         if (session && typeof session === "object") {
+          // The session record carries `directory` flat (SessionV1.Info);
+          // some shapes wrap it in `location`. Read both.
+          const directory =
+            typeof session.directory === "string"
+              ? session.directory
+              : typeof session.location?.directory === "string"
+                ? session.location.directory
+                : "";
           info = {
             projectID: typeof session.projectID === "string" ? session.projectID : "",
-            directory:
-              typeof session.location?.directory === "string" ? session.location.directory : "",
+            directory,
           };
         }
       } catch {}
@@ -386,14 +397,26 @@ export default {
           // sessions belonging to this instance adopt/forward.
           case "session.created": {
             const session_id = sessionIdOf(data.sessionID);
+            // The 2.0.x public bus nests the session record under `info`
+            // (`{ sessionID, info: { projectID, directory, parentID, ... } }`);
+            // flat fields on `data` were never present, so reading them there
+            // left every session's project unknown and the project gate
+            // default-allowing — foreign sessions adopted the main slot and
+            // the real session's lifecycle events were dropped. Older/internal
+            // shapes carry the fields flat; read both.
+            const info =
+              data?.info && typeof data.info === "object" ? data.info : data;
             sessionProjects.set(session_id, {
-              projectID: typeof data.projectID === "string" ? data.projectID : "",
+              projectID: typeof info?.projectID === "string" ? info.projectID : "",
               directory:
-                typeof data.location?.directory === "string" ? data.location.directory : "",
+                typeof info?.directory === "string"
+                  ? info.directory
+                  : typeof info?.location?.directory === "string"
+                    ? info.location.directory
+                    : "",
             });
             const parentID =
-              sessionIdOf(data.parentID) ||
-              sessionIdOf(data.info?.parentID);
+              sessionIdOf(info?.parentID) || sessionIdOf(data.parentID);
             if (parentID) {
               if (session_id) {
                 childSessions.add(session_id);
@@ -410,7 +433,7 @@ export default {
             hook("session-title", {
               cwd,
               session_id,
-              title: data.title ?? data.info?.title ?? "",
+              title: info?.title ?? "",
             });
             continue;
           }

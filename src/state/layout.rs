@@ -103,7 +103,7 @@ impl AppState {
             // order in `row_collector::collect`, and pass the same
             // per-window status-filter rule as the renderer.
             let show_windows = self.global.show_windows;
-            let key = crate::group::repo_group_key(group);
+            let key = crate::group::group_window_key(self.global.group_by, group);
             if show_windows
                 && !key.is_empty()
                 && let Some(windows) = self.other_windows.get(&key)
