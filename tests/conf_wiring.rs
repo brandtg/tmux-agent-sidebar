@@ -35,10 +35,18 @@ fn maintain_width_is_registered_for_both_resize_events() {
     // must stay inside `if-shell` guards (window-layout-changed needs
     // tmux 3.2+, and an unguarded `set-hook` would error while sourcing
     // on older servers).
+    //
+    // The quoting is load-bearing: at fire time tmux re-parses the stored
+    // command, so the `\"` span must stay open across `maintain-width` and
+    // close only after `#{window_id}` — that way `run-shell` receives the
+    // whole invocation as ONE argument. Closing the span after the binary
+    // (`\"#{@agent_sidebar_bin}\"`) splits the hook into separate
+    // arguments; tmux's run-shell then executes argv[0] (the bare binary,
+    // headless TUI) which exits 1 on every layout change.
     let mut per_hook: BTreeMap<&str, Vec<&'static str>> = BTreeMap::new();
     for hook in ["window-layout-changed", "client-resized"] {
         let needle = format!(
-            "set-hook -ga {hook} \"run-shell -b \\\"#{{@agent_sidebar_bin}}\\\" maintain-width \\\"#{{window_id}}\\\"\""
+            "set-hook -ga {hook} \"run-shell -b \\\"#{{@agent_sidebar_bin}} maintain-width #{{window_id}}\\\"\""
         );
         let lines = conf_lines_containing(&needle);
         assert_eq!(
