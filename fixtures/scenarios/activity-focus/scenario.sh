@@ -26,36 +26,27 @@ build_layout
 paint_stream "$MAIN_PANE" \
     "$ROOT/fixtures/scenarios/hero/main-pane.stream"
 
-# Rich activity log for the focused pane — hits every tool-category
-# colour in src/activity.rs.
+# Rich activity log for the focused pane — hits every Feed kind
+# (FileChange, Task, TaskCompleted, Subagent, Permission, Failure,
+# Notification). Read/Grep/Bash-style lines are deliberately absent:
+# the feed filters them out (see FeedKind::classify).
 cat >> "$FOCUSED_LOG" <<'ACTIVITY'
 14:01|TaskCreate|#1 reproduce the deep-link regression
 14:01|TaskCreate|#2 preserve window.location.search through the redirect
 14:01|TaskCreate|#3 add a failing test for the deep-link flow
 14:01|TaskCreate|#4 update the migration doc for v13 router
-14:02|Read|packages/web/src/login.tsx
-14:02|Read|packages/web/src/router.ts
-14:02|Grep|deep-link
 14:02|TaskUpdate|completed #1
-14:03|Read|packages/web/tests/login.test.tsx
-14:03|TaskUpdate|in_progress #3
 14:03|Edit|packages/web/src/login.tsx
-14:03|Bash|npm test -- login
-14:03|TaskUpdate|completed #3
-14:04|Glob|packages/web/src/**/*.ts
-14:04|Agent|Explore #d9e0f1
-14:04|Skill|superpowers:using-git-worktrees
-14:04|WebFetch|https://reactrouter.com/en/docs
-14:04|Read|packages/web/src/auth/session.ts
-14:04|TaskUpdate|in_progress #2
-14:05|Edit|packages/web/src/login.tsx
-14:05|LSP|textDocument/rename
-14:05|mcp__playwright__screenshot|login-redirect.png
+14:03|Agent|Explore #d9e0f1
+14:03|Notify|Claude needs your permission to use Bash
+14:04|Write|packages/web/src/auth/session.ts
+14:04|TaskUpdate|in_progress #3
+14:05|Edit|packages/web/src/router.ts
 14:05|NotebookEdit|analysis/redirect-timings.ipynb
-14:05|AskUserQuestion|merge to main?
-14:05|Bash|npm run build
-14:05|EnterWorktree|fix/login-redirect
-14:05|Write|packages/web/src/login.tsx
+14:05|Error|npm test exited 1
+14:06|Permission|permission denied
+14:06|AskUserQuestion|merge to main?
+14:07|TaskUpdate|completed #3
 ACTIVITY
 
 start_sidebar
