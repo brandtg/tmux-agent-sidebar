@@ -124,8 +124,8 @@ fn test_running_icon_blink_off() {
     ⓘ                        — ▾
     project
     ┃ ● claude
-    ╭ Activity │ Git ──────────╮
-    │      No activity yet     │
+    ╭ Feed │ Repos ────────────╮
+    │    No recent activity    │
     ╰──────────────────────────╯
     ");
 }
@@ -153,8 +153,8 @@ fn test_running_spinner_frame_advances() {
     ⓘ                        — ▾
     project
     ┃ ● claude
-    ╭ Activity │ Git ──────────╮
-    │      No activity yet     │
+    ╭ Feed │ Repos ────────────╮
+    │    No recent activity    │
     ╰──────────────────────────╯
     ");
 }
@@ -181,8 +181,8 @@ fn test_waiting_icon() {
     ⓘ                        — ▾
     project
     ┃ ◐ claude
-    ╭ Activity │ Git ──────────╮
-    │      No activity yet     │
+    ╭ Feed │ Repos ────────────╮
+    │    No recent activity    │
     ╰──────────────────────────╯
     ");
 }
@@ -209,8 +209,8 @@ fn test_error_icon() {
     ⓘ                        — ▾
     project
     ┃ ✕ claude
-    ╭ Activity │ Git ──────────╮
-    │      No activity yet     │
+    ╭ Feed │ Repos ────────────╮
+    │    No recent activity    │
     ╰──────────────────────────╯
     ");
 }
@@ -302,8 +302,8 @@ fn test_agents_auto_scroll_up_shows_group_header() {
     project
       ○ claude
         Waiting for prompt…
-    ╭ Activity │ Git ──────────╮
-    │      No activity yet     │
+    ╭ Feed │ Repos ────────────╮
+    │    No recent activity    │
     ╰──────────────────────────╯
     ");
 }
@@ -472,7 +472,7 @@ fn repo_popup_renders_repo_names_when_open() {
 
     // The snapshot locks in that the popup lists the `All` entry plus both
     // repo names when opened.
-    insta::assert_snapshot!(render_to_string(&mut state, 40, 30), @r"
+    insta::assert_snapshot!(render_to_string(&mut state, 40, 30), @"
      ≡2  ●0  ◎0  ◐0  ○2  ✕0
     ⓘ                                    — ▾
     frontend                    ┌──────────┐
@@ -482,8 +482,8 @@ fn repo_popup_renders_repo_names_when_open() {
     backend                     └──────────┘
     ┃ ○ claude
         Waiting for prompt…
-    ╭ Activity │ Git ──────────────────────╮
-    │            No activity yet           │
+    ╭ Feed │ Repos  Shift+Tab: switch tab ─╮
+    │          No recent activity          │
     ╰──────────────────────────────────────╯
     ");
     // The popup area is required for click hit-testing and is non-visual
@@ -520,7 +520,7 @@ fn repo_popup_highlights_selected_entry_with_background() {
 
     // Styled snapshot locks in that the `backend` row carries the selection
     // background (bg:239) on each cell of the entry.
-    insta::assert_snapshot!(render_to_styled_string(&mut state, 40, 30), @r"
+    insta::assert_snapshot!(render_to_styled_string(&mut state, 40, 30), @"
      ≡[fg:111]2[fg:255]  ●[fg:245]0[fg:245]  ◎[fg:245]0[fg:245]  ◐[fg:245]0[fg:245]  ○[fg:245]2[fg:255]  ✕[fg:245]0[fg:245]
     ⓘ[fg:221]                                    —[fg:255] ▾[fg:255]
     f[fg:153]r[fg:153]o[fg:153]n[fg:153]t[fg:153]e[fg:153]n[fg:153]d[fg:153]                    ┌[fg:153]─[fg:153]─[fg:153]─[fg:153]─[fg:153]─[fg:153]─[fg:153]─[fg:153]─[fg:153]─[fg:153]─[fg:153]┐[fg:153]
@@ -531,7 +531,7 @@ fn repo_popup_highlights_selected_entry_with_background() {
     ┃[fg:153] ○[fg:110] [fg:174]c[fg:174]l[fg:174]a[fg:174]u[fg:174]d[fg:174]e[fg:174]
        [fg:255] [fg:255]W[fg:255]a[fg:255]i[fg:255]t[fg:255]i[fg:255]n[fg:255]g[fg:255] [fg:255]f[fg:255]o[fg:255]r[fg:255] [fg:255]p[fg:255]r[fg:255]o[fg:255]m[fg:255]p[fg:255]t[fg:255]…[fg:255]
 
-    ╭[fg:240] [fg:240]A[fg:153]c[fg:153]t[fg:153]i[fg:153]v[fg:153]i[fg:153]t[fg:153]y[fg:153] [fg:240]│[fg:240] [fg:240]G[fg:252]i[fg:252]t[fg:252] [fg:240]─[fg:240]─[fg:240]─[fg:240]─[fg:240]─[fg:240]─[fg:240]─[fg:240]─[fg:240]─[fg:240]─[fg:240]─[fg:240]─[fg:240]─[fg:240]─[fg:240]─[fg:240]─[fg:240]─[fg:240]─[fg:240]─[fg:240]─[fg:240]─[fg:240]─[fg:240]╮[fg:240]
+    ╭[fg:240] [fg:240]F[fg:153]e[fg:153]e[fg:153]d[fg:153] [fg:240]│[fg:240] [fg:240]R[fg:252]e[fg:252]p[fg:252]o[fg:252]s[fg:252] [fg:252] [fg:252]S[fg:252]h[fg:252]i[fg:252]f[fg:252]t[fg:252]+[fg:252]T[fg:252]a[fg:252]b[fg:252]:[fg:252] [fg:252]s[fg:252]w[fg:252]i[fg:252]t[fg:252]c[fg:252]h[fg:252] [fg:252]t[fg:252]a[fg:252]b[fg:252] [fg:240]─[fg:240]╮[fg:240]
     │[fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240]│[fg:240]
     │[fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240]│[fg:240]
     │[fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240]│[fg:240]
@@ -540,7 +540,7 @@ fn repo_popup_highlights_selected_entry_with_background() {
     │[fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240]│[fg:240]
     │[fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240]│[fg:240]
     │[fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240]│[fg:240]
-    │[fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240]N[fg:252]o[fg:252] [fg:252]a[fg:252]c[fg:252]t[fg:252]i[fg:252]v[fg:252]i[fg:252]t[fg:252]y[fg:252] [fg:252]y[fg:252]e[fg:252]t[fg:252] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240]│[fg:240]
+    │[fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240]N[fg:252]o[fg:252] [fg:252]r[fg:252]e[fg:252]c[fg:252]e[fg:252]n[fg:252]t[fg:252] [fg:252]a[fg:252]c[fg:252]t[fg:252]i[fg:252]v[fg:252]i[fg:252]t[fg:252]y[fg:252] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240]│[fg:240]
     │[fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240]│[fg:240]
     │[fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240]│[fg:240]
     │[fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240]│[fg:240]
@@ -661,7 +661,7 @@ fn snapshot_compact_mode_spawned_worktree_remove_marker() {
                 repo_root: Some("/home/user/project".into()),
                 branch: Some("agent/fix-api".into()),
                 is_worktree: true,
-                worktree_name: None,
+                ..Default::default()
             },
         )],
     }];

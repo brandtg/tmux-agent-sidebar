@@ -1,0 +1,21 @@
+{"run_id":"1792263043-637297292","line":313,"new":{"module_name":"bottom_tests","snapshot_name":"snapshot_repos_long_branch_flows_with_inline_stats","metadata":{"source":"tests/bottom_tests.rs","assertion_line":313,"expression":"output"},"snapshot":" ≡1  ●1  ◎0  ◐0  ○0  ✕0\nⓘ                                    — ▾\nproject                                +\n╭ Feed │ Repos  Shift+Tab: switch tab ─╮\n│project                               │\n│claude   feature/sidebar/really-long-b│\n│ranch ↑2 ↓1 ~3                        │\n╰──────────────────────────────────────╯"},"old":{"module_name":"bottom_tests","metadata":{},"snapshot":""}}
+{"run_id":"1792263052-819125662","line":267,"new":null,"old":null}
+{"run_id":"1792263052-819125662","line":342,"new":null,"old":null}
+{"run_id":"1792263052-819125662","line":103,"new":null,"old":null}
+{"run_id":"1792263052-819125662","line":221,"new":null,"old":null}
+{"run_id":"1792263052-819125662","line":174,"new":null,"old":null}
+{"run_id":"1792263052-819125662","line":382,"new":null,"old":null}
+{"run_id":"1792263052-819125662","line":439,"new":null,"old":null}
+{"run_id":"1792263052-819125662","line":413,"new":null,"old":null}
+{"run_id":"1792263052-819125662","line":313,"new":null,"old":null}
+{"run_id":"1792263052-819125662","line":148,"new":null,"old":null}
+{"run_id":"1792263055-43306157","line":382,"new":null,"old":null}
+{"run_id":"1792263055-43306157","line":313,"new":null,"old":null}
+{"run_id":"1792263055-43306157","line":221,"new":null,"old":null}
+{"run_id":"1792263055-43306157","line":174,"new":null,"old":null}
+{"run_id":"1792263055-43306157","line":148,"new":null,"old":null}
+{"run_id":"1792263055-43306157","line":342,"new":null,"old":null}
+{"run_id":"1792263055-43306157","line":103,"new":null,"old":null}
+{"run_id":"1792263055-43306157","line":439,"new":null,"old":null}
+{"run_id":"1792263055-43306157","line":413,"new":null,"old":null}
+{"run_id":"1792263055-43306157","line":267,"new":null,"old":null}

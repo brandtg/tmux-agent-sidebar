@@ -750,3 +750,85 @@ test("a valid inherited TMUX_PANE is kept when no pane matches", async () => {
     h.dispose();
   }
 });
+
+// Regression: with a plain first-match tie-break, two same-directory
+// sessions both resolved to the first pane in list-panes order. The second
+// session never received an event (so it could never acquire a binding of
+// its own) and the first pane carried the wrong session's prompt and clock.
+test("a second same-directory session claims the unbound pane instead of stealing a bound one", async () => {
+  const h = await loadPlugin({
+    panes: "%2\topencode\t/repo\tses_a\n%4\topencode\t/repo\t\n",
+  });
+  try {
+    process.env.TMUX_RECORD_ENV = "1";
+    const plugin = await h.init("/repo");
+    await plugin.prompt({ sessionID: "ses_b", prompt: { text: "go" } });
+    await settle(h);
+
+    // %2 is bound to ses_a; the unbound %4 must take session B's events.
+    assert.match(h.events()[0], / env=%4$/);
+  } finally {
+    delete process.env.TMUX_RECORD_ENV;
+    h.dispose();
+  }
+});
+
+// Regression: a single main-session slot made concurrent sessions in one
+// project steal it from each other — the newest session.created or the
+// mid-turn prompt won, and the loser's turns were dropped entirely (its
+// pane never went green, and its prompt text landed on the wrong row).
+test("concurrent main sessions route their turns independently", async () => {
+  const h = await loadPlugin();
+  try {
+    const plugin = await h.init("/repo");
+    await plugin.event({ type: "session.created", data: { sessionID: "ses_a", info: { directory: "/repo", title: "A" } } });
+    await plugin.event({ type: "session.created", data: { sessionID: "ses_b", info: { directory: "/repo", title: "B" } } });
+    await plugin.prompt({ sessionID: "ses_a", prompt: { text: "turn a" } });
+    // B prompts while A's turn is still active — must not be dropped.
+    await plugin.prompt({ sessionID: "ses_b", prompt: { text: "turn b" } });
+    await plugin.event({ type: "session.execution.succeeded", data: { sessionID: "ses_a" } });
+    await plugin.event({ type: "session.execution.succeeded", data: { sessionID: "ses_b" } });
+    await settle(h);
+
+    assert.deepEqual(h.events(), [
+      "session-start " + JSON.stringify({ cwd: "/repo", session_id: "ses_a", source: "startup" }),
+      "session-title " + JSON.stringify({ cwd: "/repo", session_id: "ses_a", title: "A" }),
+      "session-start " + JSON.stringify({ cwd: "/repo", session_id: "ses_b", source: "startup" }),
+      "session-title " + JSON.stringify({ cwd: "/repo", session_id: "ses_b", title: "B" }),
+      "user-prompt-submit " + JSON.stringify({ cwd: "/repo", session_id: "ses_a", prompt: "turn a" }),
+      "user-prompt-submit " + JSON.stringify({ cwd: "/repo", session_id: "ses_b", prompt: "turn b" }),
+      "stop " + JSON.stringify({ cwd: "/repo", session_id: "ses_a", last_message: "" }),
+      "stop " + JSON.stringify({ cwd: "/repo", session_id: "ses_b", last_message: "" }),
+    ]);
+  } finally {
+    h.dispose();
+  }
+});
+
+// Turn scoping is per parent: with two mains, a child's tool result is
+// kept while its own parent's turn runs — not while ANY turn runs.
+test("a child's tool activity is gated on its own parent's turn", async () => {
+  const h = await loadPlugin();
+  try {
+    const plugin = await h.init("/repo");
+    await plugin.event({ type: "session.created", data: { sessionID: "ses_a", info: { directory: "/repo", title: "A" } } });
+    await plugin.event({ type: "session.created", data: { sessionID: "ses_b", info: { directory: "/repo", title: "B" } } });
+    await plugin.event({ type: "session.created", data: { sessionID: "ses_child_a", parentID: "ses_a", title: "ca" } });
+    await plugin.event({ type: "session.created", data: { sessionID: "ses_child_b", parentID: "ses_b", title: "cb" } });
+    await plugin.prompt({ sessionID: "ses_b", prompt: { text: "turn b" } });
+    await plugin.tool({ sessionID: "ses_child_a", tool: "read", input: {}, status: "completed", result: { output: "o", metadata: null } });
+    await plugin.tool({ sessionID: "ses_child_b", tool: "read", input: {}, status: "completed", result: { output: "o", metadata: null } });
+    await settle(h);
+
+    assert.deepEqual(h.events(), [
+      "session-start " + JSON.stringify({ cwd: "/repo", session_id: "ses_a", source: "startup" }),
+      "session-title " + JSON.stringify({ cwd: "/repo", session_id: "ses_a", title: "A" }),
+      "session-start " + JSON.stringify({ cwd: "/repo", session_id: "ses_b", source: "startup" }),
+      "session-title " + JSON.stringify({ cwd: "/repo", session_id: "ses_b", title: "B" }),
+      "user-prompt-submit " + JSON.stringify({ cwd: "/repo", session_id: "ses_b", prompt: "turn b" }),
+      "activity-log " + JSON.stringify({ cwd: "/repo", session_id: "ses_child_b", tool_name: "read", tool_input: {}, tool_response: { output: "o", metadata: null } }),
+    ]);
+  } finally {
+    h.dispose();
+  }
+});

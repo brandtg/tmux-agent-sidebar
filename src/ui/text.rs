@@ -178,6 +178,69 @@ fn wrap_text_inner(text: &str, max_width: usize, max_lines: usize, word_wrap: bo
     result
 }
 
+/// Word-wrap `text` where the first line is constrained to `first_width`
+/// display columns and every following line to `rest_width` — the prefix
+/// case: a timestamp or agent label shares the first line, and wrapped
+/// lines continue at the panel edge with the full width available.
+///
+/// Never truncates; every line of the text is returned. When
+/// `first_width` is 0 the first line has no room for text, so the whole
+/// result is wrapped at `rest_width` and the caller must not render the
+/// first element on the prefix line.
+pub fn wrap_flow(text: &str, first_width: usize, rest_width: usize) -> Vec<String> {
+    let mut lines: Vec<String> = Vec::new();
+    if text.is_empty() {
+        return lines;
+    }
+    let chars: Vec<char> = text.chars().collect();
+    let mut pos = 0;
+    // Real labels are far below this; the cap guarantees termination even
+    // on pathological zero-progress chunks.
+    while pos < chars.len() && lines.len() < 4096 {
+        let max_w = if lines.is_empty() && first_width > 0 {
+            first_width
+        } else {
+            rest_width
+        };
+        if max_w == 0 {
+            break; // nowhere to place text on this line
+        }
+        // Take the largest chunk that fits.
+        let mut end = pos;
+        let mut w = 0;
+        while end < chars.len() {
+            let ch_w = unicode_width::UnicodeWidthChar::width(chars[end]).unwrap_or(0);
+            if w + ch_w > max_w {
+                break;
+            }
+            w += ch_w;
+            end += 1;
+        }
+        if end == pos {
+            // A single char wider than the line: emit it anyway so the
+            // loop always advances.
+            end = pos + 1;
+        }
+        // Prefer breaking at the last space inside the chunk.
+        let cut = if end < chars.len() {
+            match chars[pos..end].iter().rposition(|&c| c == ' ') {
+                Some(sp) if sp > 0 => pos + sp,
+                _ => end,
+            }
+        } else {
+            end
+        };
+        let line: String = chars[pos..cut].iter().collect();
+        lines.push(line.trim_end().to_string());
+        pos = cut;
+        // Word-wrap: skip the spaces the break happened at.
+        while pos < chars.len() && chars[pos] == ' ' {
+            pos += 1;
+        }
+    }
+    lines
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -306,6 +369,55 @@ mod tests {
         assert_eq!(lines, vec!["hi"]);
     }
 
+    // ─── wrap_flow ────────────────────────────────────────────────
+
+    #[test]
+    fn wrap_flow_first_line_narrower_than_rest() {
+        // First line shares the row with a prefix; the rest gets full width.
+        let lines = wrap_flow("abcdefghij", 4, 10);
+        assert_eq!(lines, vec!["abcd", "efghij"]);
+    }
+
+    #[test]
+    fn wrap_flow_prefers_word_boundary() {
+        let lines = wrap_flow("needs permission: Bash", 20, 20);
+        assert_eq!(lines, vec!["needs permission:", "Bash"]);
+    }
+
+    #[test]
+    fn wrap_flow_zero_first_width_wraps_all_at_rest() {
+        // Contract: the caller must not render element 0 on the prefix
+        // line; everything is wrapped at rest_width.
+        let lines = wrap_flow("abcd", 0, 3);
+        assert_eq!(lines, vec!["abc", "d"]);
+    }
+
+    #[test]
+    fn wrap_flow_wide_char_overrides_narrow_first_line() {
+        // A 2-column char cannot fit a 1-column first line; it is emitted
+        // alone rather than stalling the loop.
+        let lines = wrap_flow("あいう", 1, 4);
+        assert_eq!(lines, vec!["あ", "いう"]);
+    }
+
+    #[test]
+    fn wrap_flow_never_truncates() {
+        let lines = wrap_flow(&"x".repeat(100), 10, 10);
+        assert_eq!(lines.len(), 10);
+        assert!(lines.iter().all(|l| l == "xxxxxxxxxx"));
+    }
+
+    #[test]
+    fn wrap_flow_exact_rest_fit() {
+        let lines = wrap_flow("abcdef", 2, 4);
+        assert_eq!(lines, vec!["ab", "cdef"]);
+    }
+
+    #[test]
+    fn wrap_flow_empty_text() {
+        assert!(wrap_flow("", 5, 5).is_empty());
+    }
+
     // ─── elapsed_label ─────────────────────────────────────────────
 
     #[test]
@@ -419,7 +531,7 @@ mod tests {
             repo_root: Some("/repo".into()),
             branch: Some("main".into()),
             is_worktree: false,
-            worktree_name: None,
+            ..Default::default()
         };
         assert_eq!(branch_label(&info), "main");
     }
@@ -431,7 +543,7 @@ mod tests {
             repo_root: Some("/repo".into()),
             branch: Some("fix/typo".into()),
             is_worktree: true,
-            worktree_name: None,
+            ..Default::default()
         };
         assert_eq!(branch_label(&info), "+ fix/typo");
     }

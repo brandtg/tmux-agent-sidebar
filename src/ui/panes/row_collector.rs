@@ -438,7 +438,7 @@ mod tests {
             repo_root: Some("/tmp/repo".into()),
             branch: None,
             is_worktree: false,
-            worktree_name: None,
+            ..Default::default()
         };
         state.repo_groups = vec![RepoGroup {
             name: "repo".into(),
@@ -484,7 +484,7 @@ mod tests {
                     repo_root: Some(root.into()),
                     branch: None,
                     is_worktree: false,
-                    worktree_name: None,
+                    ..Default::default()
                 },
             )],
         };

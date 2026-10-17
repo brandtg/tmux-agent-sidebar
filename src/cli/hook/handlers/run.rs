@@ -5,6 +5,7 @@ use crate::tmux;
 
 use crate::time::now_epoch_secs;
 
+use super::super::activity::write_activity_entry;
 use super::super::context::{
     AgentContext, clear_run_state, is_system_message, mark_task_reset, set_agent_meta,
 };
@@ -119,6 +120,9 @@ pub(in crate::cli::hook) fn on_stop_failure(
     mark_task_reset(pane);
     if !error.is_empty() {
         tmux::set_pane_option(pane, tmux::PANE_WAIT_REASON, error);
+        // Feed visibility: a failed turn is an attention event. `Error` is
+        // a sidebar pseudo-tool — see `FeedKind::classify`.
+        write_activity_entry(pane, "Error", error);
     }
     set_status(pane, "error");
     let _ = notify_lifecycle(

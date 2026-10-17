@@ -1,14 +1,12 @@
 #!/usr/bin/env bash
-# Single-frame snapshot cropped to the Git tab at the bottom.
+# Single-frame snapshot cropped to the Repos tab at the bottom.
 #
-# To demonstrate every Git-tab feature (branch, ahead/behind,
-# diff-shortstat, PR number, and all three Staged/Unstaged/Untracked
-# sections), the focused pane's cwd is pointed at a purpose-built
-# throwaway repo:
-#   - feat/login-redirect is 2 commits ahead of origin
+# To demonstrate the Repos row (agent, branch, ahead/behind, ~dirty),
+# every seeded agent pane is pointed at a purpose-built throwaway repo:
+#   - feat/login-redirect is 3 commits ahead of origin
 #   - origin/feat/login-redirect is 1 commit ahead of the merge base
 #   - three staged (A/M/D), three unstaged (M/M/D), three untracked
-#   - a stubbed `gh` on PATH that returns PR #42
+#     -> ~9 dirty
 #
 # The repo lives under $TMUX_DIR and is wiped by cleanup.
 
@@ -105,50 +103,42 @@ GC=(-c commit.gpgsign=false -c tag.gpgsign=false -c user.name=tas -c user.email=
     echo "## Migration notes"                 > docs/MIGRATION.md
 )
 
-# ─── fake gh ──────────────────────────────────────────────────────
-# The sidebar's git worker runs `gh pr view --json number -q .number`
-# and expects stdout to be the PR number. Match the invocation the
-# real gh uses and print "42".
-cat > "$FAKE_BIN_DIR/gh" <<'GH'
-#!/usr/bin/env bash
-# Minimal stub: respond to `gh pr view --json number -q .number` with 42.
-# Bash's case patterns can't share characters across literal segments,
-# so match the full `pr view` phrase in one literal instead of two.
-case " $* " in
-    *" pr view "*" number "*) echo 42 ;;
-    *)                        exit 1 ;;
-esac
-GH
-chmod +x "$FAKE_BIN_DIR/gh"
-
-# Tmux inherits env at server startup, so PATH must be set BEFORE the
-# new-session inside build_layout. set-environment -g also forces the
-# value onto later panes in case a login shell rewrites PATH.
-export PATH="$FAKE_BIN_DIR:$PATH"
-
 build_layout
 
 tmux set-environment -g PATH "$PATH"
 paint_stream "$MAIN_PANE" \
     "$ROOT/fixtures/scenarios/hero/main-pane.stream"
 
-# Redirect the focused pane's repo lookup at the fake repo. The git
-# worker calls `display-message #{pane_current_path}` (src/tmux.rs
-# get_pane_path), so respawn the pane in the fake repo's dir to
-# update pane_current_path in place.
+# Point the focused pane's repo lookup at the fake repo. The resolver
+# keys off the pane's working directory, so respawn the pane in the
+# fake repo's dir to update pane_current_path in place. Its seeded
+# @pane_worktree_branch is cleared so the resolved branch shows.
 tmux respawn-pane -k -t "$PANE_WAITING" -c "$FAKE_REPO" \
     "$FAKE_BIN_DIR/codex 999999"
+tmux set-option -t "$PANE_WAITING" -p -u @pane_worktree_branch
 
-# Launch the sidebar via respawn-pane with an explicit PATH. The user's
-# fish login shell prepends homebrew (where the real `gh` lives) to
-# PATH, which otherwise wins over FAKE_BIN_DIR even after `export` +
-# `tmux set-environment`. Respawn bypasses the shell, so the fake `gh`
-# stub is picked up.
-tmux respawn-pane -k -t "$SIDEBAR_PANE" -e "PATH=$PATH" "$BIN"
+# Point the remaining seeded panes at the fake repo too, and clear
+# their seeded @pane_worktree_branch overrides — otherwise the Repos
+# rows would mix those labels with this checkout's real branch and
+# dirty state, which drifts with whatever is uncommitted when the
+# capture runs. With this every row reads fix/login-redirect ↑3 ↓1 ~9.
+tmux respawn-pane -k -t "$MAIN_PANE" -c "$FAKE_REPO" \
+    "$FAKE_BIN_DIR/claude 999999"
+tmux respawn-pane -k -t "$PANE_BACKGROUND" -c "$FAKE_REPO" \
+    "$FAKE_BIN_DIR/opencode 999999"
+tmux respawn-pane -k -t "$PANE_ERROR" -c "$FAKE_REPO" \
+    "$FAKE_BIN_DIR/claude 999999"
+for pane in "$MAIN_PANE" "$PANE_BACKGROUND" "$PANE_ERROR"; do
+    tmux set-option -t "$pane" -p -u @pane_worktree_branch
+done
+
+# Launch the sidebar via respawn-pane so it starts with a clean env
+# (bypassing the user's fish login shell).
+tmux respawn-pane -k -t "$SIDEBAR_PANE" "$BIN"
 sleep 2.0
 
-# Switch the bottom panel to the Git tab and give the git worker a
-# beat to finish its fetch cycle (shortstat, ahead/behind, gh PR).
+# Switch the bottom panel to the Repos tab and give the git-info
+# resolver a beat to fill in branch, movement, and dirty count.
 tmux send-keys -t "$SIDEBAR_PANE" BTab
 sleep 1.5
 

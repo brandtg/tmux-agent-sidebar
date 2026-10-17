@@ -589,7 +589,7 @@ mod tests {
                 repo_root: Some("/tmp/project".into()),
                 branch: Some("feature/sidebar".into()),
                 is_worktree: false,
-                worktree_name: None,
+                ..Default::default()
             },
             Some(&ports),
             None,
@@ -620,7 +620,7 @@ mod tests {
                 repo_root: Some("/tmp/project".into()),
                 branch: Some("feature/sidebar/really-long-branch-name-that-should-truncate".into()),
                 is_worktree: false,
-                worktree_name: None,
+                ..Default::default()
             },
             Some(&ports),
             None,
@@ -1096,7 +1096,7 @@ mod tests {
             repo_root: Some("/r".into()),
             branch: Some("feat/x".into()),
             is_worktree: true,
-            worktree_name: None,
+            ..Default::default()
         };
         let line = branch_ports_row(&git, None, false, &ctx).expect("branch row should render");
         let text = line_text(&line);
@@ -1113,7 +1113,7 @@ mod tests {
             repo_root: Some("/r".into()),
             branch: Some("feat/x".into()),
             is_worktree: true,
-            worktree_name: None,
+            ..Default::default()
         };
         let line = branch_ports_row(&git, None, true, &ctx).expect("branch row should render");
         let text = line_text(&line);
@@ -1174,7 +1174,7 @@ mod tests {
             repo_root: Some("/r".into()),
             branch: Some("feature/really-long-branch-name".into()),
             is_worktree: true,
-            worktree_name: None,
+            ..Default::default()
         };
         let line = branch_ports_row(&git, None, true, &ctx).expect("branch row should render");
         let text = line_text(&line);
@@ -1212,7 +1212,7 @@ mod tests {
             repo_root: Some("/r".into()),
             branch: Some("feat/abc".into()),
             is_worktree: true,
-            worktree_name: None,
+            ..Default::default()
         };
         let line = branch_ports_row(&git, None, true, &ctx).expect("branch row should render");
         let text = line_text(&line);
@@ -1234,13 +1234,13 @@ mod tests {
             repo_root: Some("/r".into()),
             branch: Some("x".into()),
             is_worktree: true,
-            worktree_name: None,
+            ..Default::default()
         };
         let long = PaneGitInfo {
             repo_root: Some("/r".into()),
             branch: Some("feature/really-long-branch-name".into()),
             is_worktree: true,
-            worktree_name: None,
+            ..Default::default()
         };
         let col_short = sidebar_remove_marker_col(&short, None, true, 40);
         let col_long = sidebar_remove_marker_col(&long, None, true, 40);
@@ -1254,7 +1254,7 @@ mod tests {
             repo_root: Some("/r".into()),
             branch: Some("feat/x".into()),
             is_worktree: true,
-            worktree_name: None,
+            ..Default::default()
         };
         assert_eq!(sidebar_remove_marker_col(&git, None, false, 40), None);
     }
@@ -1267,7 +1267,7 @@ mod tests {
             repo_root: Some("/r".into()),
             branch: Some("main".into()),
             is_worktree: false,
-            worktree_name: None,
+            ..Default::default()
         };
         assert_eq!(sidebar_remove_marker_col(&git, None, true, 40), None);
     }
@@ -1284,7 +1284,7 @@ mod tests {
             repo_root: Some("/r".into()),
             branch: Some("feat/abc".into()),
             is_worktree: true,
-            worktree_name: None,
+            ..Default::default()
         };
         let ports = [3000u16];
         let line =
@@ -1315,7 +1315,7 @@ mod tests {
             repo_root: Some("/r".into()),
             branch: Some("main".into()),
             is_worktree: false,
-            worktree_name: None,
+            ..Default::default()
         };
         let line = branch_ports_row(&git, None, true, &ctx).expect("branch row should render");
         let text = line_text(&line);
@@ -1500,7 +1500,7 @@ mod tests {
             repo_root: Some("/r".into()),
             branch: Some("feat/compact".into()),
             is_worktree: false,
-            worktree_name: None,
+            ..Default::default()
         };
         let lines = compact_row(
             &p,
@@ -1542,7 +1542,7 @@ mod tests {
             repo_root: Some("/r".into()),
             branch: Some("feature/very-long-branch-name".into()),
             is_worktree: false,
-            worktree_name: None,
+            ..Default::default()
         };
         let lines = compact_row(
             &p,
@@ -1572,7 +1572,7 @@ mod tests {
             repo_root: Some("/r".into()),
             branch: Some("feat/compact".into()),
             is_worktree: false,
-            worktree_name: None,
+            ..Default::default()
         };
         let text = compact_row_text(&p, &git, 40);
         assert!(
@@ -1591,7 +1591,7 @@ mod tests {
             repo_root: Some("/r".into()),
             branch: Some("feat/x".into()),
             is_worktree: true,
-            worktree_name: None,
+            ..Default::default()
         };
         let width = 40usize;
         let lines = compact_row(
@@ -1624,7 +1624,7 @@ mod tests {
             repo_root: Some("/r".into()),
             branch: Some("main".into()),
             is_worktree: false,
-            worktree_name: None,
+            ..Default::default()
         };
         let text = compact_row_text(&p, &git, 40);
         assert!(!text.contains('×'), "non-worktree panes get no ×: {text}");

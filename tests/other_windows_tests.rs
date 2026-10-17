@@ -61,8 +61,8 @@ fn snapshot_other_windows_rendered() {
         Waiting for prompt…
       ◆ cargo test  cargo
       ◆ nvim
-    ╭ Activity │ Git ────────────────╮
-    │         No activity yet        │
+    ╭ Feed │ Repos ──────────────────╮
+    │       No recent activity       │
     ╰────────────────────────────────╯
     ");
 }
@@ -78,8 +78,8 @@ fn snapshot_other_windows_hidden_when_off() {
     project
     ┃ ○ claude
         Waiting for prompt…
-    ╭ Activity │ Git ────────────────╮
-    │         No activity yet        │
+    ╭ Feed │ Repos ──────────────────╮
+    │       No recent activity       │
     ╰────────────────────────────────╯
     ");
 }
@@ -99,8 +99,8 @@ fn snapshot_other_windows_visible_under_matching_status_filter() {
     ⓘ                              — ▾
     project
       ◆ cargo test  cargo
-    ╭ Activity │ Git ────────────────╮
-    │         No activity yet        │
+    ╭ Feed │ Repos ──────────────────╮
+    │       No recent activity       │
     ╰────────────────────────────────╯
     ");
 }

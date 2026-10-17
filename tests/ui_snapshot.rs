@@ -2,7 +2,7 @@
 mod test_helpers;
 
 use test_helpers::*;
-use tmux_agent_sidebar::activity::{ActivityEntry, TaskProgress, TaskStatus};
+use tmux_agent_sidebar::activity::{TaskProgress, TaskStatus};
 use tmux_agent_sidebar::group::{PaneGitInfo, RepoGroup};
 use tmux_agent_sidebar::state::{Focus, PopupState, RepoFilter, StatusFilter};
 use tmux_agent_sidebar::tmux::{
@@ -34,8 +34,8 @@ fn snapshot_single_agent_idle_ui() {
     ⓘ                        — ▾
     ┃ ○ claude
         Waiting for prompt…
-    ╭ Activity │ Git ──────────╮
-    │      No activity yet     │
+    ╭ Feed │ Repos ────────────╮
+    │    No recent activity    │
     ╰──────────────────────────╯
     ");
 }
@@ -67,8 +67,8 @@ fn snapshot_done_unseen_pane_matches_idle_layout() {
     ⓘ                        — ▾
     ┃ ○ claude
         Waiting for prompt…
-    ╭ Activity │ Git ──────────╮
-    │      No activity yet     │
+    ╭ Feed │ Repos ────────────╮
+    │    No recent activity    │
     ╰──────────────────────────╯
     ");
 }
@@ -101,8 +101,8 @@ fn snapshot_secondary_header_without_notices() {
                              — ▾
     ┃ ○ claude
         Waiting for prompt…
-    ╭ Activity │ Git ──────────╮
-    │      No activity yet     │
+    ╭ Feed │ Repos ────────────╮
+    │    No recent activity    │
     ╰──────────────────────────╯
     ");
 }
@@ -131,8 +131,8 @@ fn snapshot_secondary_header_long_repo_filter_truncated() {
     ⓘ  very-long-repository-n… ▾
     ┃ ○ claude
         Waiting for prompt…
-    ╭ Activity │ Git ──────────╮
-    │      No activity yet     │
+    ╭ Feed │ Repos ────────────╮
+    │    No recent activity    │
     ╰──────────────────────────╯
     ");
 }
@@ -227,8 +227,8 @@ fn snapshot_single_agent_running_with_elapsed() {
     ⓘ                        — ▾
     dotfiles
     ┃ ● claude              2m5s
-    ╭ Activity │ Git ──────────╮
-    │      No activity yet     │
+    ╭ Feed │ Repos ────────────╮
+    │    No recent activity    │
     ╰──────────────────────────╯
     ");
 }
@@ -258,8 +258,8 @@ fn snapshot_long_session_name_truncated_keeps_elapsed_visible() {
     ⓘ                        — ▾
     dotfiles
     ┃ ● this-is-a-ridiculo… 2m5s
-    ╭ Activity │ Git ──────────╮
-    │      No activity yet     │
+    ╭ Feed │ Repos ────────────╮
+    │    No recent activity    │
     ╰──────────────────────────╯
     ");
 }
@@ -287,8 +287,8 @@ fn running_spinner_different_frame() {
     ⓘ                        — ▾
     project
     ┃ ● claude
-    ╭ Activity │ Git ──────────╮
-    │      No activity yet     │
+    ╭ Feed │ Repos ────────────╮
+    │    No recent activity    │
     ╰──────────────────────────╯
     ");
 }
@@ -317,8 +317,8 @@ fn snapshot_agent_with_prompt_ui() {
     ⓘ                        — ▾
     ┃ ○ claude
         fix the bug
-    ╭ Activity │ Git ──────────╮
-    │      No activity yet     │
+    ╭ Feed │ Repos ────────────╮
+    │    No recent activity    │
     ╰──────────────────────────╯
     ");
 }
@@ -349,8 +349,8 @@ fn snapshot_agent_with_japanese_prompt_ui() {
         こ れ っ て 今 1時 間 経 っ て い
         る け ど 、 起 動 し て 確 認 し て
         も 問 題 な い ？
-    ╭ Activity │ Git ──────────╮
-    │      No activity yet     │
+    ╭ Feed │ Repos ────────────╮
+    │    No recent activity    │
     ╰──────────────────────────╯
     ");
 }
@@ -421,8 +421,8 @@ fn snapshot_two_agents_same_window_ui() {
     ⓘ                        — ▾
     ┃ ● claude
         fix the bug
-    ╭ Activity │ Git ──────────╮
-    │      No activity yet     │
+    ╭ Feed │ Repos ────────────╮
+    │    No recent activity    │
     ╰──────────────────────────╯
     ");
 }
@@ -467,8 +467,8 @@ fn snapshot_two_windows_ui() {
     ⓘ                        — ▾
     project-a
     ┃ ● claude
-    ╭ Activity │ Git ──────────╮
-    │      No activity yet     │
+    ╭ Feed │ Repos ────────────╮
+    │    No recent activity    │
     ╰──────────────────────────╯
     ");
 }
@@ -516,8 +516,8 @@ fn snapshot_multi_session_ui() {
     ⓘ                        — ▾
     dotfiles
     ┃ ● claude
-    ╭ Activity │ Git ──────────╮
-    │      No activity yet     │
+    ╭ Feed │ Repos ────────────╮
+    │    No recent activity    │
     ╰──────────────────────────╯
     ");
 }
@@ -546,8 +546,8 @@ fn snapshot_wait_reason_ui() {
     ⓘ                        — ▾
     ┃ ◐ claude
         permission required
-    ╭ Activity │ Git ──────────╮
-    │      No activity yet     │
+    ╭ Feed │ Repos ────────────╮
+    │    No recent activity    │
     ╰──────────────────────────╯
     ");
 }
@@ -576,14 +576,14 @@ fn snapshot_auto_rename_window_title_ui() {
     ⓘ                        — ▾
     ┃ ○ claude
         Waiting for prompt…
-    ╭ Activity │ Git ──────────╮
-    │      No activity yet     │
+    ╭ Feed │ Repos ────────────╮
+    │    No recent activity    │
     ╰──────────────────────────╯
     ");
 }
 
 #[test]
-fn snapshot_activity_log_ui() {
+fn snapshot_feed_multiple_entries_ui() {
     let pane = make_pane(AgentType::Claude, PaneStatus::Running);
     let mut state = make_state(vec![SessionInfo {
         session_name: "main".into(),
@@ -598,43 +598,46 @@ fn snapshot_activity_log_ui() {
     state.repo_groups = vec![make_repo_group("project", vec![pane])];
     state.rebuild_row_targets();
 
-    state.activity.entries = vec![
-        ActivityEntry {
-            timestamp: "10:32".into(),
-            tool: "Edit".into(),
+    state.feed.entries = vec![
+        tmux_agent_sidebar::state::FeedEntry {
+            timestamp: "14:32".into(),
+            agent: tmux_agent_sidebar::tmux::AgentType::Claude,
+            kind: tmux_agent_sidebar::activity::FeedKind::FileChange,
             label: "src/main.rs".into(),
         },
-        ActivityEntry {
-            timestamp: "10:31".into(),
-            tool: "Bash".into(),
+        tmux_agent_sidebar::state::FeedEntry {
+            timestamp: "14:31".into(),
+            agent: tmux_agent_sidebar::tmux::AgentType::Claude,
+            kind: tmux_agent_sidebar::activity::FeedKind::Task,
             label: "cargo build".into(),
         },
-        ActivityEntry {
-            timestamp: "10:30".into(),
-            tool: "Read".into(),
+        tmux_agent_sidebar::state::FeedEntry {
+            timestamp: "14:30".into(),
+            agent: tmux_agent_sidebar::tmux::AgentType::Claude,
+            kind: tmux_agent_sidebar::activity::FeedKind::FileChange,
             label: "Cargo.toml".into(),
         },
     ];
 
     let output = render_to_string(&mut state, 28, 25);
-    insta::assert_snapshot!(output, @r"
+    insta::assert_snapshot!(output, @"
      ≡1  ●1  ◎0  ◐0  ○0  ✕0
     ⓘ                        — ▾
     project
     ┃ ● claude
-    ╭ Activity │ Git ──────────╮
-    │10:32                 Edit│
-    │  src/main.rs             │
-    │10:31                 Bash│
-    │  cargo build             │
-    │10:30                 Read│
-    │  Cargo.toml              │
+    ╭ Feed │ Repos ────────────╮
+    │14:32  claude   ✎ src/main│
+    │.rs                       │
+    │14:31  claude   + cargo   │
+    │build                     │
+    │14:30  claude   ✎ Cargo.to│
+    │ml                        │
     ╰──────────────────────────╯
     ");
 }
 
 #[test]
-fn snapshot_activity_log_long_label_ui() {
+fn snapshot_feed_long_label_wraps_ui() {
     let pane = make_pane(AgentType::Claude, PaneStatus::Running);
     let mut state = make_state(vec![SessionInfo {
         session_name: "main".into(),
@@ -649,23 +652,23 @@ fn snapshot_activity_log_long_label_ui() {
     state.repo_groups = vec![make_repo_group("project", vec![pane])];
     state.rebuild_row_targets();
 
-    state.activity.entries = vec![ActivityEntry {
-        timestamp: "10:32".into(),
-        tool: "Read".into(),
+    state.feed.entries = vec![tmux_agent_sidebar::state::FeedEntry {
+        timestamp: "14:32".into(),
+        agent: tmux_agent_sidebar::tmux::AgentType::Claude,
+        kind: tmux_agent_sidebar::activity::FeedKind::FileChange,
         label: "config/tmux-agent-sidebar-rs/src/very-long-filename.rs".into(),
     }];
 
     let output = render_to_string(&mut state, 28, 25);
-    insta::assert_snapshot!(output, @r"
+    insta::assert_snapshot!(output, @"
      ≡1  ●1  ◎0  ◐0  ○0  ✕0
     ⓘ                        — ▾
     project
     ┃ ● claude
-    ╭ Activity │ Git ──────────╮
-    │10:32                 Read│
-    │  config/tmux-agent-sideba│
-    │  r-rs/src/very-long-filen│
-    │  ame.rs                  │
+    ╭ Feed │ Repos ────────────╮
+    │14:32  claude   ✎ config/t│
+    │mux-agent-sidebar-rs/src/v│
+    │ery-long-filename.rs      │
     ╰──────────────────────────╯
     ");
 }
@@ -698,8 +701,8 @@ fn snapshot_prompt_wrapping_ui() {
         Please fix the
         authentication bug in
         the login flow that cau…
-    ╭ Activity │ Git ──────────╮
-    │      No activity yet     │
+    ╭ Feed │ Repos ────────────╮
+    │    No recent activity    │
     ╰──────────────────────────╯
     ");
 }
@@ -728,8 +731,8 @@ fn snapshot_selected_unfocused_ui() {
     project
     ┃ ○ claude
         Waiting for prompt…
-    ╭ Activity │ Git ──────────╮
-    │      No activity yet     │
+    ╭ Feed │ Repos ────────────╮
+    │    No recent activity    │
     ╰──────────────────────────╯
     ");
 }
@@ -758,8 +761,8 @@ fn snapshot_error_state_ui() {
     ⓘ                        — ▾
     ┃ ✕ claude
         something broke
-    ╭ Activity │ Git ──────────╮
-    │      No activity yet     │
+    ╭ Feed │ Repos ────────────╮
+    │    No recent activity    │
     ╰──────────────────────────╯
     ");
 }
@@ -788,8 +791,8 @@ fn snapshot_narrow_width_ui() {
     ⓘ              — ▾
     ┃ ○ claude
         hello world
-    ╭ Activity │ Git ╮
-    │ No activity yet│
+    ╭ Feed │ Repos ──╮
+    │No recent activi│
     ╰────────────────╯
     ");
 }
@@ -824,7 +827,7 @@ fn snapshot_worktree_branch_ui() {
         repo_root: Some("/home/user/project".into()),
         branch: Some("feature/sidebar".into()),
         is_worktree: true,
-        worktree_name: None,
+        ..Default::default()
     };
     let mut state = make_state_with_groups(vec![tmux_agent_sidebar::group::RepoGroup {
         name: "project".into(),
@@ -839,8 +842,8 @@ fn snapshot_worktree_branch_ui() {
     ┃ ● claude
     ┃   + feature/sidebar
         fix bug
-    ╭ Activity │ Git ──────────╮
-    │      No activity yet     │
+    ╭ Feed │ Repos ────────────╮
+    │    No recent activity    │
     ╰──────────────────────────╯
     ");
 }
@@ -852,7 +855,7 @@ fn snapshot_worktree_long_branch_truncated_ui() {
         repo_root: Some("/home/user/project".into()),
         branch: Some("feature/very-long-branch-name-that-overflows".into()),
         is_worktree: true,
-        worktree_name: None,
+        ..Default::default()
     };
     let mut state = make_state_with_groups(vec![tmux_agent_sidebar::group::RepoGroup {
         name: "project".into(),
@@ -866,8 +869,8 @@ fn snapshot_worktree_long_branch_truncated_ui() {
     ⓘ                        — ▾
     ┃   + feature/very-long-bra…
         Waiting for prompt…
-    ╭ Activity │ Git ──────────╮
-    │      No activity yet     │
+    ╭ Feed │ Repos ────────────╮
+    │    No recent activity    │
     ╰──────────────────────────╯
     ");
 }
@@ -879,7 +882,7 @@ fn snapshot_long_branch_with_ports_ui() {
         repo_root: Some("/home/user/project".into()),
         branch: Some("feature/sidebar/really-long-branch-name-that-should-truncate".into()),
         is_worktree: false,
-        worktree_name: None,
+        ..Default::default()
     };
     let mut state = make_state_with_groups(vec![tmux_agent_sidebar::group::RepoGroup {
         name: "project".into(),
@@ -889,12 +892,12 @@ fn snapshot_long_branch_with_ports_ui() {
     state.set_pane_ports("%1", vec![3000, 5173]);
 
     let output = render_to_string(&mut state, 40, 24);
-    insta::assert_snapshot!(output, @r"
+    insta::assert_snapshot!(output, @"
      ≡1  ●1  ◎0  ◐0  ○0  ✕0
     ⓘ                                    — ▾
     ┃   feature/sidebar/really…  :3000, 5173
-    ╭ Activity │ Git ──────────────────────╮
-    │            No activity yet           │
+    ╭ Feed │ Repos  Shift+Tab: switch tab ─╮
+    │          No recent activity          │
     ╰──────────────────────────────────────╯
     ");
 }
@@ -923,8 +926,8 @@ fn snapshot_task_progress_partial_ui() {
     ⓘ                        — ▾
         ✔◼◻ 1/3
         working
-    ╭ Activity │ Git ──────────╮
-    │      No activity yet     │
+    ╭ Feed │ Repos ────────────╮
+    │    No recent activity    │
     ╰──────────────────────────╯
     ");
 }
@@ -949,8 +952,8 @@ fn snapshot_task_progress_all_completed_ui() {
     ⓘ                        — ▾
     ┃ ● claude
         ✔✔ 2/2
-    ╭ Activity │ Git ──────────╮
-    │      No activity yet     │
+    ╭ Feed │ Repos ────────────╮
+    │    No recent activity    │
     ╰──────────────────────────╯
     ");
 }
@@ -976,8 +979,8 @@ fn snapshot_task_progress_all_pending_ui() {
     ⓘ                        — ▾
     ┃ ● claude
         ◻◻◻ 0/3
-    ╭ Activity │ Git ──────────╮
-    │      No activity yet     │
+    ╭ Feed │ Repos ────────────╮
+    │    No recent activity    │
     ╰──────────────────────────╯
     ");
 }
@@ -996,7 +999,7 @@ fn snapshot_all_elements_combined_ui() {
         repo_root: Some("/home/user/project".into()),
         branch: Some("main".into()),
         is_worktree: false,
-        worktree_name: None,
+        ..Default::default()
     };
 
     let mut state = make_state_with_groups(vec![tmux_agent_sidebar::group::RepoGroup {
@@ -1026,8 +1029,8 @@ fn snapshot_all_elements_combined_ui() {
         └ Plan #2
         permission required
         fixing the bug
-    ╭ Activity │ Git ────────────╮
-    │       No activity yet      │
+    ╭ Feed │ Repos ──────────────╮
+    │     No recent activity     │
     ╰────────────────────────────╯
     ");
 }
@@ -1049,8 +1052,8 @@ fn snapshot_response_japanese_ui() {
     ┃ ○ claude
       ▷ 修 正 が 完 了 し ま し た 。 テ ス ト
         も 全 て 通 っ て い ま す 。
-    ╭ Activity │ Git ────────────╮
-    │       No activity yet      │
+    ╭ Feed │ Repos ──────────────╮
+    │     No recent activity     │
     ╰────────────────────────────╯
     ");
 }
@@ -1088,8 +1091,8 @@ fn snapshot_three_groups_middle_focused_ui() {
     repo-c
       ○ claude
         Waiting for prompt…
-    ╭ Activity │ Git ──────────╮
-    │      No activity yet     │
+    ╭ Feed │ Repos ────────────╮
+    │    No recent activity    │
     ╰──────────────────────────╯
     ");
 }
@@ -1109,8 +1112,8 @@ fn snapshot_bypass_all_badge_ui() {
     ⓘ                        — ▾
     project
     ┃ ● claude !
-    ╭ Activity │ Git ──────────╮
-    │      No activity yet     │
+    ╭ Feed │ Repos ────────────╮
+    │    No recent activity    │
     ╰──────────────────────────╯
     ");
 }
@@ -1128,8 +1131,8 @@ fn snapshot_full_auto_badge_ui() {
     ⓘ                        — ▾
     project
     ┃ ● claude auto
-    ╭ Activity │ Git ──────────╮
-    │      No activity yet     │
+    ╭ Feed │ Repos ────────────╮
+    │    No recent activity    │
     ╰──────────────────────────╯
     ");
 }
@@ -1147,8 +1150,8 @@ fn snapshot_plan_badge_ui() {
     ⓘ                        — ▾
     project
     ┃ ● claude plan
-    ╭ Activity │ Git ──────────╮
-    │      No activity yet     │
+    ╭ Feed │ Repos ────────────╮
+    │    No recent activity    │
     ╰──────────────────────────╯
     ");
 }
@@ -1166,8 +1169,8 @@ fn snapshot_accept_edits_badge_ui() {
     ⓘ                        — ▾
     project
     ┃ ● claude edit
-    ╭ Activity │ Git ──────────╮
-    │      No activity yet     │
+    ╭ Feed │ Repos ────────────╮
+    │    No recent activity    │
     ╰──────────────────────────╯
     ");
 }
@@ -1181,7 +1184,7 @@ fn snapshot_response_with_branch_ui() {
         repo_root: Some("/home/user/project".into()),
         branch: Some("feature/ui-v2".into()),
         is_worktree: false,
-        worktree_name: None,
+        ..Default::default()
     };
     let mut state = make_state_with_groups(vec![tmux_agent_sidebar::group::RepoGroup {
         name: "project".into(),
@@ -1197,8 +1200,8 @@ fn snapshot_response_with_branch_ui() {
     ┃ ○ claude
     ┃   feature/ui-v2
       ▷ Done. All tests are green.
-    ╭ Activity │ Git ────────────────╮
-    │         No activity yet        │
+    ╭ Feed │ Repos ──────────────────╮
+    │       No recent activity       │
     ╰────────────────────────────────╯
     ");
 }
@@ -1218,8 +1221,8 @@ fn snapshot_wait_reason_elicitation_ui() {
     ⓘ                        — ▾
     ┃ ◐ claude
         waiting for selection
-    ╭ Activity │ Git ──────────╮
-    │      No activity yet     │
+    ╭ Feed │ Repos ────────────╮
+    │    No recent activity    │
     ╰──────────────────────────╯
     ");
 }
@@ -1237,8 +1240,8 @@ fn snapshot_wait_reason_unknown_ui() {
     ⓘ                        — ▾
     ┃ ◐ claude
         some_future_reason
-    ╭ Activity │ Git ──────────╮
-    │      No activity yet     │
+    ╭ Feed │ Repos ────────────╮
+    │    No recent activity    │
     ╰──────────────────────────╯
     ");
 }
@@ -1258,8 +1261,8 @@ fn snapshot_wait_reason_permission_denied_ui() {
     ⓘ                        — ▾
     ┃ ◐ claude
         permission denied
-    ╭ Activity │ Git ──────────╮
-    │      No activity yet     │
+    ╭ Feed │ Repos ────────────╮
+    │    No recent activity    │
     ╰──────────────────────────╯
     ");
 }
@@ -1274,6 +1277,7 @@ fn snapshot_worktree_with_name_ui() {
         branch: Some("feat/auth".into()),
         is_worktree: true,
         worktree_name: Some("auth-wt".into()),
+        ..Default::default()
     };
     let mut state = make_state_with_groups(vec![tmux_agent_sidebar::group::RepoGroup {
         name: "project".into(),
@@ -1287,8 +1291,8 @@ fn snapshot_worktree_with_name_ui() {
     ⓘ                        — ▾
     ┃ ● claude
     ┃   + auth-wt: feat/auth
-    ╭ Activity │ Git ──────────╮
-    │      No activity yet     │
+    ╭ Feed │ Repos ────────────╮
+    │    No recent activity    │
     ╰──────────────────────────╯
     ");
 }
@@ -1301,6 +1305,7 @@ fn snapshot_worktree_name_same_as_branch_ui() {
         branch: Some("feat/auth".into()),
         is_worktree: true,
         worktree_name: Some("feat/auth".into()),
+        ..Default::default()
     };
     let mut state = make_state_with_groups(vec![tmux_agent_sidebar::group::RepoGroup {
         name: "project".into(),
@@ -1314,8 +1319,8 @@ fn snapshot_worktree_name_same_as_branch_ui() {
     ⓘ                        — ▾
     ┃ ● claude
     ┃   + feat/auth
-    ╭ Activity │ Git ──────────╮
-    │      No activity yet     │
+    ╭ Feed │ Repos ────────────╮
+    │    No recent activity    │
     ╰──────────────────────────╯
     ");
 }
@@ -1323,101 +1328,103 @@ fn snapshot_worktree_name_same_as_branch_ui() {
 // ─── Activity Log Tool Types ──────────────────────────────────────
 
 #[test]
-fn snapshot_activity_all_tool_types_ui() {
+fn snapshot_feed_all_kinds_ui() {
     let pane = make_pane(AgentType::Claude, PaneStatus::Running);
     let mut state = make_state_with_groups(vec![make_repo_group("project", vec![pane])]);
 
-    state.activity.entries = vec![
-        ActivityEntry {
-            timestamp: "10:07".into(),
-            tool: "Agent".into(),
+    state.feed.entries = vec![
+        tmux_agent_sidebar::state::FeedEntry {
+            timestamp: "14:07".into(),
+            agent: tmux_agent_sidebar::tmux::AgentType::Claude,
+            kind: tmux_agent_sidebar::activity::FeedKind::Subagent,
             label: "Explore codebase".into(),
         },
-        ActivityEntry {
-            timestamp: "10:06".into(),
-            tool: "Skill".into(),
-            label: "commit".into(),
+        tmux_agent_sidebar::state::FeedEntry {
+            timestamp: "14:06".into(),
+            agent: tmux_agent_sidebar::tmux::AgentType::Claude,
+            kind: tmux_agent_sidebar::activity::FeedKind::TaskCompleted,
+            label: "#3 commit".into(),
         },
-        ActivityEntry {
-            timestamp: "10:05".into(),
-            tool: "ToolSearch".into(),
-            label: "select:Read".into(),
+        tmux_agent_sidebar::state::FeedEntry {
+            timestamp: "14:05".into(),
+            agent: tmux_agent_sidebar::tmux::AgentType::Claude,
+            kind: tmux_agent_sidebar::activity::FeedKind::Task,
+            label: "#4 Write docs".into(),
         },
-        ActivityEntry {
-            timestamp: "10:04".into(),
-            tool: "TaskCreate".into(),
-            label: "#1 Fix bug".into(),
+        tmux_agent_sidebar::state::FeedEntry {
+            timestamp: "14:04".into(),
+            agent: tmux_agent_sidebar::tmux::AgentType::Claude,
+            kind: tmux_agent_sidebar::activity::FeedKind::Permission,
+            label: "needs permission: Bash".into(),
         },
-        ActivityEntry {
-            timestamp: "10:03".into(),
-            tool: "WebFetch".into(),
-            label: "docs.rs/ratatui".into(),
+        tmux_agent_sidebar::state::FeedEntry {
+            timestamp: "14:03".into(),
+            agent: tmux_agent_sidebar::tmux::AgentType::Codex,
+            kind: tmux_agent_sidebar::activity::FeedKind::Failure,
+            label: "exit 1".into(),
         },
-        ActivityEntry {
-            timestamp: "10:02".into(),
-            tool: "Grep".into(),
-            label: "run_git".into(),
+        tmux_agent_sidebar::state::FeedEntry {
+            timestamp: "14:02".into(),
+            agent: tmux_agent_sidebar::tmux::AgentType::Claude,
+            kind: tmux_agent_sidebar::activity::FeedKind::Notification,
+            label: "waiting for input".into(),
         },
-        ActivityEntry {
-            timestamp: "10:01".into(),
-            tool: "Write".into(),
+        tmux_agent_sidebar::state::FeedEntry {
+            timestamp: "14:01".into(),
+            agent: tmux_agent_sidebar::tmux::AgentType::Claude,
+            kind: tmux_agent_sidebar::activity::FeedKind::FileChange,
             label: "new_file.rs".into(),
         },
     ];
 
     let output = render_to_string(&mut state, 28, 25);
-    insta::assert_snapshot!(output, @r"
+    insta::assert_snapshot!(output, @"
      ≡1  ●1  ◎0  ◐0  ○0  ✕0
     ⓘ                        — ▾
     project
     ┃ ● claude
-    ╭ Activity │ Git ──────────╮
-    │10:07                Agent│
-    │  Explore codebase        │
-    │10:06                Skill│
-    │  commit                  │
-    │10:05           ToolSearch│
-    │  select:Read             │
-    │10:04           TaskCreate│
-    │  #1 Fix bug              │
-    │10:03             WebFetch│
-    │  docs.rs/ratatui         │
-    │10:02                 Grep│
-    │  run_git                 │
-    │10:01                Write│
-    │  new_file.rs             │
+    ╭ Feed ·3 │ Repos ─────────╮
+    │14:07  claude   ❯ Explore │
+    │codebase                  │
+    │14:06  claude   ✓ #3      │
+    │commit                    │
+    │14:05  claude   + #4      │
+    │Write docs                │
+    │14:04  claude   ⚠ needs   │
+    │permission: Bash          │
+    │14:03  codex    ✗ exit 1  │
+    │14:02  claude   ✳ waiting │
+    │for input                 │
+    │14:01  claude   ✎ new_file│
+    │.rs                       │
     ╰──────────────────────────╯
     ");
 }
 
-// ─── Focus Transitions ───────────────────────────────────────────
-
 #[test]
-fn snapshot_focus_activity_log_ui() {
+fn snapshot_focus_feed_ui() {
     let pane = make_pane(AgentType::Claude, PaneStatus::Running);
     let mut state = make_state_with_groups(vec![make_repo_group("project", vec![pane])]);
-    state.focus_state.focus = Focus::ActivityLog;
+    state.focus_state.focus = Focus::BottomPanel;
     state.focus_state.sidebar_focused = true;
-    state.activity.entries = vec![ActivityEntry {
-        timestamp: "10:00".into(),
-        tool: "Read".into(),
+    state.feed.entries = vec![tmux_agent_sidebar::state::FeedEntry {
+        timestamp: "14:00".into(),
+        agent: tmux_agent_sidebar::tmux::AgentType::Claude,
+        kind: tmux_agent_sidebar::activity::FeedKind::FileChange,
         label: "file.rs".into(),
     }];
 
     let output = render_to_string(&mut state, 28, 25);
     insta::assert_snapshot!(output, @r"
-     ≡1  ●1  ◎0  ◐0  ○0  ✕0
-    ⓘ                        — ▾
-    project
-    ┃ ● claude
-    ╭ Activity │ Git ──────────╮
-    │10:00                 Read│
-    │  file.rs                 │
-    ╰──────────────────────────╯
+ ≡1  ●1  ◎0  ◐0  ○0  ✕0
+ⓘ                        — ▾
+project
+┃ ● claude
+╭ Feed │ Repos ────────────╮
+│14:00  claude   ✎ file.rs │
+╰──────────────────────────╯
     ");
 }
-
-// ─── Right Border Integrity ──────────────────────────────────────
 
 #[test]
 fn right_border_narrow_width_with_badge() {
@@ -1436,8 +1443,8 @@ fn right_border_narrow_width_with_badge() {
     ⓘ                  — ▾
     ┃ ● claude !    2h0m0s
         fix the issue
-    ╭ Activity │ Git ────╮
-    │   No activity yet  │
+    ╭ Feed │ Repos ──────╮
+    │ No recent activity │
     ╰────────────────────╯
     ");
     // Structural invariant (width-agnostic): every line that starts with a
@@ -1485,8 +1492,8 @@ fn right_border_all_permission_modes_and_agents() {
     ⓘ                        — ▾
     project
     ┃ ● claude          1h30m32s
-    ╭ Activity │ Git ──────────╮
-    │      No activity yet     │
+    ╭ Feed │ Repos ────────────╮
+    │    No recent activity    │
     ╰──────────────────────────╯
 
     === Claude / Auto ===
@@ -1494,8 +1501,8 @@ fn right_border_all_permission_modes_and_agents() {
     ⓘ                        — ▾
     project
     ┃ ● claude auto     1h30m32s
-    ╭ Activity │ Git ──────────╮
-    │      No activity yet     │
+    ╭ Feed │ Repos ────────────╮
+    │    No recent activity    │
     ╰──────────────────────────╯
 
     === Claude / DontAsk ===
@@ -1503,8 +1510,8 @@ fn right_border_all_permission_modes_and_agents() {
     ⓘ                        — ▾
     project
     ┃ ● claude dontAsk  1h30m32s
-    ╭ Activity │ Git ──────────╮
-    │      No activity yet     │
+    ╭ Feed │ Repos ────────────╮
+    │    No recent activity    │
     ╰──────────────────────────╯
 
     === Claude / Plan ===
@@ -1512,8 +1519,8 @@ fn right_border_all_permission_modes_and_agents() {
     ⓘ                        — ▾
     project
     ┃ ● claude plan     1h30m32s
-    ╭ Activity │ Git ──────────╮
-    │      No activity yet     │
+    ╭ Feed │ Repos ────────────╮
+    │    No recent activity    │
     ╰──────────────────────────╯
 
     === Claude / AcceptEdits ===
@@ -1521,8 +1528,8 @@ fn right_border_all_permission_modes_and_agents() {
     ⓘ                        — ▾
     project
     ┃ ● claude edit     1h30m32s
-    ╭ Activity │ Git ──────────╮
-    │      No activity yet     │
+    ╭ Feed │ Repos ────────────╮
+    │    No recent activity    │
     ╰──────────────────────────╯
 
     === Claude / BypassPermissions ===
@@ -1530,8 +1537,8 @@ fn right_border_all_permission_modes_and_agents() {
     ⓘ                        — ▾
     project
     ┃ ● claude !        1h30m32s
-    ╭ Activity │ Git ──────────╮
-    │      No activity yet     │
+    ╭ Feed │ Repos ────────────╮
+    │    No recent activity    │
     ╰──────────────────────────╯
 
     === Codex / Default ===
@@ -1539,8 +1546,8 @@ fn right_border_all_permission_modes_and_agents() {
     ⓘ                        — ▾
     project
     ┃ ● codex           1h30m32s
-    ╭ Activity │ Git ──────────╮
-    │      No activity yet     │
+    ╭ Feed │ Repos ────────────╮
+    │    No recent activity    │
     ╰──────────────────────────╯
 
     === Codex / Auto ===
@@ -1548,8 +1555,8 @@ fn right_border_all_permission_modes_and_agents() {
     ⓘ                        — ▾
     project
     ┃ ● codex auto      1h30m32s
-    ╭ Activity │ Git ──────────╮
-    │      No activity yet     │
+    ╭ Feed │ Repos ────────────╮
+    │    No recent activity    │
     ╰──────────────────────────╯
 
     === Codex / DontAsk ===
@@ -1557,8 +1564,8 @@ fn right_border_all_permission_modes_and_agents() {
     ⓘ                        — ▾
     project
     ┃ ● codex dontAsk   1h30m32s
-    ╭ Activity │ Git ──────────╮
-    │      No activity yet     │
+    ╭ Feed │ Repos ────────────╮
+    │    No recent activity    │
     ╰──────────────────────────╯
 
     === Codex / Plan ===
@@ -1566,8 +1573,8 @@ fn right_border_all_permission_modes_and_agents() {
     ⓘ                        — ▾
     project
     ┃ ● codex plan      1h30m32s
-    ╭ Activity │ Git ──────────╮
-    │      No activity yet     │
+    ╭ Feed │ Repos ────────────╮
+    │    No recent activity    │
     ╰──────────────────────────╯
 
     === Codex / AcceptEdits ===
@@ -1575,8 +1582,8 @@ fn right_border_all_permission_modes_and_agents() {
     ⓘ                        — ▾
     project
     ┃ ● codex edit      1h30m32s
-    ╭ Activity │ Git ──────────╮
-    │      No activity yet     │
+    ╭ Feed │ Repos ────────────╮
+    │    No recent activity    │
     ╰──────────────────────────╯
 
     === Codex / BypassPermissions ===
@@ -1584,8 +1591,8 @@ fn right_border_all_permission_modes_and_agents() {
     ⓘ                        — ▾
     project
     ┃ ● codex !         1h30m32s
-    ╭ Activity │ Git ──────────╮
-    │      No activity yet     │
+    ╭ Feed │ Repos ────────────╮
+    │    No recent activity    │
     ╰──────────────────────────╯
     ");
 }
@@ -1610,8 +1617,8 @@ fn snapshot_filter_bar_shows_counts() {
     ⓘ                          — ▾
     project
     ┃ ● claude
-    ╭ Activity │ Git ────────────╮
-    │       No activity yet      │
+    ╭ Feed │ Repos ──────────────╮
+    │     No recent activity     │
     ╰────────────────────────────╯
     ");
 }
@@ -1635,8 +1642,8 @@ fn snapshot_filter_running_hides_idle() {
     ⓘ                          — ▾
     project
     ┃ ● claude
-    ╭ Activity │ Git ────────────╮
-    │       No activity yet      │
+    ╭ Feed │ Repos ──────────────╮
+    │     No recent activity     │
     ╰────────────────────────────╯
     ");
 }
@@ -1660,8 +1667,8 @@ fn snapshot_filter_idle_hides_running() {
     ⓘ                          — ▾
       ○ codex
         Waiting for prompt…
-    ╭ Activity │ Git ────────────╮
-    │       No activity yet      │
+    ╭ Feed │ Repos ──────────────╮
+    │     No recent activity     │
     ╰────────────────────────────╯
     ");
 }
@@ -1688,8 +1695,8 @@ fn snapshot_filter_hides_empty_groups() {
     ⓘ                          — ▾
     repo-a
     ┃ ● claude
-    ╭ Activity │ Git ────────────╮
-    │       No activity yet      │
+    ╭ Feed │ Repos ──────────────╮
+    │     No recent activity     │
     ╰────────────────────────────╯
     ");
 }
@@ -1715,8 +1722,8 @@ fn snapshot_filter_all_shows_everything() {
     ┃ ● claude
       ○ codex
         Waiting for prompt…
-    ╭ Activity │ Git ────────────╮
-    │       No activity yet      │
+    ╭ Feed │ Repos ──────────────╮
+    │     No recent activity     │
     ╰────────────────────────────╯
     ");
 }
@@ -1755,8 +1762,8 @@ fn snapshot_filter_bar_stays_fixed_on_scroll() {
     let output = render_to_string(&mut state, 30, 15);
     insta::assert_snapshot!(output, @r"
      ≡6  ●6  ◎0  ◐0  ○0  ✕0
-    ╭ Activity │ Git ────────────╮
-    │       No activity yet      │
+    ╭ Feed │ Repos ──────────────╮
+    │     No recent activity     │
     ╰────────────────────────────╯
     ");
 }
@@ -1801,8 +1808,8 @@ fn snapshot_filter_error_shows_agents() {
     ⓘ                          — ▾
     ┃ ✕ claude
         something broke
-    ╭ Activity │ Git ────────────╮
-    │       No activity yet      │
+    ╭ Feed │ Repos ──────────────╮
+    │     No recent activity     │
     ╰────────────────────────────╯
     ");
 }
@@ -1827,8 +1834,8 @@ fn snapshot_filter_waiting_shows_only_waiting() {
     ⓘ                          — ▾
     ┃ ◐ claude
         permission required
-    ╭ Activity │ Git ────────────╮
-    │       No activity yet      │
+    ╭ Feed │ Repos ──────────────╮
+    │     No recent activity     │
     ╰────────────────────────────╯
     ");
 }
@@ -1848,7 +1855,7 @@ fn repo_group_with_root(name: &str, panes: Vec<PaneInfo>) -> RepoGroup {
                         repo_root: Some(format!("/home/u/{name}")),
                         branch: Some("main".into()),
                         is_worktree: false,
-                        worktree_name: None,
+                        ..Default::default()
                     },
                 )
             })
@@ -1876,8 +1883,8 @@ fn snapshot_repo_header_shows_spawn_plus_button() {
     ┃ ○ claude
     ┃   main
         Waiting for prompt…
-    ╭ Activity │ Git ────────────╮
-    │       No activity yet      │
+    ╭ Feed │ Repos ──────────────╮
+    │     No recent activity     │
     ╰────────────────────────────╯
     ");
 }
@@ -1899,8 +1906,8 @@ fn snapshot_spawn_modal_default_state() {
      │ MODE                         │
      │ default                      │
      ╰──────────────────────────────╯
-    ╭ Activity │ Git ────────────────╮
-    │         No activity yet        │
+    ╭ Feed │ Repos ──────────────────╮
+    │       No recent activity       │
     ╰────────────────────────────────╯
     ");
 }
@@ -1928,8 +1935,8 @@ fn snapshot_spawn_modal_anchors_directly_below_repo_header() {
     │ MODE                         │
     │ default                      │
     ╰──────────────────────────────╯
-    ╭ Activity │ Git ────────────────╮
-    │         No activity yet        │
+    ╭ Feed │ Repos ──────────────────╮
+    │       No recent activity       │
     ╰────────────────────────────────╯
     ");
 }
@@ -1958,8 +1965,8 @@ fn snapshot_spawn_modal_advance_fields_cycles_agent_and_mode() {
      │ MODE                         │
      │ bypassPermissions            │
      ╰──────────────────────────────╯
-    ╭ Activity │ Git ────────────────╮
-    │         No activity yet        │
+    ╭ Feed │ Repos ──────────────────╮
+    │       No recent activity       │
     ╰────────────────────────────────╯
     ");
 }
@@ -1984,8 +1991,8 @@ fn snapshot_spawn_modal_tail_fits_long_task_name() {
      │ MODE                         │
      │ default                      │
      ╰──────────────────────────────╯
-    ╭ Activity │ Git ────────────────╮
-    │         No activity yet        │
+    ╭ Feed │ Repos ──────────────────╮
+    │       No recent activity       │
     ╰────────────────────────────────╯
     ");
 }
@@ -2009,8 +2016,8 @@ fn snapshot_spawn_modal_narrow_width_still_fits() {
     │ MODE           │
     │ default        │
     ╰────────────────╯
-    ╭ Activity │ Git ╮
-    │ No activity yet│
+    ╭ Feed │ Repos ──╮
+    │No recent activi│
     ╰────────────────╯
     ");
 }
@@ -2028,7 +2035,7 @@ fn snapshot_spawn_modal_compact_layout_in_short_agent_area() {
         state.spawn_input_push_char(c);
     }
     let output = render_to_string(&mut state, 40, 14);
-    insta::assert_snapshot!(output, @r"
+    insta::assert_snapshot!(output, @"
      ≡1  ●0  ◎0  ◐0  ○1  ✕0
     ⓘ                                    — ▾
     proj╭ Spawn worktree ──────────────╮   +
@@ -2036,8 +2043,8 @@ fn snapshot_spawn_modal_compact_layout_in_short_agent_area() {
     ┃   │ claude                       │
         │ default                      │
         ╰──────────────────────────────╯
-    ╭ Activity │ Git ──────────────────────╮
-    │            No activity yet           │
+    ╭ Feed │ Repos  Shift+Tab: switch tab ─╮
+    │          No recent activity          │
     ╰──────────────────────────────────────╯
     ");
 }
@@ -2049,7 +2056,7 @@ fn snapshot_spawn_modal_compact_layout_shows_inline_error() {
     state.open_spawn_input_for_repo("proj".into(), "/home/u/proj".into(), None);
     state.confirm_spawn_input();
     let output = render_to_string(&mut state, 40, 14);
-    insta::assert_snapshot!(output, @r"
+    insta::assert_snapshot!(output, @"
      ≡1  ●0  ◎0  ◐0  ○1  ✕0
     ⓘ   ╭ Spawn worktree ──────────────╮ — ▾
     proj│ █                            │   +
@@ -2057,8 +2064,8 @@ fn snapshot_spawn_modal_compact_layout_shows_inline_error() {
     ┃   │ default                      │
         │ name is empty                │
         ╰──────────────────────────────╯
-    ╭ Activity │ Git ──────────────────────╮
-    │            No activity yet           │
+    ╭ Feed │ Repos  Shift+Tab: switch tab ─╮
+    │          No recent activity          │
     ╰──────────────────────────────────────╯
     ");
 }
@@ -2081,7 +2088,7 @@ fn snapshot_sidebar_spawned_pane_appends_trailing_remove_marker() {
                     repo_root: Some("/home/u/proj".into()),
                     branch: Some("main".into()),
                     is_worktree: true,
-                    worktree_name: None,
+                    ..Default::default()
                 },
             ),
             (
@@ -2090,7 +2097,7 @@ fn snapshot_sidebar_spawned_pane_appends_trailing_remove_marker() {
                     repo_root: Some("/home/u/proj".into()),
                     branch: Some("feat/x".into()),
                     is_worktree: true,
-                    worktree_name: None,
+                    ..Default::default()
                 },
             ),
         ],
@@ -2108,8 +2115,8 @@ fn snapshot_sidebar_spawned_pane_appends_trailing_remove_marker() {
       ○ claude
         + feat/x                 ×
         Waiting for prompt…
-    ╭ Activity │ Git ────────────╮
-    │       No activity yet      │
+    ╭ Feed │ Repos ──────────────╮
+    │     No recent activity     │
     ╰────────────────────────────╯
     ");
 }
@@ -2128,7 +2135,7 @@ fn snapshot_sidebar_spawned_pane_registers_click_target() {
                 repo_root: Some("/home/u/proj".into()),
                 branch: Some("feat/abc".into()),
                 is_worktree: true,
-                worktree_name: None,
+                ..Default::default()
             },
         )],
     };
@@ -2169,7 +2176,7 @@ fn snapshot_sidebar_spawned_click_target_is_invariant_to_branch_length() {
                 repo_root: Some("/home/u/proj".into()),
                 branch: Some(branch.into()),
                 is_worktree: true,
-                worktree_name: None,
+                ..Default::default()
             },
         )],
     };
@@ -2201,7 +2208,7 @@ fn snapshot_non_spawned_pane_does_not_register_click_target() {
                 repo_root: Some("/home/u/proj".into()),
                 branch: Some("feat/abc".into()),
                 is_worktree: true,
-                worktree_name: None,
+                ..Default::default()
             },
         )],
     };
@@ -2231,7 +2238,7 @@ fn snapshot_sidebar_spawned_long_branch_truncates_and_keeps_x() {
                 repo_root: Some("/home/u/proj".into()),
                 branch: Some("feature/really-long-branch-name".into()),
                 is_worktree: true,
-                worktree_name: None,
+                ..Default::default()
             },
         )],
     };
@@ -2245,8 +2252,8 @@ fn snapshot_sidebar_spawned_long_branch_truncates_and_keeps_x() {
       ○ claude
         + feature/really-l…×
         Waiting for prompt…
-    ╭ Activity │ Git ──────╮
-    │    No activity yet   │
+    ╭ Feed │ Repos ────────╮
+    │  No recent activity  │
     ╰──────────────────────╯
     ");
     // The click target must still be registered even after
@@ -2273,7 +2280,7 @@ fn snapshot_sidebar_spawned_coexists_with_port_display() {
                 repo_root: Some("/home/u/proj".into()),
                 branch: Some("feat/srv".into()),
                 is_worktree: true,
-                worktree_name: None,
+                ..Default::default()
             },
         )],
     };
@@ -2288,8 +2295,8 @@ fn snapshot_sidebar_spawned_coexists_with_port_display() {
       ○ claude
         + feat/srv         :3000 ×
         Waiting for prompt…
-    ╭ Activity │ Git ────────────╮
-    │       No activity yet      │
+    ╭ Feed │ Repos ──────────────╮
+    │     No recent activity     │
     ╰────────────────────────────╯
     ");
 }
@@ -2312,7 +2319,7 @@ fn snapshot_remove_confirm_modal_shows_three_options() {
         area: None,
     };
     let output = render_to_string(&mut state, 50, 18);
-    insta::assert_snapshot!(output, @r"
+    insta::assert_snapshot!(output, @"
      ≡1  ●0  ◎0  ◐0  ○1  ✕0
     ⓘ                                              — ▾
     proj       ╭ add-login ───────────────╮          +
@@ -2324,8 +2331,8 @@ fn snapshot_remove_confirm_modal_shows_three_options() {
                │2 unpushed                │
                │commits: reflog only      │
                ╰──────────────────────────╯
-    ╭ Activity │ Git ────────────────────────────────╮
-    │                 No activity yet                │
+    ╭ Feed │ Repos  Shift+Tab: switch tab ───────────╮
+    │               No recent activity               │
     ╰────────────────────────────────────────────────╯
     ");
 }
@@ -2352,8 +2359,8 @@ fn snapshot_spawn_modal_shows_inline_error_when_task_empty() {
      │ default                      │
      │ name is empty                │
      ╰──────────────────────────────╯
-    ╭ Activity │ Git ────────────────╮
-    │         No activity yet        │
+    ╭ Feed │ Repos ──────────────────╮
+    │       No recent activity       │
     ╰────────────────────────────────╯
     ");
 }
@@ -2391,7 +2398,7 @@ fn snapshot_remove_confirm_modal_shows_inline_error() {
         area: None,
     };
     let output = render_to_string(&mut state, 50, 18);
-    insta::assert_snapshot!(output, @r"
+    insta::assert_snapshot!(output, @"
      ≡1  ●0  ◎0  ◐0  ○1  ✕0
     ⓘ                                              — ▾
     proj                                             +
@@ -2403,8 +2410,8 @@ fn snapshot_remove_confirm_modal_shows_inline_error() {
                │changes, untracked files  │
                │git: worktree has uncommi…│
                ╰──────────────────────────╯
-    ╭ Activity │ Git ────────────────────────────────╮
-    │                 No activity yet                │
+    ╭ Feed │ Repos  Shift+Tab: switch tab ───────────╮
+    │               No recent activity               │
     ╰────────────────────────────────────────────────╯
     ");
 }
@@ -2433,8 +2440,8 @@ fn snapshot_background_status_shows_bg_command_row() {
     ⓘ                            — ▾
     ┃ ◎ claude
         $ npm run dev
-    ╭ Activity │ Git ──────────────╮
-    │        No activity yet       │
+    ╭ Feed │ Repos ────────────────╮
+    │      No recent activity      │
     ╰──────────────────────────────╯
     ");
 }
@@ -2464,8 +2471,8 @@ fn snapshot_running_pane_still_shows_live_bg_command() {
     ⓘ                            — ▾
     ┃ ● claude                   10s
         $ cargo watch
-    ╭ Activity │ Git ──────────────╮
-    │        No activity yet       │
+    ╭ Feed │ Repos ────────────────╮
+    │      No recent activity      │
     ╰──────────────────────────────╯
     ");
 }
@@ -2494,8 +2501,8 @@ fn snapshot_background_long_command_truncates_with_ellipsis() {
     ⓘ                        — ▾
     ┃ ◎ claude
         $ cargo run --bin very-…
-    ╭ Activity │ Git ──────────╮
-    │      No activity yet     │
+    ╭ Feed │ Repos ────────────╮
+    │    No recent activity    │
     ╰──────────────────────────╯
     ");
 }
