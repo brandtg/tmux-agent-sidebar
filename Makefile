@@ -4,7 +4,7 @@ BIN := target/release/tmux-agent-sidebar
 ARGS ?=
 
 .DEFAULT_GOAL := build
-.PHONY: build test clippy fmt fmt-check ci insta-accept install clean
+.PHONY: build test clippy fmt fmt-check ci check insta-accept install clean
 
 build: ## Build the release binary tmux loads (strip + lto)
 	cargo build --release
@@ -22,6 +22,8 @@ fmt-check: ## Verify formatting only (what CI runs)
 	cargo fmt --check
 
 ci: fmt-check clippy test ## Run everything CI runs (formatting checked, not auto-fixed)
+
+check: ci ## Alias for ci — run all CI checks locally
 
 insta-accept: ## Accept UI snapshot changes after intentional UI edits
 	cargo insta accept

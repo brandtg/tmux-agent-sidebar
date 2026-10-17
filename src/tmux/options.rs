@@ -146,6 +146,11 @@ pub const SIDEBAR_BOTTOM_HEIGHT: &str = "@sidebar_bottom_height";
 /// popup instead of a split pane (mobile viewports). `0` disables the
 /// popup path entirely. Read by the `toggle` subcommand.
 pub const SIDEBAR_POPUP_MAX_WIDTH: &str = "@sidebar_popup_max_width";
+/// Whether the `maintain-width` hook may auto-hide a split-pane sidebar
+/// whose window shrinks below [`SIDEBAR_POPUP_MAX_WIDTH`] (`on` / `off`,
+/// default `on` via agent-sidebar.conf seeding). Read by the
+/// `maintain-width` subcommand; empty is treated as `on`.
+pub const SIDEBAR_AUTO_HIDE: &str = "@sidebar_auto_hide";
 /// Window-scoped `#{window_layout}` snapshot taken immediately before the
 /// sidebar split is created. The close paths replay it with
 /// `select-layout` so every pane returns to its pre-sidebar geometry —
@@ -153,6 +158,12 @@ pub const SIDEBAR_POPUP_MAX_WIDTH: &str = "@sidebar_popup_max_width";
 /// neighbors and repeated toggles progressively shrink them. Cleared
 /// again once the restore succeeds.
 pub const SIDEBAR_SAVED_LAYOUT: &str = "@sidebar_saved_layout";
+/// Window-scoped last-seen `#{window_width}`, written by the
+/// `maintain-width` subcommand (and by the toggle paths whenever a split
+/// sidebar or popup is opened) so the auto-hide decision compares against
+/// the latest observation instead of a stale one. Cleared never — it is
+/// simply overwritten on every observation.
+pub const SIDEBAR_LAST_WINDOW_WIDTH: &str = "@sidebar_last_window_width";
 pub const SIDEBAR_PET: &str = "@sidebar_pet";
 pub const SIDEBAR_NOTIFICATIONS: &str = "@sidebar_notifications";
 pub const SIDEBAR_NOTIFICATIONS_EVENTS: &str = "@sidebar_notifications_events";

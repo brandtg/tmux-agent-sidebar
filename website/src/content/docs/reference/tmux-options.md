@@ -20,6 +20,7 @@ Most options must be set **before** loading the plugin in your `tmux.conf`. Colo
 | `@sidebar_mode`                  | unset   | System-level sidebar state written by `prefix+E` (`open` / `closed`). New windows and sessions follow it, so toggle-all means "always on/off everywhere" rather than a one-shot sweep; per-window toggles ignore it. Unset (no sweep yet this server) falls back to `@sidebar_auto_create` |
 | `@sidebar_auto_create_delay`     | `0`     | Seconds to defer auto-create after a window or session opens, so a declaratively-built window (e.g. tmuxinator's `select-layout`) finishes before the sidebar pane is injected; accepts fractional seconds. `0` keeps the create synchronous |
 | `@sidebar_popup_max_width`       | `100`   | Windows narrower than this many columns open the sidebar as a tmux popup instead of a split pane — for phones and small SSH viewports. The popup hides the activity/git bottom panel; entering the popup view stops any split-pane sidebars still running in the session, and a toggle press on a narrow window swaps a desktop split pane for the popup directly. Auto-create skips narrow windows; the toggle-all sweep ignores the threshold so "open everywhere" stays uniform. Set `0` to always use a split pane |
+| `@sidebar_auto_hide`             | `on`    | Auto-hide a split-pane sidebar when its window shrinks below `@sidebar_popup_max_width` (a phone or other small client attached, or resized the window); the next toggle press then opens the modal popup. Only an actual downward crossing of the threshold counts, so sidebars the toggle-all sweep deliberately created on narrow windows are left alone, and the hook's regular firings never act. Set `off` to keep split panes at every width |
 | `@sidebar_notifications`         | `on`    | Master switch for desktop notifications                                                 |
 | `@sidebar_notifications_events`  | unset   | Restrict events — see [Notifications](/tmux-agent-sidebar/features/notifications/)       |
 | `@sidebar_agents`                | unset   | Comma-separated allow-list of agents (`claude`, `codex`, `opencode`, `hermes`) the ⓘ notices evaluates for missing hooks — e.g. `set -g @sidebar_agents "claude,opencode"` silences the Codex warning for non-Codex users. Unset checks every agent; pane rows and status parsing are unaffected |
@@ -123,6 +124,14 @@ Per-icon options below always win over the preset.
 | `@sidebar_icon_idle`    | `○`     | Idle status icon             |
 | `@sidebar_icon_error`   | `✕`     | Error status icon            |
 | `@sidebar_icon_unknown` | `·`     | Unknown status icon          |
+
+## Internal options
+
+Written and maintained by the plugin itself; no need to touch them.
+
+| Option                          | Scope   | Purpose                                                                                                                                    |
+| ------------------------------- | ------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
+| `@sidebar_last_window_width`    | window  | Last `window_width` observed by the `maintain-width` hook, so the auto-hide decision only fires on an actual downward crossing of the popup threshold |
 
 ## Example config
 
