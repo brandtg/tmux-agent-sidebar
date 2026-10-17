@@ -1,6 +1,46 @@
+use std::path::PathBuf;
+
+use crate::paths;
 use crate::tmux;
 
+use super::super::activity::lock_exclusive;
 use super::super::context::remove_subagent;
+
+/// Per-pane lockfile serializing `@pane_subagents` writers across
+/// independent hook processes. Same naming scheme as the activity log
+/// (`%` → `_`, user runtime dir). Never unlinked: removing a flock
+/// target while another process waits on the old inode reopens the
+/// race the lock exists to prevent.
+fn subagent_lock_path(pane: &str) -> PathBuf {
+    let encoded = pane.replace('%', "_");
+    paths::runtime_dir().join(format!("tmux-agent-subagent-{encoded}.lock"))
+}
+
+/// Run `f` while holding the pane's subagent lock. Fail-open: if the
+/// lockfile cannot be opened or flocked, proceed unlocked — a skipped
+/// write would strand the subagent guard, while an unlocked write is
+/// only the pre-fix race. The lock is released when the fd drops at
+/// the end of this function.
+fn with_subagent_lock<T>(pane: &str, f: impl FnOnce() -> T) -> T {
+    match paths::open_read_write_private(&subagent_lock_path(pane)) {
+        Ok(file) => {
+            if !lock_exclusive(&file) {
+                crate::debug::log(&format!(
+                    "subagent: flock failed on {} for pane {pane}; proceeding unlocked",
+                    subagent_lock_path(pane).display()
+                ));
+            }
+            f()
+        }
+        Err(err) => {
+            crate::debug::log(&format!(
+                "subagent: failed to open {} for pane {pane} ({err}); proceeding unlocked",
+                subagent_lock_path(pane).display()
+            ));
+            f()
+        }
+    }
+}
 
 pub(in crate::cli::hook) fn on_subagent_start(
     pane: &str,
@@ -20,8 +60,15 @@ pub(in crate::cli::hook) fn on_subagent_start(
     // stuck open/closed. The chunk carries its own joining comma; on an
     // unset option tmux stores it verbatim (leading comma), which every
     // reader tolerates by filtering empty entries.
+    //
+    // The append alone cannot interleave with `on_subagent_stop`'s
+    // read-modify-write: a start landing between a stop's read and its
+    // write would be clobbered by the stale rewrite. Both sides take
+    // the same per-pane flock; only appends-vs-appends rely on `set -a`.
     let entry = tmux::sanitize_option_value(&format!("{agent_type}:{id}"));
-    tmux::append_pane_option(pane, tmux::PANE_SUBAGENTS, &format!(",{entry}"));
+    with_subagent_lock(pane, || {
+        tmux::append_pane_option(pane, tmux::PANE_SUBAGENTS, &format!(",{entry}"));
+    });
     0
 }
 
@@ -29,16 +76,23 @@ pub(in crate::cli::hook) fn on_subagent_stop(pane: &str, agent_id: Option<&str>)
     let Some(id) = agent_id.filter(|s| !s.is_empty()) else {
         return 0;
     };
-    let current = tmux::get_pane_option_value(pane, tmux::PANE_SUBAGENTS);
-    match remove_subagent(&current, id) {
-        None => {}
-        Some(new_val) if new_val.is_empty() => {
-            tmux::unset_pane_option(pane, tmux::PANE_SUBAGENTS);
-        }
-        Some(new_val) => {
-            tmux::set_pane_option(pane, tmux::PANE_SUBAGENTS, &new_val);
-        }
-    };
+    // The removal is a get → rewrite → set round trip across
+    // independent hook processes; concurrent stops lost updates (9/25
+    // rounds with 6 concurrent hooks), stranding `pane_writes_allowed`
+    // and blocking the parent's SessionEnd. Serialize on the same
+    // per-pane flock the start path holds.
+    with_subagent_lock(pane, || {
+        let current = tmux::get_pane_option_value(pane, tmux::PANE_SUBAGENTS);
+        match remove_subagent(&current, id) {
+            None => {}
+            Some(new_val) if new_val.is_empty() => {
+                tmux::unset_pane_option(pane, tmux::PANE_SUBAGENTS);
+            }
+            Some(new_val) => {
+                tmux::set_pane_option(pane, tmux::PANE_SUBAGENTS, &new_val);
+            }
+        };
+    });
     0
 }
 
@@ -74,6 +128,52 @@ mod tests {
             tmux::test_mock::get(pane, tmux::PANE_SUBAGENTS).as_deref(),
             Some(",Explore:sub-1,Plan:sub-2")
         );
+        fs::remove_file(subagent_lock_path(pane)).ok();
+    }
+
+    #[test]
+    fn subagent_lock_excludes_concurrent_holders() {
+        // The stop path is a read-modify-write across independent hook
+        // processes; the flock is what keeps concurrent rewrites from
+        // losing entries. Prove mutual exclusion of the lock itself with
+        // real threads: at most one thread may be inside the critical
+        // section at any moment, even though every iteration sleeps
+        // while holding it.
+        let pane = "%SUB_LOCK_RACE";
+        let lock = subagent_lock_path(pane);
+        let _ = fs::remove_file(&lock);
+
+        use std::sync::Arc;
+        use std::sync::atomic::AtomicUsize;
+        use std::sync::atomic::Ordering;
+        let inside = Arc::new(AtomicUsize::new(0));
+        let max_inside = Arc::new(AtomicUsize::new(0));
+        let handles: Vec<_> = (0..8)
+            .map(|_| {
+                let inside = inside.clone();
+                let max_inside = max_inside.clone();
+                std::thread::spawn(move || {
+                    for _ in 0..25 {
+                        with_subagent_lock(pane, || {
+                            let now = inside.fetch_add(1, Ordering::SeqCst) + 1;
+                            max_inside.fetch_max(now, Ordering::SeqCst);
+                            std::thread::sleep(std::time::Duration::from_micros(200));
+                            inside.fetch_sub(1, Ordering::SeqCst);
+                        });
+                    }
+                })
+            })
+            .collect();
+        for handle in handles {
+            handle.join().unwrap();
+        }
+
+        assert_eq!(
+            max_inside.load(Ordering::SeqCst),
+            1,
+            "flock must exclude concurrent subagent writers"
+        );
+        fs::remove_file(&lock).ok();
     }
 
     #[test]
@@ -93,6 +193,7 @@ mod tests {
             !tmux::test_mock::contains(pane, tmux::PANE_SUBAGENTS),
             "drained list must be unset"
         );
+        fs::remove_file(subagent_lock_path(pane)).ok();
     }
 
     #[test]
@@ -151,5 +252,6 @@ mod tests {
         assert!(log_path.exists());
 
         fs::remove_file(&log_path).ok();
+        fs::remove_file(subagent_lock_path(pane)).ok();
     }
 }

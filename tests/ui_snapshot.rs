@@ -2308,6 +2308,7 @@ fn snapshot_remove_confirm_modal_shows_three_options() {
             "commits: reflog only".into(),
         ],
         error: None,
+        working: None,
         area: None,
     };
     let output = render_to_string(&mut state, 50, 18);
@@ -2386,6 +2387,7 @@ fn snapshot_remove_confirm_modal_shows_inline_error() {
             "changes, untracked files".into(),
         ],
         error: Some("git: worktree has uncommitted changes".into()),
+        working: None,
         area: None,
     };
     let output = render_to_string(&mut state, 50, 18);

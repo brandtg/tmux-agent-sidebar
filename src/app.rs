@@ -5,6 +5,7 @@
 
 use std::io;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc;
 use std::time::Duration;
 
 use crossterm::event::{self};
@@ -36,6 +37,13 @@ pub fn run(
     // Short viewports start with the bottom panel minimized so the agent
     // list keeps usable space; the user can expand it with `m`.
     state.apply_auto_minimize(terminal.size()?.height);
+    // Worktree spawn/remove run on per-operation worker threads (they
+    // can spend minutes in git under a hung repo); results land here
+    // for the loop to apply — the same one-way-mpsc pattern as the
+    // Workers feeds below. The render thread stays the sole owner of
+    // AppState.
+    let (popup_op_tx, popup_op_rx) = mpsc::channel();
+    state.popup_op_tx = Some(popup_op_tx);
     let mut window_inactive_count: u32 = 0;
 
     let workers = workers::spawn(&state);
@@ -243,6 +251,11 @@ pub fn run(
 
         while let Some(scanned) = port_scan_rx.try_recv().ok().flatten() {
             state.apply_process_snapshot(scanned);
+            needs_redraw = true;
+        }
+
+        while let Ok(result) = popup_op_rx.try_recv() {
+            state.apply_popup_op_result(result);
             needs_redraw = true;
         }
 

@@ -112,7 +112,21 @@ function build_from_source() {
     cargo build --release --manifest-path "$PLUGIN_DIR/Cargo.toml"
 
     mkdir -p "$BIN_DIR"
-    cp "$PLUGIN_DIR/target/release/tmux-agent-sidebar" "$BINARY"
+    # Stage to a temp file in the same dir and swap in with mv. Writing
+    # straight onto the live binary fails with "Text file busy"
+    # (ETXTBSY) on Linux while the sidebar TUI executes from bin/ — the
+    # normal deploy. mv is an atomic rename and succeeds even while
+    # instances are still running; stop_running_instances runs later in
+    # post_install_fixups.
+    local tmp
+    tmp="${BINARY}.install.$$"
+    if ! cp "$PLUGIN_DIR/target/release/tmux-agent-sidebar" "$tmp"; then
+        rm -f "$tmp"
+        echo "Copy failed."
+        return 1
+    fi
+    chmod +x "$tmp"
+    mv -f "$tmp" "$BINARY"
 
     post_install_fixups
 
