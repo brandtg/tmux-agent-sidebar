@@ -130,6 +130,12 @@ pub const SIDEBAR_DEFAULT_COMPACT_VIEW: &str = "@sidebar_default_compact_view";
 /// Live "show other windows" flag (`1`/`0`). Written whenever a sidebar
 /// toggles with `w` so every open sidebar renders the section alike.
 pub const SIDEBAR_SHOW_WINDOWS: &str = "@sidebar_show_windows";
+/// How the agents panel buckets panes into groups (`repo` / `session`).
+/// `repo` (default) groups by resolved git repo root; `session` groups by
+/// tmux session name — combined with [`SIDEBAR_SHOW_WINDOWS`] that turns
+/// the panel into an agent-forward session manager. Read on every global
+/// sync; unlike the toggle modes it has no runtime keybinding.
+pub const SIDEBAR_GROUP_BY: &str = "@sidebar_group_by";
 /// "Show other windows" mode a newly opened sidebar lands on (`on` /
 /// `off`, default `off`). Read once at startup; the live
 /// [`SIDEBAR_SHOW_WINDOWS`] value is never restored on reopen.

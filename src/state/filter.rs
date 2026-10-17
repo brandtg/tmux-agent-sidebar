@@ -211,7 +211,7 @@ impl AppState {
             if !self.global.show_windows {
                 continue;
             }
-            let key = crate::group::repo_group_key(group);
+            let key = crate::group::group_window_key(self.global.group_by, group);
             let Some(windows) = self.other_windows.get(key.as_str()) else {
                 continue;
             };
@@ -242,7 +242,7 @@ impl AppState {
             .iter()
             .filter(|g| self.global.repo_filter.matches_group(&g.name))
             .map(|g| {
-                let key = crate::group::repo_group_key(g);
+                let key = crate::group::group_window_key(self.global.group_by, g);
                 let runtime = &self.pane_states;
                 self.other_windows
                     .get(&key)
