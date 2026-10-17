@@ -60,8 +60,11 @@ fn normalize_tool_name(raw: &str) -> String {
 }
 
 /// Hermes file tools take a `path` argument; the label extractor wants
-/// Claude-style `file_path`. Added alongside the original so raw-payload
-/// consumers still see it (same convention as the OpenCode adapter).
+/// Claude-style `file_path`. Detached terminal spawns carry `background: true`
+/// while the shared activity-log handler tracks background shells by Claude's
+/// `run_in_background` key. Both are added alongside the originals so
+/// raw-payload consumers still see them (same convention as the OpenCode
+/// adapter).
 fn normalize_tool_input(tool_name: &str, input: Value) -> Value {
     let mut input = input;
     if matches!(tool_name, "Read" | "Write" | "Edit")
@@ -70,6 +73,13 @@ fn normalize_tool_input(tool_name: &str, input: Value) -> Value {
         && let Some(path) = map.get("path").cloned()
     {
         map.insert("file_path".into(), path);
+    }
+    if tool_name == CanonicalTool::Bash.as_str()
+        && let Value::Object(map) = &mut input
+        && map.get("background").and_then(|v| v.as_bool()) == Some(true)
+        && !map.contains_key("run_in_background")
+    {
+        map.insert("run_in_background".into(), Value::Bool(true));
     }
     input
 }
@@ -114,6 +124,13 @@ impl HermesAdapter {
     ///   agent resumes. The arm disambiguates via `hook_event_name`.
     /// - `subagent_start`/`subagent_stop` are delegation-only; they carry the
     ///   child role rather than a tool-agent type.
+    /// - `post_tool_call` also feeds background-shell tracking: a
+    ///   `terminal(background=true)` spawn is translated to Claude's
+    ///   `run_in_background` flag, so when the turn ends (`post_llm_call` →
+    ///   `stop`) the pane resolves to `background` instead of `idle` while
+    ///   the detached process is alive. Hermes spawns those processes
+    ///   detached (`start_new_session`) under a login shell, so the ps-tree
+    ///   liveness sweep sees the stored command until the process exits.
     pub const HOOK_REGISTRATIONS: &'static [HookRegistration] = &[
         HookRegistration {
             trigger: "on_session_start",
@@ -520,6 +537,59 @@ mod tests {
             .unwrap();
         match event {
             AgentEvent::ActivityLog { tool_name, .. } => assert_eq!(tool_name, "Bash"),
+            other => panic!("expected ActivityLog, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn post_tool_call_background_terminal_sets_run_in_background() {
+        // `terminal(background=true)` is hermes' detached-spawn dialect; the
+        // activity-log handler keys background-shell tracking on Claude's
+        // `run_in_background`. Translating the flag is what makes the
+        // turn-ending stop resolve to `background` (green) while the process
+        // is alive instead of `idle`.
+        let adapter = HermesAdapter;
+        let event = adapter
+            .parse(
+                "activity-log",
+                &json!({
+                    "hook_event_name": "post_tool_call",
+                    "tool_name": "terminal",
+                    "tool_input": {"command": "opencode run --title m3", "background": true},
+                    "extra": {}
+                }),
+            )
+            .unwrap();
+        match event {
+            AgentEvent::ActivityLog { tool_input, .. } => {
+                assert_eq!(tool_input["run_in_background"], true);
+                assert_eq!(
+                    tool_input["background"], true,
+                    "the original key must survive for raw-payload consumers"
+                );
+            }
+            other => panic!("expected ActivityLog, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn post_tool_call_foreground_terminal_gets_no_background_flag() {
+        let adapter = HermesAdapter;
+        let event = adapter
+            .parse(
+                "activity-log",
+                &json!({
+                    "hook_event_name": "post_tool_call",
+                    "tool_name": "terminal",
+                    "tool_input": {"command": "cargo test", "background": false},
+                    "extra": {}
+                }),
+            )
+            .unwrap();
+        match event {
+            AgentEvent::ActivityLog { tool_input, .. } => {
+                assert!(tool_input.get("run_in_background").is_none());
+            }
             other => panic!("expected ActivityLog, got {:?}", other),
         }
     }
