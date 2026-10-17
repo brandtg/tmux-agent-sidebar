@@ -184,6 +184,17 @@ pub const SIDEBAR_COLOR_ACCENT: &str = "@sidebar_color_accent";
 /// alone. Per-window `toggle` presses ignore the mode — they remain
 /// explicit user actions.
 pub const SIDEBAR_MODE: &str = "@sidebar_mode";
+/// Global comma-separated window ids that had sidebars when the
+/// `maintain-width` mobile takeover closed them, recorded so the takeover
+/// can reverse itself when a desktop viewport returns. Written only by the
+/// takeover path — a deliberate `toggle-all` close records nothing and is
+/// therefore never undone automatically. Cleared once the restore has run.
+pub const SIDEBAR_MOBILE_RESTORE: &str = "@sidebar_mobile_restore";
+/// Global `@sidebar_mode` value observed when the mobile takeover fired.
+/// The release path restores it verbatim (including unset) so a takeover
+/// that fired while mode was unset does not leave an `open` pin behind that
+/// would override [`SIDEBAR_AUTO_CREATE`] for later windows.
+pub const SIDEBAR_MOBILE_PRIOR_MODE: &str = "@sidebar_mobile_prior_mode";
 /// Whether a sidebar is created automatically for new windows (`on` /
 /// `off`, default `on` via agent-sidebar.conf seeding). Consulted at
 /// window-create time; only consulted while [`SIDEBAR_MODE`] is unset.
