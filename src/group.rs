@@ -1,7 +1,7 @@
 use indexmap::IndexMap;
 
 use crate::git::run_git;
-use crate::tmux::{OtherPane, PaneInfo, SessionInfo, WindowStatus};
+use crate::tmux::{OtherPane, PaneInfo, WindowStatus};
 
 /// Per-pane git metadata resolved from the pane's working directory.
 #[derive(Debug, Clone, Default)]
@@ -60,28 +60,19 @@ pub fn repo_group_key(group: &RepoGroup) -> String {
 
 /// Bucket non-agent panes by repo key, one [`OtherWindow`] per pane.
 /// Every pane running in a repo window gets its own row so two programs
-/// split across panes are tracked independently. Excludes windows that
-/// already have an agent pane (their agent row already represents them).
-/// Windows in a repo with no agent are still returned; the caller only
-/// renders keys that match an existing group.
+/// split across panes are tracked independently — including panes that
+/// share a window with an agent: an agent row represents the agent, not
+/// its window, so a side-by-side tests pane still shows its own command
+/// and ports. Windows in a repo with no agent are still returned; the
+/// caller only renders keys that match an existing group.
 pub fn group_other_windows_by_repo(
     other_panes: &[OtherPane],
-    sessions: &[SessionInfo],
     git_info_cache: &std::collections::HashMap<String, PaneGitInfo>,
 ) -> IndexMap<String, Vec<OtherWindow>> {
-    let agent_windows: std::collections::HashSet<&str> = sessions
-        .iter()
-        .flat_map(|session| session.windows.iter())
-        .map(|window| window.window_id.as_str())
-        .collect();
-
     let mut out: IndexMap<String, Vec<OtherWindow>> = IndexMap::new();
     let mut seen_panes: std::collections::HashSet<(String, String)> =
         std::collections::HashSet::new();
     for pane in other_panes {
-        if agent_windows.contains(pane.window_id.as_str()) {
-            continue;
-        }
         // Grouped sessions can emit the same pane line twice.
         if !seen_panes.insert((pane.window_id.clone(), pane.pane_id.clone())) {
             continue;
@@ -107,6 +98,50 @@ pub fn group_other_windows_by_repo(
             // script running under a shell foreground arrives as `Task`.
             status: pane.status,
         });
+    }
+
+    for windows in out.values_mut() {
+        windows.sort_by_key(|w| (status_rank(w.status), w.window_index));
+    }
+    out
+}
+
+/// Bucket non-agent panes by tmux session name, one [`OtherWindow`] per
+/// pane. The session-mode counterpart of [`group_other_windows_by_repo`]:
+/// sessions exist independently of any agent, so every non-agent pane is
+/// returned and agent-less sessions surface through their windows (the
+/// caller only renders keys that match an existing group).
+pub fn group_other_windows_by_session(
+    other_panes: &[OtherPane],
+    git_info_cache: &std::collections::HashMap<String, PaneGitInfo>,
+) -> IndexMap<String, Vec<OtherWindow>> {
+    let mut out: IndexMap<String, Vec<OtherWindow>> = IndexMap::new();
+    let mut seen_panes: std::collections::HashSet<(String, String)> =
+        std::collections::HashSet::new();
+    for pane in other_panes {
+        // Grouped sessions can emit the same pane line twice.
+        if !seen_panes.insert((pane.window_id.clone(), pane.pane_id.clone())) {
+            continue;
+        }
+        let git_info = git_info_cache.get(&pane.path).cloned().unwrap_or_default();
+        out.entry(pane.session_name.clone())
+            .or_default()
+            .push(OtherWindow {
+                window_id: pane.window_id.clone(),
+                window_index: pane.window_index,
+                window_name: pane.window_name.clone(),
+                window_active: pane.window_active,
+                session_name: pane.session_name.clone(),
+                pane_id: pane.pane_id.clone(),
+                pane_active: pane.pane_active,
+                pane_pid: pane.pane_pid,
+                command: pane.command.clone(),
+                path: pane.path.clone(),
+                git_info,
+                // Precomputed at parse time with the process snapshot, so a
+                // script running under a shell foreground arrives as `Task`.
+                status: pane.status,
+            });
     }
 
     for windows in out.values_mut() {
@@ -178,6 +213,44 @@ pub fn resolve_pane_git_info(path: &str) -> PaneGitInfo {
     }
 }
 
+/// Per-pane git metadata shared by both grouping modes: cache lookup by
+/// the pane's grouping anchor, then hook-provided worktree overrides.
+/// The cache is authoritative — a miss falls back to default info (no
+/// git subprocess is ever spawned on the render thread here).
+fn pane_git_info(
+    pane: &crate::tmux::PaneInfo,
+    git_info_cache: &std::collections::HashMap<String, PaneGitInfo>,
+) -> PaneGitInfo {
+    let mut git_info = git_info_cache
+        .get(pane.grouping_anchor())
+        .cloned()
+        .unwrap_or_default();
+
+    // Override with hook-provided worktree info (Claude Code
+    // provides this; Codex does not, so the git-command base
+    // remains as fallback).
+    if !pane.worktree.name.is_empty() {
+        git_info.worktree_name = Some(pane.worktree.name.clone());
+        git_info.is_worktree = true;
+    }
+    if !pane.worktree.branch.is_empty() {
+        git_info.branch = Some(pane.worktree.branch.clone());
+        git_info.is_worktree = true;
+    }
+    git_info
+}
+
+/// The key under which a group's non-agent window panes are bucketed in
+/// `AppState::other_windows` — mirroring how the active grouping mode
+/// bucketed them: the repo root / grouping anchor in repo mode, the tmux
+/// session name in session mode (where it equals the display name).
+pub fn group_window_key(group_by: crate::state::GroupBy, group: &RepoGroup) -> String {
+    match group_by {
+        crate::state::GroupBy::Repo => repo_group_key(group),
+        crate::state::GroupBy::Session => group.name.clone(),
+    }
+}
+
 /// Group all panes across all sessions by repo root.
 /// Returns groups sorted alphabetically by display name (case-insensitive),
 /// so the order is stable regardless of which pane is encountered first.
@@ -197,22 +270,7 @@ pub fn group_panes_by_repo(
     for session in sessions {
         for window in &session.windows {
             for pane in &window.panes {
-                let mut git_info = git_info_cache
-                    .get(pane.grouping_anchor())
-                    .cloned()
-                    .unwrap_or_default();
-
-                // Override with hook-provided worktree info (Claude Code
-                // provides this; Codex does not, so the git-command base
-                // remains as fallback).
-                if !pane.worktree.name.is_empty() {
-                    git_info.worktree_name = Some(pane.worktree.name.clone());
-                    git_info.is_worktree = true;
-                }
-                if !pane.worktree.branch.is_empty() {
-                    git_info.branch = Some(pane.worktree.branch.clone());
-                    git_info.is_worktree = true;
-                }
+                let git_info = pane_git_info(pane, git_info_cache);
 
                 let group_key = match &git_info.repo_root {
                     Some(root) => root.clone(),
@@ -238,6 +296,71 @@ pub fn group_panes_by_repo(
                 }
 
                 group.panes.push((pane.clone(), git_info));
+            }
+        }
+    }
+
+    let mut result: Vec<RepoGroup> = groups.into_values().collect();
+    result.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    result
+}
+
+/// Group all agent panes by tmux session name, one group per session,
+/// sorted alphabetically (case-insensitive) like
+/// [`group_panes_by_repo`]. Git metadata is still resolved per pane so
+/// rows keep their branch labels; only the bucketing changes.
+///
+/// With `include_agentless` set, sessions hosting no agent panes get an
+/// empty group too — that is the `w`-mode session-manager view, where
+/// their plain windows render as non-agent rows. The agent-less session
+/// names come from `other_panes` (the parse drops sessions without agent
+/// panes from `sessions`); a session whose only pane is the sidebar still
+/// yields no group entries and stays hidden. Without the flag, agent-less
+/// sessions are dropped, matching the repo mode's agents-only behavior.
+pub fn group_panes_by_session(
+    sessions: &[crate::tmux::SessionInfo],
+    other_panes: &[OtherPane],
+    git_info_cache: &std::collections::HashMap<String, PaneGitInfo>,
+    include_agentless: bool,
+) -> Vec<RepoGroup> {
+    let mut groups: IndexMap<String, RepoGroup> = IndexMap::new();
+
+    for session in sessions {
+        let mut group = RepoGroup {
+            name: session.session_name.clone(),
+            has_focus: false,
+            panes: Vec::new(),
+        };
+        for window in &session.windows {
+            for pane in &window.panes {
+                if window.window_active && pane.pane_active {
+                    group.has_focus = true;
+                }
+                group
+                    .panes
+                    .push((pane.clone(), pane_git_info(pane, git_info_cache)));
+            }
+        }
+        if group.panes.is_empty() && !include_agentless {
+            continue;
+        }
+        groups.insert(session.session_name.clone(), group);
+    }
+
+    if include_agentless {
+        for pane in other_panes {
+            let entry = groups
+                .entry(pane.session_name.clone())
+                .or_insert_with(|| RepoGroup {
+                    name: pane.session_name.clone(),
+                    has_focus: false,
+                    panes: Vec::new(),
+                });
+            // Non-agent panes count for the group's focus highlight in
+            // session mode: the session the user is working in lights up
+            // even when they sit in a plain shell.
+            if pane.window_active && pane.pane_active {
+                entry.has_focus = true;
             }
         }
     }
@@ -724,6 +847,143 @@ mod tests {
         assert_eq!(groups[2].panes.len(), 2, "zzz should have 2 panes");
     }
 
+    // ─── group_panes_by_session ─────────────────────────────────────
+
+    fn named_session(
+        name: &str,
+        windows: Vec<crate::tmux::WindowInfo>,
+    ) -> crate::tmux::SessionInfo {
+        crate::tmux::SessionInfo {
+            session_name: name.into(),
+            windows,
+        }
+    }
+
+    #[test]
+    fn group_panes_by_session_buckets_by_tmux_session_name() {
+        // The bucket key is the tmux session name only — the agent's own
+        // session title (Claude /rename etc.) must not leak into it.
+        let mut pane = test_pane("%1", "/tmp/a");
+        pane.session_name = "fix-csv-aliases".into();
+
+        let sessions = vec![
+            named_session("alpha", vec![test_window(vec![pane], true)]),
+            named_session(
+                "beta",
+                vec![test_window(vec![test_pane("%2", "/tmp/b")], false)],
+            ),
+        ];
+        let groups = group_panes_by_session(&sessions, &[], &HashMap::new(), false);
+
+        assert_eq!(groups.len(), 2);
+        assert_eq!(groups[0].name, "alpha");
+        assert_eq!(groups[1].name, "beta");
+        assert_eq!(
+            group_window_key(crate::state::GroupBy::Session, &groups[1]),
+            "beta",
+            "session mode keys the window section by the group's session name"
+        );
+    }
+
+    #[test]
+    fn group_panes_by_session_keeps_same_repo_sessions_separate() {
+        // Repo mode merges same-repo panes across sessions; session mode
+        // must not — the tmux session is the bucket.
+        let manifest_dir = env!("CARGO_MANIFEST_DIR");
+        let sessions = vec![
+            named_session(
+                "alpha",
+                vec![test_window(vec![test_pane("%1", manifest_dir)], true)],
+            ),
+            named_session(
+                "beta",
+                vec![test_window(vec![test_pane("%2", manifest_dir)], false)],
+            ),
+        ];
+        let groups = group_panes_by_session(&sessions, &[], &HashMap::new(), false);
+
+        assert_eq!(groups.len(), 2, "session mode does not merge by repo");
+        assert!(groups.iter().all(|g| g.panes.len() == 1));
+    }
+
+    #[test]
+    fn group_panes_by_session_agentless_sessions_follow_include_flag() {
+        // The parse drops sessions without agent panes from `sessions`,
+        // so agent-less sessions are only visible through their non-agent
+        // panes. `include_agentless` (the w-mode session-manager view)
+        // turns them into empty groups; the default drops them.
+        let sessions = vec![named_session(
+            "alpha",
+            vec![test_window(vec![test_pane("%1", "/tmp/a")], true)],
+        )];
+        let agentless_shell = other_pane("@5", "%5", "/repo", "zsh", true); // session "main"
+
+        let without = group_panes_by_session(
+            &sessions,
+            std::slice::from_ref(&agentless_shell),
+            &HashMap::new(),
+            false,
+        );
+        assert_eq!(
+            without.len(),
+            1,
+            "w off keeps agent-less sessions out of the list"
+        );
+
+        let with = group_panes_by_session(
+            &sessions,
+            std::slice::from_ref(&agentless_shell),
+            &HashMap::new(),
+            true,
+        );
+        assert_eq!(with.len(), 2, "w on adds the agent-less session");
+        let solo = with.iter().find(|g| g.name == "main").unwrap();
+        assert!(solo.panes.is_empty(), "the agent-less group has no agents");
+    }
+
+    #[test]
+    fn group_panes_by_session_focus_from_agent_and_window_panes() {
+        let mut pane = test_pane("%1", "/tmp/a");
+        pane.pane_active = true;
+        let sessions = vec![named_session("alpha", vec![test_window(vec![pane], true)])];
+        let mut shell = other_pane("@9", "%9", "/repo", "zsh", true);
+        shell.session_name = "solo".into();
+        shell.window_active = true;
+
+        let groups = group_panes_by_session(&sessions, &[shell], &HashMap::new(), true);
+
+        assert!(
+            groups.iter().find(|g| g.name == "alpha").unwrap().has_focus,
+            "an active agent pane marks its session focused"
+        );
+        assert!(
+            groups.iter().find(|g| g.name == "solo").unwrap().has_focus,
+            "an active non-agent pane marks its session focused too"
+        );
+    }
+
+    #[test]
+    fn group_panes_by_session_keeps_git_info_for_row_labels() {
+        let tmp = tempfile::tempdir().expect("temp dir");
+        let repo = temp_git_repo(tmp.path(), "intel-eng");
+        let pane = test_pane("%1", repo.to_str().unwrap());
+
+        let sessions = vec![named_session("alpha", vec![test_window(vec![pane], true)])];
+        let groups = group_panes_by_session(
+            &sessions,
+            &[],
+            &cache_with(&[repo.to_str().unwrap()]),
+            false,
+        );
+
+        assert_eq!(groups[0].name, "alpha");
+        assert_eq!(
+            groups[0].panes[0].1.repo_root.as_deref(),
+            Some(repo.to_str().unwrap()),
+            "branch labels still resolve; only the bucketing changes"
+        );
+    }
+
     // ─── group_other_windows_by_repo ────────────────────────────────
 
     fn other_pane(
@@ -762,32 +1022,22 @@ mod tests {
         cache
     }
 
-    fn agent_window(window_id: &str, pane_id: &str, path: &str) -> crate::tmux::SessionInfo {
-        crate::tmux::SessionInfo {
-            session_name: "main".into(),
-            windows: vec![crate::tmux::WindowInfo {
-                window_id: window_id.into(),
-                window_name: "agent".into(),
-                window_active: true,
-                auto_rename: false,
-                panes: vec![test_pane(pane_id, path)],
-            }],
-        }
-    }
-
     #[test]
-    fn group_other_windows_buckets_by_repo_and_skips_agent_windows() {
+    fn group_other_windows_buckets_by_repo_and_includes_agent_window_siblings() {
         let shell = other_pane("@5", "%5", "/repo", "zsh", true);
         let agent_sibling = other_pane("@6", "%6", "/repo", "zsh", true);
         let cache = cache_with_repo("/repo", "/repo");
-        // @6 already hosts an agent pane, so it is not an "other" window.
-        let sessions = vec![agent_window("@6", "%9", "/repo")];
+        // @6 also hosts an agent pane, but an agent row represents the
+        // agent, not its window: the side-by-side shell split keeps its
+        // own row so its command and ports stay visible. Agent panes
+        // themselves are excluded upstream at parse time, never here.
 
-        let grouped = group_other_windows_by_repo(&[shell, agent_sibling], &sessions, &cache);
+        let grouped = group_other_windows_by_repo(&[shell, agent_sibling], &cache);
 
         let windows = grouped.get("/repo").expect("repo bucket");
-        assert_eq!(windows.len(), 1);
-        assert_eq!(windows[0].window_id, "@5");
+        assert_eq!(windows.len(), 2, "both non-agent panes get a row");
+        assert!(windows.iter().any(|w| w.window_id == "@5"));
+        assert!(windows.iter().any(|w| w.window_id == "@6"));
     }
 
     #[test]
@@ -798,7 +1048,7 @@ mod tests {
         let active = other_pane("@5", "%6", "/repo", "cargo", true);
         let cache = cache_with_repo("/repo", "/repo");
 
-        let grouped = group_other_windows_by_repo(&[inactive, active], &[], &cache);
+        let grouped = group_other_windows_by_repo(&[inactive, active], &cache);
 
         let windows = grouped.get("/repo").expect("repo bucket");
         assert_eq!(
@@ -823,7 +1073,7 @@ mod tests {
         let pane = other_pane("@5", "%5", "/repo", "zsh", true);
         let cache = cache_with_repo("/repo", "/repo");
 
-        let grouped = group_other_windows_by_repo(&[pane.clone(), pane], &[], &cache);
+        let grouped = group_other_windows_by_repo(&[pane.clone(), pane], &cache);
 
         assert_eq!(grouped.get("/repo").expect("repo bucket").len(), 1);
     }
@@ -834,7 +1084,7 @@ mod tests {
         let task = other_pane("@2", "%2", "/repo", "cargo", true);
         let cache = cache_with_repo("/repo", "/repo");
 
-        let grouped = group_other_windows_by_repo(&[idle, task], &[], &cache);
+        let grouped = group_other_windows_by_repo(&[idle, task], &cache);
 
         let windows = grouped.get("/repo").expect("repo bucket");
         assert_eq!(windows.len(), 2);
@@ -846,9 +1096,36 @@ mod tests {
     fn group_other_windows_non_git_path_keys_by_raw_path() {
         let shell = other_pane("@5", "%5", "/tmp/no-git", "zsh", true);
 
-        let grouped = group_other_windows_by_repo(&[shell], &[], &HashMap::new());
+        let grouped = group_other_windows_by_repo(&[shell], &HashMap::new());
 
         assert!(grouped.contains_key("/tmp/no-git"));
+    }
+
+    // ─── group_other_windows_by_session ─────────────────────────────
+
+    #[test]
+    fn group_other_windows_by_session_buckets_by_tmux_session() {
+        let mut alpha = other_pane("@5", "%5", "/repo", "zsh", true);
+        alpha.session_name = "alpha".into();
+        let mut beta = other_pane("@6", "%6", "/repo", "cargo", true);
+        beta.session_name = "beta".into();
+
+        let grouped = group_other_windows_by_session(&[alpha, beta], &HashMap::new());
+
+        assert_eq!(grouped.get("alpha").expect("alpha bucket").len(), 1);
+        let beta_windows = grouped.get("beta").expect("beta bucket");
+        assert_eq!(beta_windows.len(), 1);
+        assert_eq!(beta_windows[0].command, "cargo");
+    }
+
+    #[test]
+    fn group_other_windows_by_session_dedups_grouped_session_lines() {
+        let mut pane = other_pane("@5", "%5", "/repo", "zsh", true);
+        pane.session_name = "alpha".into();
+
+        let grouped = group_other_windows_by_session(&[pane.clone(), pane], &HashMap::new());
+
+        assert_eq!(grouped.get("alpha").expect("alpha bucket").len(), 1);
     }
 
     #[test]

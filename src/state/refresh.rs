@@ -109,12 +109,25 @@ impl AppState {
             }
             self.timers.git_info_primed = true;
         }
-        self.repo_groups = crate::group::group_panes_by_repo(&sessions, &self.git_info_cache);
-        self.other_windows = crate::group::group_other_windows_by_repo(
-            &other_panes,
-            &sessions,
-            &self.git_info_cache,
-        );
+        self.repo_groups = match self.global.group_by {
+            crate::state::GroupBy::Repo => {
+                crate::group::group_panes_by_repo(&sessions, &self.git_info_cache)
+            }
+            crate::state::GroupBy::Session => crate::group::group_panes_by_session(
+                &sessions,
+                &other_panes,
+                &self.git_info_cache,
+                self.global.show_windows,
+            ),
+        };
+        self.other_windows = match self.global.group_by {
+            crate::state::GroupBy::Repo => {
+                crate::group::group_other_windows_by_repo(&other_panes, &self.git_info_cache)
+            }
+            crate::state::GroupBy::Session => {
+                crate::group::group_other_windows_by_session(&other_panes, &self.git_info_cache)
+            }
+        };
         self.update_attention_stamps();
         self.refresh_window_tasks(&other_panes);
         self.prune_pane_states_to_current_panes();

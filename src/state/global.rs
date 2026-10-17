@@ -5,6 +5,31 @@ use crate::tmux;
 
 use super::filter::{RepoFilter, StatusFilter};
 
+/// How the agents panel buckets panes into groups. Set via the
+/// `@sidebar_group_by` tmux global; a config-time choice read on every
+/// sync, with no runtime toggle.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum GroupBy {
+    /// Bucket panes by resolved git repo root (the historical default).
+    #[default]
+    Repo,
+    /// Bucket panes by tmux session name. With the windows section
+    /// enabled this becomes an agent-forward session manager: sessions
+    /// without agents render their plain windows too.
+    Session,
+}
+
+impl GroupBy {
+    /// Parse a tmux-option label into a [`GroupBy`]. Unknown values fall
+    /// back to `Repo`.
+    pub fn from_label(s: &str) -> Self {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "session" => Self::Session,
+            _ => Self::Repo,
+        }
+    }
+}
+
 /// State shared across all sidebar instances via tmux global variables.
 /// Synced from tmux at startup, on pane focus change (SIGUSR1), and
 /// whenever another sidebar broadcasts a shared-option change.
@@ -24,6 +49,10 @@ pub struct GlobalState {
     /// `@sidebar_default_show_windows` only seeds the mode when no live
     /// value exists yet.
     pub show_windows: bool,
+    /// Grouping mode for the agents panel: repo roots (default) or tmux
+    /// session names. Read from `@sidebar_group_by` on every sync — set
+    /// it in tmux.conf; there is no runtime toggle.
+    pub group_by: GroupBy,
     /// User's explicit bottom-panel minimize choice from `m`, shared
     /// across open sidebars via `@sidebar_bottom_minimized` so the
     /// collapsed/expanded state is sticky everywhere. `None` means no
@@ -60,6 +89,7 @@ impl GlobalState {
             repo_filter: RepoFilter::All,
             compact: false,
             show_windows: false,
+            group_by: GroupBy::default(),
             bottom_minimize_override: None,
             owner_pane,
             last_saved_filter: StatusFilter::All,
@@ -336,6 +366,9 @@ impl GlobalState {
         }
         if let Some(show_windows_str) = opts.get(tmux::SIDEBAR_SHOW_WINDOWS) {
             self.show_windows = show_windows_str.trim() == "1";
+        }
+        if let Some(group_by_str) = opts.get(tmux::SIDEBAR_GROUP_BY) {
+            self.group_by = GroupBy::from_label(group_by_str);
         }
         if let Some(minimized_str) = opts.get(tmux::SIDEBAR_BOTTOM_MINIMIZED) {
             let tmux_minimize = match minimized_str.trim() {

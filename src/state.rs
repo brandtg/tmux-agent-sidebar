@@ -22,7 +22,7 @@ mod timers;
 pub use activity::ActivityState;
 pub use filter::{RepoFilter, StatusFilter};
 pub use focus::{Focus, FocusState};
-pub use global::GlobalState;
+pub use global::{GlobalState, GroupBy};
 pub use layout::{FrameLayout, HyperlinkOverlay, RepoSpawnTarget, RowTarget, SpawnRemoveTarget};
 pub(crate) use notices::debug_forced_display;
 pub(crate) use notices::parse_enabled_agents;
