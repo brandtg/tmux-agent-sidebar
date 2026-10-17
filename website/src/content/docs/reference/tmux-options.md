@@ -13,7 +13,7 @@ Most options must be set **before** loading the plugin in your `tmux.conf`. Colo
 | `@sidebar_key_all`               | `E`     | Prefix-triggered keybinding to toggle the sidebar in all windows                        |
 | `@sidebar_width`                 | `15%`   | Width in columns or as a percentage                                                     |
 | `@sidebar_position`              | `left`  | Sidebar placement (`left` or `right`)                                                   |
-| `@sidebar_bottom_height`         | `20`    | Bottom panel height in lines (set `0` to hide). When the terminal is too short to fit this panel plus ~10 rows of agent list, the panel auto-minimizes to its Activity/Git tab header; press `m` to expand or minimize it manually — the choice is shared across all open sidebars and sticks until toggled again |
+| `@sidebar_bottom_height`         | `20`    | Bottom panel height in lines (set `0` to hide). When the terminal is too short to fit this panel plus ~10 rows of agent list, the panel auto-minimizes to its Feed/Repos tab header; press `m` to expand or minimize it manually — the choice is shared across all open sidebars and sticks until toggled again |
 | `@sidebar_default_view`          | `all`   | Status filter view the sidebar lands on when it opens (`all`, `running`, `background`, `waiting`, `idle`, `error`). Filter changes still sync across open sidebars but are not restored on reopen |
 | `@sidebar_default_compact_view`  | `off`   | Whether a newly opened sidebar starts in compact mode — one line per agent. Toggle live with `c` inside the sidebar; the toggle syncs across open sidebars but is not restored on reopen |
 | `@sidebar_auto_create`           | `on`    | Auto-create the sidebar on new windows and sessions (set `off` to disable). Consulted at window/session-create time, and only while no `@sidebar_mode` is recorded — a toggle-all sweep overrides it until the next one |
@@ -81,23 +81,20 @@ Most options must be set **before** loading the plugin in your `tmux.conf`. Colo
 | `@sidebar_color_task_progress`  | `223`&nbsp;(pale yellow) | Task progress summary |
 | `@sidebar_color_subagent`       | `73`&nbsp;(soft teal)  | Sub-agent tree        |
 
-## Git tab colors
+## Repos tab colors
 
 | Option                          | Default            | What it paints      |
 | ------------------------------- | ------------------ | ------------------- |
 | `@sidebar_color_branch`         | `109`&nbsp;(teal)       | Git branch name     |
-| `@sidebar_color_commit_hash`    | `221`&nbsp;(yellow)     | Commit hash         |
-| `@sidebar_color_diff_added`     | `114`&nbsp;(green)      | Added diff lines    |
-| `@sidebar_color_diff_deleted`   | `174`&nbsp;(terracotta) | Deleted diff lines  |
-| `@sidebar_color_file_change`    | `221`&nbsp;(yellow)     | File change stats   |
-| `@sidebar_color_pr_link`        | `117`&nbsp;(light blue) | PR link / number    |
+| `@sidebar_color_diff_added`     | `114`&nbsp;(green)      | Ahead arrows        |
+| `@sidebar_color_diff_deleted`   | `174`&nbsp;(terracotta) | Behind arrows       |
 
 ## Section titles and timestamps
 
 | Option                                | Default      | What it paints      |
 | ------------------------------------- | ------------ | ------------------- |
 | `@sidebar_color_section_title`        | `109`&nbsp;(teal) | Section titles      |
-| `@sidebar_color_activity_timestamp`   | `109`&nbsp;(teal) | Activity timestamps |
+| `@sidebar_color_activity_timestamp`   | `109`&nbsp;(teal) | Feed timestamps |
 
 ## Status icons
 

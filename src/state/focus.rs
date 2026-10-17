@@ -6,7 +6,8 @@ pub enum Focus {
     Filter,
     #[default]
     Panes,
-    ActivityLog,
+    /// The bottom panel (Feed/Repos tabs) has keyboard focus for scrolling.
+    BottomPanel,
 }
 
 #[derive(Debug, Clone)]

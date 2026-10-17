@@ -50,8 +50,6 @@ pub(super) fn init_state(tmux_pane: String) -> AppState {
         state.select_focused_context_row();
     }
 
-    super::render::refresh_git_for_focused_pane(&mut state);
-
     // Resolve the installed Claude Code plugin status once at startup,
     // matching the version_notice pattern. Restart the sidebar after a
     // /plugin install, /plugin uninstall, or /plugin update to pick up

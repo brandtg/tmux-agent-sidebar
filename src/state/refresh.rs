@@ -395,7 +395,7 @@ impl AppState {
     }
 
     fn refresh_activity_data(&mut self) {
-        self.refresh_activity_log();
+        self.refresh_feed();
         self.refresh_task_progress();
         self.auto_switch_tab();
     }
@@ -681,26 +681,26 @@ impl AppState {
         self.timers.last_bg_shell_sweep = Some(std::time::Instant::now());
     }
 
-    pub(crate) fn refresh_activity_log(&mut self) {
-        let Some(ref pane_id) = self.focus_state.focused_pane_id else {
-            self.activity.entries.clear();
-            self.activity.log_cache = None;
-            return;
-        };
-        let current_mtime = activity::log_mtime(pane_id);
-        if let (Some(mtime), Some((cached_id, cached_mtime))) =
-            (current_mtime, self.activity.log_cache.as_ref())
-            && cached_id == pane_id
-            && *cached_mtime == mtime
-        {
-            return;
+    /// Rebuild the cross-agent feed from every agent pane's activity log.
+    ///
+    /// Each pane's log is read at most once per mtime change (per-pane
+    /// cache in [`FeedState`]); the filtered entries are then merged
+    /// newest-first. Panes that left the snapshot drop out of both the
+    /// cache and the feed — their logs are removed by the dead-agent
+    /// teardown anyway.
+    pub(crate) fn refresh_feed(&mut self) {
+        let panes: Vec<(String, crate::tmux::AgentType)> = self
+            .repo_groups
+            .iter()
+            .flat_map(|group| group.panes.iter())
+            .map(|(pane, _)| (pane.pane_id.clone(), pane.agent.clone()))
+            .collect();
+        let pane_ids: Vec<String> = panes.iter().map(|(id, _)| id.clone()).collect();
+        self.feed.retain_panes(&pane_ids);
+        for (pane_id, agent) in &panes {
+            self.feed.refresh_pane(pane_id, agent);
         }
-        // Task-reset markers are internal bookkeeping for parse_task_progress;
-        // they should never appear in the user-facing Activity tab.
-        let mut entries = activity::read_activity_log(pane_id, self.activity.max_entries);
-        entries.retain(|e| e.tool != activity::TASK_RESET_MARKER);
-        self.activity.entries = entries;
-        self.activity.log_cache = current_mtime.map(|m| (pane_id.clone(), m));
+        self.feed.rebuild();
     }
 }
 

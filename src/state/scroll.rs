@@ -16,7 +16,7 @@ impl ScrollState {
 #[derive(Debug, Clone, Default)]
 pub struct ScrollStates {
     pub panes: ScrollState,
-    pub git: ScrollState,
+    pub repos: ScrollState,
 }
 
 impl super::AppState {
@@ -135,9 +135,9 @@ mod tests {
         assert_eq!(states.panes.offset, 0);
         assert_eq!(states.panes.total_lines, 0);
         assert_eq!(states.panes.visible_height, 0);
-        assert_eq!(states.git.offset, 0);
-        assert_eq!(states.git.total_lines, 0);
-        assert_eq!(states.git.visible_height, 0);
+        assert_eq!(states.repos.offset, 0);
+        assert_eq!(states.repos.total_lines, 0);
+        assert_eq!(states.repos.visible_height, 0);
     }
 
     #[test]

@@ -92,7 +92,7 @@ pane disappears (`prune_pane_states_to_current_panes`).
 | `pane_states.map[...].task_progress` | Every 1s (refresh cycle) | Parsed from activity log — task list per pane |
 | `pane_states.map[...].task_dismissed_total` | On task completion | Tracks dismissed completed-task counts |
 | `pane_states.map[...].inactive_since` | On status change | Debounce timestamp (3s grace before hiding tasks) |
-| `pane_states.map[...].tab_pref` | On user tab switch | Remembered bottom tab choice per pane (cleared on relaunch) |
+| `pane_states.map[...]` | On every refresh | Per-pane runtime: task progress, ports, dead-scan streak, activity-log mtime |
 | `pane_states.map[...].task_progress_log_mtime` | Every 1s (refresh cycle) | mtime of the task-progress log last parsed; skips re-parsing when unchanged |
 
 Per-pane file-based state:
@@ -108,18 +108,17 @@ Per-pane file-based state:
 | `repo_groups` | Every 1s | Panes grouped by git repo root (built directly from `tmux::query_sessions()` output, not stored separately as a session list). The path fed into repo resolution is the launch anchor `@pane_launch_cwd` when set, falling back to the live cwd — so mid-session `cd`s into other checkouts don't regroup the pane |
 | `focus_state.focused_pane_id` | Every 1s, plus immediately on user-initiated pane jumps | Currently focused agent pane |
 | `focus_state.sidebar_focused` | Every 1s | Whether sidebar pane itself has focus |
-| `focus_state.focus` | On user input | UI focus: `Filter` / `Panes` / `ActivityLog`; input also triggers an immediate redraw so focus changes appear without waiting for the next poll tick |
+| `focus_state.focus` | On user input | UI focus: `Filter` / `Panes` / `BottomPanel`; input also triggers an immediate redraw so focus changes appear without waiting for the next poll tick |
 | `focus_state.prev_focused_pane_id` | Every 1s | Previous focused pane ID (for detecting focus changes) |
 | `now` | Every 1s | Current Unix epoch |
 | `scrolls.panes` | On user input / render | Agent list scroll position |
-| `scrolls.git` | On user input / render | Git status scroll position |
-| `activity.scroll` | On user input / render | Activity log scroll position |
-| `activity.entries` | Every 1s | Focused pane's activity entries (max 50) |
-| `activity.max_entries` | Once at startup | Max activity log entries to display |
-| `activity.log_cache` | Every 1s | `(focused_pane_id, mtime)` of the last-rendered activity log; skips re-reads when unchanged |
-| `git` | Every 2s (bg thread) | Branch, diff stats, ahead/behind, PR number |
+| `scrolls.repos` | On user input / render | Repos tab scroll position |
+| `feed.scroll` | On user input / render | Feed tab scroll position |
+| `feed.entries` | Every 1s | Merged cross-agent feed entries (max 100, noise-filtered) |
+| `feed.max_entries` | Once at startup | Max feed entries to display |
+| `feed.per_pane cache` | Every 1s | `(mtime, entries)` per pane; skips re-parsing unchanged logs |
 | `bottom_tab` | On user input / auto-switch | Current bottom panel tab |
-| `bottom_minimized` | On viewport resize / `m` key / cross-instance sync | Whether the Activity/Git panel is collapsed to just its tab header row. While `global.bottom_minimize_override` is `None` it follows the terminal height — auto-minimized when the viewport can't fit the configured panel plus `AUTO_MINIMIZE_MIN_LIST_ROWS` (10) list rows, so short viewports keep space for the agent list |
+| `bottom_minimized` | On viewport resize / `m` key / cross-instance sync | Whether the Feed/Repos panel is collapsed to just its tab header row. While `global.bottom_minimize_override` is `None` it follows the terminal height — auto-minimized when the viewport can't fit the configured panel plus `AUTO_MINIMIZE_MIN_LIST_ROWS` (10) list rows, so short viewports keep space for the agent list |
 | `global.bottom_minimize_override` | `m` key / `GlobalState::apply_all` | User's explicit minimize choice (`Some`), shared across all open sidebars via the `@sidebar_bottom_minimized` tmux global so the collapsed state is sticky everywhere and across sidebar relaunches. `None` (option unset) means every sidebar follows its own viewport |
 | `theme` | Once at startup | Color theme from tmux `@sidebar_color_*` variables |
 | `popup` | On user input / render | `PopupState` enum: `None` / `Repo { selected, area }` / `Notices { area }`. Enforces "at most one popup open" via the type system |
@@ -149,7 +148,7 @@ Per-pane file-based state:
 ├─────────────────────────────────────────────────────────────┤
 │  Every 1s (refresh cycle)                                   │
 │  repo_groups, focus_state.focused_pane_id,                  │
-│  layout.pane_row_targets, activity.entries,                 │
+│  layout.pane_row_targets, feed.entries,                     │
 │  pane_states.map[..].task_progress                          │
 ├─────────────────────────────────────────────────────────────┤
 │  Every 10s (port scan, background)                          │
@@ -163,8 +162,8 @@ Per-pane file-based state:
 │  notices.claude_settings_has_residual_hooks,                │
 │  notices.claude_plugin_notice, notices.missing_hook_groups  │
 ├─────────────────────────────────────────────────────────────┤
-│  Every 2s (git background thread)                           │
-│  git (branch, diff, ahead/behind, PR)                       │
+│  Every 10s TTL per path (git-info resolver worker)          │
+│  PaneGitInfo (repo root, branch, dirty, ahead/behind)       │
 ├─────────────────────────────────────────────────────────────┤
 │  On SIGUSR1 (tmux focus change)                             │
 │  GlobalState reloaded from tmux variables                   │
@@ -173,7 +172,7 @@ Per-pane file-based state:
 │  @pane_* tmux options, activity log files                   │
 ├─────────────────────────────────────────────────────────────┤
 │  On user input                                              │
-│  focus_state.focus, scrolls.*, activity.scroll, bottom_tab, │
+│  focus_state.focus, scrolls.*, feed.scroll, bottom_tab,     │
 │  GlobalState fields, popup (PopupState enum),               │
 │  timers.last_filter_click,                                  │
 │  immediate selection / active-pane redraw                   │
@@ -204,14 +203,14 @@ TUI main loop (app::run in app.rs; submodules app/{setup,workers,input,render})
     → query_sessions() (tmux.rs)     ← reads @pane_* via `tmux list-panes -a`
     → group_panes_by_repo() (group.rs)
     → rebuild_row_targets()          ← applies GlobalState filters
-    → refresh_activity_data()        ← reads /tmp activity logs
+    → refresh_activity_data()        ← rebuilds the cross-agent feed from runtime-dir logs
     → refresh_task_progress()        ← updates PaneRuntimeState.task_progress
     → refresh_port_data()            ← updates PaneRuntimeState.ports
     → scan_session_process_snapshot() ← detects dead panes and clears stale tmux metadata
                                           (teardown requires two consecutive dead scans;
                                            `dead_scan_streak` tracks the miss count)
                         ↓
-  → git_rx.try_recv()                ← receives GitData from background thread
+  → git_info_rx.try_recv()           ← receives path→PaneGitInfo from resolver worker
   → notices popup render/copy state  ← derived from AppState plugin fields
                         ↓
   → ui::draw() renders frame         ← reads all AppState fields
@@ -222,10 +221,10 @@ TUI main loop (app::run in app.rs; submodules app/{setup,workers,input,render})
 ## Key Types
 
 ```rust
-enum Focus { Filter, Panes, ActivityLog }
+enum Focus { Filter, Panes, BottomPanel }
 enum StatusFilter { All, Running, Background, Waiting, Idle, Error }
 enum RepoFilter { All, Repo(String) }
-enum BottomTab { Activity, GitStatus }
+enum BottomTab { Feed, Repos }
 enum PaneStatus { Running, Background, Waiting, Idle, Error, Unknown }
 enum AgentType { Claude, Codex, OpenCode, Unknown }
 enum PermissionMode { Default, Plan, AcceptEdits, Auto, DontAsk, BypassPermissions, Defer }
@@ -298,21 +297,22 @@ struct FocusState {
     prev_focused_pane_id: Option<String>,
 }
 
-/// Non-activity scrolls (the agent list and the git bottom panel).
-/// Activity's scroll lives inside `ActivityState` because it pairs
-/// with the activity entries buffer.
+/// Non-feed scrolls (the agent list and the Repos bottom panel).
+/// The Feed's scroll lives inside `FeedState` because it pairs
+/// with the merged entries buffer.
 struct ScrollStates {
     panes: ScrollState,
-    git: ScrollState,
+    repos: ScrollState,
 }
 
-/// Activity-log snapshot for the focused pane plus cache metadata so
-/// the polling tick can skip redundant file reads.
-struct ActivityState {
-    entries: Vec<ActivityEntry>,
+/// Merged cross-agent feed plus per-pane cache metadata so the
+/// polling tick only re-parses logs whose mtime changed.
+struct FeedState {
+    entries: Vec<FeedEntry>,
     scroll: ScrollState,
     max_entries: usize,
-    log_cache: Option<(String, SystemTime)>,
+    per_pane: HashMap<String, (Option<SystemTime>, Vec<FeedEntry>)>,
+    last_seen: usize,
 }
 
 /// Session-name map scanned by a background thread so the TUI thread
@@ -360,13 +360,12 @@ struct NoticesState {
 ## State Invariants
 
 1. `selected_pane_row` is clamped in `rebuild_row_targets()`: reset to 0 when `layout.pane_row_targets` is empty, otherwise clamped to the last valid index
-2. `activity.entries` contains only the focused pane's entries — cleared on focus change
-3. Tab preferences persist per pane in `PaneRuntimeState.tab_pref` and are restored on focus change. They vanish together with the rest of `PaneRuntimeState` when the pane is pruned, so a relaunched agent starts on the default tab
-4. Git fetching respects the `git_tab_active` flag — stops when tab is hidden
-5. Task progress has a 3-second debounce — prevents flicker when agent briefly pauses
-6. Global state syncs via tmux variables — enables coordination across sidebar instances
-7. Scroll positions are independent per panel — agents, activity, git each have their own `ScrollState`
-8. `layout.line_to_row` is rebuilt every frame — ensures accurate click routing
-9. Pane runtime state is pruned when the pane disappears — prevents stale per-pane ports, task progress, and tab preferences from surviving after the agent is gone
-10. At most one popup is open at a time — enforced structurally by the `PopupState` enum, not by parallel boolean flags
+2. `feed.entries` merges every agent pane's log (noise-filtered via `FeedKind::classify`), newest first, capped at `feed.max_entries` — per-pane caches re-parse only when the log mtime changes
+3. The Feed tab badge counts unseen attention entries (`Permission`/`Failure`/`Notification`); drawing the expanded Feed tab marks everything seen
+4. Task progress has a 3-second debounce — prevents flicker when agent briefly pauses
+5. Global state syncs via tmux variables — enables coordination across sidebar instances
+6. Scroll positions are independent per panel — agents, feed, repos each have their own `ScrollState`
+7. `layout.line_to_row` is rebuilt every frame — ensures accurate click routing
+8. Pane runtime state is pruned when the pane disappears — prevents stale per-pane ports and task progress from surviving after the agent is gone
+9. At most one popup is open at a time — enforced structurally by the `PopupState` enum, not by parallel boolean flags
 10. Hook-based cleanup wins when available; pid-based cleanup is a slower fallback that removes panes when the agent process is gone but the hook did not fire

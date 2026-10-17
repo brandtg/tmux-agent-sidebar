@@ -672,7 +672,7 @@ mod tests {
                     repo_root: Some("/tmp/myrepo".into()),
                     branch: None,
                     is_worktree: false,
-                    worktree_name: None,
+                    ..Default::default()
                 },
             )],
         }];

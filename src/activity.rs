@@ -11,31 +11,90 @@ pub struct ActivityEntry {
     pub label: String,
 }
 
-impl ActivityEntry {
-    pub fn tool_color_index(&self) -> u8 {
-        // MCP tool names arrive as `mcp__<server>__<tool>`; their variable
-        // suffixes would otherwise fall through to the gray fallback.
-        if self.tool.starts_with("mcp__") {
-            return 183; // soft violet
+/// Classification of an activity-log line for the cross-agent Feed tab.
+///
+/// The feed is deliberately sparse: it answers "what are the agents doing
+/// and what just happened" across all panes, so noisy read-only tools are
+/// dropped and lifecycle events (written by hooks under pseudo-tool names)
+/// are highlighted. Detail stays in the agent pane itself.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FeedKind {
+    /// File touched by an edit tool.
+    FileChange,
+    /// Task bookkeeping (create/update/list/get).
+    Task,
+    /// TaskUpdate reporting a completion.
+    TaskCompleted,
+    /// `Agent` tool call — a subagent was spawned.
+    Subagent,
+    /// Agent needs the user (asked a question / notification hook).
+    Notification,
+    /// Permission prompt or denial.
+    Permission,
+    /// Turn ended in failure.
+    Failure,
+}
+
+impl FeedKind {
+    /// Map a raw activity-log `tool` field to a feed kind. `None` means the
+    /// entry is filtered out of the feed (reads, greps, fetches, MCP calls,
+    /// shell noise — anything the agent pane itself already shows better).
+    ///
+    /// Pseudo-tool names (`Notify`, `Permission`, `Error`) are written by
+    /// hook handlers for lifecycle events that have no tool call behind
+    /// them; they are sidebar-internal and never produced by agents.
+    pub fn classify(tool: &str, label: &str) -> Option<FeedKind> {
+        match tool {
+            "Edit" | "Write" | "NotebookEdit" => Some(FeedKind::FileChange),
+            "TaskCreate" | "TaskGet" | "TaskList" | "TaskOutput" | "TaskStop" => {
+                Some(FeedKind::Task)
+            }
+            // Label format from the TaskUpdate hook: "completed #1",
+            // "in_progress #2". Completions get their own (greener) kind.
+            "TaskUpdate" if label.starts_with("completed") => Some(FeedKind::TaskCompleted),
+            "TaskUpdate" => Some(FeedKind::Task),
+            "Agent" => Some(FeedKind::Subagent),
+            "AskUserQuestion" | "Notify" => Some(FeedKind::Notification),
+            "Permission" => Some(FeedKind::Permission),
+            "Error" => Some(FeedKind::Failure),
+            _ => None,
         }
-        match self.tool.as_str() {
-            "Edit" | "Write" => 180,                  // soft yellow
-            "Bash" | "PowerShell" | "Monitor" => 114, // soft green (Bash-permission category)
-            "Read" | "Glob" | "Grep" => 110,          // soft blue
-            "Agent" => 181,                           // soft pink
-            "WebFetch" | "WebSearch" => 117,          // soft cyan
-            "Skill" => 218,                           // soft magenta
-            "TaskCreate" | "TaskUpdate" | "TaskGet" | "TaskList" | "TaskStop" | "TaskOutput" => 223, // soft gold
-            "SendMessage" | "TeamCreate" | "TeamDelete" => 182, // soft lavender
-            "LSP" => 146,                                       // soft teal
-            "NotebookEdit" => 180,                              // soft yellow (like Edit)
-            "AskUserQuestion" | "PushNotification" => 216,      // soft orange (attention)
-            "CronCreate" | "CronDelete" | "CronList" | "RemoteTrigger" => 151, // soft mint
-            "EnterPlanMode" | "ExitPlanMode" => 189,            // soft periwinkle
-            "EnterWorktree" | "ExitWorktree" => 179,            // soft bronze
-            "ToolSearch" => 250,                                // light gray
-            _ => 244,
+    }
+
+    /// 256-color index used for the kind's icon.
+    pub fn color_index(self) -> u8 {
+        match self {
+            FeedKind::FileChange => 180,    // soft yellow (edit)
+            FeedKind::Task => 223,          // soft gold
+            FeedKind::TaskCompleted => 114, // soft green
+            FeedKind::Subagent => 181,      // soft pink
+            FeedKind::Notification => 117,  // soft cyan
+            FeedKind::Permission => 216,    // soft orange (attention)
+            FeedKind::Failure => 174,       // soft red
         }
+    }
+
+    /// Glyph rendered before the feed label.
+    pub fn icon(self) -> &'static str {
+        match self {
+            FeedKind::FileChange => "✎",
+            FeedKind::Task => "+",
+            FeedKind::TaskCompleted => "✓",
+            FeedKind::Subagent => "❯",
+            FeedKind::Notification => "✳",
+            FeedKind::Permission => "⚠",
+            FeedKind::Failure => "✗",
+        }
+    }
+
+    /// Whether the kind warrants the unseen-events badge on the tab title.
+    /// Deliberately excludes routine work (edits, task churn) — the badge
+    /// means "something needs you", not "something happened".
+    pub fn is_attention(self) -> bool {
+        matches!(
+            self,
+            FeedKind::Notification | FeedKind::Permission | FeedKind::Failure
+        )
     }
 }
 
@@ -247,88 +306,6 @@ mod tests {
         assert_eq!(entries[2].tool, "Read");
 
         fs::remove_file(&path).unwrap();
-    }
-
-    #[test]
-    fn test_tool_color() {
-        let entry = ActivityEntry {
-            timestamp: "10:00".into(),
-            tool: "Edit".into(),
-            label: "test".into(),
-        };
-        assert_eq!(entry.tool_color_index(), 180);
-
-        let entry = ActivityEntry {
-            timestamp: "10:00".into(),
-            tool: "Bash".into(),
-            label: "test".into(),
-        };
-        assert_eq!(entry.tool_color_index(), 114);
-
-        let entry = ActivityEntry {
-            timestamp: "10:00".into(),
-            tool: "WebFetch".into(),
-            label: "example.com".into(),
-        };
-        assert_eq!(entry.tool_color_index(), 117);
-
-        let entry = ActivityEntry {
-            timestamp: "10:00".into(),
-            tool: "WebSearch".into(),
-            label: "rust tutorial".into(),
-        };
-        assert_eq!(entry.tool_color_index(), 117);
-
-        let entry = ActivityEntry {
-            timestamp: "10:00".into(),
-            tool: "ToolSearch".into(),
-            label: "".into(),
-        };
-        assert_eq!(entry.tool_color_index(), 250);
-
-        let entry = ActivityEntry {
-            timestamp: "10:00".into(),
-            tool: "PowerShell".into(),
-            label: "Get-Process".into(),
-        };
-        assert_eq!(entry.tool_color_index(), 114);
-
-        let entry = ActivityEntry {
-            timestamp: "10:00".into(),
-            tool: "Monitor".into(),
-            label: "tail -f server.log".into(),
-        };
-        assert_eq!(entry.tool_color_index(), 114);
-
-        let entry = ActivityEntry {
-            timestamp: "10:00".into(),
-            tool: "PushNotification".into(),
-            label: "Deploy complete".into(),
-        };
-        assert_eq!(entry.tool_color_index(), 216);
-
-        let entry = ActivityEntry {
-            timestamp: "10:00".into(),
-            tool: "UnknownTool".into(),
-            label: "".into(),
-        };
-        assert_eq!(entry.tool_color_index(), 244);
-
-        // Any `mcp__<server>__<tool>` name gets the MCP category color
-        // instead of falling through to the gray default.
-        let entry = ActivityEntry {
-            timestamp: "10:00".into(),
-            tool: "mcp__context7__query-docs".into(),
-            label: "".into(),
-        };
-        assert_eq!(entry.tool_color_index(), 183);
-
-        let entry = ActivityEntry {
-            timestamp: "10:00".into(),
-            tool: "mcp__chrome-devtools__navigate_page".into(),
-            label: "".into(),
-        };
-        assert_eq!(entry.tool_color_index(), 183);
     }
 
     #[test]

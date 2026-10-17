@@ -419,7 +419,7 @@ mod tests {
             repo_root: Some("/repo".into()),
             branch: Some("main".into()),
             is_worktree: false,
-            worktree_name: None,
+            ..Default::default()
         };
         assert_eq!(branch_label(&info), "main");
     }
@@ -431,7 +431,7 @@ mod tests {
             repo_root: Some("/repo".into()),
             branch: Some("fix/typo".into()),
             is_worktree: true,
-            worktree_name: None,
+            ..Default::default()
         };
         assert_eq!(branch_label(&info), "+ fix/typo");
     }

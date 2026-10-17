@@ -46,7 +46,7 @@ pub struct HyperlinkOverlay {
 /// Bundling them under `state.layout` makes the "frame-scoped vs
 /// persistent state" boundary visible at a glance, since the rest of
 /// `AppState` only holds data that survives across frames.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct FrameLayout {
     /// Filtered pane list, in the order the UI rendered them. Index
     /// matches `GlobalState::selected_pane_row`.
@@ -67,6 +67,26 @@ pub struct FrameLayout {
     /// OSC 8 hyperlink overlays the main loop writes after each frame so
     /// terminals can recognise PR numbers as clickable links.
     pub hyperlink_overlays: Vec<HyperlinkOverlay>,
+    /// Half-open terminal-column ranges of the bottom-panel tab labels,
+    /// `(feed, repos)`, recomputed every frame by `draw_bottom` — the
+    /// Feed label's width varies with the unseen-events badge. The
+    /// default matches the badge-less static title (`╭ Feed │ Repos`)
+    /// for hit-tests before the first frame is drawn.
+    pub bottom_tab_click_cols: ((usize, usize), (usize, usize)),
+}
+
+impl Default for FrameLayout {
+    fn default() -> Self {
+        Self {
+            pane_row_targets: Vec::new(),
+            line_to_row: Vec::new(),
+            repo_button_col: None,
+            repo_spawn_targets: Vec::new(),
+            spawn_remove_targets: Vec::new(),
+            hyperlink_overlays: Vec::new(),
+            bottom_tab_click_cols: ((2, 6), (9, 14)),
+        }
+    }
 }
 
 pub(super) fn point_in_rect(row: u16, col: u16, rect: ratatui::layout::Rect) -> bool {
