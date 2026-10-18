@@ -661,6 +661,8 @@ mod tests {
             worktree: WorktreeMetadata::default(),
             session_id: None,
             session_name: String::new(),
+            tmux_session: String::new(),
+            window_index: 0,
             sidebar_spawned: false,
             bg_shell_cmd: None,
             bg_shell_pid: None,

@@ -370,14 +370,22 @@ fn build_session_hierarchy(
                 panes: Vec::new(),
             });
 
-        if let Some(pane) = parse_pane_fields_with_processes(pane_fields, process_snapshot) {
-            if pane.agent == AgentType::Codex
-                && let Some(pid) = pane.pane_pid
-            {
-                codex_pids.push((window_id.to_string(), pane.pane_id.clone(), pid));
-            }
-            window.panes.push(pane);
+        let Some(mut pane) = parse_pane_fields_with_processes(pane_fields, process_snapshot) else {
+            continue;
+        };
+        // Window position for the session → window → pane row order
+        // (agents and the non-agent panes of their window render
+        // together). The prefix fields are parsed here rather than in
+        // `parse_pane_fields_with_processes`, which also receives the
+        // pane suffix alone from the test wrapper.
+        pane.tmux_session = session_name.to_string();
+        pane.window_index = parts[session_line_field::WINDOW_INDEX].parse().unwrap_or(0);
+        if pane.agent == AgentType::Codex
+            && let Some(pid) = pane.pane_pid
+        {
+            codex_pids.push((window_id.to_string(), pane.pane_id.clone(), pid));
         }
+        window.panes.push(pane);
     }
 
     (sessions_map, codex_pids)
@@ -564,6 +572,11 @@ fn parse_pane_fields_with_processes(
         // `@pane_session_title` (opencode) lands here directly; Claude's
         // `/rename` labels are applied later from the polled name map.
         session_name: parts[pane_line_field::SESSION_TITLE].to_string(),
+        // `build_session_hierarchy` overwrites these with the line's
+        // prefix fields; the defaults keep the test wrapper path
+        // (suffix-only lines) working.
+        tmux_session: String::new(),
+        window_index: 0,
         sidebar_spawned: parts[pane_line_field::SIDEBAR_SPAWNED] == "1",
         bg_shell_cmd: {
             let raw = &parts[pane_line_field::BG_CMD];
@@ -948,6 +961,8 @@ mod tests {
             worktree: WorktreeMetadata::default(),
             session_id: None,
             session_name: String::new(),
+            tmux_session: String::new(),
+            window_index: 0,
             sidebar_spawned: false,
             bg_shell_cmd: None,
             bg_shell_pid: None,
@@ -1841,6 +1856,8 @@ mod tests {
                     worktree: WorktreeMetadata::default(),
                     session_id: None,
                     session_name: String::new(),
+                    tmux_session: String::new(),
+                    window_index: 0,
                     sidebar_spawned: false,
                     bg_shell_cmd: None,
                     bg_shell_pid: None,
@@ -1969,6 +1986,29 @@ mod tests {
     }
 
     // ─── failure vs zero-panes ──────────────────────────────────────
+
+    #[test]
+    fn build_session_hierarchy_records_window_position() {
+        // Agent panes carry their tmux session and window index so the
+        // rendered rows can order session → window → pane alongside the
+        // non-agent rows of the same window.
+        let mut fields: Vec<&str> = vec![""; 33];
+        fields[0] = "primary";
+        fields[1] = "@7"; // window_id
+        fields[2] = "3"; // window_index
+        fields[9] = "opencode"; // @pane_agent
+        fields[11] = "/tmp"; // pane_current_path
+        fields[14] = "%4"; // pane_id
+        fields[19] = "77"; // pane_pid
+        fields[21] = "/tmp"; // @pane_cwd
+        let (sessions_map, _) = build_session_hierarchy(&fields.join("|"), None);
+        let sessions = finalize_sessions(sessions_map);
+
+        let pane = &sessions[0].windows[0].panes[0];
+        assert_eq!(pane.pane_id, "%4");
+        assert_eq!(pane.tmux_session, "primary");
+        assert_eq!(pane.window_index, 3);
+    }
 
     #[test]
     fn query_sessions_failure_is_not_zero_panes() {
