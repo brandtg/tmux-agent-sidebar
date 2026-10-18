@@ -296,6 +296,7 @@ mod tests {
         let mut state = AppState::new("%99".into());
         state.feed.entries = (0..10)
             .map(|i| crate::state::FeedEntry {
+                epoch: 0,
                 timestamp: format!("10:{i:02}"),
                 agent: AgentType::Claude,
                 kind: crate::activity::FeedKind::FileChange,

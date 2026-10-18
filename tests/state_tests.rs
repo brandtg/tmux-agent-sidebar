@@ -49,6 +49,7 @@ fn test_move_pane_selection_empty() {
 fn test_scroll_feed_bounds() {
     let mut state = make_state(vec![]);
     state.feed.entries = vec![tmux_agent_sidebar::state::FeedEntry {
+        epoch: 0,
         timestamp: "10:00".into(),
         agent: tmux_agent_sidebar::tmux::AgentType::Claude,
         kind: tmux_agent_sidebar::activity::FeedKind::FileChange,
@@ -389,6 +390,7 @@ fn test_scroll_bottom_dispatches_to_feed() {
     let mut state = make_state(vec![]);
     state.bottom_tab = BottomTab::Feed;
     state.feed.entries = vec![tmux_agent_sidebar::state::FeedEntry {
+        epoch: 0,
         timestamp: "10:00".into(),
         agent: tmux_agent_sidebar::tmux::AgentType::Claude,
         kind: tmux_agent_sidebar::activity::FeedKind::FileChange,

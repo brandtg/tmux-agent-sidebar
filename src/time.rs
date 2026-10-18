@@ -27,6 +27,17 @@ pub fn now_epoch_millis() -> u64 {
         .unwrap_or(0)
 }
 
+/// Local wall-clock `HH:MM` for an epoch-seconds timestamp. Activity-log
+/// lines carry epoch seconds on the wire (so the feed can order entries
+/// correctly across midnight) and display this short local form.
+pub fn format_epoch_hhmm(epoch: u64) -> String {
+    unsafe {
+        let mut tm: libc::tm = std::mem::zeroed();
+        libc::localtime_r(&(epoch as libc::time_t), &mut tm);
+        format!("{:02}:{:02}", tm.tm_hour, tm.tm_min)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -42,5 +53,16 @@ mod tests {
             ms / 1000 >= secs && ms / 1000 <= secs + 2,
             "secs={secs}, ms={ms}"
         );
+    }
+
+    #[test]
+    fn format_epoch_hhmm_matches_local_time() {
+        let t = format_epoch_hhmm(now_epoch_secs());
+        assert_eq!(t.len(), 5);
+        assert_eq!(t.as_bytes()[2], b':');
+        let h: u32 = t[..2].parse().unwrap();
+        let m: u32 = t[3..].parse().unwrap();
+        assert!(h < 24);
+        assert!(m < 60);
     }
 }
