@@ -117,11 +117,20 @@ pub(super) fn handle_activity_log(
             pane,
             tmux::PANE_WAIT_REASON,
         ));
+    // Hermes is excluded from the promotion below. Its turns are bracketed
+    // by `pre_llm_call` (→ running) and `post_llm_call` (→ idle), but its
+    // background forks (skill review, side questions) emit `post_tool_call`
+    // while the turn-end hook is deliberately suppressed upstream
+    // (`_apply_output_hooks` gates `post_llm_call` on `_persist_disabled`,
+    // which the fork sets) — so a fork's tool events would promote the idle
+    // pane to `running` with no stop ever coming, glowing forever until the
+    // next real turn ends. For every other agent a tool call really is
+    // unambiguous activity, so the inference stays.
     // An empty status is promoted too: a tool just ran in this pane, so the
     // agent is unambiguously active. The old empty-status guard left
     // bootstrapped OpenCode panes (claimed without a run-state event, e.g.
     // when two same-directory sessions raced for bindings) blue forever.
-    if current_status != "running" && !pending_action {
+    if agent_name != crate::tmux::HERMES_AGENT && current_status != "running" && !pending_action {
         set_status(pane, "running");
         // Any resume into `running` clears a stale wait reason, not just
         // resumes from `waiting`: `on_stop_failure` stores error text in
@@ -616,6 +625,66 @@ mod tests {
             tmux::test_mock::get(pane_id, tmux::PANE_STATUS).as_deref(),
             Some("running")
         );
+        fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn handle_activity_log_hermes_tool_event_does_not_promote_idle_pane() {
+        // Hermes background forks (skill review, side questions) emit
+        // `post_tool_call` while their turn-end `post_llm_call` is
+        // deliberately suppressed upstream — a fork's tool events on an
+        // idle pane must not flip it to `running` with no stop ever coming.
+        let _guard = tmux::test_mock::install();
+        let pane_id = "%HERMES_NO_PROMOTE";
+        let path = crate::activity::log_file_path(pane_id);
+        let _ = fs::remove_file(&path);
+        tmux::test_mock::set(pane_id, tmux::PANE_STATUS, "idle");
+
+        handle_activity_log(pane_id, "hermes", "skill_view", &json!({}), &Value::Null);
+
+        assert_eq!(
+            tmux::test_mock::get(pane_id, tmux::PANE_STATUS).as_deref(),
+            Some("idle"),
+            "fork tool events must not promote a hermes pane it will never stop"
+        );
+        assert!(
+            !tmux::test_mock::contains(pane_id, tmux::PANE_STARTED_AT),
+            "no run clock without a pre_llm_call bracket"
+        );
+        // The activity entry itself must still land.
+        assert!(fs::read_to_string(&path).unwrap().contains("|skill_view|"));
+        fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn handle_activity_log_hermes_tool_event_keeps_waiting_state() {
+        // Same gate, waiting variant: a hermes question prompt stays put
+        // when a fork's tool result lands (no promotion, no clears).
+        let _guard = tmux::test_mock::install();
+        let pane_id = "%HERMES_WAIT_KEEP";
+        let path = crate::activity::log_file_path(pane_id);
+        let _ = fs::remove_file(&path);
+        tmux::test_mock::set(pane_id, tmux::PANE_STATUS, "waiting");
+        tmux::test_mock::set(pane_id, tmux::PANE_WAIT_REASON, "question");
+        tmux::test_mock::set(pane_id, tmux::PANE_ATTENTION, "notification");
+
+        handle_activity_log(
+            pane_id,
+            "hermes",
+            "Read",
+            &json!({"file_path": "/a.rs"}),
+            &Value::Null,
+        );
+
+        assert_eq!(
+            tmux::test_mock::get(pane_id, tmux::PANE_STATUS).as_deref(),
+            Some("waiting")
+        );
+        assert_eq!(
+            tmux::test_mock::get(pane_id, tmux::PANE_WAIT_REASON).as_deref(),
+            Some("question")
+        );
+        assert!(tmux::test_mock::contains(pane_id, tmux::PANE_ATTENTION));
         fs::remove_file(&path).ok();
     }
 

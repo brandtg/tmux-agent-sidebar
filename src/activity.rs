@@ -33,6 +33,12 @@ pub enum FeedKind {
     Permission,
     /// Turn ended in failure.
     Failure,
+    /// Collapsed summary of a pane's routine tool calls (Bash, Read, Grep,
+    /// …) when nothing notable survived [`FeedKind::classify`]. Never
+    /// produced by hooks or `classify` — synthesized by the feed reader
+    /// (see `FeedState::read_pane`) so an agent that is active but only
+    /// running shell/search work still shows up in the feed.
+    Routine,
 }
 
 impl FeedKind {
@@ -43,6 +49,8 @@ impl FeedKind {
     /// Pseudo-tool names (`Notify`, `Permission`, `Error`) are written by
     /// hook handlers for lifecycle events that have no tool call behind
     /// them; they are sidebar-internal and never produced by agents.
+    /// [`FeedKind::Routine`] is likewise sidebar-internal but synthetic —
+    /// the feed reader builds it, so `classify` never returns it.
     pub fn classify(tool: &str, label: &str) -> Option<FeedKind> {
         match tool {
             "Edit" | "Write" | "NotebookEdit" => Some(FeedKind::FileChange),
@@ -71,6 +79,7 @@ impl FeedKind {
             FeedKind::Notification => 117,  // soft cyan
             FeedKind::Permission => 216,    // soft orange (attention)
             FeedKind::Failure => 174,       // soft red
+            FeedKind::Routine => 240,       // dim gray (collapsed noise)
         }
     }
 
@@ -84,6 +93,7 @@ impl FeedKind {
             FeedKind::Notification => "✳",
             FeedKind::Permission => "⚠",
             FeedKind::Failure => "✗",
+            FeedKind::Routine => "·",
         }
     }
 
@@ -95,6 +105,12 @@ impl FeedKind {
             self,
             FeedKind::Notification | FeedKind::Permission | FeedKind::Failure
         )
+    }
+
+    /// Whether this is the collapsed routine summary. Its label is rendered
+    /// in the muted text color — it is a footprint, not an event.
+    pub fn is_routine(self) -> bool {
+        matches!(self, FeedKind::Routine)
     }
 }
 

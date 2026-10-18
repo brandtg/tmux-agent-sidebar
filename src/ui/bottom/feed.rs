@@ -32,6 +32,13 @@ pub(super) fn draw_feed_content(frame: &mut Frame, state: &mut AppState, inner: 
         let agent_label = entry.agent.label();
         let agent_pad = AGENT_COL.saturating_sub(display_width(agent_label));
         let icon = entry.kind.icon();
+        // The collapsed routine summary is a footprint, not an event —
+        // render its label in the muted text color.
+        let label_color = if entry.kind.is_routine() {
+            theme.text_muted
+        } else {
+            theme.text_active
+        };
 
         // ts + two spaces + agent column + one space + icon + one space.
         let prefix_w = ts_dw + 2 + AGENT_COL + 1 + display_width(icon) + 1;
@@ -65,14 +72,14 @@ pub(super) fn draw_feed_content(frame: &mut Frame, state: &mut AppState, inner: 
             && !first.is_empty()
         {
             spans.push(Span::raw(" "));
-            spans.push(Span::styled(first, Style::default().fg(theme.text_active)));
+            spans.push(Span::styled(first, Style::default().fg(label_color)));
         }
         lines.push(Line::from(spans));
 
         for chunk in chunks {
             lines.push(Line::from(vec![Span::styled(
                 chunk,
-                Style::default().fg(theme.text_active),
+                Style::default().fg(label_color),
             )]));
         }
     }
