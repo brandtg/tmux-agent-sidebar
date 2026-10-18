@@ -87,6 +87,18 @@ pub(in crate::cli::hook) fn on_subagent_stop(pane: &str, agent_id: Option<&str>)
             None => {}
             Some(new_val) if new_val.is_empty() => {
                 tmux::unset_pane_option(pane, tmux::PANE_SUBAGENTS);
+                // The last async child finished. If the parent's Stop
+                // resolved to `background` because of these children
+                // (`on_stop` keeps the list for Hermes), nothing else
+                // will drop the pane — do it here, but only when no bg
+                // shell keeps `background` alive on its own. Direct
+                // option write, mirroring the sweep's downgrade so the
+                // `done` attention flag set at Stop survives.
+                if tmux::get_pane_option_value(pane, tmux::PANE_BG_CMD).is_empty()
+                    && tmux::get_pane_option_value(pane, tmux::PANE_STATUS) == "background"
+                {
+                    tmux::set_pane_option(pane, tmux::PANE_STATUS, "idle");
+                }
             }
             Some(new_val) => {
                 tmux::set_pane_option(pane, tmux::PANE_SUBAGENTS, &new_val);
@@ -204,6 +216,62 @@ mod tests {
         assert!(!tmux::test_mock::contains(pane, tmux::PANE_SUBAGENTS));
         on_subagent_start(pane, "Explore", Some(""));
         assert!(!tmux::test_mock::contains(pane, tmux::PANE_SUBAGENTS));
+    }
+
+    #[test]
+    fn on_subagent_stop_drains_last_async_child_to_idle() {
+        // Hermes async delegation: the parent's Stop resolved to
+        // `background` while children ran; when the last child stops, the
+        // pane must drop back to idle — nothing else will.
+        let _guard = tmux::test_mock::install();
+        let pane = "%SUB_DRAIN_IDLE";
+        tmux::test_mock::set(pane, tmux::PANE_SUBAGENTS, ",leaf:child-1");
+        tmux::test_mock::set(pane, tmux::PANE_STATUS, "background");
+
+        on_subagent_stop(pane, Some("child-1"));
+
+        assert!(!tmux::test_mock::contains(pane, tmux::PANE_SUBAGENTS));
+        assert_eq!(
+            tmux::test_mock::get(pane, tmux::PANE_STATUS).as_deref(),
+            Some("idle"),
+            "the last child finishing must drop the pane out of background"
+        );
+        fs::remove_file(subagent_lock_path(pane)).ok();
+    }
+
+    #[test]
+    fn on_subagent_stop_keeps_background_while_bg_shell_alive() {
+        let _guard = tmux::test_mock::install();
+        let pane = "%SUB_DRAIN_BG_ALIVE";
+        tmux::test_mock::set(pane, tmux::PANE_SUBAGENTS, ",leaf:child-1");
+        tmux::test_mock::set(pane, tmux::PANE_STATUS, "background");
+        tmux::test_mock::set(pane, tmux::PANE_BG_CMD, "npm run dev");
+
+        on_subagent_stop(pane, Some("child-1"));
+
+        assert_eq!(
+            tmux::test_mock::get(pane, tmux::PANE_STATUS).as_deref(),
+            Some("background"),
+            "a live bg shell still owns the background status"
+        );
+        fs::remove_file(subagent_lock_path(pane)).ok();
+    }
+
+    #[test]
+    fn on_subagent_stop_leaves_non_background_status_alone() {
+        let _guard = tmux::test_mock::install();
+        let pane = "%SUB_DRAIN_RUNNING";
+        tmux::test_mock::set(pane, tmux::PANE_SUBAGENTS, ",leaf:child-1");
+        tmux::test_mock::set(pane, tmux::PANE_STATUS, "running");
+
+        on_subagent_stop(pane, Some("child-1"));
+
+        assert_eq!(
+            tmux::test_mock::get(pane, tmux::PANE_STATUS).as_deref(),
+            Some("running"),
+            "the downgrade is scoped to the children-live background state"
+        );
+        fs::remove_file(subagent_lock_path(pane)).ok();
     }
 
     // ─── subagent-guarded SessionEnd regression test ────────────────

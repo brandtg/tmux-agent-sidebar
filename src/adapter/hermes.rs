@@ -128,9 +128,11 @@ impl HermesAdapter {
     ///   `terminal(background=true)` spawn is translated to Claude's
     ///   `run_in_background` flag, so when the turn ends (`post_llm_call` →
     ///   `stop`) the pane resolves to `background` instead of `idle` while
-    ///   the detached process is alive. Hermes spawns those processes
-    ///   detached (`start_new_session`) under a login shell, so the ps-tree
-    ///   liveness sweep sees the stored command until the process exits.
+    ///   the detached process is alive. The result's `pid` is stored in
+    ///   `@pane_bg_pid` so the liveness sweep tracks the process by PID —
+    ///   Hermes spawns detached (`start_new_session`) under a login shell,
+    ///   and orchestrator commands carry quotes and `$(…)` that the raw
+    ///   command string can never match against shell-expanded ps args.
     pub const HOOK_REGISTRATIONS: &'static [HookRegistration] = &[
         HookRegistration {
             trigger: "on_session_start",

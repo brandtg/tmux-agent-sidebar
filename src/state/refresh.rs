@@ -779,26 +779,52 @@ pub(crate) fn clear_dead_bg_shells(
                 let Some(cmd) = pane.bg_shell_cmd.as_deref() else {
                     continue;
                 };
-                if cmd == tmux::BG_CMD_PLACEHOLDER {
-                    continue;
-                }
-                let Some(pane_pid) = pane.pane_pid else {
-                    continue;
+                let alive = match pane.bg_shell_pid {
+                    // PID captured at spawn: liveness is a plain presence
+                    // check in the full-ps snapshot. This survives the
+                    // shell rewriting the command before exec — quote
+                    // stripping, `$(cat …)` substitution, arg reordering,
+                    // `bash -lic` wrappers — none of which the string
+                    // match below can see through (a Hermes orchestrator
+                    // spawn like `opencode run … "$(cat prompt.md)"` is
+                    // stored raw but runs expanded, so the substring never
+                    // matches and the pane was downgraded mid-run). The
+                    // snapshot is a fresh full `ps` scan each tick, so a
+                    // dead PID drops out and the sweep clears. Known
+                    // tradeoff: PID reuse by an unrelated process keeps
+                    // the pane `background` until that process exits —
+                    // rarer than the rewrite false-negative, and benign.
+                    Some(pid) => process_snapshot.info_by_pid.contains_key(&pid),
+                    None => {
+                        // No PID (e.g. Claude's `run_in_background`,
+                        // whose payload only carries a shell id): fall
+                        // back to matching the stored command against
+                        // ps lines in the pane's tree. A placeholder has
+                        // no verifiable process; leave it alone.
+                        if cmd == tmux::BG_CMD_PLACEHOLDER {
+                            continue;
+                        }
+                        let Some(pane_pid) = pane.pane_pid else {
+                            continue;
+                        };
+                        process_snapshot
+                            .command_lines_for_tree(&[pane_pid])
+                            .iter()
+                            .map(|line| sanitize_tmux_value(line))
+                            .any(|line| ps_line_matches_cmd(&line, cmd))
+                    }
                 };
-                if process_snapshot
-                    .command_lines_for_tree(&[pane_pid])
-                    .iter()
-                    .map(|line| sanitize_tmux_value(line))
-                    .any(|line| ps_line_matches_cmd(&line, cmd))
-                {
+                if alive {
                     continue;
                 }
                 tmux::unset_pane_option(&pane.pane_id, tmux::PANE_BG_CMD);
+                tmux::unset_pane_option(&pane.pane_id, tmux::PANE_BG_PID);
                 if pane.status == PaneStatus::Background {
                     tmux::set_pane_option(&pane.pane_id, tmux::PANE_STATUS, "idle");
                     pane.status = PaneStatus::Idle;
                 }
                 pane.bg_shell_cmd = None;
+                pane.bg_shell_pid = None;
             }
         }
     }
@@ -879,6 +905,7 @@ mod tests {
             session_name: String::new(),
             sidebar_spawned: false,
             bg_shell_cmd: None,
+            bg_shell_pid: None,
         }
     }
 
@@ -1074,6 +1101,127 @@ mod tests {
         clear_dead_bg_shells(&mut sessions, &snapshot);
 
         assert!(sessions[0].windows[0].panes[0].bg_shell_cmd.is_none());
+    }
+
+    fn pane_with_bg_pid(id: &str, cmd: &str, pid: Option<u32>, status: PaneStatus) -> PaneInfo {
+        let mut p = pane_with_bg(id, cmd, status);
+        p.bg_shell_pid = pid;
+        p
+    }
+
+    #[test]
+    fn clear_dead_bg_shells_retains_spawn_by_pid_despite_arg_rewrite() {
+        // Regression (Hermes orchestrator spawns): the stored command is
+        // the raw string with quotes and $(cat …); the shell execs the
+        // expanded form, so the ps line never contains the raw text and
+        // the old string match downgraded a live pane within seconds.
+        // With a PID tracked, liveness is a snapshot presence check.
+        let _guard = tmux::test_mock::install();
+        let pane_id = "%BG_PID_ALIVE";
+        tmux::test_mock::set(
+            pane_id,
+            tmux::PANE_BG_CMD,
+            "opencode run --title \"m13\" \"$(cat prompt.md)\" 2>&1",
+        );
+        tmux::test_mock::set(pane_id, tmux::PANE_BG_PID, "1126098");
+
+        let mut sessions = test_session(vec![pane_with_bg_pid(
+            pane_id,
+            "opencode run --title \"m13\" \"$(cat prompt.md)\" 2>&1",
+            Some(1126098),
+            PaneStatus::Background,
+        )]);
+        // The expanded ps args share no verbatim substring with the raw
+        // command beyond tokens, and the tree seed pid is absent — only
+        // the PID check can keep this alive.
+        let snapshot = process_snapshot(
+            "1126098 1 opencode opencode run --title m13-run2 --model spark/x # M13 run 2 of 2 — day/night shading\n",
+        );
+
+        clear_dead_bg_shells(&mut sessions, &snapshot);
+
+        assert_eq!(
+            sessions[0].windows[0].panes[0].bg_shell_cmd.as_deref(),
+            Some("opencode run --title \"m13\" \"$(cat prompt.md)\" 2>&1"),
+            "a live PID must keep the marker regardless of arg rewriting",
+        );
+        assert!(tmux::test_mock::contains(pane_id, tmux::PANE_BG_CMD));
+        assert!(tmux::test_mock::contains(pane_id, tmux::PANE_BG_PID));
+    }
+
+    #[test]
+    fn clear_dead_bg_shells_clears_when_tracked_pid_is_gone() {
+        let _guard = tmux::test_mock::install();
+        let pane_id = "%BG_PID_DEAD";
+        tmux::test_mock::set(pane_id, tmux::PANE_BG_CMD, "npm run dev");
+        tmux::test_mock::set(pane_id, tmux::PANE_BG_PID, "9999");
+        tmux::test_mock::set(pane_id, tmux::PANE_STATUS, "background");
+
+        let mut sessions = test_session(vec![pane_with_bg_pid(
+            pane_id,
+            "npm run dev",
+            Some(9999),
+            PaneStatus::Background,
+        )]);
+        // PID 9999 exited; the pane tree still runs an identical-looking
+        // command, but the tracked process is what matters.
+        let snapshot = process_snapshot("100 1 zsh /bin/zsh -c 'npm run dev' < /dev/null\n");
+
+        clear_dead_bg_shells(&mut sessions, &snapshot);
+
+        let pane = &sessions[0].windows[0].panes[0];
+        assert!(pane.bg_shell_cmd.is_none());
+        assert_eq!(pane.bg_shell_pid, None);
+        assert_eq!(pane.status, PaneStatus::Idle);
+        assert!(!tmux::test_mock::contains(pane_id, tmux::PANE_BG_CMD));
+        assert!(!tmux::test_mock::contains(pane_id, tmux::PANE_BG_PID));
+    }
+
+    #[test]
+    fn clear_dead_bg_shells_pid_governs_placeholder_cmd() {
+        // A placeholder command was previously unverifiable and skipped;
+        // with a PID the sweep can now prove it dead.
+        let _guard = tmux::test_mock::install();
+        let pane_id = "%BG_PID_PLACEHOLDER";
+        tmux::test_mock::set(pane_id, tmux::PANE_BG_CMD, tmux::BG_CMD_PLACEHOLDER);
+        tmux::test_mock::set(pane_id, tmux::PANE_BG_PID, "77");
+        tmux::test_mock::set(pane_id, tmux::PANE_STATUS, "background");
+
+        let mut sessions = test_session(vec![pane_with_bg_pid(
+            pane_id,
+            tmux::BG_CMD_PLACEHOLDER,
+            Some(77),
+            PaneStatus::Background,
+        )]);
+        let snapshot = process_snapshot("100 1 zsh /bin/zsh\n");
+
+        clear_dead_bg_shells(&mut sessions, &snapshot);
+
+        let pane = &sessions[0].windows[0].panes[0];
+        assert!(pane.bg_shell_cmd.is_none());
+        assert_eq!(pane.status, PaneStatus::Idle);
+    }
+
+    #[test]
+    fn clear_dead_bg_shells_pid_check_needs_no_pane_pid() {
+        // A detached spawn can outlive the shell that seeded the pane
+        // tree (or the pane pid can be unknown); the PID check must not
+        // depend on `pane_pid` the way the string fallback does.
+        let _guard = tmux::test_mock::install();
+        let pane_id = "%BG_PID_NO_PANE_PID";
+        tmux::test_mock::set(pane_id, tmux::PANE_BG_CMD, "opencode run");
+
+        let mut p = pane_with_bg_pid(pane_id, "opencode run", Some(500), PaneStatus::Background);
+        p.pane_pid = None;
+        let mut sessions = test_session(vec![p]);
+        let snapshot = process_snapshot("500 1 opencode opencode run --title x\n");
+
+        clear_dead_bg_shells(&mut sessions, &snapshot);
+
+        assert_eq!(
+            sessions[0].windows[0].panes[0].bg_shell_cmd.as_deref(),
+            Some("opencode run"),
+        );
     }
 
     // ─── ps_line_matches_cmd ────────────────────────────────────────

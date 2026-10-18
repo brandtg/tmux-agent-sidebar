@@ -108,6 +108,17 @@ pub(super) fn handle_activity_log(
             label.as_str()
         };
         tmux::set_pane_option(pane, tmux::PANE_BG_CMD, &sanitize_tmux_value(stored));
+        // Track the spawned process by PID when the result reports one
+        // (Hermes' `terminal(background=true)` returns `pid`). The ps
+        // sweep compares the stored raw command against shell-expanded
+        // ps args, which never match once the command uses quotes or
+        // `$(…)` substitution — a live PID is immune to that rewrite.
+        // Overwrite-or-clear every spawn: a stale PID from a previous
+        // shell must not keep the next command's marker alive.
+        match bg_pid_from_response(tool_response) {
+            Some(pid) => tmux::set_pane_option(pane, tmux::PANE_BG_PID, &pid.to_string()),
+            None => tmux::unset_pane_option(pane, tmux::PANE_BG_PID),
+        }
     }
 
     let current_status = tmux::get_pane_option_value(pane, tmux::PANE_STATUS);
@@ -175,6 +186,20 @@ fn is_background_bash(tool_name: &str, tool_input: &serde_json::Value) -> bool {
         && ["run_in_background", "runInBackground"]
             .iter()
             .any(|key| tool_input.get(key).and_then(|v| v.as_bool()) == Some(true))
+}
+
+/// Extract the spawned process's PID from a background-shell tool
+/// result. Hermes' `terminal(background=true)` returns
+/// `{"output": …, "pid": <int>, …}`; Claude's `run_in_background`
+/// payload carries only a string shell id, so callers fall back to the
+/// command-string sweep for those. Numeric strings are accepted in case
+/// an upstream serializes the id as text.
+fn bg_pid_from_response(response: &serde_json::Value) -> Option<u32> {
+    let pid = response.get("pid")?;
+    pid.as_u64()
+        .or_else(|| pid.as_str().and_then(|s| s.parse().ok()))
+        .and_then(|pid| u32::try_from(pid).ok())
+        .filter(|pid| *pid > 0)
 }
 
 #[cfg(test)]
@@ -428,6 +453,87 @@ mod tests {
         let stored = tmux::test_mock::get(pane_id, tmux::PANE_BG_CMD).unwrap_or_default();
         assert!(!stored.contains('|'));
         assert!(!stored.contains('\n'));
+        fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn handle_activity_log_stores_pid_from_spawn_result() {
+        // Hermes' `terminal(background=true)` result carries the spawned
+        // process's PID; storing it lets the sweep verify liveness by PID
+        // instead of matching the raw command against shell-expanded ps
+        // args (which quoting / `$(…)` substitution always break).
+        let _guard = tmux::test_mock::install();
+        let pane_id = "%CLI_BG_PID";
+        let path = crate::activity::log_file_path(pane_id);
+        let _ = fs::remove_file(&path);
+
+        handle_activity_log(
+            pane_id,
+            "hermes",
+            "Bash",
+            // Post-normalization shape (the Hermes adapter maps
+            // `terminal(background=true)` onto `run_in_background`).
+            &json!({"command": "opencode run --title \"m13\" \"$(cat prompt.md)\"", "run_in_background": true}),
+            &json!({"output": "Background process started", "pid": 1126098}),
+        );
+
+        assert_eq!(
+            tmux::test_mock::get(pane_id, tmux::PANE_BG_PID).as_deref(),
+            Some("1126098")
+        );
+        fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn handle_activity_log_accepts_string_pid_and_drops_stale_one() {
+        let _guard = tmux::test_mock::install();
+        let pane_id = "%CLI_BG_PID_STALE";
+        let path = crate::activity::log_file_path(pane_id);
+        let _ = fs::remove_file(&path);
+
+        handle_activity_log(
+            pane_id,
+            "hermes",
+            "Bash",
+            &json!({"command": "npm run dev", "run_in_background": true}),
+            &json!({"pid": "4242"}),
+        );
+        assert_eq!(
+            tmux::test_mock::get(pane_id, tmux::PANE_BG_PID).as_deref(),
+            Some("4242")
+        );
+
+        // The next spawn without a PID must not inherit the old one: the
+        // sweep would otherwise keep the new command alive on a dead PID.
+        handle_activity_log(
+            pane_id,
+            "claude",
+            "Bash",
+            &json!({"command": "cargo watch", "run_in_background": true}),
+            &Value::Null,
+        );
+        assert!(
+            !tmux::test_mock::contains(pane_id, tmux::PANE_BG_PID),
+            "stale PID must be cleared when the new spawn reports none"
+        );
+        fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn handle_activity_log_ignores_non_positive_pid() {
+        let _guard = tmux::test_mock::install();
+        let pane_id = "%CLI_BG_PID_INVALID";
+        let path = crate::activity::log_file_path(pane_id);
+        let _ = fs::remove_file(&path);
+
+        handle_activity_log(
+            pane_id,
+            "hermes",
+            "Bash",
+            &json!({"command": "npm run dev", "run_in_background": true}),
+            &json!({"pid": 0}),
+        );
+        assert!(!tmux::test_mock::contains(pane_id, tmux::PANE_BG_PID));
         fs::remove_file(&path).ok();
     }
 

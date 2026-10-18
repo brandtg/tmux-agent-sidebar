@@ -5,7 +5,7 @@ use crate::process::{ProcessSnapshot, command_basename};
 
 use super::commands::run_tmux;
 use super::options::{
-    PANE_AGENT, PANE_ATTENTION, PANE_BG_CMD, PANE_CWD, PANE_LAST_CMD, PANE_LAST_EXIT,
+    PANE_AGENT, PANE_ATTENTION, PANE_BG_CMD, PANE_BG_PID, PANE_CWD, PANE_LAST_CMD, PANE_LAST_EXIT,
     PANE_LAUNCH_CWD, PANE_NAME, PANE_PENDING_SESSION_END, PANE_PENDING_WORKTREE_REMOVE,
     PANE_PERMISSION_MODE, PANE_PROMPT, PANE_PROMPT_SOURCE, PANE_ROLE, PANE_SESSION_ID,
     PANE_SESSION_TITLE, PANE_STARTED_AT, PANE_STATUS, PANE_SUBAGENTS, PANE_WAIT_REASON,
@@ -63,9 +63,10 @@ pub(super) mod pane_line_field {
     pub const LAUNCH_CWD: usize = 23; // absolute 29 (@pane_launch_cwd)
     pub const LAST_CMD: usize = 24; // absolute 30 (@pane_last_cmd)
     pub const LAST_EXIT: usize = 25; // absolute 31 (@pane_last_exit)
+    pub const BG_PID: usize = 26; // absolute 32 (@pane_bg_pid)
     /// Minimum number of fields the pane-line suffix must contain.
     /// Equals `session_line_field::MIN_FIELDS - PANE_LINE_OFFSET`.
-    pub const MIN_FIELDS: usize = 26;
+    pub const MIN_FIELDS: usize = 27;
 }
 
 /// Build the tmux `list-panes -F` format used by [`query_sessions`].
@@ -105,6 +106,7 @@ fn pane_format() -> String {
         q(PANE_LAUNCH_CWD),
         q(PANE_LAST_CMD),
         q(PANE_LAST_EXIT),
+        q(PANE_BG_PID),
     ]
     .join("|")
 }
@@ -571,6 +573,7 @@ fn parse_pane_fields_with_processes(
                 Some(raw.to_string())
             }
         },
+        bg_shell_pid: parts[pane_line_field::BG_PID].parse().ok(),
     })
 }
 
@@ -610,6 +613,7 @@ fn clear_agent_pane_state(pane_id: &str) {
         PANE_PROMPT,
         PANE_PROMPT_SOURCE,
         PANE_BG_CMD,
+        PANE_BG_PID,
         PANE_SUBAGENTS,
         PANE_CWD,
         PANE_LAUNCH_CWD,
@@ -946,6 +950,7 @@ mod tests {
             session_name: String::new(),
             sidebar_spawned: false,
             bg_shell_cmd: None,
+            bg_shell_pid: None,
         }
     }
 
@@ -1209,6 +1214,7 @@ mod tests {
             "",                   // 23: @pane_launch_cwd
             "",                   // 24: @pane_last_cmd
             "",                   // 25: @pane_last_exit
+            "",                   // 26: @pane_bg_pid
         ]
     }
 
@@ -1837,6 +1843,7 @@ mod tests {
                     session_name: String::new(),
                     sidebar_spawned: false,
                     bg_shell_cmd: None,
+                    bg_shell_pid: None,
                 }],
             },
         );
@@ -1898,9 +1905,10 @@ mod tests {
         // 20:@pane_subagents|21:@pane_cwd|22:@pane_permission_mode|
         // 23:@pane_worktree_name|24:@pane_worktree_branch|
         // 25:@pane_session_id|26:@agent-sidebar-spawned|27:@pane_bg_cmd|
-        // 28:@pane_session_title|29:@pane_launch_cwd
-        // 32 total fields (MIN_FIELDS = 32)
-        let mut fields: Vec<&str> = vec![""; 32];
+        // 28:@pane_session_title|29:@pane_launch_cwd|30:@pane_last_cmd|
+        // 31:@pane_last_exit|32:@pane_bg_pid
+        // 33 total fields (MIN_FIELDS = 33)
+        let mut fields: Vec<&str> = vec![""; 33];
         fields[0] = session_name;
         fields[1] = "@0"; // window_id
         fields[3] = "win"; // window_name
@@ -2000,7 +2008,7 @@ mod tests {
                     role: &str,
                     path: &str| {
             format!(
-                "main|{window}|1|win|{window_active}|1|{active}|running||claude|@pane_name|{path}|zsh|{role}|{pane}|prompt|src|100|wait|{pid}|sub|cwd|default|wt|wtb|sid|0|bg|title|/launch||"
+                "main|{window}|1|win|{window_active}|1|{active}|running||claude|@pane_name|{path}|zsh|{role}|{pane}|prompt|src|100|wait|{pid}|sub|cwd|default|wt|wtb|sid|0|bg|title|/launch|||"
             )
         };
         let output = [
@@ -2027,7 +2035,7 @@ mod tests {
 
     #[test]
     fn snapshot_missing_sidebar_pane_yields_empty_window_panes() {
-        let line = "main|@1|1|win|1|1|1|running||claude|@pane_name|/agent|zsh||%1|prompt|src|100|wait|12|sub|cwd|default|wt|wtb|sid|0|bg|title|/launch||";
+        let line = "main|@1|1|win|1|1|1|running||claude|@pane_name|/agent|zsh||%1|prompt|src|100|wait|12|sub|cwd|default|wt|wtb|sid|0|bg|title|/launch|||";
         let snapshot = build_session_snapshot(line, "%99");
 
         assert!(!snapshot.sidebar_pane_active);
@@ -2050,7 +2058,7 @@ mod tests {
         path: &str,
     ) -> String {
         format!(
-            "main|{window_id}|1|editor|{window_active}|1|{pane_active}|running|||@pane_name|{path}|{command}||{pane_id}|prompt|src|100|wait|12345|sub|cwd|default|wt|wtb|sid|0|bg|title|/launch||"
+            "main|{window_id}|1|editor|{window_active}|1|{pane_active}|running|||@pane_name|{path}|{command}||{pane_id}|prompt|src|100|wait|12345|sub|cwd|default|wt|wtb|sid|0|bg|title|/launch|||"
         )
     }
 
@@ -2076,7 +2084,7 @@ mod tests {
         // The sidebar's own pane is excluded by role, but a non-agent
         // sibling in the same window is kept — a window the user jumps
         // into must still list its other panes.
-        let sidebar = "main|@5|1|editor|1|1|1|running|||@pane_name|/repo|zsh|sidebar|%9|prompt|src|100|wait|12345|sub|cwd|default|wt|wtb|sid|0|bg|title|/launch||";
+        let sidebar = "main|@5|1|editor|1|1|1|running|||@pane_name|/repo|zsh|sidebar|%9|prompt|src|100|wait|12345|sub|cwd|default|wt|wtb|sid|0|bg|title|/launch|||";
         let sibling = other_pane_line("@5", "1", "%7", "1", "zsh", "/repo");
 
         let panes = collect_other_panes(&format!("{sidebar}\n{sibling}"), None);

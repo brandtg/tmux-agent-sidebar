@@ -67,6 +67,12 @@ pub struct PaneInfo {
     /// pane status is `Background` (or `Running` with a backgrounded shell
     /// still alive) so the row body can surface the actual command.
     pub bg_shell_cmd: Option<String>,
+    /// PID of the process behind [`bg_shell_cmd`], when the spawn result
+    /// reported one. The bg-shell liveness sweep checks this first — a
+    /// plain presence test in the full-ps snapshot — and only falls back
+    /// to matching the raw command string against shell-expanded ps args
+    /// when absent (a match that quoting or `$(…)` substitution breaks).
+    pub bg_shell_pid: Option<u32>,
 }
 
 impl PaneInfo {
