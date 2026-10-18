@@ -69,6 +69,11 @@ pub enum PopupState {
         working: Option<&'static str>,
         area: Option<ratatui::layout::Rect>,
     },
+    /// Keyboard reference shown when the user presses `?`. Static
+    /// content — no per-popup data beyond the rendered rect.
+    Help {
+        area: Option<ratatui::layout::Rect>,
+    },
     /// Confirmation prompt shown when the user presses `x` on a
     /// spawn-created pane. `pane_id` feeds `worktree::remove`; `branch`
     /// is shown in the modal title; `warning` lines spell out what the
@@ -106,6 +111,12 @@ impl PopupState {
 
     pub fn set_notices_area(&mut self, rect: Option<ratatui::layout::Rect>) {
         if let Self::Notices { area } = self {
+            *area = rect;
+        }
+    }
+
+    pub fn set_help_area(&mut self, rect: Option<ratatui::layout::Rect>) {
+        if let Self::Help { area } = self {
             *area = rect;
         }
     }
@@ -211,6 +222,33 @@ impl AppState {
         self.popup = PopupState::None;
         self.notices.copy_targets.clear();
         self.notices.copied_at = None;
+    }
+
+    // ─── Help popup (? key) ────────────────────────────────────────────
+
+    pub fn is_help_open(&self) -> bool {
+        matches!(self.popup, PopupState::Help { .. })
+    }
+
+    pub fn help_popup_area(&self) -> Option<ratatui::layout::Rect> {
+        match &self.popup {
+            PopupState::Help { area } => *area,
+            _ => None,
+        }
+    }
+
+    pub fn toggle_help_popup(&mut self) {
+        if self.is_help_open() {
+            self.close_help_popup();
+        } else {
+            self.popup = PopupState::Help { area: None };
+        }
+    }
+
+    pub fn close_help_popup(&mut self) {
+        if self.is_help_open() {
+            self.popup = PopupState::None;
+        }
     }
 
     // ─── Spawn input popup (n key / + click) ─────────────────────────────
@@ -795,6 +833,32 @@ mod tests {
     fn notices_popup_area_none_when_closed() {
         let state = AppState::new("%99".into());
         assert!(state.notices_popup_area().is_none());
+    }
+
+    // ─── Help popup ────────────────────────────────────────────────
+
+    #[test]
+    fn toggle_help_popup_opens_then_closes() {
+        let mut state = AppState::new("%99".into());
+        state.toggle_help_popup();
+        assert!(state.is_help_open());
+        state.toggle_help_popup();
+        assert!(!state.is_help_open());
+    }
+
+    #[test]
+    fn close_help_popup_only_closes_the_help_popup() {
+        let mut state = AppState::new("%99".into());
+        state.popup = PopupState::Notices { area: None };
+        state.close_help_popup();
+        assert!(
+            matches!(state.popup, PopupState::Notices { .. }),
+            "a different popup must not be touched"
+        );
+
+        state.popup = PopupState::Help { area: None };
+        state.close_help_popup();
+        assert!(matches!(state.popup, PopupState::None));
     }
 
     // ─── Spawn input popup ───────────────────────────────────────────

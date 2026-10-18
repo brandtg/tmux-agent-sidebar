@@ -296,6 +296,15 @@ impl AppState {
             self.close_repo_popup();
             return;
         }
+        if self.is_help_open() {
+            if let Some(area) = self.help_popup_area()
+                && point_in_rect(row, col, area)
+            {
+                return;
+            }
+            self.close_help_popup();
+            return;
+        }
         if self.is_spawn_input_open() {
             if let Some(area) = self.spawn_input_popup_area()
                 && point_in_rect(row, col, area)

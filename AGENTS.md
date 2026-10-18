@@ -68,7 +68,7 @@ TUI event loop (app::run) → AppState::sync_global_state()
 
 See `docs/state-management.md` for the full scope/update-frequency table, per-pane tmux options, data flow, and key type definitions.
 
-Process-level detail not covered there: SIGUSR1 triggers an instant refresh on tmux pane focus change (handler in `src/main.rs` flips a shared `AtomicBool` that the `app::run` loop polls).
+Process-level detail not covered there: SIGUSR1 triggers an instant refresh on tmux pane/window focus change and client session changes (the after-select-pane/after-select-window/client-session-changed hooks all route through `notify-focus`, which signals every live sidebar pid in the affected window; handler in `src/main.rs` flips a shared `AtomicBool` that the `app::run` loop polls).
 
 ### Testing
 
@@ -88,7 +88,7 @@ cp target/release/tmux-agent-sidebar ~/.tmux/plugins/tmux-agent-sidebar/bin/tmux
 Two copy targets matter:
 
 - `bin/tmux-agent-sidebar` — what tmux actually runs. The entry script (`tmux-agent-sidebar.tmux`) prefers `bin/` over `target/release/` when both exist, so copying only `target/release/` leaves the old binary live (the classic "my change didn't do anything" trap).
-- `agent-sidebar.conf` — copy when hook registration or option defaults changed. Hooks are registered once at conf-load time, so a binary-only copy leaves stale wiring (e.g. the after-new-window hook) until the next plugin reload (prefix+R or `tmux source-file ~/.tmux/plugins/tmux-agent-sidebar/tmux-agent-sidebar.tmux`).
+- `agent-sidebar.conf` — copy when hook registration or option defaults changed. Hooks are registered once at conf-load time, so a binary-only copy leaves stale wiring (e.g. the after-new-window hook) until the next plugin reload (prefix+R or `bash ~/.tmux/plugins/tmux-agent-sidebar/tmux-agent-sidebar.tmux` — the entry script is bash and must be executed, not `tmux source-file`d; source-file cannot parse it).
 
 A third target exists for OpenCode: `.opencode/plugins/tmux-agent-sidebar.js` (the bridge the OpenCode TUIs load via `~/.config/opencode/plugins/tmux-agent-sidebar.js`). Copy it on every bridge change, then **restart the opencode service daemon** — the daemon imports the plugin module once and caches it for the process lifetime, so bridge edits are invisible until every OpenCode TUI has reconnected to a fresh `opencode serve --service`. This is a silent no-op trap: the Rust half of a bridge change takes effect immediately (the CLI is spawned fresh per hook event) while the routing half keeps running the old module, which makes a correct fix look broken. Verify which module the daemon has by comparing the deployed file's mtime against the daemon's start time (`ps -o lstart -p $(pgrep -f 'opencode.*serve --service')`).
 
