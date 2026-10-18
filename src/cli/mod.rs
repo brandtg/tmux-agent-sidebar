@@ -68,15 +68,6 @@ fn tmux_pane() -> String {
     std::env::var("TMUX_PANE").unwrap_or_default()
 }
 
-fn local_time_hhmm() -> String {
-    unsafe {
-        let now = libc::time(std::ptr::null_mut());
-        let mut tm: libc::tm = std::mem::zeroed();
-        libc::localtime_r(&now, &mut tm);
-        format!("{:02}:{:02}", tm.tm_hour, tm.tm_min)
-    }
-}
-
 fn set_status(pane: &str, status: &str) {
     if status == "clear" {
         tmux::unset_pane_option(pane, tmux::PANE_STATUS);
@@ -219,18 +210,5 @@ mod tests {
     #[test]
     fn sanitize_consecutive_pipes_and_newlines() {
         assert_eq!(sanitize_tmux_value("a||\n\nb"), "a    b");
-    }
-
-    // ─── local_time_hhmm tests ──────────────────────────────────────
-
-    #[test]
-    fn local_time_hhmm_format() {
-        let t = local_time_hhmm();
-        assert_eq!(t.len(), 5);
-        assert_eq!(t.as_bytes()[2], b':');
-        let h: u32 = t[..2].parse().unwrap();
-        let m: u32 = t[3..].parse().unwrap();
-        assert!(h < 24);
-        assert!(m < 60);
     }
 }

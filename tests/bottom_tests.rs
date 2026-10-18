@@ -8,8 +8,11 @@ use tmux_agent_sidebar::state::{BottomTab, FeedEntry, Focus};
 use tmux_agent_sidebar::tmux::{AgentType, PaneStatus, SessionInfo, WindowInfo};
 
 fn feed_entry(ts: &str, agent: AgentType, kind: FeedKind, label: &str) -> FeedEntry {
+    // `epoch: 0` — these tests set `feed.entries` directly and never run
+    // the merge sort; the display string is what the snapshots see.
     FeedEntry {
         timestamp: ts.into(),
+        epoch: 0,
         agent,
         kind,
         label: label.into(),

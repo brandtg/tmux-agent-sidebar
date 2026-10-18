@@ -3,10 +3,16 @@ use crate::tmux;
 use crate::tool_name::CanonicalTool;
 
 use super::super::label::extract_tool_label;
-use super::super::{local_time_hhmm, sanitize_tmux_value, set_status};
+use super::super::{sanitize_tmux_value, set_status};
 use super::context::pane_writes_allowed;
 
 /// Write a single activity entry to the log file and trim if needed.
+///
+/// Line format is `epoch-seconds|tool|label`. The epoch (not a bare
+/// `HH:MM`) is what lets the feed order entries correctly across
+/// midnight; the display time is derived on the reader side. Lines
+/// written before the epoch format (`HH:MM|tool|label`) still parse,
+/// with their date treated as unknown (they sort oldest).
 ///
 /// Hook events are independent processes appending to the same file, so
 /// the append and the trim run under an exclusive `flock`: the old
@@ -16,7 +22,7 @@ use super::context::pane_writes_allowed;
 pub(super) fn write_activity_entry(pane: &str, tool_name: &str, label: &str) {
     let log_path = crate::activity::log_file_path(pane);
     let label = sanitize_tmux_value(label);
-    let timestamp = local_time_hhmm();
+    let timestamp = now_epoch_secs().to_string();
     let line = format!("{}|{}|{}\n", timestamp, tool_name, label);
 
     use std::io::{Seek, SeekFrom, Write};
@@ -248,7 +254,12 @@ mod tests {
         assert_eq!(lines.len(), 2);
         assert!(lines[0].ends_with("|Read|main.rs"));
         assert!(lines[1].ends_with("|Edit|lib.rs"));
-        assert_eq!(lines[0].as_bytes()[2], b':');
+        // The timestamp field is epoch seconds on the wire (digits, not
+        // the old `HH:MM`); both lines must carry a plausible recent value.
+        for line in &lines {
+            let ts: u64 = line.split('|').next().unwrap().parse().unwrap();
+            assert!(ts >= 1_000_000_000, "expected a recent epoch, got {ts}");
+        }
         fs::remove_file(&path).ok();
     }
 

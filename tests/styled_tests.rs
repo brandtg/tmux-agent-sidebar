@@ -55,6 +55,7 @@ fn snapshot_feed_focused_styled() {
     state.focus_state.focus = Focus::BottomPanel;
     state.focus_state.sidebar_focused = true;
     state.feed.entries = vec![tmux_agent_sidebar::state::FeedEntry {
+        epoch: 0,
         timestamp: "14:32".into(),
         agent: tmux_agent_sidebar::tmux::AgentType::Claude,
         kind: tmux_agent_sidebar::activity::FeedKind::FileChange,
@@ -100,6 +101,7 @@ fn snapshot_feed_unfocused_styled() {
     state.focus_state.focus = Focus::Panes; // not the bottom panel
     state.focus_state.sidebar_focused = true;
     state.feed.entries = vec![tmux_agent_sidebar::state::FeedEntry {
+        epoch: 0,
         timestamp: "14:32".into(),
         agent: tmux_agent_sidebar::tmux::AgentType::Claude,
         kind: tmux_agent_sidebar::activity::FeedKind::FileChange,

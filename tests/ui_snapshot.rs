@@ -600,18 +600,21 @@ fn snapshot_feed_multiple_entries_ui() {
 
     state.feed.entries = vec![
         tmux_agent_sidebar::state::FeedEntry {
+            epoch: 0,
             timestamp: "14:32".into(),
             agent: tmux_agent_sidebar::tmux::AgentType::Claude,
             kind: tmux_agent_sidebar::activity::FeedKind::FileChange,
             label: "src/main.rs".into(),
         },
         tmux_agent_sidebar::state::FeedEntry {
+            epoch: 0,
             timestamp: "14:31".into(),
             agent: tmux_agent_sidebar::tmux::AgentType::Claude,
             kind: tmux_agent_sidebar::activity::FeedKind::Task,
             label: "cargo build".into(),
         },
         tmux_agent_sidebar::state::FeedEntry {
+            epoch: 0,
             timestamp: "14:30".into(),
             agent: tmux_agent_sidebar::tmux::AgentType::Claude,
             kind: tmux_agent_sidebar::activity::FeedKind::FileChange,
@@ -653,6 +656,7 @@ fn snapshot_feed_long_label_wraps_ui() {
     state.rebuild_row_targets();
 
     state.feed.entries = vec![tmux_agent_sidebar::state::FeedEntry {
+        epoch: 0,
         timestamp: "14:32".into(),
         agent: tmux_agent_sidebar::tmux::AgentType::Claude,
         kind: tmux_agent_sidebar::activity::FeedKind::FileChange,
@@ -1334,48 +1338,56 @@ fn snapshot_feed_all_kinds_ui() {
 
     state.feed.entries = vec![
         tmux_agent_sidebar::state::FeedEntry {
+            epoch: 0,
             timestamp: "14:07".into(),
             agent: tmux_agent_sidebar::tmux::AgentType::Claude,
             kind: tmux_agent_sidebar::activity::FeedKind::Subagent,
             label: "Explore codebase".into(),
         },
         tmux_agent_sidebar::state::FeedEntry {
+            epoch: 0,
             timestamp: "14:06".into(),
             agent: tmux_agent_sidebar::tmux::AgentType::Claude,
             kind: tmux_agent_sidebar::activity::FeedKind::TaskCompleted,
             label: "#3 commit".into(),
         },
         tmux_agent_sidebar::state::FeedEntry {
+            epoch: 0,
             timestamp: "14:05".into(),
             agent: tmux_agent_sidebar::tmux::AgentType::Claude,
             kind: tmux_agent_sidebar::activity::FeedKind::Task,
             label: "#4 Write docs".into(),
         },
         tmux_agent_sidebar::state::FeedEntry {
+            epoch: 0,
             timestamp: "14:04".into(),
             agent: tmux_agent_sidebar::tmux::AgentType::Claude,
             kind: tmux_agent_sidebar::activity::FeedKind::Permission,
             label: "needs permission: Bash".into(),
         },
         tmux_agent_sidebar::state::FeedEntry {
+            epoch: 0,
             timestamp: "14:03".into(),
             agent: tmux_agent_sidebar::tmux::AgentType::Codex,
             kind: tmux_agent_sidebar::activity::FeedKind::Failure,
             label: "exit 1".into(),
         },
         tmux_agent_sidebar::state::FeedEntry {
+            epoch: 0,
             timestamp: "14:02".into(),
             agent: tmux_agent_sidebar::tmux::AgentType::Claude,
             kind: tmux_agent_sidebar::activity::FeedKind::Notification,
             label: "waiting for input".into(),
         },
         tmux_agent_sidebar::state::FeedEntry {
+            epoch: 0,
             timestamp: "14:01".into(),
             agent: tmux_agent_sidebar::tmux::AgentType::Claude,
             kind: tmux_agent_sidebar::activity::FeedKind::FileChange,
             label: "new_file.rs".into(),
         },
         tmux_agent_sidebar::state::FeedEntry {
+            epoch: 0,
             timestamp: "14:00".into(),
             agent: tmux_agent_sidebar::tmux::AgentType::Codex,
             kind: tmux_agent_sidebar::activity::FeedKind::Routine,
@@ -1416,6 +1428,7 @@ fn snapshot_focus_feed_ui() {
     state.focus_state.focus = Focus::BottomPanel;
     state.focus_state.sidebar_focused = true;
     state.feed.entries = vec![tmux_agent_sidebar::state::FeedEntry {
+        epoch: 0,
         timestamp: "14:00".into(),
         agent: tmux_agent_sidebar::tmux::AgentType::Claude,
         kind: tmux_agent_sidebar::activity::FeedKind::FileChange,

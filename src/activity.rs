@@ -6,7 +6,13 @@ use crate::paths;
 
 #[derive(Debug, Clone)]
 pub struct ActivityEntry {
+    /// `HH:MM` for display: local time formatted from [`Self::epoch`] for
+    /// current lines, the raw `HH:MM` for legacy lines.
     pub timestamp: String,
+    /// Wall-clock epoch seconds the hook wrote the line at. `0` for legacy
+    /// lines written before the epoch format (date unknown) — such lines
+    /// sort before every epoch-stamped entry.
+    pub epoch: u64,
     pub tool: String,
     pub label: String,
 }
@@ -141,14 +147,27 @@ pub fn log_mtime(pane_id: &str) -> Option<std::time::SystemTime> {
 
 fn parse_entry(line: &str) -> Option<ActivityEntry> {
     let mut parts = line.splitn(3, '|');
-    let timestamp = parts.next()?.to_string();
+    let raw_ts = parts.next()?.to_string();
     let tool = parts.next()?.to_string();
     let label = parts.next().unwrap_or("").to_string();
-    Some(ActivityEntry {
-        timestamp,
-        tool,
-        label,
-    })
+    // Current lines carry epoch seconds; lines written before the epoch
+    // format carry a bare `HH:MM` with no date. Both stay parseable so
+    // pre-upgrade logs keep rendering; legacy entries sort as oldest
+    // (epoch 0) and show their raw time.
+    match raw_ts.parse::<u64>() {
+        Ok(epoch) => Some(ActivityEntry {
+            epoch,
+            timestamp: crate::time::format_epoch_hhmm(epoch),
+            tool,
+            label,
+        }),
+        Err(_) => Some(ActivityEntry {
+            epoch: 0,
+            timestamp: raw_ts,
+            tool,
+            label,
+        }),
+    }
 }
 
 pub fn read_activity_log(pane_id: &str, max_entries: usize) -> Vec<ActivityEntry> {
@@ -325,6 +344,48 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_activity_log_epoch_format() {
+        let pane_id = "%99_epoch_test";
+        let path = log_file_path(pane_id);
+        let mut f = fs::File::create(&path).unwrap();
+        // Epoch seconds on the wire; the reader formats them as local
+        // HH:MM for display and keeps the epoch for ordering.
+        writeln!(f, "{}|Read|package.json", 1_729_000_000).unwrap();
+        writeln!(f, "{}|Edit|sidebar.sh", 1_729_000_060).unwrap();
+        drop(f);
+
+        let entries = read_activity_log(pane_id, 50);
+
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].epoch, 1_729_000_060);
+        assert_eq!(entries[0].tool, "Edit");
+        assert_eq!(entries[0].timestamp.len(), 5);
+        assert_eq!(entries[0].timestamp.as_bytes()[2], b':');
+        assert_eq!(entries[1].epoch, 1_729_000_000);
+        assert_eq!(entries[1].tool, "Read");
+
+        fs::remove_file(&path).unwrap();
+    }
+
+    #[test]
+    fn test_parse_activity_log_legacy_hhmm_line() {
+        // A line written before the epoch format keeps its raw time and
+        // sorts as oldest (epoch 0) rather than failing to parse.
+        let pane_id = "%99_legacy_test";
+        let path = log_file_path(pane_id);
+        fs::write(&path, "23:37|Edit|run5-tail.md\n").unwrap();
+
+        let entries = read_activity_log(pane_id, 50);
+
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].epoch, 0);
+        assert_eq!(entries[0].timestamp, "23:37");
+        assert_eq!(entries[0].tool, "Edit");
+
+        fs::remove_file(&path).unwrap();
+    }
+
+    #[test]
     fn test_log_file_path() {
         let path = log_file_path("%5");
         // Directory depends on the environment ($XDG_RUNTIME_DIR when
@@ -381,6 +442,7 @@ mod tests {
     fn task_entry(tool: &str, label: &str) -> ActivityEntry {
         ActivityEntry {
             timestamp: "10:00".into(),
+            epoch: 0,
             tool: tool.into(),
             label: label.into(),
         }

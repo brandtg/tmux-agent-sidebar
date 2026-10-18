@@ -490,12 +490,19 @@ mod tests {
         let mut state = AppState::new("%99".into());
         let pane_a = "%201";
         let pane_b = "%202";
+        // Epoch-seconds wire format; the display `HH:MM` is derived from
+        // the epoch in the reader's local timezone, so assert on epochs
+        // and labels, not display strings.
         fs::write(
             crate::activity::log_file_path(pane_a),
-            "10:00|Read|noise\n10:04|Edit|a.rs\n",
+            "1729000000|Read|noise\n1729000240|Edit|a.rs\n",
         )
         .unwrap();
-        fs::write(crate::activity::log_file_path(pane_b), "10:02|Write|b.rs\n").unwrap();
+        fs::write(
+            crate::activity::log_file_path(pane_b),
+            "1729000120|Write|b.rs\n",
+        )
+        .unwrap();
         state.repo_groups = vec![RepoGroup {
             name: "test".into(),
             has_focus: true,
@@ -507,14 +514,10 @@ mod tests {
 
         state.refresh_feed();
 
-        // Read/Grep noise is filtered; the rest merges newest-first.
-        let stamps: Vec<String> = state
-            .feed
-            .entries
-            .iter()
-            .map(|e| e.timestamp.clone())
-            .collect();
-        assert_eq!(stamps, vec!["10:04", "10:02"]);
+        // Read/Grep noise is filtered; the rest merges newest-first by
+        // epoch.
+        let stamps: Vec<u64> = state.feed.entries.iter().map(|e| e.epoch).collect();
+        assert_eq!(stamps, vec![1729000240, 1729000120]);
         assert_eq!(state.feed.entries[0].label, "a.rs");
         assert_eq!(state.feed.entries[1].label, "b.rs");
 
