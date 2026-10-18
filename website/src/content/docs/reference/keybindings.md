@@ -18,8 +18,11 @@ description: Every shortcut in the sidebar, the worktree spawn modal, and the cl
 | `Tab`          | Cycle status filter                                           |
 | `Shift+Tab`    | Switch bottom panel tab (Feed ⇄ Repos); `←`/`→` also switch while the bottom panel has focus |
 | `c`            | Toggle compact view (one line per agent)                      |
+| `w`            | Toggle listing non-agent panes (long-running tasks)           |
 | `m`            | Minimize / expand the bottom panel (collapses to the tab header); shared across all open sidebars |
+| `?`            | Show keyboard reference popup                                 |
 | `Esc`          | Return focus or close the popup                               |
+| `q`            | Quit the sidebar                                              |
 
 ## Repo filter popup
 
@@ -39,6 +42,14 @@ Opened by clicking the `ⓘ` badge shown when hooks or plugin setup are missing.
 | Key   | Action          |
 | ----- | --------------- |
 | `Esc` | Close the popup |
+
+## Help popup
+
+Opened with `?`; a keyboard reference for the shortcuts above.
+
+| Key       | Action          |
+| --------- | --------------- |
+| `?` / `Esc` | Close the popup |
 
 ## Worktree
 

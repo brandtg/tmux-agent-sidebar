@@ -70,6 +70,13 @@ pub(super) fn handle_key_event(key: KeyEvent, state: &mut AppState) -> bool {
         }
         return true;
     }
+    if state.is_help_open() {
+        match key.code {
+            KeyCode::Esc | KeyCode::Char('?') => state.close_help_popup(),
+            _ => {}
+        }
+        return true;
+    }
     if state.is_spawn_input_open() {
         // While the spawn runs on its worker thread the modal must not
         // accept input: no double-submit, no edits the result would
@@ -165,23 +172,16 @@ pub(super) fn handle_key_event(key: KeyEvent, state: &mut AppState) -> bool {
                 state.open_remove_confirm();
             }
         }
+        // Toggles are self-evident in the pane list; `?` explains them.
         KeyCode::Char('c') => {
             state.global.toggle_compact();
-            state.set_flash(if state.global.compact {
-                "Compact view: on"
-            } else {
-                "Compact view: off"
-            });
         }
         KeyCode::Char('w') => {
             state.global.toggle_show_windows();
             state.rebuild_row_targets();
-            let count: usize = state.other_windows.values().map(Vec::len).sum();
-            if state.global.show_windows {
-                state.set_flash(format!("Windows: on ({count})"));
-            } else {
-                state.set_flash("Windows: off");
-            }
+        }
+        KeyCode::Char('?') => {
+            state.toggle_help_popup();
         }
         KeyCode::Char('m') => {
             if state.bottom_panel_height > 0 {
@@ -456,7 +456,7 @@ mod tests {
     }
 
     #[test]
-    fn c_toggles_compact_and_sets_flash() {
+    fn c_toggles_compact_without_flash() {
         // `c` is global (any non-modal focus) so the toggle works from the
         // activity log or filter bar too, not just Panes focus.
         let mut state = state_with_three_panes();
@@ -464,38 +464,57 @@ mod tests {
 
         handle_key_event(key(KeyCode::Char('c')), &mut state);
         assert!(state.global.compact);
-        assert_eq!(
-            state.flash.as_ref().map(|(text, _)| text.as_str()),
-            Some("Compact view: on")
-        );
+        assert!(state.flash.is_none(), "toggles set no feedback flash");
 
         handle_key_event(key(KeyCode::Char('c')), &mut state);
         assert!(!state.global.compact);
-        assert_eq!(
-            state.flash.as_ref().map(|(text, _)| text.as_str()),
-            Some("Compact view: off")
-        );
+        assert!(state.flash.is_none(), "toggles set no feedback flash");
     }
 
     #[test]
-    fn w_toggles_show_windows_and_sets_flash() {
-        // `w` is global like `c`, and the flash reports the window count.
+    fn w_toggles_show_windows_without_flash() {
+        // `w` is global like `c`.
         let mut state = state_with_three_panes();
         assert!(!state.global.show_windows);
 
         handle_key_event(key(KeyCode::Char('w')), &mut state);
         assert!(state.global.show_windows);
-        assert_eq!(
-            state.flash.as_ref().map(|(text, _)| text.as_str()),
-            Some("Windows: on (0)")
-        );
+        assert!(state.flash.is_none(), "toggles set no feedback flash");
 
         handle_key_event(key(KeyCode::Char('w')), &mut state);
         assert!(!state.global.show_windows);
-        assert_eq!(
-            state.flash.as_ref().map(|(text, _)| text.as_str()),
-            Some("Windows: off")
-        );
+        assert!(state.flash.is_none(), "toggles set no feedback flash");
+    }
+
+    #[test]
+    fn question_mark_toggles_help_popup() {
+        let mut state = state_with_three_panes();
+        assert!(!state.is_help_open());
+
+        handle_key_event(key(KeyCode::Char('?')), &mut state);
+        assert!(state.is_help_open());
+        assert!(!state.quit_requested, "? must not be read as anything else");
+
+        handle_key_event(key(KeyCode::Char('?')), &mut state);
+        assert!(!state.is_help_open());
+    }
+
+    #[test]
+    fn help_popup_owns_keyboard_until_dismissed() {
+        // While open the popup swallows every key; only Esc (or another
+        // `?`) closes it. `j` must not move the selection underneath.
+        let mut state = state_with_three_panes();
+        state.toggle_help_popup();
+
+        handle_key_event(key(KeyCode::Char('j')), &mut state);
+        assert!(state.is_help_open());
+        assert_eq!(state.global.selected_pane_row, 0);
+
+        handle_key_event(key(KeyCode::Char('q')), &mut state);
+        assert!(!state.quit_requested, "q must not quit through the popup");
+
+        handle_key_event(key(KeyCode::Esc), &mut state);
+        assert!(!state.is_help_open());
     }
 
     #[test]

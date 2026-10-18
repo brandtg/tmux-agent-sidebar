@@ -407,6 +407,29 @@ test("renames arrive via session.updated and child renames never take over the r
   }
 });
 
+// Regression: opencode 2.0.32 changed the title contract — `session.updated`
+// no longer fires at all; titles arrive as `session.renamed` with a flat
+// `data: { sessionID, title }`. The bridge must forward the flat title
+// (not `data.info?.title`) and drop a subagent session's rename.
+test("renames arrive via session.renamed (2.0.32) and child renames never take over the row", async () => {
+  const h = await loadPlugin();
+  try {
+    const plugin = await h.init("/repo");
+    await plugin.event({ type: "session.created", data: { sessionID: MAIN, title: "Main" } });
+    await plugin.event({ type: "session.renamed", data: { sessionID: CHILD, title: "child" } });
+    await plugin.event({ type: "session.renamed", data: { sessionID: MAIN, title: "Renamed" } });
+    await settle(h);
+
+    assert.deepEqual(h.events(), [
+      "session-start " + JSON.stringify({ cwd: "/repo", session_id: MAIN, source: "startup" }),
+      "session-title " + JSON.stringify({ cwd: "/repo", session_id: MAIN, title: "Main" }),
+      "session-title " + JSON.stringify({ cwd: "/repo", session_id: MAIN, title: "Renamed" }),
+    ]);
+  } finally {
+    h.dispose();
+  }
+});
+
 // Regression: OpenCode 2.0.x ends turns with session.execution.* — it never
 // publishes session.idle / session.status, so the v1-era mapping left the
 // pane running (solid status dot) forever after the agent finished.

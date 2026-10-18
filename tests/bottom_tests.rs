@@ -222,7 +222,7 @@ fn snapshot_repos_tab_ui() {
      ≡1  ●1  ◎0  ◐0  ○0  ✕0
     ⓘ                                    — ▾
     dotfiles                               +
-    ╭ Feed │ Repos  Shift+Tab: switch tab ─╮
+    ╭ Feed │ Repos ────────────────────────╮
     │dotfiles                              │
     │claude   main                 ↑2 ↓1 ~3│
     ╰──────────────────────────────────────╯
@@ -266,7 +266,7 @@ fn snapshot_repos_clean_row_has_no_right_cluster() {
     let output = render_to_string(&mut state, 40, 14);
     insta::assert_snapshot!(output, @"
      ≡1  ●1  ◎0  ◐0  ○0  ✕0
-    ╭ Feed │ Repos  Shift+Tab: switch tab ─╮
+    ╭ Feed │ Repos ────────────────────────╮
     │project                               │
     │claude   feature/feed                 │
     ╰──────────────────────────────────────╯
@@ -310,14 +310,16 @@ fn snapshot_repos_long_branch_flows_with_inline_stats() {
     state.focus_state.sidebar_focused = true;
 
     let output = render_to_string(&mut state, 40, 24);
-    insta::assert_snapshot!(output, @r" ≡1  ●1  ◎0  ◐0  ○0  ✕0
-ⓘ                                    — ▾
-project                                +
-╭ Feed │ Repos  Shift+Tab: switch tab ─╮
-│project                               │
-│claude   feature/sidebar/really-long-b│
-│ranch ↑2 ↓1 ~3                        │
-╰──────────────────────────────────────╯");
+    insta::assert_snapshot!(output, @"
+     ≡1  ●1  ◎0  ◐0  ○0  ✕0
+    ⓘ                                    — ▾
+    project                                +
+    ╭ Feed │ Repos ────────────────────────╮
+    │project                               │
+    │claude   feature/sidebar/really-long-b│
+    │ranch ↑2 ↓1 ~3                        │
+    ╰──────────────────────────────────────╯
+    ");
 }
 
 #[test]
@@ -412,7 +414,7 @@ fn snapshot_tab_bar_renders_both_labels() {
     let output = render_to_string(&mut state, 40, 14);
     insta::assert_snapshot!(output, @"
      ≡1  ●0  ◎0  ◐0  ○1  ✕0
-    ╭ Feed │ Repos  Shift+Tab: switch tab ─╮
+    ╭ Feed │ Repos ────────────────────────╮
     │10:32  claude   ✎ test                │
     ╰──────────────────────────────────────╯
     ");
@@ -445,7 +447,7 @@ fn test_pet_enabled_preserves_bottom_panel_border() {
       ▄ ▄
      ▄▀▀▀▄                             ████
       ▀ ▀                           ██ █  █
-    ╭ Feed │ Repos  Shift+Tab: switch tab ─╮
+    ╭ Feed │ Repos ────────────────────────╮
     │          No recent activity          │
     ╰──────────────────────────────────────╯
     ");

@@ -896,7 +896,7 @@ fn snapshot_long_branch_with_ports_ui() {
      ≡1  ●1  ◎0  ◐0  ○0  ✕0
     ⓘ                                    — ▾
     ┃   feature/sidebar/really…  :3000, 5173
-    ╭ Feed │ Repos  Shift+Tab: switch tab ─╮
+    ╭ Feed │ Repos ────────────────────────╮
     │          No recent activity          │
     ╰──────────────────────────────────────╯
     ");
@@ -2051,7 +2051,7 @@ fn snapshot_spawn_modal_compact_layout_in_short_agent_area() {
     ┃   │ claude                       │
         │ default                      │
         ╰──────────────────────────────╯
-    ╭ Feed │ Repos  Shift+Tab: switch tab ─╮
+    ╭ Feed │ Repos ────────────────────────╮
     │          No recent activity          │
     ╰──────────────────────────────────────╯
     ");
@@ -2072,7 +2072,7 @@ fn snapshot_spawn_modal_compact_layout_shows_inline_error() {
     ┃   │ default                      │
         │ name is empty                │
         ╰──────────────────────────────╯
-    ╭ Feed │ Repos  Shift+Tab: switch tab ─╮
+    ╭ Feed │ Repos ────────────────────────╮
     │          No recent activity          │
     ╰──────────────────────────────────────╯
     ");
@@ -2339,7 +2339,7 @@ fn snapshot_remove_confirm_modal_shows_three_options() {
                │2 unpushed                │
                │commits: reflog only      │
                ╰──────────────────────────╯
-    ╭ Feed │ Repos  Shift+Tab: switch tab ───────────╮
+    ╭ Feed │ Repos ──────────────────────────────────╮
     │               No recent activity               │
     ╰────────────────────────────────────────────────╯
     ");
@@ -2418,7 +2418,7 @@ fn snapshot_remove_confirm_modal_shows_inline_error() {
                │changes, untracked files  │
                │git: worktree has uncommi…│
                ╰──────────────────────────╯
-    ╭ Feed │ Repos  Shift+Tab: switch tab ───────────╮
+    ╭ Feed │ Repos ──────────────────────────────────╮
     │               No recent activity               │
     ╰────────────────────────────────────────────────╯
     ");

@@ -19,9 +19,11 @@
 // the v1-era `session.idle` / `session.status` events are still understood
 // (schema keeps them) but a 2.0.27 server never emits them, so
 // `session.idle` alone left panes running forever. Title changes arrive as
-// `session.updated` (data.info.title), and the question tool surfaces as
-// `question.asked` / `question.replied` / `question.rejected` with a flat
-// `data.sessionID`.
+// `session.renamed` (2.0.32+: flat `data: { sessionID, title }`; 2.0.32 no
+// longer emits `session.updated` at all — older daemons titled via
+// `session.updated` with `data.info.title`, still handled), and the
+// question tool surfaces as `question.asked` / `question.replied` /
+// `question.rejected` with a flat `data.sessionID`.
 //
 // The bus is server-global: a plugin instance receives events for every
 // session on the service, including other projects. `session.created`
@@ -489,8 +491,8 @@ export default {
 
     // sessionID → current title, for pane-title matching in resolvePaneId.
     // Served from the sessionProjects cache (session.created + renames via
-    // session.updated) with a one-time session.get fallback, so repeated
-    // resolutions never re-query.
+    // session.renamed / session.updated) with a one-time session.get
+    // fallback, so repeated resolutions never re-query.
     resolveSessionTitle = async (session_id) => {
       if (session_id === "") return "";
       const info = await lookupSessionInfo(session_id);
@@ -640,15 +642,22 @@ export default {
 
           // The session doc's title changes via renames — opencode
           // auto-titles from the first exchange and applies manual renames
-          // later. `session.updated` carries the refreshed session info;
-          // forward its current title so the sidebar tracks it. A
+          // later. 2.0.32+ daemons emit `session.renamed` with a flat
+          // `data: { sessionID, title }` and no longer fire
+          // `session.updated` at all; older daemons carry the refreshed
+          // session info on `session.updated` (`data.info.title`). Handle
+          // both shapes so titles track across daemon upgrades. A
           // subagent session's rename is dropped so it cannot take over
           // the row.
+          case "session.renamed":
           case "session.updated": {
             if (!isMainSession(session_id)) {
               continue;
             }
-            const title = data.info?.title ?? data.title;
+            const title =
+              event.type === "session.renamed"
+                ? data.title
+                : (data.info?.title ?? data.title);
             // Track renames so pane-title matching in resolvePaneId stays
             // current: the TUI restamps its pane title with the new title,
             // and the cached session record must follow.

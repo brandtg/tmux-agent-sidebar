@@ -25,13 +25,6 @@ fn render_centered(frame: &mut Frame, area: Rect, text: &str, color: Color) {
     frame.render_widget(paragraph, area);
 }
 
-/// Muted keyboard hint appended after the tab labels. The tabs look
-/// click-only, but `Shift+Tab` switches them from the keyboard at any
-/// time — the hint surfaces that where the user is looking. Dropped when
-/// the viewport is too narrow to fit it, and while minimized (the
-/// collapsed header stays bare by choice).
-const TAB_HINT: &str = "  Shift+Tab: switch tab";
-
 pub fn draw_bottom(frame: &mut Frame, state: &mut AppState, area: Rect) {
     let theme = &state.theme;
     let border_color = if state.focus_state.focus == Focus::BottomPanel {
@@ -43,7 +36,7 @@ pub fn draw_bottom(frame: &mut Frame, state: &mut AppState, area: Rect) {
     // Unseen attention-event count, resolved before rendering so the
     // minimized header row carries the badge too.
     let unseen = state.feed.unseen_attention_count();
-    let (tab_title, click_cols) = build_tab_title(state, unseen, area.width);
+    let (tab_title, click_cols) = build_tab_title(state, unseen);
     // Click ranges must track this frame's title (the badge changes the
     // Feed label's width); hit-testing reads the previous frame's values.
     state.layout.bottom_tab_click_cols = click_cols;
@@ -111,13 +104,11 @@ pub type TabClickCols = ((usize, usize), (usize, usize));
 
 /// Title spans for the two tab labels plus their clickable column ranges.
 ///
-/// Layout: `╭ Feed[ ·N] │ Repos[  hint] ╮` — the `╭ ` border span occupies
+/// Layout: `╭ Feed[ ·N] │ Repos ╮` — the `╭ ` border span occupies
 /// columns 0–1, so the Feed label starts at column 2. The ranges are
 /// stored on `layout` for `handle_bottom_tab_click`; they cannot be
 /// hardcoded because the Feed label's width varies with the unseen badge.
-/// `width` is the panel's total column count; the keyboard hint is only
-/// appended when it fits alongside the labels and the borders.
-fn build_tab_title(state: &AppState, unseen: usize, width: u16) -> (Line<'static>, TabClickCols) {
+fn build_tab_title(state: &AppState, unseen: usize) -> (Line<'static>, TabClickCols) {
     let theme = &state.theme;
     let feed_style = if state.bottom_tab == BottomTab::Feed {
         Style::default().fg(theme.accent)
@@ -145,26 +136,11 @@ fn build_tab_title(state: &AppState, unseen: usize, width: u16) -> (Line<'static
     let repos_text = "Repos";
     let repos_end = repos_start + display_width(repos_text);
 
-    let mut spans = vec![
+    let spans = vec![
         Span::styled(feed_text, feed_style),
         Span::styled(sep.to_string(), sep_style),
         Span::styled(repos_text.to_string(), repos_style),
     ];
-    // The hint rides after the labels, so the trailing fill (computed by
-    // the caller from the spans' total width) shrinks to compensate. It
-    // must fit alongside `╭ `, the labels, and the trailing ` ╮`.
-    let labels_dw = spans
-        .iter()
-        .map(|span| display_width(&span.content))
-        .sum::<usize>();
-    if !state.bottom_minimized
-        && (width as usize).saturating_sub(labels_dw + display_width(TAB_HINT)) >= 4
-    {
-        spans.push(Span::styled(
-            TAB_HINT.to_string(),
-            Style::default().fg(theme.text_muted),
-        ));
-    }
     (
         Line::from(spans),
         ((feed_start, feed_end), (repos_start, repos_end)),
@@ -179,37 +155,16 @@ mod tests {
     fn tab_title_ranges_track_badge_width() {
         let state = AppState::new("%99".into());
 
-        let (line, cols) = build_tab_title(&state, 0, 80);
+        let (line, cols) = build_tab_title(&state, 0);
         assert_eq!(line.spans[0].content, "Feed");
         assert_eq!(line.spans[1].content, " │ ");
         assert_eq!(line.spans[2].content, "Repos");
         // Title starts after `╭ `; "Feed" is 4 wide, sep 3, "Repos" 5.
         assert_eq!(cols, ((2, 6), (9, 14)));
 
-        let (line, cols) = build_tab_title(&state, 2, 80);
+        let (line, cols) = build_tab_title(&state, 2);
         assert_eq!(line.spans[0].content, "Feed ·2");
         // The badge widens the Feed label and shifts the Repos range.
         assert_eq!(cols, ((2, 9), (12, 17)));
-    }
-
-    #[test]
-    fn tab_title_carries_keyboard_hint_when_it_fits() {
-        let state = AppState::new("%99".into());
-
-        // Wide panel: the hint rides after the labels in muted style.
-        let (line, cols) = build_tab_title(&state, 0, 80);
-        assert_eq!(line.spans[3].content, TAB_HINT);
-        // Click ranges stop at the Repos label; the hint is a dead zone.
-        assert_eq!(cols, ((2, 6), (9, 14)));
-
-        // Narrow panel: the hint is dropped rather than crowding the row.
-        let (line, _) = build_tab_title(&state, 0, 28);
-        assert_eq!(line.spans.len(), 3, "hint must not fit at 28 columns");
-
-        // Minimized header stays bare even when there is room.
-        let mut state = AppState::new("%99".into());
-        state.bottom_minimized = true;
-        let (line, _) = build_tab_title(&state, 0, 80);
-        assert_eq!(line.spans.len(), 3);
     }
 }

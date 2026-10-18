@@ -482,7 +482,7 @@ fn repo_popup_renders_repo_names_when_open() {
     backend                     └──────────┘
     ┃ ○ claude
         Waiting for prompt…
-    ╭ Feed │ Repos  Shift+Tab: switch tab ─╮
+    ╭ Feed │ Repos ────────────────────────╮
     │          No recent activity          │
     ╰──────────────────────────────────────╯
     ");
@@ -531,7 +531,7 @@ fn repo_popup_highlights_selected_entry_with_background() {
     ┃[fg:153] ○[fg:110] [fg:174]c[fg:174]l[fg:174]a[fg:174]u[fg:174]d[fg:174]e[fg:174]
        [fg:255] [fg:255]W[fg:255]a[fg:255]i[fg:255]t[fg:255]i[fg:255]n[fg:255]g[fg:255] [fg:255]f[fg:255]o[fg:255]r[fg:255] [fg:255]p[fg:255]r[fg:255]o[fg:255]m[fg:255]p[fg:255]t[fg:255]…[fg:255]
 
-    ╭[fg:240] [fg:240]F[fg:153]e[fg:153]e[fg:153]d[fg:153] [fg:240]│[fg:240] [fg:240]R[fg:252]e[fg:252]p[fg:252]o[fg:252]s[fg:252] [fg:252] [fg:252]S[fg:252]h[fg:252]i[fg:252]f[fg:252]t[fg:252]+[fg:252]T[fg:252]a[fg:252]b[fg:252]:[fg:252] [fg:252]s[fg:252]w[fg:252]i[fg:252]t[fg:252]c[fg:252]h[fg:252] [fg:252]t[fg:252]a[fg:252]b[fg:252] [fg:240]─[fg:240]╮[fg:240]
+    ╭[fg:240] [fg:240]F[fg:153]e[fg:153]e[fg:153]d[fg:153] [fg:240]│[fg:240] [fg:240]R[fg:252]e[fg:252]p[fg:252]o[fg:252]s[fg:252] [fg:240]─[fg:240]─[fg:240]─[fg:240]─[fg:240]─[fg:240]─[fg:240]─[fg:240]─[fg:240]─[fg:240]─[fg:240]─[fg:240]─[fg:240]─[fg:240]─[fg:240]─[fg:240]─[fg:240]─[fg:240]─[fg:240]─[fg:240]─[fg:240]─[fg:240]─[fg:240]─[fg:240]─[fg:240]╮[fg:240]
     │[fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240]│[fg:240]
     │[fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240]│[fg:240]
     │[fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240] [fg:240]│[fg:240]
