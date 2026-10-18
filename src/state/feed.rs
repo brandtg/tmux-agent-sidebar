@@ -104,19 +104,48 @@ impl FeedState {
         self.last_seen = self.entries.len();
     }
 
+    /// Parse a pane's log into feed entries: classified notable events, or
+    /// — when the pane did only routine work (shell, reads, searches) — a
+    /// single collapsed `Routine` entry so the agent stays visible in the
+    /// feed instead of silently vanishing behind the sparse filter. The
+    /// collapsed entry is stamped with the newest dropped entry's
+    /// timestamp; `read_activity_log` returns newest-first, so that is the
+    /// first drop seen here.
     fn read_pane(pane_id: &str, agent: &AgentType) -> Vec<FeedEntry> {
-        activity::read_activity_log(pane_id, 0)
-            .into_iter()
-            .filter(|entry| entry.tool != activity::TASK_RESET_MARKER)
-            .filter_map(|entry| {
-                FeedKind::classify(&entry.tool, &entry.label).map(|kind| FeedEntry {
+        let mut entries = Vec::new();
+        let mut routine_count = 0usize;
+        let mut routine_timestamp = String::new();
+        for entry in activity::read_activity_log(pane_id, 0) {
+            if entry.tool == activity::TASK_RESET_MARKER {
+                continue;
+            }
+            match FeedKind::classify(&entry.tool, &entry.label) {
+                Some(kind) => entries.push(FeedEntry {
                     timestamp: entry.timestamp,
                     agent: agent.clone(),
                     kind,
                     label: entry.label,
-                })
-            })
-            .collect()
+                }),
+                None => {
+                    routine_count += 1;
+                    if routine_timestamp.is_empty() {
+                        routine_timestamp = entry.timestamp;
+                    }
+                }
+            }
+        }
+        if entries.is_empty() && routine_count > 0 {
+            entries.push(FeedEntry {
+                timestamp: routine_timestamp,
+                agent: agent.clone(),
+                kind: FeedKind::Routine,
+                label: format!(
+                    "{routine_count} tool call{}",
+                    if routine_count == 1 { "" } else { "s" }
+                ),
+            });
+        }
+        entries
     }
 }
 
@@ -129,6 +158,7 @@ impl Default for FeedState {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
 
     fn entry(ts: &str, kind: FeedKind, label: &str) -> FeedEntry {
         FeedEntry {
@@ -137,6 +167,78 @@ mod tests {
             kind,
             label: label.into(),
         }
+    }
+
+    // ─── read_pane ───────────────────────────────────────────────────
+
+    #[test]
+    fn read_pane_collapses_routine_only_log_into_one_entry() {
+        let pane_id = "%FEED_ROUTINE_ONLY";
+        let path = crate::activity::log_file_path(pane_id);
+        let _ = fs::remove_file(&path);
+        fs::write(
+            &path,
+            "10:00|Bash|cargo build\n10:01|Read|main.rs\n10:02|Grep|pattern\n",
+        )
+        .unwrap();
+
+        let entries = FeedState::read_pane(pane_id, &AgentType::Claude);
+
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].kind, FeedKind::Routine);
+        assert_eq!(entries[0].label, "3 tool calls");
+        // Newest dropped entry's timestamp, not the oldest's.
+        assert_eq!(entries[0].timestamp, "10:02");
+        assert_eq!(entries[0].agent, AgentType::Claude);
+
+        fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn read_pane_singular_label_for_one_routine_call() {
+        let pane_id = "%FEED_ROUTINE_ONE";
+        let path = crate::activity::log_file_path(pane_id);
+        let _ = fs::remove_file(&path);
+        fs::write(&path, "10:00|Bash|ls\n").unwrap();
+
+        let entries = FeedState::read_pane(pane_id, &AgentType::Claude);
+
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].label, "1 tool call");
+
+        fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn read_pane_notable_entries_suppress_the_summary() {
+        let pane_id = "%FEED_MIXED";
+        let path = crate::activity::log_file_path(pane_id);
+        let _ = fs::remove_file(&path);
+        fs::write(&path, "10:00|Bash|cargo test\n10:01|Edit|lib.rs\n").unwrap();
+
+        let entries = FeedState::read_pane(pane_id, &AgentType::Claude);
+
+        // The pane already has a notable row; the routine calls stay
+        // invisible rather than appending a redundant summary.
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].kind, FeedKind::FileChange);
+        assert_eq!(entries[0].label, "lib.rs");
+
+        fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn read_pane_ignores_marker_only_log() {
+        let pane_id = "%FEED_MARKER_ONLY";
+        let path = crate::activity::log_file_path(pane_id);
+        let _ = fs::remove_file(&path);
+        fs::write(&path, "10:00|__task_reset__|\n").unwrap();
+
+        let entries = FeedState::read_pane(pane_id, &AgentType::Claude);
+
+        assert!(entries.is_empty());
+
+        fs::remove_file(&path).ok();
     }
 
     // ─── unseen badge ────────────────────────────────────────────────

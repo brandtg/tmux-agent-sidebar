@@ -1375,6 +1375,12 @@ fn snapshot_feed_all_kinds_ui() {
             kind: tmux_agent_sidebar::activity::FeedKind::FileChange,
             label: "new_file.rs".into(),
         },
+        tmux_agent_sidebar::state::FeedEntry {
+            timestamp: "14:00".into(),
+            agent: tmux_agent_sidebar::tmux::AgentType::Codex,
+            kind: tmux_agent_sidebar::activity::FeedKind::Routine,
+            label: "22 tool calls".into(),
+        },
     ];
 
     let output = render_to_string(&mut state, 28, 25);
@@ -1397,6 +1403,8 @@ fn snapshot_feed_all_kinds_ui() {
     │for input                 │
     │14:01  claude   ✎ new_file│
     │.rs                       │
+    │14:00  codex    · 22 tool │
+    │calls                     │
     ╰──────────────────────────╯
     ");
 }
