@@ -57,26 +57,38 @@ pub(in crate::cli::hook) fn on_stop(
         tmux::set_pane_option(pane, tmux::PANE_PROMPT_SOURCE, "response");
     }
     let bg_shell_live = !tmux::get_pane_option_value(pane, tmux::PANE_BG_CMD).is_empty();
-    // `Stop` is emitted for the parent turn, and Claude Code `Task` subagents
-    // are synchronous: once the parent reaches Stop, no child should still be
-    // running. Treat any leftover list as stale state from a missed or
-    // mismatched SubagentStop and clear it before `mark_task_reset`, whose
-    // guard intentionally skips writes while subagents are active.
-    tmux::unset_pane_option(pane, tmux::PANE_SUBAGENTS);
-    if bg_shell_live {
+    // Claude Code `Task` subagents are synchronous: once the parent
+    // reaches Stop, no child should still be running, so any leftover
+    // list is stale state from a missed or mismatched SubagentStop and
+    // is cleared before `mark_task_reset`, whose guard intentionally
+    // skips writes while subagents are active.
+    //
+    // Hermes `delegate_task` has an async/background mode: the parent's
+    // turn can end while dispatched children still run, and each child
+    // removes itself via `subagent_stop` when it finishes. For Hermes a
+    // non-empty list is therefore live work, not stale state — keep it
+    // and let the final `subagent_stop` drain it (dropping the pane back
+    // to idle), so the pane doesn't flash idle while children run.
+    let subagents = tmux::get_pane_option_value(pane, tmux::PANE_SUBAGENTS);
+    let children_live = ctx.agent == crate::tmux::HERMES_AGENT && !subagents.is_empty();
+    if !children_live {
+        tmux::unset_pane_option(pane, tmux::PANE_SUBAGENTS);
+    }
+    let bg_work_live = bg_shell_live || children_live;
+    if bg_work_live {
         tmux::unset_pane_option(pane, tmux::PANE_WAIT_REASON);
     } else {
         clear_run_state(pane);
     }
     mark_task_reset(pane);
-    set_status(pane, resolve_stop_status(bg_shell_live));
+    set_status(pane, resolve_stop_status(bg_work_live));
     // Flag the finished turn for attention AFTER set_status, which
     // clears attention for `idle`. The sidebar clears the flag when the
     // user focuses the pane; a new prompt / activity clears it on the
     // hook side.
     set_attention(pane, "done");
 
-    if !bg_shell_live {
+    if !bg_work_live {
         let run_id = notification_run_id(pane);
         // Skip the generic Stop notification if an explicit TaskCompleted
         // stamp from the current run has already fired — otherwise Claude
@@ -450,6 +462,51 @@ mod tests {
         assert_eq!(
             tmux::test_mock::get(pane, tmux::PANE_STATUS).as_deref(),
             Some("idle")
+        );
+    }
+
+    #[test]
+    fn on_stop_keeps_async_subagents_for_hermes_and_resolves_background() {
+        // Hermes `delegate_task` background mode: children outlive the
+        // parent's turn and remove themselves via SubagentStop. The list
+        // is live work, not stale state — it must survive the Stop and
+        // the pane must resolve to `background`, not idle.
+        let _guard = tmux::test_mock::install();
+        let pane = "%STOP_HERMES_CHILDREN";
+        tmux::test_mock::set(pane, tmux::PANE_SUBAGENTS, "leaf:child-1");
+        tmux::test_mock::set(pane, tmux::PANE_STARTED_AT, "123");
+        let ctx = AgentContext {
+            agent: "hermes",
+            cwd: "/repo",
+            permission_mode: "default",
+            worktree: &None,
+            session_id: &None,
+        };
+
+        on_stop(
+            pane,
+            &ctx,
+            "",
+            None,
+            &desktop_notification::DesktopNotificationSettings {
+                enabled: false,
+                events: Default::default(),
+            },
+        );
+
+        assert_eq!(
+            tmux::test_mock::get(pane, tmux::PANE_SUBAGENTS).as_deref(),
+            Some("leaf:child-1"),
+            "async children must survive the parent Stop so the final SubagentStop can drain them"
+        );
+        assert_eq!(
+            tmux::test_mock::get(pane, tmux::PANE_STATUS).as_deref(),
+            Some("background")
+        );
+        assert_eq!(
+            tmux::test_mock::get(pane, tmux::PANE_STARTED_AT).as_deref(),
+            Some("123"),
+            "live children keep the run clock, mirroring the bg-shell path"
         );
     }
 

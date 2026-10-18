@@ -36,6 +36,13 @@ pub const PANE_BG_CMD: &str = "@pane_bg_cmd";
 /// command. The ps liveness sweep matches on this to skip its own entries
 /// (placeholder has no process to verify against).
 pub const BG_CMD_PLACEHOLDER: &str = "(background shell)";
+/// PID of the process behind [`PANE_BG_CMD`], when the spawn result
+/// reports one (Hermes `terminal(background=true)`). The ps liveness
+/// sweep prefers this over the raw command string: shell-expanded ps
+/// args can never match a stored command that used quotes or `$(…)`
+/// substitution. Unset for spawns without a PID in the result (Claude's
+/// `run_in_background`), which keep the string-match fallback.
+pub const PANE_BG_PID: &str = "@pane_bg_pid";
 /// Epoch-ms identifier regenerated on every SessionStart so
 /// notification fingerprints stay scoped to the current run and
 /// don't dedupe across restarts.
