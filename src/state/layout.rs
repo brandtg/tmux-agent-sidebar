@@ -110,34 +110,46 @@ impl AppState {
             if !self.global.repo_filter.matches_group(&group.name) {
                 continue;
             }
-            for (pane, _) in &group.panes {
-                if self.global.status_filter.matches(pane) {
-                    self.layout.pane_row_targets.push(RowTarget {
+            let filtered_panes: Vec<_> = group
+                .panes
+                .iter()
+                .filter(|(pane, _)| self.global.status_filter.matches(pane))
+                .collect();
+
+            // The same window set and per-window status-filter rule as
+            // the renderer, so the target order mirrors the render
+            // order in `row_collector::collect` — the selection index is
+            // a position into `pane_row_targets`, and `row_index` counts
+            // rendered rows, so the two paths must agree on the order.
+            let matched_windows: Vec<&crate::group::OtherWindow> = if self.global.show_windows
+                && let Some(windows) = self
+                    .other_windows
+                    .get(&crate::group::group_window_key(self.global.group_by, group))
+                && !windows.is_empty()
+            {
+                windows
+                    .iter()
+                    .filter(|window| {
+                        let runtime = self.pane_state(&window.pane_id);
+                        self.global.status_filter.matches_window(window, runtime)
+                    })
+                    .collect()
+            } else {
+                Vec::new()
+            };
+
+            for row in crate::group::ordered_group_rows(&filtered_panes, &matched_windows) {
+                let target = match row {
+                    crate::group::GroupRow::Agent((pane, _)) => RowTarget {
                         pane_id: pane.pane_id.clone(),
                         is_window: false,
-                    });
-                }
-            }
-
-            // Window rows follow the agent rows, mirroring the render
-            // order in `row_collector::collect`, and pass the same
-            // per-window status-filter rule as the renderer.
-            let show_windows = self.global.show_windows;
-            let key = crate::group::group_window_key(self.global.group_by, group);
-            if show_windows
-                && !key.is_empty()
-                && let Some(windows) = self.other_windows.get(&key)
-            {
-                for window in windows {
-                    let runtime = self.pane_state(&window.pane_id);
-                    if !self.global.status_filter.matches_window(window, runtime) {
-                        continue;
-                    }
-                    self.layout.pane_row_targets.push(RowTarget {
+                    },
+                    crate::group::GroupRow::Window(window) => RowTarget {
                         pane_id: window.pane_id.clone(),
                         is_window: true,
-                    });
-                }
+                    },
+                };
+                self.layout.pane_row_targets.push(target);
             }
         }
         if self.layout.pane_row_targets.is_empty() {

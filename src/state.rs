@@ -296,6 +296,8 @@ mod tests {
             worktree: WorktreeMetadata::default(),
             session_id: None,
             session_name: String::new(),
+            tmux_session: String::new(),
+            window_index: 0,
             sidebar_spawned: false,
             bg_shell_cmd: None,
             bg_shell_pid: None,
@@ -529,7 +531,9 @@ mod tests {
     #[test]
     fn refresh_feed_ignores_panes_outside_the_snapshot() {
         let mut state = AppState::new("%99".into());
-        let log_path = crate::activity::log_file_path("%209");
+        // Unique pane id: %209's log is shared with the task-progress
+        // dismissal test, and parallel log writes there make it flaky.
+        let log_path = crate::activity::log_file_path("%299");
         fs::write(&log_path, "10:00|Edit|stray\n").unwrap();
 
         state.refresh_feed();

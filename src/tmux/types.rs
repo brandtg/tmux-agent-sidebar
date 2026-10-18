@@ -58,6 +58,17 @@ pub struct PaneInfo {
     /// applied each tick by `refresh_session_names`, which leaves
     /// hook-provided titles alone.
     pub session_name: String,
+    /// Tmux session the pane's window lives in (`#{session_name}` from
+    /// the raw pane line) — distinct from `session_name`, which is the
+    /// agent session's row title. With `window_index` it is the row's
+    /// session-level ordering key so agents and the non-agent panes of
+    /// their window render together in session → window → pane order.
+    pub tmux_session: String,
+    /// Index of the pane's window within its session (`#{window_index}`).
+    /// Tmux window indices are unique per session, so
+    /// `(tmux_session, window_index)` identifies the window — the same
+    /// key `OtherWindow` rows order by.
+    pub window_index: i64,
     /// `true` when the window this pane lives in was created by the
     /// sidebar's spawn flow (via the `@agent-sidebar-spawned` window
     /// option). Used by the row renderer to show a clickable red `×`
@@ -185,8 +196,8 @@ pub struct OtherPane {
     /// time with the process snapshot available (see
     /// [`crate::tmux::classify_pane_status`]). A shell foreground with a
     /// script running beneath it arrives pre-promoted to `Task`, so
-    /// every consumer (row glyph, running filter, sort rank) sees the
-    /// same verdict.
+    /// every consumer (row glyph, running filter) sees the same
+    /// verdict.
     pub status: WindowStatus,
     /// Basename of the last foreground command the pane's shell recorded
     /// via the shell-integration snippet. Empty/None when no integration

@@ -155,6 +155,46 @@ fn activating_a_window_row_sets_focus_without_a_pane_info() {
     );
 }
 
+#[test]
+fn row_targets_interleave_windows_after_their_window_agent() {
+    // With w on, `pane_row_targets` must mirror the interleaved render
+    // order (session → window → pane, agents before their window's
+    // processes) — selection and clicks address rows by index, so a
+    // stale agents-first order would target the wrong pane.
+    let mut agent1 = make_pane(AgentType::Claude, PaneStatus::Idle);
+    agent1.pane_id = "%1".into();
+    agent1.tmux_session = "main".into();
+    agent1.window_index = 0;
+    let mut agent2 = make_pane(AgentType::Claude, PaneStatus::Idle);
+    agent2.pane_id = "%2".into();
+    agent2.tmux_session = "main".into();
+    agent2.window_index = 1;
+
+    let mut state = make_state(vec![]);
+    state.repo_groups = vec![make_repo_group("project", vec![agent1, agent2])];
+    state.global.show_windows = true;
+    state.other_windows.insert(
+        "/home/user/project".into(),
+        vec![
+            other_window("%10", "backend", "node", WindowStatus::Task), // main, index 0
+            other_window("%11", "tests", "cargo", WindowStatus::Task),  // main, index 0
+        ],
+    );
+    state.rebuild_row_targets();
+
+    let targets: Vec<(&str, bool)> = state
+        .layout
+        .pane_row_targets
+        .iter()
+        .map(|t| (t.pane_id.as_str(), t.is_window))
+        .collect();
+    assert_eq!(
+        targets,
+        vec![("%1", false), ("%10", true), ("%11", true), ("%2", false),],
+        "window rows must sit between their window's agent and the next window's agent"
+    );
+}
+
 // ─── finished / failed task tracking ───────────────────────────────
 
 /// Drive a window pane through task → shell transitions via

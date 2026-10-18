@@ -108,7 +108,7 @@ pub fn group_other_windows_by_repo(
     }
 
     for windows in out.values_mut() {
-        windows.sort_by_key(|w| (status_rank(w.status), w.window_index));
+        windows.sort_by_key(|w| (w.session_name.clone(), w.window_index));
     }
     out
 }
@@ -152,17 +152,9 @@ pub fn group_other_windows_by_session(
     }
 
     for windows in out.values_mut() {
-        windows.sort_by_key(|w| (status_rank(w.status), w.window_index));
+        windows.sort_by_key(|w| (w.session_name.clone(), w.window_index));
     }
     out
-}
-
-fn status_rank(status: WindowStatus) -> u8 {
-    match status {
-        WindowStatus::Task => 0,
-        WindowStatus::Busy => 1,
-        WindowStatus::Idle => 2,
-    }
 }
 
 /// Resolve git info for a single pane path.
@@ -282,6 +274,41 @@ pub fn group_window_key(group_by: crate::state::GroupBy, group: &RepoGroup) -> S
         crate::state::GroupBy::Repo => repo_group_key(group),
         crate::state::GroupBy::Session => group.name.clone(),
     }
+}
+
+/// One row of a group's rendered list: either an agent pane or a
+/// non-agent window pane.
+#[derive(Debug, Clone, Copy)]
+pub enum GroupRow<'a> {
+    Agent(&'a (PaneInfo, PaneGitInfo)),
+    Window(&'a OtherWindow),
+}
+
+/// Interleave a group's agent panes and non-agent window rows in
+/// session → window → pane order, so each window's processes sit next
+/// to its agent instead of pooling below the whole group.
+///
+/// Both inputs must be in pane-encounter order within each window:
+/// `RepoGroup::panes` is pushed in tmux line order and
+/// [`group_other_windows_by_repo`] / [`group_other_windows_by_session`]
+/// sort by (session, window index), which is stable, so pane order
+/// inside a window survives. The stable sort by
+/// `(session, window_index, agents_first)` then yields exactly:
+/// windows in session-name order, then window-index order; within a
+/// window the agent panes (in pane order) first, then the non-agent
+/// rows (in pane order). Rows carrying no window position (unit-test
+/// panes) keep their input order, agents before windows.
+pub fn ordered_group_rows<'a>(
+    panes: &'a [&'a (PaneInfo, PaneGitInfo)],
+    windows: &'a [&'a OtherWindow],
+) -> Vec<GroupRow<'a>> {
+    let mut rows: Vec<GroupRow<'a>> = panes.iter().copied().map(GroupRow::Agent).collect();
+    rows.extend(windows.iter().copied().map(GroupRow::Window));
+    rows.sort_by_key(|row| match row {
+        GroupRow::Agent((pane, _)) => (pane.tmux_session.as_str(), pane.window_index, 0u8),
+        GroupRow::Window(w) => (w.session_name.as_str(), w.window_index, 1u8),
+    });
+    rows
 }
 
 /// Group all panes across all sessions by repo root.
@@ -555,6 +582,8 @@ mod tests {
             worktree: crate::tmux::WorktreeMetadata::default(),
             session_id: None,
             session_name: String::new(),
+            tmux_session: String::new(),
+            window_index: 0,
             sidebar_spawned: false,
             bg_shell_cmd: None,
             bg_shell_pid: None,
@@ -1114,17 +1143,111 @@ mod tests {
     }
 
     #[test]
-    fn group_other_windows_sorts_task_before_idle() {
-        let idle = other_pane("@1", "%1", "/repo", "zsh", true);
-        let task = other_pane("@2", "%2", "/repo", "cargo", true);
-        let cache = cache_with_repo("/repo", "/repo");
+    fn group_other_windows_sorts_by_session_then_window() {
+        // Rows order by (session, window index) so the sidebar mirrors
+        // the tmux window order; status is no longer a sort key and the
+        // stable sort keeps pane-encounter order inside a window.
+        let mut later_idle = other_pane("@2", "%1", "/repo", "zsh", true); // session "main", index 1
+        later_idle.window_index = 1;
+        let earlier_task = other_pane("@1", "%2", "/repo", "cargo", true); // session "main", index 0
+        let mut other_session = other_pane("@3", "%3", "/repo", "cargo", true);
+        other_session.session_name = "alpha".into();
 
-        let grouped = group_other_windows_by_repo(&[idle, task], &cache);
+        let cache = cache_with_repo("/repo", "/repo");
+        let grouped =
+            group_other_windows_by_repo(&[later_idle, earlier_task, other_session], &cache);
 
         let windows = grouped.get("/repo").expect("repo bucket");
-        assert_eq!(windows.len(), 2);
-        assert_eq!(windows[0].status, WindowStatus::Task);
-        assert_eq!(windows[1].status, WindowStatus::Idle);
+        assert_eq!(windows.len(), 3);
+        // "alpha" sorts before "main" even though its window index is higher.
+        assert_eq!(windows[0].session_name, "alpha");
+        assert_eq!(windows[1].window_index, 0);
+        assert_eq!(windows[2].window_index, 1);
+    }
+
+    // ─── ordered_group_rows ─────────────────────────────────────────
+
+    fn agent_pane(id: &str, session: &str, window_index: i64) -> (PaneInfo, PaneGitInfo) {
+        let mut pane = test_pane(id, "/repo");
+        pane.tmux_session = session.into();
+        pane.window_index = window_index;
+        (pane, PaneGitInfo::default())
+    }
+
+    fn other_window(pane_id: &str, session: &str, window_index: i64) -> OtherWindow {
+        OtherWindow {
+            window_id: format!("@{pane_id}"),
+            window_index,
+            window_name: "win".into(),
+            window_active: false,
+            session_name: session.into(),
+            pane_id: pane_id.into(),
+            pane_active: true,
+            pane_pid: None,
+            command: "cargo".into(),
+            path: "/repo".into(),
+            git_info: PaneGitInfo::default(),
+            status: WindowStatus::Task,
+        }
+    }
+
+    fn row_ids<'a>(rows: &[GroupRow<'a>]) -> Vec<&'a str> {
+        rows.iter()
+            .map(|row| match row {
+                GroupRow::Agent((pane, _)) => pane.pane_id.as_str(),
+                GroupRow::Window(w) => w.pane_id.as_str(),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn ordered_group_rows_interleaves_agents_before_their_window_panes() {
+        // The w-mode view: an agent plus two sibling server panes in one
+        // window, then a second agent in the next window. The list must
+        // read (agent, server1, server2, agent2), not (agent, agent2,
+        // server1, server2).
+        let panes = vec![agent_pane("%1", "main", 0), agent_pane("%2", "main", 1)];
+        let windows = vec![
+            other_window("%10", "main", 0),
+            other_window("%11", "main", 0),
+            other_window("%12", "main", 1),
+        ];
+        let pane_refs: Vec<_> = panes.iter().collect();
+        let window_refs: Vec<_> = windows.iter().collect();
+
+        let rows = ordered_group_rows(&pane_refs, &window_refs);
+        assert_eq!(row_ids(&rows), vec!["%1", "%10", "%11", "%2", "%12"]);
+    }
+
+    #[test]
+    fn ordered_group_rows_orders_windows_by_session_then_index() {
+        // A process-only window keeps its slot in the window order even
+        // though it contributes no agent row, and within a session
+        // windows order by index: beta's window 1 precedes its window 5.
+        let panes = vec![agent_pane("%1", "beta", 5), agent_pane("%2", "alpha", 0)];
+        let windows = vec![
+            other_window("%10", "beta", 1),
+            other_window("%11", "alpha", 0),
+        ];
+        let pane_refs: Vec<_> = panes.iter().collect();
+        let window_refs: Vec<_> = windows.iter().collect();
+
+        let rows = ordered_group_rows(&pane_refs, &window_refs);
+        assert_eq!(row_ids(&rows), vec!["%2", "%11", "%10", "%1"]);
+    }
+
+    #[test]
+    fn ordered_group_rows_without_window_position_keeps_input_order() {
+        // Unit-test panes carry no window position; all rows share the
+        // empty key, so the stable sort preserves input order — agents
+        // first, then windows.
+        let panes = vec![agent_pane("%1", "", 0), agent_pane("%2", "", 0)];
+        let windows = vec![other_window("%10", "", 0)];
+        let pane_refs: Vec<_> = panes.iter().collect();
+        let window_refs: Vec<_> = windows.iter().collect();
+
+        let rows = ordered_group_rows(&pane_refs, &window_refs);
+        assert_eq!(row_ids(&rows), vec!["%1", "%2", "%10"]);
     }
 
     #[test]

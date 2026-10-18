@@ -128,104 +128,115 @@ pub(super) fn collect(state: &AppState, width: u16) -> CollectedRows {
         collected.lines.push(Line::from(spans));
         collected.line_to_row.push(None);
 
-        for (pane, git_info) in filtered_panes.iter() {
-            let is_selected = state.focus_state.sidebar_focused
-                && state.focus_state.focus == Focus::Panes
-                && row_index == state.global.selected_pane_row;
+        // Agents and non-agent rows interleave in session → window →
+        // pane order (see `group::ordered_group_rows`), so each window's
+        // processes sit next to its agent instead of pooling below the
+        // whole group. Window rows use a diamond status glyph
+        // (see `row::window_row`), so they read as distinct without a
+        // header line.
+        for row in crate::group::ordered_group_rows(&filtered_panes, &matched_windows) {
+            match row {
+                crate::group::GroupRow::Agent((pane, git_info)) => {
+                    let is_selected = state.focus_state.sidebar_focused
+                        && state.focus_state.focus == Focus::Panes
+                        && row_index == state.global.selected_pane_row;
 
-            let is_active = state.focus_state.focused_pane_id.as_ref() == Some(&pane.pane_id);
+                    let is_active =
+                        state.focus_state.focused_pane_id.as_ref() == Some(&pane.pane_id);
 
-            let pane_state = state.pane_state(&pane.pane_id);
-            let ports = pane_state.map(|s| s.ports.as_slice());
-            let task_progress = pane_state.and_then(|s| s.task_progress.as_ref());
-            let status_line_idx = collected.lines.len();
-            let compact = state.global.compact;
-            let pane_lines = if compact {
-                row::compact_row(
-                    pane,
-                    git_info,
-                    is_selected,
-                    is_active,
-                    width,
-                    &state.icons,
-                    theme,
-                    state.spinner_frame,
-                    state.now,
-                )
-            } else {
-                row::render_pane_lines_with_ports(
-                    pane,
-                    git_info,
-                    ports,
-                    task_progress,
-                    is_selected,
-                    is_active,
-                    width,
-                    &state.icons,
-                    theme,
-                    state.spinner_frame,
-                    state.now,
-                )
-            };
-            let pane_line_count = pane_lines.len();
-            collected.lines.extend(pane_lines);
-            for _ in 0..pane_line_count {
-                collected.line_to_row.push(Some(row_index));
+                    let pane_state = state.pane_state(&pane.pane_id);
+                    let ports = pane_state.map(|s| s.ports.as_slice());
+                    let task_progress = pane_state.and_then(|s| s.task_progress.as_ref());
+                    let status_line_idx = collected.lines.len();
+                    let compact = state.global.compact;
+                    let pane_lines = if compact {
+                        row::compact_row(
+                            pane,
+                            git_info,
+                            is_selected,
+                            is_active,
+                            width,
+                            &state.icons,
+                            theme,
+                            state.spinner_frame,
+                            state.now,
+                        )
+                    } else {
+                        row::render_pane_lines_with_ports(
+                            pane,
+                            git_info,
+                            ports,
+                            task_progress,
+                            is_selected,
+                            is_active,
+                            width,
+                            &state.icons,
+                            theme,
+                            state.spinner_frame,
+                            state.now,
+                        )
+                    };
+                    let pane_line_count = pane_lines.len();
+                    collected.lines.extend(pane_lines);
+                    for _ in 0..pane_line_count {
+                        collected.line_to_row.push(Some(row_index));
+                    }
+
+                    // Register the trailing `×` remove marker when the
+                    // pane is a sidebar-spawned worktree. In full mode
+                    // the marker rides on the branch row
+                    // (`status_line_idx + 1`, present only when the
+                    // pane rendered >= 2 lines); in compact mode it is
+                    // pinned to the status row itself.
+                    let remove_eligible = if compact {
+                        true
+                    } else {
+                        git_info.is_worktree && pane_line_count >= 2
+                    };
+                    if pane.sidebar_spawned
+                        && remove_eligible
+                        && let Some(x) = row::sidebar_remove_marker_col(
+                            git_info,
+                            ports,
+                            true,
+                            width.saturating_sub(2),
+                        )
+                    {
+                        let line_idx = if compact {
+                            status_line_idx
+                        } else {
+                            status_line_idx + 1
+                        };
+                        collected
+                            .pending_remove
+                            .push((line_idx, x, pane.pane_id.clone()));
+                    }
+
+                    row_index += 1;
+                }
+                crate::group::GroupRow::Window(window) => {
+                    let runtime = state.pane_state(&window.pane_id);
+                    let is_selected = state.focus_state.sidebar_focused
+                        && state.focus_state.focus == Focus::Panes
+                        && row_index == state.global.selected_pane_row;
+                    let is_active = window.window_active && window.pane_active;
+                    let finished = runtime.and_then(|s| s.window_finished.clone());
+                    let line = row::window_row(
+                        window,
+                        runtime.map(|s| s.ports.as_slice()),
+                        finished.as_ref(),
+                        is_selected,
+                        is_active,
+                        width,
+                        &state.icons,
+                        theme,
+                        state.spinner_frame,
+                    );
+                    collected.lines.push(line);
+                    collected.line_to_row.push(Some(row_index));
+                    row_index += 1;
+                }
             }
-
-            // Register the trailing `×` remove marker when the pane is a
-            // sidebar-spawned worktree. In full mode the marker rides on
-            // the branch row (`status_line_idx + 1`, present only when the
-            // pane rendered >= 2 lines); in compact mode it is pinned to
-            // the status row itself.
-            let remove_eligible = if compact {
-                true
-            } else {
-                git_info.is_worktree && pane_line_count >= 2
-            };
-            if pane.sidebar_spawned
-                && remove_eligible
-                && let Some(x) =
-                    row::sidebar_remove_marker_col(git_info, ports, true, width.saturating_sub(2))
-            {
-                let line_idx = if compact {
-                    status_line_idx
-                } else {
-                    status_line_idx + 1
-                };
-                collected
-                    .pending_remove
-                    .push((line_idx, x, pane.pane_id.clone()));
-            }
-
-            row_index += 1;
-        }
-
-        // Non-agent window panes in this repo, rendered after the agent
-        // rows. Window rows use a diamond status glyph
-        // (see `row::window_row`), so the section reads as distinct
-        // without a header line.
-        for window in matched_windows {
-            let runtime = state.pane_state(&window.pane_id);
-            let is_selected = state.focus_state.sidebar_focused
-                && state.focus_state.focus == Focus::Panes
-                && row_index == state.global.selected_pane_row;
-            let is_active = window.window_active && window.pane_active;
-            let finished = runtime.and_then(|s| s.window_finished.clone());
-            let line = row::window_row(
-                window,
-                runtime.map(|s| s.ports.as_slice()),
-                finished.as_ref(),
-                is_selected,
-                is_active,
-                width,
-                &state.icons,
-                theme,
-                state.spinner_frame,
-            );
-            collected.lines.push(line);
-            collected.line_to_row.push(Some(row_index));
-            row_index += 1;
         }
     }
 
@@ -261,10 +272,37 @@ mod tests {
             worktree: WorktreeMetadata::default(),
             session_id: None,
             session_name: String::new(),
+            tmux_session: String::new(),
+            window_index: 0,
             sidebar_spawned: false,
             bg_shell_cmd: None,
             bg_shell_pid: None,
         }
+    }
+
+    fn make_window_pane(
+        id: &str,
+        status: PaneStatus,
+        session: &str,
+        window_index: i64,
+    ) -> PaneInfo {
+        let mut pane = make_pane(id, status);
+        pane.tmux_session = session.into();
+        pane.window_index = window_index;
+        pane
+    }
+
+    fn other_window_in(
+        pane_id: &str,
+        name: &str,
+        command: &str,
+        session: &str,
+        window_index: i64,
+    ) -> crate::group::OtherWindow {
+        let mut w = other_window(pane_id, name, command);
+        w.session_name = session.into();
+        w.window_index = window_index;
+        w
     }
 
     #[test]
@@ -331,6 +369,73 @@ mod tests {
             collected.line_to_row,
             vec![None, Some(0), Some(0), Some(1)],
             "the window row must be selectable as row 1"
+        );
+    }
+
+    #[test]
+    fn collect_interleaves_window_rows_after_their_window_agent() {
+        // w mode: an agent plus two server panes in window 0, an agent
+        // in window 1 with its own server. Rows must render in session
+        // → window → pane order (agent, server1, server2, agent2,
+        // server3) — not all agents first, all windows after.
+        let mut state = AppState::new("%0".into());
+        state.global.show_windows = true;
+        let mut agent1 = make_window_pane("%1", PaneStatus::Running, "main", 0);
+        agent1.prompt = "fix auth".into();
+        let mut agent2 = make_window_pane("%2", PaneStatus::Running, "main", 1);
+        agent2.prompt = "fix ui".into();
+        state.repo_groups = vec![RepoGroup {
+            name: "repo".into(),
+            has_focus: false,
+            panes: vec![
+                (agent1, PaneGitInfo::default()),
+                (agent2, PaneGitInfo::default()),
+            ],
+        }];
+        state.other_windows.insert(
+            "/tmp/repo".into(),
+            vec![
+                other_window_in("%10", "backend", "node", "main", 0),
+                other_window_in("%11", "frontend", "npm", "main", 0),
+                other_window_in("%12", "tests", "cargo", "main", 1),
+            ],
+        );
+
+        let collected = collect(&state, 40);
+        let text = collected
+            .lines
+            .iter()
+            .map(line_text)
+            .collect::<Vec<_>>()
+            .join("\n");
+        let pos = |needle: &str| {
+            text.lines()
+                .position(|l| l.contains(needle))
+                .unwrap_or_else(|| panic!("{needle:?} missing:\n{text}"))
+        };
+        assert!(
+            pos("fix auth") < pos("backend")
+                && pos("backend") < pos("frontend")
+                && pos("frontend") < pos("fix ui")
+                && pos("fix ui") < pos("tests"),
+            "rows must interleave by window:\n{text}"
+        );
+
+        // Selection targets follow the same order: window-0 rows sit
+        // between the two agents, window-1's row after agent2.
+        assert_eq!(
+            collected.line_to_row,
+            vec![
+                None,
+                Some(0),
+                Some(0),
+                Some(1),
+                Some(2),
+                Some(3),
+                Some(3),
+                Some(4)
+            ],
+            "line_to_row must match the interleaved render order"
         );
     }
 
