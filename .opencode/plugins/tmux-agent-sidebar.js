@@ -232,8 +232,18 @@ async function resolvePaneId(cwd, sessionId) {
         title: rest.join("\t"),
       };
     });
+  // opencode's bundled bun binary keeps an `.exe` suffix on every platform
+  // (`@opencode/cli/bin/opencode.exe`), and tmux reports the pane's
+  // foreground process name — so on macOS a live TUI pane reads
+  // `opencode.exe` while Linux wrappers surface plain `opencode`. Accept
+  // both spellings or the pane is unresolvable on macOS and every hook
+  // falls back to the (stale) daemon TMUX_PANE. Override with
+  // OPENCODE_PANE_COMMAND.
   const agent = process.env?.OPENCODE_PANE_COMMAND ?? "opencode";
-  const candidates = panes.filter((p) => p.command === agent);
+  const agentNames = new Set([agent, `${agent}.exe`]);
+  const candidates = panes.filter((p) =>
+    agentNames.has((p.command ?? "").replace(/\.exe$/i, "")),
+  );
 
   let realCwd = "";
   try {

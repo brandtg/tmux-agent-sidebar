@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 use std::path::Path;
 
-use crate::process::{ProcessSnapshot, command_basename};
+use crate::process::{ProcessSnapshot, command_basename, strip_exe_suffix};
 
 use super::commands::run_tmux;
 use super::options::{
@@ -473,6 +473,12 @@ fn parse_pane_fields_with_processes(
             // state once they fire, and the row drops out on its own
             // when the agent exits and the command reverts to the shell.
             let agent = AgentType::from_label(current_command)
+                // macOS: the opencode TUI's foreground process is the bun
+                // binary `opencode.exe`, not the agent label. Retry the
+                // label without the suffix before giving up — the row must
+                // appear from the pane command alone (the shimmed walk
+                // below stays deliberately Hermes-scoped).
+                .or_else(|| AgentType::from_label(strip_exe_suffix(current_command)))
                 .or_else(|| detect_shimmed_agent(parts, process_snapshot))?;
             let raw_status = &parts[pane_line_field::PANE_STATUS];
             let status = if raw_status.is_empty() {
@@ -595,7 +601,9 @@ fn parse_pane_fields_with_processes(
 /// (`python3 -I -c …`) that renames its process (`comm` = `hermes`), so
 /// tmux's `pane_current_command` stays `python3` and the argv0 fallback
 /// above can never match. Walk the pane's process tree instead, using the
-/// same comm/argv matching as the stale-state sweep.
+/// same comm/argv matching as the stale-state sweep (which also recognizes
+/// the launcher's `python3 -I -c` shape on macOS, where the rename is
+/// impossible and `comm` stays `python3`).
 ///
 /// Deliberately scoped to Hermes: claude, codex, and opencode all surface
 /// their name as argv0, so extending the walk to them would only add
@@ -1273,6 +1281,23 @@ mod tests {
         assert_eq!(pane.agent, AgentType::OpenCode);
         assert_eq!(pane.status, PaneStatus::Idle);
         assert_eq!(pane.permission_mode, PermissionMode::Default);
+    }
+
+    #[test]
+    fn parse_pane_line_bootstraps_macos_opencode_exe_pane() {
+        // macOS: the opencode TUI's foreground process is the bundled bun
+        // binary `opencode.exe` (the `.exe` ships on every platform), so
+        // pane_current_command never equals the bare label there. Without
+        // this the pane parses as None and the row vanishes entirely —
+        // the "opencode not showing up on mac" regression.
+        let mut fields = full_fields();
+        fields[3] = ""; // @pane_agent unset
+        fields[1] = ""; // @pane_status unset
+        fields[6] = "opencode.exe"; // pane_current_command
+        let pane =
+            parse_pane_line(&make_pane_line(&fields)).expect("opencode.exe command should parse");
+        assert_eq!(pane.agent, AgentType::OpenCode);
+        assert_eq!(pane.status, PaneStatus::Idle);
     }
 
     #[test]

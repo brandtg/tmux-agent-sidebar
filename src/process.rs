@@ -4,7 +4,7 @@ use std::process::Command;
 use std::time::Duration;
 
 use crate::subprocess;
-use crate::tmux::AgentType;
+use crate::tmux::{AgentType, HERMES_AGENT};
 
 /// Deadline for the full-process `ps` scan; it runs on the TUI event loop
 /// every refresh tick and must never hang there.
@@ -143,6 +143,15 @@ pub(crate) fn command_basename(command: &str) -> &str {
         .unwrap_or(command)
 }
 
+/// Bun-compiled agent binaries keep an `.exe` suffix on every platform —
+/// opencode ships `@opencode/cli/bin/opencode.exe` even on macOS — and that
+/// suffix surfaces in both process `comm` values and tmux's
+/// `pane_current_command`. Strip it before comparing against agent labels,
+/// or macOS panes read as a different program than their Linux namesake.
+pub(crate) fn strip_exe_suffix(name: &str) -> &str {
+    name.strip_suffix(".exe").unwrap_or(name)
+}
+
 /// Shell and meta-invocation names that never count as "work" when
 /// scanning a pane's process tree. The shell set is the same list
 /// [`crate::tmux::classify_window_status`] classifies with; `tmux`,
@@ -157,18 +166,85 @@ fn is_meta_or_shell_comm(comm: &str) -> bool {
 }
 
 pub(crate) fn process_matches_agent(info: &ProcessInfo, agent_name: &str) -> bool {
-    if command_basename(&info.comm) == agent_name {
+    // Hermes' launcher is `python3 -I -c <bootstrap>`. On Linux the
+    // bootstrap renames the process (prctl), so `comm` reads `hermes`; macOS
+    // has no rename and keeps `comm` as `python3`, leaving the install root
+    // visible only in argv. Match that launcher shape explicitly or macOS
+    // hermes panes are invisible to every sweep that uses this predicate.
+    if agent_name == HERMES_AGENT && process_matches_hermes_launcher(info) {
+        return true;
+    }
+    if strip_exe_suffix(command_basename(&info.comm)) == agent_name {
         return true;
     }
 
     // Wrapper installs name the runtime at args0, not the agent:
     // `npx claude` runs under node, `node .../claude` and bun shims put
-    // the agent binary deeper in argv. Match any argv token so these
-    // live panes are not misread as "agent dead" by the port-scan
-    // sweep (which would wipe their metadata mid-session).
-    info.args
+    // the agent binary deeper in argv. Match argv tokens, but strictly —
+    // see `argv_tokens_match_agent` — so these live panes are not misread
+    // as "agent dead" by the port-scan sweep (which would wipe their
+    // metadata mid-session).
+    argv_tokens_match_agent(&info.args, agent_name)
+}
+
+/// Package runners whose argv carries the agent as a bare package name
+/// rather than a path (`npx claude`, or npx's internal
+/// `node .../npx-cli.js claude` entry).
+const PACKAGE_RUNNERS: [&str; 5] = ["npx", "bunx", "uvx", "dlx", "pnpx"];
+
+/// Whether `args` invokes `agent_name` strictly enough to trust.
+///
+/// A token whose basename equals the agent name matches only when it is a
+/// path into the agent binary (`node .../bin/claude --model opus`) or sits
+/// directly after a package runner (`npx claude`). A bare agent name
+/// anywhere else is data, not a program: `ansible-playbook --tags hermes`
+/// once turned an ordinary shell pane into a Hermes agent row.
+fn argv_tokens_match_agent(args: &str, agent_name: &str) -> bool {
+    let tokens: Vec<&str> = args.split_whitespace().collect();
+    tokens.iter().enumerate().any(|(index, raw_token)| {
+        let token = raw_token.trim_matches('"');
+        if command_basename(token) != agent_name {
+            return false;
+        }
+        if token.contains('/') {
+            return true;
+        }
+        index > 0
+            && (PACKAGE_RUNNERS.contains(&command_basename(tokens[index - 1]))
+                || command_basename(tokens[index - 1]).starts_with("npx"))
+    })
+}
+
+/// The hermes launcher shape: a python interpreter running `-I -c`
+/// bootstrap code that references the `~/.hermes` install root.
+///
+/// The interpreter is read from argv[0], not `comm`: macOS truncates
+/// `comm` to the first 16 bytes of argv[0], which for the launcher is a
+/// fragment of the interpreter's path (`/Users/greg-bran`), not a basename.
+fn process_matches_hermes_launcher(info: &ProcessInfo) -> bool {
+    let interpreter = info
+        .args
         .split_whitespace()
-        .any(|token| command_basename(token.trim_matches('"')) == agent_name)
+        .next()
+        .map(command_basename)
+        .unwrap_or("");
+    if !interpreter.starts_with("python") {
+        return false;
+    }
+    let mut isolated = false;
+    let mut command = false;
+    let mut install_root = false;
+    for token in info.args.split_whitespace() {
+        match token {
+            "-I" => isolated = true,
+            "-c" => command = true,
+            _ => {}
+        }
+        if token.contains("/.hermes/") {
+            install_root = true;
+        }
+    }
+    isolated && command && install_root
 }
 
 #[cfg(test)]
@@ -212,6 +288,29 @@ mod tests {
     }
 
     #[test]
+    fn process_matches_agent_matches_macos_exe_suffix() {
+        // opencode's bun binary is `opencode.exe` on every platform; on
+        // macOS that name is what shows up in both comm and tmux's
+        // pane_current_command. It must still match the "opencode" label.
+        assert!(process_matches_agent(
+            &ProcessInfo {
+                comm: "opencode.exe".to_string(),
+                args: "/Users/u/.local/share/fnm/node-versions/v22.21.0/installation/lib/node_modules/@opencode/cli/bin/opencode.exe"
+                    .to_string(),
+            },
+            "opencode",
+        ));
+        // The suffix strip must not loosen matching for lookalikes.
+        assert!(!process_matches_agent(
+            &ProcessInfo {
+                comm: "not-opencode.exe".to_string(),
+                args: "/usr/local/bin/not-opencode.exe".to_string(),
+            },
+            "opencode",
+        ));
+    }
+
+    #[test]
     fn process_matches_agent_requires_command_name_match() {
         assert!(process_matches_agent(
             &ProcessInfo {
@@ -237,7 +336,7 @@ mod tests {
     }
 
     #[test]
-    fn process_matches_agent_matches_agent_basename_anywhere_in_argv() {
+    fn process_matches_agent_matches_runner_and_path_tokens() {
         // npx shim: the runtime owns comm/args0, the agent name only
         // appears as a later argv token.
         assert!(process_matches_agent(
@@ -278,6 +377,78 @@ mod tests {
                 args: "node /path/to/not-claude".to_string(),
             },
             "claude",
+        ));
+    }
+
+    #[test]
+    fn process_matches_agent_rejects_bare_agent_name_outside_runner_position() {
+        // An agent name appearing as argument data is not the agent running:
+        // `ansible-playbook site.yml --tags hermes` once registered an
+        // ordinary shell pane as a Hermes agent row.
+        assert!(!process_matches_agent(
+            &ProcessInfo {
+                comm: "ansible-playbook".to_string(),
+                args: "ansible-playbook site.yml --tags hermes".to_string(),
+            },
+            "hermes",
+        ));
+        // Same for a bare name in a non-runner position right after the
+        // program (`grep hermes notes.txt`).
+        assert!(!process_matches_agent(
+            &ProcessInfo {
+                comm: "grep".to_string(),
+                args: "grep hermes notes.txt".to_string(),
+            },
+            "hermes",
+        ));
+        // And an agent name glued into a larger path segment.
+        assert!(!process_matches_agent(
+            &ProcessInfo {
+                comm: "python3".to_string(),
+                args: "python3 /home/u/.hermes-tools/render.py".to_string(),
+            },
+            "hermes",
+        ));
+    }
+
+    #[test]
+    fn process_matches_agent_matches_hermes_launcher_without_rename() {
+        // macOS: the hermes launcher cannot rename its process, and `comm`
+        // is argv[0] truncated to 16 bytes — for the launcher that is a
+        // fragment of the interpreter's path, not a basename. The launcher
+        // shape (python argv[0], `-I -c`, `/.hermes/` install root) must
+        // still match Hermes.
+        assert!(process_matches_agent(
+            &ProcessInfo {
+                comm: "/Users/greg-bran".to_string(),
+                args: "/Users/u/.hermes/tools/python-3.14.7/bin/python3 -I -c import os, sys\012sys.path.insert(0, '/Users/u/.hermes/hermes-agent')\012import hermes_cli".to_string(),
+            },
+            "hermes",
+        ));
+        // An interpreter name in comm alone (no launcher argv) does not match.
+        assert!(!process_matches_agent(
+            &ProcessInfo {
+                comm: "python3.14".to_string(),
+                args: "python3 /tmp/tool.py".to_string(),
+            },
+            "hermes",
+        ));
+        // A hermes-managed python running an ordinary script (no -c
+        // bootstrap) is not the launcher.
+        assert!(!process_matches_agent(
+            &ProcessInfo {
+                comm: "python3".to_string(),
+                args: "/Users/u/.hermes/tools/python-3.14.7/bin/python3 /tmp/tool.py".to_string(),
+            },
+            "hermes",
+        ));
+        // The renamed Linux process keeps matching through comm.
+        assert!(process_matches_agent(
+            &ProcessInfo {
+                comm: "hermes".to_string(),
+                args: "python3 -I -c bootstrap".to_string(),
+            },
+            "hermes",
         ));
     }
 
