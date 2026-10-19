@@ -59,7 +59,7 @@ fn snapshot_other_windows_rendered() {
     project
     ┃ ○ claude
         Waiting for prompt…
-      ◆ cargo test  cargo
+      ◆ cargo
       ◆ nvim
     ╭ Feed │ Repos ──────────────────╮
     │       No recent activity       │
@@ -98,7 +98,7 @@ fn snapshot_other_windows_visible_under_matching_status_filter() {
      ≡3  ●1  ◎0  ◐0  ○2  ✕0
     ⓘ                              — ▾
     project
-      ◆ cargo test  cargo
+      ◆ cargo
     ╭ Feed │ Repos ──────────────────╮
     │       No recent activity       │
     ╰────────────────────────────────╯
