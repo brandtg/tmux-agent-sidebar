@@ -7,7 +7,7 @@ pub const AGENT_OPTION: &str = "@agent-sidebar-default-agent";
 pub const BRANCH_PREFIX_OPTION: &str = "@agent-sidebar-branch-prefix";
 pub const WORKTREE_DIR_OPTION: &str = "@agent-sidebar-worktree-dir";
 
-pub const AGENTS: &[&str] = &["claude", "codex", "opencode"];
+pub const AGENTS: &[&str] = &["claude", "codex", "opencode", "antigravity"];
 pub const CLAUDE_MODES: &[&str] = &[
     "default",
     "plan",
@@ -17,11 +17,15 @@ pub const CLAUDE_MODES: &[&str] = &[
 ];
 pub const CODEX_MODES: &[&str] = &["default", "auto", "bypassPermissions"];
 pub const OPENCODE_MODES: &[&str] = &["default"];
+/// `--mode` values accepted by `agy` (see `agy --help`); `default` spawns
+/// the bare command.
+pub const ANTIGRAVITY_MODES: &[&str] = &["default", "plan", "auto", "accept-edits"];
 
 pub fn modes_for(agent: &str) -> &'static [&'static str] {
     match agent {
         "codex" => CODEX_MODES,
         "opencode" => OPENCODE_MODES,
+        "antigravity" => ANTIGRAVITY_MODES,
         _ => CLAUDE_MODES,
     }
 }
@@ -44,6 +48,8 @@ pub fn agent_command(agent: &str, mode: &str) -> String {
         ("codex", "bypassPermissions") => "codex --dangerously-bypass-approvals-and-sandbox".into(),
         ("codex", _) => "codex".into(),
         ("opencode", _) => "opencode".into(),
+        ("antigravity", "plan" | "auto" | "accept-edits") => format!("agy --mode {mode}"),
+        ("antigravity", _) => "agy".into(),
         (a, _) => a.to_string(),
     }
 }

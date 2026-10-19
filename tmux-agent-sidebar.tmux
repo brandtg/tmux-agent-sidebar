@@ -37,4 +37,25 @@ if [[ -f "$PLUGIN_DIR/.opencode/plugins/tmux-agent-sidebar.js" ]]; then
     ln -sfn "$PLUGIN_DIR/.opencode/plugins/tmux-agent-sidebar.js" "$OPENCODE_BRIDGE"
 fi
 
+# Antigravity (agy) hooks: agy loads bundled hooks from plugin directories in
+# ~/.gemini/config/plugins/, so generate the plugin bundle with the resolved
+# hook.sh path (via `setup antigravity`, whose output IS the hooks.json
+# content) and symlink it there — the same auto-wiring shape as the Claude
+# plugin and the OpenCode bridge. Regenerated on every load so a rebuilt or
+# moved install stays correct; agy picks up the bundle on its next session
+# start. The bundle lives in the cache dir (generated content, not a repo
+# artifact), and the symlink is what agy discovers.
+AGY_PLUGINS_DIR="$HOME/.gemini/config/plugins"
+AGY_RUNTIME_PLUGIN="${XDG_CACHE_HOME:-$HOME/.cache}/tmux-agent-sidebar/agy-plugin"
+AGY_PLUGIN_LINK="$AGY_PLUGINS_DIR/tmux-agent-sidebar"
+if AGY_HOOKS_JSON=$("$SIDEBAR_BINARY" setup antigravity 2>/dev/null) && [[ -n "$AGY_HOOKS_JSON" ]]; then
+    mkdir -p "$AGY_RUNTIME_PLUGIN"
+    printf '%s\n' "$AGY_HOOKS_JSON" > "$AGY_RUNTIME_PLUGIN/hooks.json"
+    cat > "$AGY_RUNTIME_PLUGIN/plugin.json" <<'AGY_MANIFEST'
+{ "name": "tmux-agent-sidebar", "description": "tmux-agent-sidebar lifecycle hooks for the Antigravity CLI" }
+AGY_MANIFEST
+    mkdir -p "$AGY_PLUGINS_DIR"
+    ln -sfn "$AGY_RUNTIME_PLUGIN" "$AGY_PLUGIN_LINK"
+fi
+
 tmux source-file "$PLUGIN_DIR/agent-sidebar.conf"

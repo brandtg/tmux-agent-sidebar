@@ -1,6 +1,6 @@
 <h1 align="center">tmux-agent-sidebar</h1>
 
-<p align="center">One tmux sidebar that tracks every Claude Code, Codex, OpenCode, and Hermes pane across every session and window. See status, background shells, prompts, Git state, activity, and worktrees without switching windows.</p>
+<p align="center">One tmux sidebar that tracks every Claude Code, Codex, OpenCode, Hermes, and Antigravity pane across every session and window. See status, background shells, prompts, Git state, activity, and worktrees without switching windows.</p>
 
 <p align="center"><img src="website/src/assets/captures/hero.png" alt="tmux-agent-sidebar hero" /></p>
 
@@ -13,7 +13,7 @@
 ## Features
 
 - **Every pane, one view** 
-  — tracks Claude Code, Codex, OpenCode, and Hermes panes across all tmux sessions and windows
+  — tracks Claude Code, Codex, OpenCode, Hermes, and Antigravity panes across all tmux sessions and windows
 - **Live metadata** 
   — prompts, tool calls, response previews, background shell state, wait reasons, task progress, and subagent trees refresh as the agents work
 - **Worktrees, included** 
@@ -24,6 +24,8 @@
 OpenCode uses a small local plugin bridge instead of per-event hook config. The plugin lives at `.opencode/plugins/tmux-agent-sidebar.js` and can be symlinked as a single file into `~/.config/opencode/plugins/` so it coexists with any existing plugins.
 
 Hermes uses its built-in shell hooks: a generated `hooks:` block is merged into `~/.hermes/config.yaml` (see [Hermes setup](https://github.com/brandtg/tmux-agent-sidebar/blob/main/website/src/content/docs/getting-started/hermes.md)).
+
+Antigravity (`agy`) uses its native `hooks.json`: the generated hook block is pasted into `~/.gemini/config/hooks.json` (see [Antigravity setup](https://github.com/brandtg/tmux-agent-sidebar/blob/main/website/src/content/docs/getting-started/antigravity.md)).
 
 ## Requirements
 
@@ -66,7 +68,15 @@ Reload tmux (`tmux source ~/.tmux.conf`), then press `prefix + I`. The install w
   tmux-agent-sidebar setup hermes
   ```
 
-Full walkthroughs: [Claude Code setup](https://github.com/brandtg/tmux-agent-sidebar/blob/main/website/src/content/docs/getting-started/claude-code.md) · [Codex setup](https://github.com/brandtg/tmux-agent-sidebar/blob/main/website/src/content/docs/getting-started/codex.md) · [OpenCode setup](https://github.com/brandtg/tmux-agent-sidebar/blob/main/website/src/content/docs/getting-started/opencode.md) · [Hermes setup](https://github.com/brandtg/tmux-agent-sidebar/blob/main/website/src/content/docs/getting-started/hermes.md)
+- **Antigravity** — wired automatically: every plugin load generates an agy plugin bundle (hooks included) and links it into `~/.gemini/config/plugins/`, so new `agy` sessions are tracked with no manual step. To wire an existing checkout by hand instead:
+
+  ```sh
+  tmux-agent-sidebar setup antigravity
+  ```
+
+  Paste the block into `~/.gemini/config/hooks.json` (create the file if missing), then restart any running `agy` session — hooks load at startup.
+
+Full walkthroughs: [Claude Code setup](https://github.com/brandtg/tmux-agent-sidebar/blob/main/website/src/content/docs/getting-started/claude-code.md) · [Codex setup](https://github.com/brandtg/tmux-agent-sidebar/blob/main/website/src/content/docs/getting-started/codex.md) · [OpenCode setup](https://github.com/brandtg/tmux-agent-sidebar/blob/main/website/src/content/docs/getting-started/opencode.md) · [Hermes setup](https://github.com/brandtg/tmux-agent-sidebar/blob/main/website/src/content/docs/getting-started/hermes.md) · [Antigravity setup](https://github.com/brandtg/tmux-agent-sidebar/blob/main/website/src/content/docs/getting-started/antigravity.md)
 
 ### 3. Toggle the sidebar
 
@@ -108,14 +118,14 @@ All options are tmux options set in `~/.tmux.conf`, before the plugin loads (bef
 | `@sidebar_auto_hide` | `on` | Auto-hide split-pane sidebars when a window shrinks below `@sidebar_popup_max_width` (e.g. a phone client attaches); the next toggle opens the modal popup |
 | `@sidebar_notifications` | `on` | Master switch for desktop notifications |
 | `@sidebar_notifications_events` | unset | Comma-separated event allow-list (e.g. `stop,notification`); unset fires every event except `task_completed`. See [Notifications](https://github.com/brandtg/tmux-agent-sidebar/blob/main/website/src/content/docs/features/notifications.mdx) |
-| `@sidebar_agents` | unset | Comma-separated agents (`claude`, `codex`, `opencode`, `hermes`) the ⓘ hook-setup notices evaluate for; unset checks every agent |
+| `@sidebar_agents` | unset | Comma-separated agents (`claude`, `codex`, `opencode`, `hermes`, `antigravity`) the ⓘ hook-setup notices evaluate for; unset checks every agent |
 | `@sidebar_pet` | `off` | Show the animated pet in a band above the bottom panel |
 
 ### Worktree spawns
 
 | Option | Default | Description |
 | --- | --- | --- |
-| `@agent-sidebar-default-agent` | `claude` | Agent launched by `n`: `claude`, `codex`, or `opencode` |
+| `@agent-sidebar-default-agent` | `claude` | Agent launched by `n`: `claude`, `codex`, `opencode`, or `antigravity` |
 | `@agent-sidebar-branch-prefix` | `agent/` | Branch prefix for new worktrees |
 | `@agent-sidebar-worktree-dir` | `.worktrees` | Repo-relative directory for sidebar-spawned worktrees; absolute paths and `..` are rejected |
 
@@ -137,6 +147,7 @@ All options are tmux options set in `~/.tmux.conf`, before the plugin loads (bef
 | `@sidebar_color_agent_codex` | `141` | Codex brand color |
 | `@sidebar_color_agent_opencode` | `117` | OpenCode brand color |
 | `@sidebar_color_agent_hermes` | `214` | Hermes brand color |
+| `@sidebar_color_agent_antigravity` | `33` | Antigravity brand color |
 | `@sidebar_color_pet_body` | `208` | Pet body |
 | `@sidebar_color_pet_eye` | `114` | Pet eyes |
 | `@sidebar_color_text_active` | `255` | Primary text — active rows, counts, filtered repo label |

@@ -24,14 +24,14 @@ Most options must be set **before** loading the plugin in your `tmux.conf`. Colo
 | `@sidebar_auto_hide`             | `on`    | Auto-hide split-pane sidebars when a window shrinks below `@sidebar_popup_max_width` (a phone or other small client attached, or resized the window): the toggle-all close sweep takes down every split-pane sidebar in every session — a phone client sees all sessions, so closing only the resized window's pane would leave slivers behind on session switches — and records `@sidebar_mode=closed` so auto-create stays off until the next toggle-all. The next toggle press then opens the modal popup. Only an actual downward crossing of the threshold counts, so sidebars the toggle-all sweep deliberately created on narrow windows are left alone, and the hook's regular firings never act. Set `off` to keep split panes at every width |
 | `@sidebar_notifications`         | `on`    | Master switch for desktop notifications                                                 |
 | `@sidebar_notifications_events`  | unset   | Restrict events — see [Notifications](/tmux-agent-sidebar/features/notifications/)       |
-| `@sidebar_agents`                | unset   | Comma-separated allow-list of agents (`claude`, `codex`, `opencode`, `hermes`) the ⓘ notices evaluates for missing hooks — e.g. `set -g @sidebar_agents "claude,opencode"` silences the Codex warning for non-Codex users. Unset checks every agent; pane rows and status parsing are unaffected |
+| `@sidebar_agents`                | unset   | Comma-separated allow-list of agents (`claude`, `codex`, `opencode`, `hermes`, `antigravity`) the ⓘ notices evaluates for missing hooks — e.g. `set -g @sidebar_agents "claude,opencode"` silences the Codex warning for non-Codex users. Unset checks every agent; pane rows and status parsing are unaffected |
 | `@sidebar_pet`                  | `off`   | Show the animated pet in a 5-row band above the bottom panel                           |
 
 ## Worktree spawn defaults
 
 | Option                            | Default     | Description                                               |
 | --------------------------------- | ----------- | --------------------------------------------------------- |
-| `@agent-sidebar-default-agent`    | `claude`    | Agent launched by `n`&nbsp;(also accepts `codex`)         |
+| `@agent-sidebar-default-agent`    | `claude`    | Agent launched by `n`&nbsp;(also accepts `codex`, `opencode`, `antigravity`) |
 | `@agent-sidebar-branch-prefix`    | `agent/`    | Branch prefix for new worktrees                           |
 | `@agent-sidebar-worktree-dir`     | `.worktrees` | Repo-relative directory for sidebar-spawned worktrees; absolute paths and `..` are rejected |
 
@@ -63,6 +63,7 @@ Most options must be set **before** loading the plugin in your `tmux.conf`. Colo
 | `@sidebar_color_agent_codex`    | `141`&nbsp;(purple)     | Codex brand color    |
 | `@sidebar_color_agent_opencode` | `117`&nbsp;(light blue) | OpenCode brand color |
 | `@sidebar_color_agent_hermes`   | `214`&nbsp;(orange)     | Hermes brand color   |
+| `@sidebar_color_agent_antigravity` | `33`&nbsp;(blue)     | Antigravity brand color |
 
 ## Text colors
 

@@ -294,11 +294,12 @@ fn apply_agent_allowlist(all: Vec<String>, enabled: &[String]) -> Vec<String> {
 /// a typo degrades to "agent ignored" (falling back to no restriction
 /// when nothing valid remains) instead of disabling every notice.
 pub(crate) fn parse_enabled_agents(raw: Option<&str>) -> Vec<String> {
-    const SUPPORTED: [&str; 4] = [
+    const SUPPORTED: [&str; 5] = [
         crate::tmux::CLAUDE_AGENT,
         crate::tmux::CODEX_AGENT,
         crate::tmux::OPENCODE_AGENT,
         crate::tmux::HERMES_AGENT,
+        crate::tmux::ANTIGRAVITY_AGENT,
     ];
     let Some(raw) = raw else {
         return Vec::new();

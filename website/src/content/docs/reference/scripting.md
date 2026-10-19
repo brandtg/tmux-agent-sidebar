@@ -14,7 +14,7 @@ tmux show -t "$pane_id" -pv @pane_status
 
 # Get agent type
 tmux show -t "$pane_id" -pv @pane_agent
-# → claude / codex / opencode / hermes / (empty)
+# → claude / codex / opencode / hermes / antigravity / (empty)
 ```
 
 ## Available pane options
@@ -23,7 +23,7 @@ tmux show -t "$pane_id" -pv @pane_agent
 | -------------------------- | ------------------------------------------------------------------ |
 | `@pane_status`             | `running` / `background` / `waiting` / `idle` / `error` / empty    |
 | `@pane_attention`          | `notification` while a hook wants attention (waiting / permission), `done` while a finished turn is unseen; empty otherwise. The sidebar clears it when you focus the pane. |
-| `@pane_agent`              | `claude` / `codex` / `opencode` / `hermes` / empty                  |
+| `@pane_agent`              | `claude` / `codex` / `opencode` / `hermes` / `antigravity` / empty  |
 | `@pane_name`               | Friendly agent/session name (from `/rename` on Claude)              |
 | `@pane_role`               | `sidebar` for the sidebar pane itself; empty for agent panes        |
 | `@pane_prompt`             | Latest user prompt text or response preview                         |

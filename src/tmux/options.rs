@@ -223,6 +223,7 @@ pub const SIDEBAR_COLOR_AGENT_CLAUDE: &str = "@sidebar_color_agent_claude";
 pub const SIDEBAR_COLOR_AGENT_CODEX: &str = "@sidebar_color_agent_codex";
 pub const SIDEBAR_COLOR_AGENT_OPENCODE: &str = "@sidebar_color_agent_opencode";
 pub const SIDEBAR_COLOR_AGENT_HERMES: &str = "@sidebar_color_agent_hermes";
+pub const SIDEBAR_COLOR_AGENT_ANTIGRAVITY: &str = "@sidebar_color_agent_antigravity";
 pub const SIDEBAR_COLOR_PET_BODY: &str = "@sidebar_color_pet_body";
 pub const SIDEBAR_COLOR_PET_EYE: &str = "@sidebar_color_pet_eye";
 pub const SIDEBAR_COLOR_TEXT_ACTIVE: &str = "@sidebar_color_text_active";
