@@ -30,10 +30,23 @@ tmux set -g @agent_sidebar_bin "$SIDEBAR_BINARY"
 # project). Idempotent: re-pointed on every plugin load, which also heals a
 # stale target after the clone moves or is reinstalled. Honors
 # XDG_CONFIG_HOME the same way opencode resolves its config dir.
+# mkdir -p that heals a dangling symlink: dotfiles-managed config dirs are
+# often symlinks whose target may not be synced out yet, and a plain
+# mkdir -p fails ("File exists"), silently skipping the install. Resolve
+# the link and create the target instead, so writes land through the
+# symlink and the link itself stays intact.
+ensure_dir() {
+    local dir="$1"
+    if ! mkdir -p "$dir" 2>/dev/null; then
+        dir="$(readlink -m "$dir" 2>/dev/null || readlink -f "$dir" 2>/dev/null)" || dir=""
+        [[ -n "$dir" ]] && mkdir -p "$dir" 2>/dev/null
+    fi
+}
+
 OPENCODE_PLUGIN_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/opencode/plugins"
 OPENCODE_BRIDGE="$OPENCODE_PLUGIN_DIR/tmux-agent-sidebar.js"
 if [[ -f "$PLUGIN_DIR/.opencode/plugins/tmux-agent-sidebar.js" ]]; then
-    mkdir -p "$OPENCODE_PLUGIN_DIR"
+    ensure_dir "$OPENCODE_PLUGIN_DIR"
     ln -sfn "$PLUGIN_DIR/.opencode/plugins/tmux-agent-sidebar.js" "$OPENCODE_BRIDGE"
 fi
 
@@ -54,7 +67,7 @@ if AGY_HOOKS_JSON=$("$SIDEBAR_BINARY" setup antigravity 2>/dev/null) && [[ -n "$
     cat > "$AGY_RUNTIME_PLUGIN/plugin.json" <<'AGY_MANIFEST'
 { "name": "tmux-agent-sidebar", "description": "tmux-agent-sidebar lifecycle hooks for the Antigravity CLI" }
 AGY_MANIFEST
-    mkdir -p "$AGY_PLUGINS_DIR"
+    ensure_dir "$AGY_PLUGINS_DIR"
     ln -sfn "$AGY_RUNTIME_PLUGIN" "$AGY_PLUGIN_LINK"
 fi
 
