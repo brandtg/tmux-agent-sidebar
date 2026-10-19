@@ -3,6 +3,7 @@ use ratatui::{
     text::{Line, Span},
 };
 
+use crate::process::{command_basename, strip_exe_suffix};
 use crate::tmux::PaneStatus;
 use crate::ui::colors::ColorTheme;
 use crate::ui::icons::StatusIcons;
@@ -341,14 +342,32 @@ pub(super) fn window_row(
     }
 
     let icon_w = display_width(icon);
-    // Icon + space + name take priority; the command fills what remains
-    // after reserving room for the right-pinned port.
+    // Non-agent rows represent individual panes (panels), so each panel shows
+    // the name of its own foreground program rather than the tmux window name.
+    // Window names are volatile under tmux's default `automatic-rename` (which
+    // tracks whichever pane has focus, causing inactive panes in the same window
+    // to adopt the focused pane's name, or `tmux-agent-sidebar` when focused here).
+    //
+    // Future (Option B): If a window was explicitly renamed by the user
+    // (tmux `automatic-rename` is off and `window_name != program_name`), we could
+    // append ` [window_name]` as a secondary muted tag when left_budget permits.
+    let raw_name = if let Some(finished) = finished {
+        finished.command.as_str()
+    } else if !window.command.is_empty() {
+        window.command.as_str()
+    } else if !window.window_name.is_empty() && window.window_name != "tmux-agent-sidebar" {
+        window.window_name.as_str()
+    } else {
+        "shell"
+    };
+    let program_name = strip_exe_suffix(command_basename(raw_name));
+
     let mut left_budget = ctx.inner_width.saturating_sub(icon_w + 1 + right_width);
-    let name = truncate_to_width(&window.window_name, left_budget);
+    let name = truncate_to_width(program_name, left_budget);
     let name_w = display_width(&name);
     left_budget = left_budget.saturating_sub(name_w);
 
-    let mut left_spans: Vec<Span<'static>> = Vec::with_capacity(4);
+    let mut left_spans: Vec<Span<'static>> = Vec::with_capacity(3);
     left_spans.push(Span::styled(
         icon,
         ctx.apply_bg(Style::default().fg(icon_color)),
@@ -358,20 +377,6 @@ pub(super) fn window_row(
         ctx.apply_bg(Style::default().fg(theme.text_active)),
     ));
     let mut left_width = icon_w + 1 + name_w;
-
-    // tmux usually auto-renames the window to the running command, so
-    // only show the command when it adds information.
-    if !window.command.is_empty() && window.command != window.window_name && left_budget >= 3 {
-        let command = truncate_to_width(&window.command, left_budget.saturating_sub(2));
-        let text = format!("  {}", command);
-        let w = display_width(&text);
-        left_spans.push(Span::styled(
-            text,
-            ctx.apply_bg(Style::default().fg(theme.text_muted)),
-        ));
-        left_width += w;
-        left_budget = left_budget.saturating_sub(w);
-    }
 
     // Failed-run marker: a muted note naming the failing exit code keeps
     // the red diamond unambiguous on theme colors that also tint tasks.
@@ -1681,7 +1686,7 @@ mod tests {
     }
 
     #[test]
-    fn window_row_renders_name_command_and_port() {
+    fn window_row_renders_program_and_port() {
         let theme = ColorTheme::default();
         let w = window("web", "node", crate::tmux::WindowStatus::Task);
         let line = window_row(
@@ -1697,13 +1702,14 @@ mod tests {
         );
         let text = line_text(&line);
         assert!(text.contains('\u{25C6}'), "diamond glyph missing: {text}");
-        assert!(text.contains("web"), "name missing: {text}");
-        assert!(text.contains("node"), "command missing: {text}");
+        assert!(text.contains("node"), "program missing: {text}");
+        // Displays the pane's own foreground program, not the window name.
+        assert!(!text.contains("web"), "window name must not appear: {text}");
         assert!(text.contains(":3000"), "port missing: {text}");
     }
 
     #[test]
-    fn window_row_omits_command_when_same_as_name_and_port_when_empty() {
+    fn window_row_omits_port_when_empty() {
         let theme = ColorTheme::default();
         let w = window("nvim", "nvim", crate::tmux::WindowStatus::Busy);
         let line = window_row(
@@ -1718,15 +1724,68 @@ mod tests {
             0,
         );
         let text = line_text(&line);
-        assert!(text.contains("nvim"), "name missing: {text}");
-        // The command equals the window name (tmux auto-rename), so it is
-        // not repeated, and no port renders.
+        assert!(text.contains("nvim"), "program missing: {text}");
         assert_eq!(
             text.matches("nvim").count(),
             1,
-            "command must not duplicate the name: {text}"
+            "program must render exactly once: {text}"
         );
         assert!(!text.contains(':'), "no port expected: {text}");
+    }
+
+    #[test]
+    fn window_row_finished_shows_task_command_not_reverted_shell() {
+        let theme = ColorTheme::default();
+        // Pane dropped back to zsh, but the finished task was cargo
+        let w = window("zsh", "zsh", crate::tmux::WindowStatus::Idle);
+        let finished = crate::state::WindowFinished {
+            command: "cargo".into(),
+            exit_code: Some(0),
+            finished_at: 0,
+        };
+        let line = window_row(
+            &w,
+            None,
+            Some(&finished),
+            false,
+            false,
+            40,
+            &StatusIcons::default(),
+            &theme,
+            0,
+        );
+        let text = line_text(&line);
+        assert!(
+            text.contains("cargo"),
+            "finished task command missing: {text}"
+        );
+        assert!(
+            !text.contains("zsh"),
+            "reverted shell must not appear: {text}"
+        );
+    }
+
+    #[test]
+    fn window_row_suppresses_tmux_agent_sidebar_window_name() {
+        let theme = ColorTheme::default();
+        let w = window("tmux-agent-sidebar", "", crate::tmux::WindowStatus::Idle);
+        let line = window_row(
+            &w,
+            None,
+            None,
+            false,
+            false,
+            40,
+            &StatusIcons::default(),
+            &theme,
+            0,
+        );
+        let text = line_text(&line);
+        assert!(
+            !text.contains("tmux-agent-sidebar"),
+            "sidebar binary name must not appear: {text}"
+        );
+        assert!(text.contains("shell"), "fallback name missing: {text}");
     }
 
     #[test]

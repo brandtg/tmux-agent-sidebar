@@ -361,7 +361,7 @@ mod tests {
             .collect::<Vec<_>>()
             .join("\n");
 
-        assert!(text.contains("cargo test"), "window row missing:\n{text}");
+        assert!(text.contains("cargo"), "window row missing:\n{text}");
         assert!(text.contains('\u{25C6}'), "window glyph missing:\n{text}");
         // Layout: repo header, agent status, agent idle hint, then the
         // window row (row index 1). No sub-header line.
@@ -414,10 +414,10 @@ mod tests {
                 .unwrap_or_else(|| panic!("{needle:?} missing:\n{text}"))
         };
         assert!(
-            pos("fix auth") < pos("backend")
-                && pos("backend") < pos("frontend")
-                && pos("frontend") < pos("fix ui")
-                && pos("fix ui") < pos("tests"),
+            pos("fix auth") < pos("node")
+                && pos("node") < pos("npm")
+                && pos("npm") < pos("fix ui")
+                && pos("fix ui") < pos("cargo"),
             "rows must interleave by window:\n{text}"
         );
 
@@ -494,7 +494,7 @@ mod tests {
             .join("\n");
 
         assert!(text.contains("solo"), "session header missing:\n{text}");
-        assert!(text.contains("cargo test"), "window row missing:\n{text}");
+        assert!(text.contains("cargo"), "window row missing:\n{text}");
         assert!(
             collected.pending_spawn.is_empty(),
             "session headers must not register spawn targets"
