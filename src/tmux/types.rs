@@ -2,6 +2,10 @@ pub const CLAUDE_AGENT: &str = "claude";
 pub const CODEX_AGENT: &str = "codex";
 pub const OPENCODE_AGENT: &str = "opencode";
 pub const HERMES_AGENT: &str = "hermes";
+pub const ANTIGRAVITY_AGENT: &str = "antigravity";
+/// Antigravity CLI's executable is `agy`, not `antigravity`: until a hook
+/// claims the pane, `pane_current_command` and process `comm` read `agy`.
+pub const AGY_BIN: &str = "agy";
 
 /// Visual attention state stored in `@pane_attention`. `Notification`
 /// means a hook wants the user's eye right now (waiting / permission /
@@ -159,6 +163,7 @@ pub enum AgentType {
     Codex,
     OpenCode,
     Hermes,
+    Antigravity,
     #[allow(dead_code)]
     Unknown,
 }
@@ -228,6 +233,9 @@ impl AgentType {
             CODEX_AGENT => Some(Self::Codex),
             OPENCODE_AGENT => Some(Self::OpenCode),
             HERMES_AGENT => Some(Self::Hermes),
+            // The `@pane_agent` value is hook-written ("antigravity"), while
+            // the pane-command fallback reads the `agy` executable name.
+            ANTIGRAVITY_AGENT | AGY_BIN => Some(Self::Antigravity),
             _ => None,
         }
     }
@@ -238,6 +246,7 @@ impl AgentType {
             Self::Codex => CODEX_AGENT,
             Self::OpenCode => OPENCODE_AGENT,
             Self::Hermes => HERMES_AGENT,
+            Self::Antigravity => ANTIGRAVITY_AGENT,
             Self::Unknown => "unknown",
         }
     }
@@ -327,6 +336,13 @@ mod tests {
         assert_eq!(AgentType::from_label("codex"), Some(AgentType::Codex));
         assert_eq!(AgentType::from_label("opencode"), Some(AgentType::OpenCode));
         assert_eq!(AgentType::from_label("hermes"), Some(AgentType::Hermes));
+        assert_eq!(
+            AgentType::from_label("antigravity"),
+            Some(AgentType::Antigravity)
+        );
+        // The executable name is accepted so a pane is detected from
+        // `pane_current_command` before any hook has fired.
+        assert_eq!(AgentType::from_label("agy"), Some(AgentType::Antigravity));
         assert_eq!(AgentType::from_label("unknown"), None);
         assert_eq!(AgentType::from_label(""), None);
     }
@@ -337,6 +353,7 @@ mod tests {
         assert_eq!(AgentType::Codex.label(), "codex");
         assert_eq!(AgentType::OpenCode.label(), "opencode");
         assert_eq!(AgentType::Hermes.label(), "hermes");
+        assert_eq!(AgentType::Antigravity.label(), "antigravity");
         assert_eq!(AgentType::Unknown.label(), "unknown");
     }
 
@@ -346,6 +363,7 @@ mod tests {
         assert_eq!(AgentType::Codex.as_str(), CODEX_AGENT);
         assert_eq!(AgentType::OpenCode.as_str(), OPENCODE_AGENT);
         assert_eq!(AgentType::Hermes.as_str(), HERMES_AGENT);
+        assert_eq!(AgentType::Antigravity.as_str(), ANTIGRAVITY_AGENT);
     }
 
     #[test]

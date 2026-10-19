@@ -15,14 +15,19 @@ const HERMES_TITLE_LIMIT: usize = 2000;
 
 /// Scan the agents' session stores for `session_id → title` labels.
 ///
-/// Two sources share one map because the key spaces never collide: Claude
+/// Three sources share one map because the key spaces never collide: Claude
 /// Code ids are UUIDs (`~/.claude/sessions/*.json`), Hermes ids are
-/// `YYYYMMDD_HHMMSS_hex` (the `sessions` table of `~/.hermes/state.db`) — and
-/// those are the same ids Hermes puts in its hook payloads, so the map keys
-/// match `@pane_session_id` on the pane.
+/// `YYYYMMDD_HHMMSS_hex` (the `sessions` table of `~/.hermes/state.db`), and
+/// Antigravity ids are UUIDs (the `conversation_summaries` table of
+/// `~/.gemini/antigravity-cli/conversation_summaries.db`) — and those are the
+/// same ids the agents put in their hook payloads, so the map keys match
+/// `@pane_session_id` on the pane.
 pub fn scan_session_names() -> HashMap<String, String> {
     let mut map = scan_claude_session_names();
     for (session_id, name) in scan_hermes_session_titles() {
+        map.insert(session_id, name);
+    }
+    for (session_id, name) in scan_antigravity_session_titles() {
         map.insert(session_id, name);
     }
     map
@@ -115,6 +120,89 @@ fn parse_hermes_titles(json: &str) -> HashMap<String, String> {
     map
 }
 
+/// Return the path to Antigravity's conversation-summaries store, when present.
+fn antigravity_summaries_db() -> Option<PathBuf> {
+    let home = std::env::var("HOME").ok()?;
+    let db = PathBuf::from(home)
+        .join(".gemini")
+        .join("antigravity-cli")
+        .join("conversation_summaries.db");
+    if db.is_file() { Some(db) } else { None }
+}
+
+/// Read `(conversation_id, title)` pairs from Antigravity's SQLite
+/// conversation-summaries store via the `sqlite3` CLI in JSON mode.
+///
+/// Antigravity auto-titles conversations after the first turn (no hook event
+/// carries a title), so a background read of the store is the only way to
+/// pick titles up. The `title` column holds a user-set `/title` label and is
+/// usually empty; the auto-generated title lives in `preview`, so it is used
+/// as the fallback — matching what the Antigravity UI itself shows.
+///
+/// Missing `sqlite3` binary, unreadable DB, or any query failure yields an
+/// empty map: Antigravity rows then keep the plain agent label. `-readonly`
+/// keeps the probe from taking write locks on the live WAL database.
+fn scan_antigravity_session_titles() -> HashMap<String, String> {
+    let Some(db) = antigravity_summaries_db() else {
+        return HashMap::new();
+    };
+    let mut command = Command::new("sqlite3");
+    command.arg("-json").arg("-readonly").arg(&db).arg(format!(
+        "SELECT conversation_id, title, preview FROM conversation_summaries \
+              ORDER BY last_modified_time DESC LIMIT {HERMES_TITLE_LIMIT}"
+    ));
+    let Ok(output) = subprocess::run_with_timeout(&mut command, HERMES_QUERY_TIMEOUT) else {
+        return HashMap::new();
+    };
+    if !output.status.success() {
+        return HashMap::new();
+    }
+    parse_antigravity_titles(&String::from_utf8_lossy(&output.stdout))
+}
+
+/// Parse `sqlite3 -json` output
+/// (`[{"conversation_id": "...", "title": "...", "preview": "..."}, ...]`).
+/// Same degradation rules as [`parse_hermes_titles`]: a row with no usable
+/// name is skipped, never an error. `title` wins over `preview` because a
+/// user-set `/title` label should not be masked by the auto-title.
+fn parse_antigravity_titles(json: &str) -> HashMap<String, String> {
+    let Ok(rows) = serde_json::from_str::<serde_json::Value>(json.trim()) else {
+        return HashMap::new();
+    };
+    let Some(rows) = rows.as_array() else {
+        return HashMap::new();
+    };
+    let mut map = HashMap::new();
+    for row in rows {
+        let Some(id) = row
+            .get("conversation_id")
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+        else {
+            continue;
+        };
+        if id.is_empty() {
+            continue;
+        }
+        let title = row
+            .get("title")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .trim();
+        let preview = row
+            .get("preview")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .trim();
+        let name = if title.is_empty() { preview } else { title };
+        if name.is_empty() {
+            continue;
+        }
+        map.insert(id.to_string(), name.to_string());
+    }
+    map
+}
+
 /// Parse a single session JSON file, returning `(sessionId, name)` if both exist.
 fn parse_session_file(path: &std::path::Path) -> Option<(String, String)> {
     let content = std::fs::read_to_string(path).ok()?;
@@ -131,6 +219,46 @@ fn parse_session_file(path: &std::path::Path) -> Option<(String, String)> {
 mod tests {
     use super::*;
     use std::fs;
+
+    #[test]
+    fn parse_antigravity_titles_reads_rows() {
+        // Real row shape from conversation_summaries.db: the auto-title is
+        // in `preview` and `title` is the (usually empty) /title column.
+        let map = parse_antigravity_titles(
+            r#"[{"conversation_id":"b1d69df5-58e7","title":"","preview":"Migrating Inference To Uv"},
+                {"conversation_id":"39d1b6d7-7983","title":"","preview":"Creating Makefile For Inference"},
+                {"conversation_id":"6b5ea64f-27f8","title":"Renamed by /title","preview":"Auto Title"}]"#,
+        );
+        assert_eq!(map.len(), 3);
+        assert_eq!(map["b1d69df5-58e7"], "Migrating Inference To Uv");
+        assert_eq!(map["39d1b6d7-7983"], "Creating Makefile For Inference");
+        // A user-set title wins over the auto-generated preview.
+        assert_eq!(map["6b5ea64f-27f8"], "Renamed by /title");
+    }
+
+    #[test]
+    fn parse_antigravity_titles_empty_output_is_empty_map() {
+        assert!(parse_antigravity_titles("").is_empty());
+        assert!(parse_antigravity_titles("[]").is_empty());
+    }
+
+    #[test]
+    fn parse_antigravity_titles_malformed_output_is_empty_map() {
+        assert!(parse_antigravity_titles("not json").is_empty());
+        assert!(parse_antigravity_titles("{\"id\":\"x\"}").is_empty());
+    }
+
+    #[test]
+    fn parse_antigravity_titles_skips_unnamed_and_incomplete_rows() {
+        let map = parse_antigravity_titles(
+            r#"[{"conversation_id":"a","title":"","preview":""},
+                {"conversation_id":"","title":"empty id"},
+                {"preview":"no id"},
+                {"conversation_id":"b","title":"  spaced  ","preview":""}]"#,
+        );
+        assert_eq!(map.len(), 1);
+        assert_eq!(map["b"], "spaced");
+    }
 
     #[test]
     fn parse_session_file_with_name() {

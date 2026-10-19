@@ -457,6 +457,7 @@ impl AppState {
         } = snapshot;
         self.sweep_dead_bg_shells_if_due(&mut sessions, &mut process_snapshot);
         self.queue_port_scan_if_due(&sessions);
+        self.queue_approval_scan_if_due(&sessions);
         self.apply_session_snapshot(sessions, other_panes, sidebar_window_panes);
         self.mark_focused_pane_seen(window_active);
         // `apply_session_snapshot` rebuilds `repo_groups` from a fresh tmux
@@ -548,6 +549,45 @@ impl AppState {
 
     pub(crate) fn take_pending_port_scan(&mut self) -> Option<Vec<crate::port::PaneScanTarget>> {
         self.pending_port_scan.take()
+    }
+
+    /// Due-check for the Antigravity approval-prompt capture scan. Antigravity
+    /// has no hook for "waiting on a permission decision", so the approval
+    /// worker capture-scans these panes to maintain the waiting state (see
+    /// `approval_scan_loop`). Only `running` Antigravity panes are queued —
+    /// panes the worker itself flagged `waiting` are re-checked worker-side
+    /// from its own flagged set, and idle/error panes have no turn in
+    /// flight to prompt on.
+    pub(crate) fn queue_approval_scan_if_due(&mut self, sessions: &[SessionInfo]) {
+        const APPROVAL_REFRESH_INTERVAL: Duration = Duration::from_secs(2);
+
+        if self.timers.approval_scan_initialized
+            && self.timers.last_approval_scan.elapsed() < APPROVAL_REFRESH_INTERVAL
+        {
+            return;
+        }
+        self.timers.approval_scan_initialized = true;
+        self.timers.last_approval_scan = std::time::Instant::now();
+        let targets: Vec<String> = sessions
+            .iter()
+            .flat_map(|session| session.windows.iter())
+            .flat_map(|window| window.panes.iter())
+            .filter(|pane| pane.agent == crate::tmux::AgentType::Antigravity)
+            .filter(|pane| pane.status == crate::tmux::PaneStatus::Running)
+            .map(|pane| pane.pane_id.clone())
+            .collect();
+        crate::debug::log(&format!(
+            "approval-scan: queued {} antigravity running pane(s)",
+            targets.len()
+        ));
+        if targets.is_empty() {
+            return; // keep the debug trace free of per-tick noise
+        }
+        self.pending_approval_scan = Some(targets);
+    }
+
+    pub(crate) fn take_pending_approval_scan(&mut self) -> Option<Vec<String>> {
+        self.pending_approval_scan.take()
     }
 
     /// Apply a completed worker scan: refresh per-pane ports/commands for

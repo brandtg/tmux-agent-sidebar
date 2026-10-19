@@ -6,9 +6,11 @@
 use std::path::PathBuf;
 
 use crate::adapter::HookRegistration;
+use crate::adapter::antigravity::AntigravityAdapter;
 use crate::adapter::claude::ClaudeAdapter;
 use crate::adapter::codex::CodexAdapter;
 use crate::adapter::hermes::HermesAdapter;
+use crate::tmux::ANTIGRAVITY_AGENT;
 
 #[allow(dead_code)]
 const _CLAUDE_TABLE_REACHABLE: &[HookRegistration] = ClaudeAdapter::HOOK_REGISTRATIONS;
@@ -16,6 +18,8 @@ const _CLAUDE_TABLE_REACHABLE: &[HookRegistration] = ClaudeAdapter::HOOK_REGISTR
 const _CODEX_TABLE_REACHABLE: &[HookRegistration] = CodexAdapter::HOOK_REGISTRATIONS;
 #[allow(dead_code)]
 const _HERMES_TABLE_REACHABLE: &[HookRegistration] = HermesAdapter::HOOK_REGISTRATIONS;
+#[allow(dead_code)]
+const _ANTIGRAVITY_TABLE_REACHABLE: &[HookRegistration] = AntigravityAdapter::HOOK_REGISTRATIONS;
 
 /// POSIX-quote a string for safe use as a single shell argument.
 ///
@@ -64,11 +68,16 @@ fn format_hook_command(hook_script: &str, agent: &str, event: &str) -> String {
 /// `AgentEventKind::external_name()` — no hook identity is duplicated here.
 /// When `HookRegistration.matcher` is `None`, the snippet uses the empty
 /// string `""` (matching Claude/Codex's "any tool" convention).
+///
+/// Antigravity is the exception: its `hooks.json` has no `"hooks"` wrapper
+/// (top-level keys are hook names), so [`build_antigravity_snippet`]
+/// returns the file root directly.
 pub(crate) fn build_agent_snippet(agent: &str, hook_script: &str) -> Option<serde_json::Value> {
     let table: &[HookRegistration] = match agent {
         "claude" => ClaudeAdapter::HOOK_REGISTRATIONS,
         "codex" => CodexAdapter::HOOK_REGISTRATIONS,
         "hermes" => HermesAdapter::HOOK_REGISTRATIONS,
+        ANTIGRAVITY_AGENT => return Some(build_antigravity_snippet(hook_script)),
         _ => return None,
     };
 
@@ -91,6 +100,46 @@ pub(crate) fn build_agent_snippet(agent: &str, hook_script: &str) -> Option<serd
     }
 
     Some(serde_json::json!({ "hooks": serde_json::Value::Object(hooks) }))
+}
+
+/// Top-level hook name under which the sidebar's registrations live in
+/// Antigravity's `hooks.json` (that file's keys are hook names, not a
+/// `hooks` object).
+pub(crate) const ANTIGRAVITY_HOOK_NAME: &str = "tmux-agent-sidebar";
+
+/// Whether an Antigravity trigger uses the `{matcher, hooks: [...]}`
+/// wrapper. Per the upstream docs, `PreToolUse`/`PostToolUse` entries are
+/// matcher groups while `SessionStart`/`PreInvocation`/`PostInvocation`/
+/// `Stop` are plain handler lists.
+fn is_antigravity_matcher_trigger(trigger: &str) -> bool {
+    matches!(trigger, "PreToolUse" | "PostToolUse")
+}
+
+/// Build the ready-to-paste Antigravity `hooks.json` content.
+///
+/// Unlike Claude/Codex, Antigravity's `hooks.json` maps **hook names** to
+/// their event configurations — there is no `"hooks"` wrapper — and
+/// non-tool events take a plain handler list instead of matcher groups
+/// (see `is_antigravity_matcher_trigger`). Generated from the same
+/// `HOOK_REGISTRATIONS` table as every other agent.
+pub(crate) fn build_antigravity_snippet(hook_script: &str) -> serde_json::Value {
+    let mut events = serde_json::Map::new();
+    for reg in AntigravityAdapter::HOOK_REGISTRATIONS {
+        let command = format_hook_command(hook_script, ANTIGRAVITY_AGENT, reg.kind.external_name());
+        let entry = if is_antigravity_matcher_trigger(reg.trigger) {
+            serde_json::json!([
+                {
+                    "matcher": reg.matcher.unwrap_or(""),
+                    "hooks": [ { "type": "command", "command": command } ],
+                }
+            ])
+        } else {
+            serde_json::json!([ { "type": "command", "command": command } ])
+        };
+        events.insert(reg.trigger.to_string(), entry);
+    }
+
+    serde_json::json!({ ANTIGRAVITY_HOOK_NAME: serde_json::Value::Object(events) })
 }
 
 /// Quote a string as a YAML double-quoted scalar so shell quoting inside the
@@ -342,6 +391,22 @@ pub(crate) fn build_setup_output(hook_script: &str) -> serde_json::Value {
             .expect("hermes must be handled by build_agent_snippet"),
         "yaml_snippet": build_hermes_yaml_snippet(hook_script),
     });
+    // Antigravity's snippet is the hooks.json root (hook-name keys, no
+    // `hooks` wrapper), so its entry is built directly instead of through
+    // `build_agent_entry`.
+    let antigravity = serde_json::json!({
+        "config_path": "~/.gemini/config/hooks.json",
+        "hook_name": ANTIGRAVITY_HOOK_NAME,
+        "hooks": AntigravityAdapter::HOOK_REGISTRATIONS.iter().map(|reg| {
+            serde_json::json!({
+                "trigger": reg.trigger,
+                "matcher": serde_json::Value::Null,
+                "event": reg.kind.external_name(),
+                "command": format_hook_command(hook_script, ANTIGRAVITY_AGENT, reg.kind.external_name()),
+            })
+        }).collect::<Vec<_>>(),
+        "snippet": build_antigravity_snippet(hook_script),
+    });
 
     serde_json::json!({
         "version": crate::VERSION,
@@ -350,6 +415,7 @@ pub(crate) fn build_setup_output(hook_script: &str) -> serde_json::Value {
             "claude": claude,
             "codex": codex,
             "hermes": hermes,
+            "antigravity": antigravity,
         },
     })
 }
@@ -462,6 +528,7 @@ pub(crate) fn config_path_for_agent(agent: &str) -> Option<PathBuf> {
         "claude" => Some(home.join(".claude/settings.json")),
         "codex" => Some(home.join(".codex/hooks.json")),
         "hermes" => Some(home.join(".hermes/config.yaml")),
+        "antigravity" => Some(home.join(".gemini/config/hooks.json")),
         _ => None,
     }
 }
@@ -492,14 +559,14 @@ fn run_setup(args: &[String], hook_script: &str) -> (i32, Option<serde_json::Val
             Some(snippet) => (0, Some(snippet)),
             None => {
                 eprintln!(
-                    "error: unknown agent '{}' (expected 'claude', 'codex', or 'hermes')",
+                    "error: unknown agent '{}' (expected 'claude', 'codex', 'hermes', or 'antigravity')",
                     args[0]
                 );
                 (2, None)
             }
         },
         _ => {
-            eprintln!("usage: tmux-agent-sidebar setup [claude|codex|hermes]");
+            eprintln!("usage: tmux-agent-sidebar setup [claude|codex|hermes|antigravity]");
             (2, None)
         }
     }
@@ -531,6 +598,19 @@ pub(crate) fn cmd_setup(args: &[String]) -> i32 {
              # or set hooks_auto_accept: true in ~/.hermes/config.yaml.\n"
         );
         return 0;
+    }
+    // Antigravity's snippet is a whole-file shape (hook-name keys) rather
+    // than a mergeable `hooks` object, and agy parses hook stdout as the
+    // response — point the user at the file and the workspace-level
+    // alternative before the JSON prints.
+    if args.len() == 1 && args[0] == ANTIGRAVITY_AGENT {
+        eprint!(
+            "\n# Paste the object above into ~/.gemini/config/hooks.json (merge with\n\
+             # existing hook-name keys if the file is not empty), or into\n\
+             # <workspace>/.agents/hooks.json for a workspace-local install.\n\
+             # Antigravity reloads hooks on workspace change; restart a running\n\
+             # session to pick up a global edit.\n"
+        );
     }
     let (code, json) = run_setup(args, &resolved.path);
     if let Some(v) = json {

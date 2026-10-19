@@ -24,6 +24,7 @@ pub struct ColorTheme {
     pub agent_codex: Color,
     pub agent_opencode: Color,
     pub agent_hermes: Color,
+    pub agent_antigravity: Color,
     pub pet_body: Color,
     pub pet_eye: Color,
     pub text_active: Color,
@@ -65,6 +66,10 @@ impl Default for ColorTheme {
             agent_codex: Color::Indexed(141),
             agent_opencode: Color::Indexed(117),
             agent_hermes: Color::Indexed(214),
+            // Aquamarine — the agent palette already holds a mauve (claude),
+            // periwinkle (codex), powder blue (opencode), and gold (hermes);
+            // a second blue would read as OpenCode's.
+            agent_antigravity: Color::Indexed(78),
             pet_body: Color::Indexed(208),
             pet_eye: Color::Indexed(114),
             text_active: Color::Indexed(255),
@@ -122,6 +127,10 @@ impl ColorTheme {
         theme.agent_codex = read(tmux::SIDEBAR_COLOR_AGENT_CODEX, theme.agent_codex);
         theme.agent_opencode = read(tmux::SIDEBAR_COLOR_AGENT_OPENCODE, theme.agent_opencode);
         theme.agent_hermes = read(tmux::SIDEBAR_COLOR_AGENT_HERMES, theme.agent_hermes);
+        theme.agent_antigravity = read(
+            tmux::SIDEBAR_COLOR_AGENT_ANTIGRAVITY,
+            theme.agent_antigravity,
+        );
         theme.pet_body = read(tmux::SIDEBAR_COLOR_PET_BODY, theme.pet_body);
         theme.pet_eye = read(tmux::SIDEBAR_COLOR_PET_EYE, theme.pet_eye);
         theme.text_active = read(tmux::SIDEBAR_COLOR_TEXT_ACTIVE, theme.text_active);
@@ -181,6 +190,7 @@ impl ColorTheme {
             AgentType::Codex => self.agent_codex,
             AgentType::OpenCode => self.agent_opencode,
             AgentType::Hermes => self.agent_hermes,
+            AgentType::Antigravity => self.agent_antigravity,
             AgentType::Unknown => self.status_unknown,
         }
     }

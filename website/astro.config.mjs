@@ -101,6 +101,7 @@ export default defineConfig({
             { slug: 'getting-started/codex' },
             { slug: 'getting-started/opencode' },
             { slug: 'getting-started/hermes' },
+            { slug: 'getting-started/antigravity' },
           ],
         },
         {
@@ -122,6 +123,7 @@ export default defineConfig({
             { slug: 'agents/codex' },
             { slug: 'agents/opencode' },
             { slug: 'agents/hermes' },
+            { slug: 'agents/antigravity' },
           ],
         },
         {

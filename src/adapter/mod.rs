@@ -1,3 +1,4 @@
+pub mod antigravity;
 pub mod claude;
 pub mod codex;
 pub mod hermes;
@@ -65,6 +66,21 @@ impl EventBase {
     /// Attach the subagent/teammate id (only Claude payloads carry one).
     pub(crate) fn with_agent_id(mut self, agent_id: Option<String>) -> Self {
         self.agent_id = agent_id;
+        self
+    }
+
+    /// Override the cwd extracted by [`EventBase::new`]. Antigravity
+    /// payloads carry no `cwd` — the workspace root arrives as the first
+    /// entry of `workspacePaths`.
+    pub(crate) fn with_cwd(mut self, cwd: String) -> Self {
+        self.cwd = cwd;
+        self
+    }
+
+    /// Override the session id extracted by [`EventBase::new`].
+    /// Antigravity payloads name it `conversationId`.
+    pub(crate) fn with_session_id(mut self, session_id: Option<String>) -> Self {
+        self.session_id = session_id;
         self
     }
 
@@ -186,7 +202,12 @@ pub struct HookRegistration {
 pub(crate) fn minimal_payload(kind: AgentEventKind) -> serde_json::Value {
     use serde_json::json;
     match kind {
-        AgentEventKind::ActivityLog => json!({"tool_name": "Read"}),
+        // Both wire shapes for the same kind: Claude/Codex/Hermes carry a
+        // flat `tool_name`, Antigravity nests it under `toolCall`.
+        AgentEventKind::ActivityLog => json!({
+            "tool_name": "Read",
+            "toolCall": {"name": "Read", "args": {}}
+        }),
         AgentEventKind::SubagentStart | AgentEventKind::SubagentStop => {
             json!({"agent_type": "Explore"})
         }

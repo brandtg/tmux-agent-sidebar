@@ -2,7 +2,9 @@ use serde_json::Value;
 
 use super::AgentEvent;
 use crate::adapter;
-use crate::tmux::{CLAUDE_AGENT, CODEX_AGENT, HERMES_AGENT, OPENCODE_AGENT};
+use crate::tmux::{
+    AGY_BIN, ANTIGRAVITY_AGENT, CLAUDE_AGENT, CODEX_AGENT, HERMES_AGENT, OPENCODE_AGENT,
+};
 
 /// Adapter that converts external agent events into internal `AgentEvent`.
 pub trait EventAdapter {
@@ -15,6 +17,9 @@ pub fn resolve_adapter(agent_name: &str) -> Option<Box<dyn EventAdapter>> {
         CODEX_AGENT => Some(Box::new(adapter::codex::CodexAdapter)),
         OPENCODE_AGENT => Some(Box::new(adapter::opencode::OpenCodeAdapter)),
         HERMES_AGENT => Some(Box::new(adapter::hermes::HermesAdapter)),
+        // Generated hook configs use the canonical label; `agy` is accepted
+        // so a hand-written config that uses the executable name still works.
+        ANTIGRAVITY_AGENT | AGY_BIN => Some(Box::new(adapter::antigravity::AntigravityAdapter)),
         _ => None,
     }
 }

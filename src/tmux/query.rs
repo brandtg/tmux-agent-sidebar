@@ -491,20 +491,21 @@ fn parse_pane_fields_with_processes(
     };
     let pane_pid: Option<u32> = parts[pane_line_field::PANE_PID].parse().ok();
 
-    // Codex / OpenCode / Hermes panes can leave stale tmux metadata behind
-    // after the agent exits and the pane falls back to the user's shell.
-    // None of them expose a reliable "process exit" hook for every path —
-    // Codex has no such hook, OpenCode runs under Bun where
-    // `process.on("exit")` does not fire our handlers, and Hermes'
+    // Codex / OpenCode / Hermes / Antigravity panes can leave stale tmux
+    // metadata behind after the agent exits and the pane falls back to the
+    // user's shell. None of them expose a reliable "process exit" hook for
+    // every path — Codex has no such hook, OpenCode runs under Bun where
+    // `process.on("exit")` does not fire our handlers, Hermes'
     // `on_session_finalize` only covers graceful exits (not crashes or
-    // killed panes) — so the Rust polling side must own teardown: wipe
+    // killed panes), and Antigravity's `Stop` marks the end of a turn, not
+    // the process — so the Rust polling side must own teardown: wipe
     // pane options + activity log the first poll after the agent is
     // gone. Subsequent polls short-circuit at the `AgentType::from_label`
     // check above once `@pane_agent` has been cleared. Claude is excluded
     // because its SessionEnd hook drives cleanup instead.
     if matches!(
         agent,
-        AgentType::Codex | AgentType::OpenCode | AgentType::Hermes
+        AgentType::Codex | AgentType::OpenCode | AgentType::Hermes | AgentType::Antigravity
     ) && is_shell_command(current_command)
     {
         // Wipe only on positive evidence the agent is gone: a parsed

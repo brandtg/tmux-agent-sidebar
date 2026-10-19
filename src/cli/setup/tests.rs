@@ -457,7 +457,7 @@ fn full_output_has_expected_top_level_keys() {
     let agents = v.get("agents").and_then(Value::as_object).unwrap();
     let mut keys: Vec<&str> = agents.keys().map(String::as_str).collect();
     keys.sort();
-    assert_eq!(keys, vec!["claude", "codex", "hermes"]);
+    assert_eq!(keys, vec!["antigravity", "claude", "codex", "hermes"]);
 }
 
 #[test]
@@ -589,6 +589,69 @@ fn full_output_snapshot() {
 
 const EXPECTED_FULL_OUTPUT: &str = r#"{
   "agents": {
+    "antigravity": {
+      "config_path": "~/.gemini/config/hooks.json",
+      "hook_name": "tmux-agent-sidebar",
+      "hooks": [
+        {
+          "command": "bash /fake/hook.sh antigravity session-start",
+          "event": "session-start",
+          "matcher": null,
+          "trigger": "SessionStart"
+        },
+        {
+          "command": "bash /fake/hook.sh antigravity user-prompt-submit",
+          "event": "user-prompt-submit",
+          "matcher": null,
+          "trigger": "PreInvocation"
+        },
+        {
+          "command": "bash /fake/hook.sh antigravity activity-log",
+          "event": "activity-log",
+          "matcher": null,
+          "trigger": "PostToolUse"
+        },
+        {
+          "command": "bash /fake/hook.sh antigravity stop",
+          "event": "stop",
+          "matcher": null,
+          "trigger": "Stop"
+        }
+      ],
+      "snippet": {
+        "tmux-agent-sidebar": {
+          "PostToolUse": [
+            {
+              "hooks": [
+                {
+                  "command": "bash /fake/hook.sh antigravity activity-log",
+                  "type": "command"
+                }
+              ],
+              "matcher": ""
+            }
+          ],
+          "PreInvocation": [
+            {
+              "command": "bash /fake/hook.sh antigravity user-prompt-submit",
+              "type": "command"
+            }
+          ],
+          "SessionStart": [
+            {
+              "command": "bash /fake/hook.sh antigravity session-start",
+              "type": "command"
+            }
+          ],
+          "Stop": [
+            {
+              "command": "bash /fake/hook.sh antigravity stop",
+              "type": "command"
+            }
+          ]
+        }
+      }
+    },
     "claude": {
       "config_path": "~/.claude/settings.json",
       "hooks": [

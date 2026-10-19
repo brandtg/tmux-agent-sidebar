@@ -4,7 +4,7 @@ use std::process::Command;
 use std::time::Duration;
 
 use crate::subprocess;
-use crate::tmux::{AgentType, HERMES_AGENT};
+use crate::tmux::{AGY_BIN, ANTIGRAVITY_AGENT, AgentType, HERMES_AGENT};
 
 /// Deadline for the full-process `ps` scan; it runs on the TUI event loop
 /// every refresh tick and must never hang there.
@@ -174,6 +174,13 @@ pub(crate) fn process_matches_agent(info: &ProcessInfo, agent_name: &str) -> boo
     if agent_name == HERMES_AGENT && process_matches_hermes_launcher(info) {
         return true;
     }
+    // Antigravity's executable is `agy` (see `AGY_BIN`), so its process
+    // `comm` never equals the "antigravity" agent label. Match the binary
+    // name explicitly or the stale-state sweep reads live panes as dead.
+    if agent_name == ANTIGRAVITY_AGENT && strip_exe_suffix(command_basename(&info.comm)) == AGY_BIN
+    {
+        return true;
+    }
     if strip_exe_suffix(command_basename(&info.comm)) == agent_name {
         return true;
     }
@@ -275,6 +282,37 @@ mod tests {
         let info = snapshot.info_by_pid.get(&100).expect("process info");
         assert_eq!(info.comm, "codex");
         assert_eq!(info.args, "/Applications/Codex App/bin/codex --full-auto");
+    }
+
+    #[test]
+    fn process_matches_agent_matches_agy_binary_name() {
+        // Antigravity runs as the `agy` executable; the agent label is
+        // "antigravity". The comm must match through the alias or the
+        // stale-state sweep would wipe a live pane's metadata.
+        assert!(process_matches_agent(
+            &ProcessInfo {
+                comm: "agy".to_string(),
+                args: "agy".to_string(),
+            },
+            "antigravity",
+        ));
+        // The canonical label still matches (hooks rename nothing here,
+        // but future-proof the predicate).
+        assert!(process_matches_agent(
+            &ProcessInfo {
+                comm: "antigravity".to_string(),
+                args: "antigravity".to_string(),
+            },
+            "antigravity",
+        ));
+        // Other agents must not match through the agy alias.
+        assert!(!process_matches_agent(
+            &ProcessInfo {
+                comm: "agy".to_string(),
+                args: "agy".to_string(),
+            },
+            "claude",
+        ));
     }
 
     #[test]
