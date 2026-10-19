@@ -53,6 +53,7 @@ pub fn run(
         git_info_rx,
         port_scan_tx,
         port_scan_rx,
+        approval_tx,
     } = workers;
 
     let mut last_refresh = std::time::Instant::now();
@@ -145,6 +146,11 @@ pub fn run(
             // Hand the queued port scan (if due) to its worker.
             if let Some(targets) = state.take_pending_port_scan() {
                 let _ = port_scan_tx.send(targets);
+            }
+            // Hand the queued approval scan (if due) to its worker, which
+            // writes the waiting state onto the pane options directly.
+            if let Some(pane_ids) = state.take_pending_approval_scan() {
+                let _ = approval_tx.send(pane_ids);
             }
             // Keep the git-info resolver fed with the current grouping
             // anchors (launch cwd when captured, else live cwd — the same

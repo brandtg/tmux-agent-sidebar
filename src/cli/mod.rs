@@ -1,7 +1,7 @@
 pub mod capture;
 mod hook;
 mod label;
-mod notify_focus;
+pub(crate) mod notify_focus;
 pub mod plugin_state;
 pub(crate) mod setup;
 pub(crate) mod shared_html;

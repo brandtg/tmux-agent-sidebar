@@ -147,7 +147,7 @@ All options are tmux options set in `~/.tmux.conf`, before the plugin loads (bef
 | `@sidebar_color_agent_codex` | `141` | Codex brand color |
 | `@sidebar_color_agent_opencode` | `117` | OpenCode brand color |
 | `@sidebar_color_agent_hermes` | `214` | Hermes brand color |
-| `@sidebar_color_agent_antigravity` | `33` | Antigravity brand color |
+| `@sidebar_color_agent_antigravity` | `78` | Antigravity brand color |
 | `@sidebar_color_pet_body` | `208` | Pet body |
 | `@sidebar_color_pet_eye` | `114` | Pet eyes |
 | `@sidebar_color_text_active` | `255` | Primary text — active rows, counts, filtered repo label |

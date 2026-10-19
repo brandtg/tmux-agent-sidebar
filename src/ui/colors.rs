@@ -66,8 +66,10 @@ impl Default for ColorTheme {
             agent_codex: Color::Indexed(141),
             agent_opencode: Color::Indexed(117),
             agent_hermes: Color::Indexed(214),
-            // Google blue — distinct from opencode's lighter 117.
-            agent_antigravity: Color::Indexed(33),
+            // Aquamarine — the agent palette already holds a mauve (claude),
+            // periwinkle (codex), powder blue (opencode), and gold (hermes);
+            // a second blue would read as OpenCode's.
+            agent_antigravity: Color::Indexed(78),
             pet_body: Color::Indexed(208),
             pet_eye: Color::Indexed(114),
             text_active: Color::Indexed(255),

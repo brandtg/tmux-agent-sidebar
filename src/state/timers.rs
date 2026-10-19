@@ -24,6 +24,11 @@ pub struct RefreshTimers {
     pub git_info_primed: bool,
     /// Timestamp of the last background-shell liveness sweep.
     pub last_bg_shell_sweep: Option<Instant>,
+    /// Timestamp of the last Antigravity approval-prompt scan.
+    pub last_approval_scan: Instant,
+    /// Whether the first approval scan has been queued; the first scan
+    /// must always run regardless of the elapsed-time gate.
+    pub approval_scan_initialized: bool,
 }
 
 impl Default for RefreshTimers {
@@ -35,6 +40,8 @@ impl Default for RefreshTimers {
             port_scan_initialized: false,
             git_info_primed: false,
             last_bg_shell_sweep: None,
+            last_approval_scan: now,
+            approval_scan_initialized: false,
         }
     }
 }

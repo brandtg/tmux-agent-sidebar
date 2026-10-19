@@ -78,6 +78,9 @@ pub struct AppState {
     /// Port-scan targets queued by `queue_port_scan_if_due`, drained by
     /// the event loop into the port-scan worker thread.
     pub pending_port_scan: Option<Vec<crate::port::PaneScanTarget>>,
+    /// Antigravity pane ids (status `running`) queued for the approval-
+    /// prompt capture scan. See [`AppState::queue_approval_scan_if_due`].
+    pub pending_approval_scan: Option<Vec<String>>,
     pub pane_states: PaneRuntimeMap,
     /// Periodic-refresh clocks (port scan, session-name scan, filter
     /// debounce, port-scan first-run flag).
@@ -199,6 +202,7 @@ impl AppState {
             bottom_tab: BottomTab::Feed,
             git_info_cache: HashMap::new(),
             pending_port_scan: None,
+            pending_approval_scan: None,
             pane_states: PaneRuntimeMap::new(),
             timers: RefreshTimers::default(),
             popup: PopupState::None,

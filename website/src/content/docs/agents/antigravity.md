@@ -32,6 +32,15 @@ Antigravity's summaries store.
 
 ### Attention cues
 
+- Waiting status while agy shows a blocking prompt, with the wait reason
+  telling you which kind:
+  - `permission` for tool-approval prompts ("Run this command?", "Allow
+    access to this URL?", "Allow calling this tool?") — agy has no hook for
+    the waiting state (its `PreToolUse` fires before the decision and
+    carries no policy info), so the sidebar detects the prompt from the
+    pane's own rendering with a background capture scan (~2s cadence) and
+    clears it the moment the prompt is answered
+  - `question` for `ask_question` pickers ("Question 1/1: …")
 - The finished-turn flag on `Stop` (breathing green until you focus the pane)
 - A `Stop` with termination reason `error` (or a populated `error` field)
   marks the pane failed and surfaces the error in the feed
@@ -53,7 +62,7 @@ Antigravity's summaries store.
 
 | Feature                     | Why |
 | --------------------------- | --- |
-| Waiting status + wait reason | `PreToolUse` is not wired — its payload cannot distinguish an approval prompt from an auto-approved call |
+| Subagent question alerts    | Only the main agent's blocking prompts are detected; questions asked inside subagent views render differently |
 | Permission badge            | Hook payloads carry no permission-mode field |
 | Background shell state      | `run_command`'s `RunPersistent` flag is not mapped |
 | Task progress counter       | No todo-style tool feeding the progress display |
