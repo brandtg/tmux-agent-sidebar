@@ -31,6 +31,11 @@ pub struct RepoGroup {
 }
 
 /// A non-agent window attached to a repo group.
+///
+/// Currently rendered as a single compact line in both compact and expanded
+/// modes. In a future extension, expanded mode can render a multi-line card
+/// (similar in height to agent rows, 2-3 lines) displaying full uncontracted
+/// arguments, working directory (`path`), and explicit `window_name`.
 #[derive(Debug, Clone)]
 pub struct OtherWindow {
     pub window_id: String,
@@ -42,6 +47,9 @@ pub struct OtherWindow {
     pub pane_active: bool,
     pub pane_pid: Option<u32>,
     pub command: String,
+    /// Cleaned foreground arguments (e.g. `server.js`, `run dev`, `test`),
+    /// or `None` if the command is bare or arguments could not be resolved.
+    pub command_args: Option<String>,
     /// Live cwd of the active pane. The git-info cache is keyed by this
     /// exact path, so it rides along for the worker feed in `app.rs`.
     pub path: String,
@@ -99,6 +107,7 @@ pub fn group_other_windows_by_repo(
             pane_active: pane.pane_active,
             pane_pid: pane.pane_pid,
             command: pane.command.clone(),
+            command_args: pane.command_args.clone(),
             path: pane.path.clone(),
             git_info,
             // Precomputed at parse time with the process snapshot, so a
@@ -143,6 +152,7 @@ pub fn group_other_windows_by_session(
                 pane_active: pane.pane_active,
                 pane_pid: pane.pane_pid,
                 command: pane.command.clone(),
+                command_args: pane.command_args.clone(),
                 path: pane.path.clone(),
                 git_info,
                 // Precomputed at parse time with the process snapshot, so a
@@ -1067,6 +1077,7 @@ mod tests {
             pane_active,
             path: path.into(),
             command: command.into(),
+            command_args: None,
             pane_pid: None,
             status: crate::tmux::classify_window_status(command),
             last_cmd: None,
@@ -1185,6 +1196,7 @@ mod tests {
             pane_active: true,
             pane_pid: None,
             command: "cargo".into(),
+            command_args: None,
             path: "/repo".into(),
             git_info: PaneGitInfo::default(),
             status: WindowStatus::Task,

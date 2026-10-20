@@ -196,6 +196,9 @@ pub struct OtherPane {
     pub pane_active: bool,
     pub path: String,
     pub command: String,
+    /// Cleaned foreground arguments (e.g. `server.js`, `run dev`, `test`),
+    /// or `None` if the command is bare or arguments could not be resolved.
+    pub command_args: Option<String>,
     pub pane_pid: Option<u32>,
     /// Coarse status of the pane's foreground work, computed at parse
     /// time with the process snapshot available (see

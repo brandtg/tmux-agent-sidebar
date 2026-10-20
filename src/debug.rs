@@ -66,10 +66,11 @@ fn open_log() -> Option<std::fs::File> {
     let path = log_file_path();
     // symlink_metadata never follows a planted symlink; only our own
     // regular files get rotated.
-    if let Ok(meta) = std::fs::symlink_metadata(&path) {
-        if meta.is_file() && meta.len() > MAX_LOG_BYTES {
-            let _ = std::fs::remove_file(&path);
-        }
+    if let Ok(meta) = std::fs::symlink_metadata(&path)
+        && meta.is_file()
+        && meta.len() > MAX_LOG_BYTES
+    {
+        let _ = std::fs::remove_file(&path);
     }
     crate::paths::open_append_private(&path).ok()
 }

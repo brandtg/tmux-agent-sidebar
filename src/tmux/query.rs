@@ -226,6 +226,15 @@ fn collect_other_panes(
         {
             continue;
         }
+        let pane_pid: Option<u32> = pane_fields[pane_line_field::PANE_PID].parse().ok();
+        let path = pane_fields[pane_line_field::PANE_CURRENT_PATH].clone();
+        let (resolved_command, command_args) = match (pane_pid, process_snapshot) {
+            (Some(pid), Some(snapshot)) => snapshot.resolve_pane_command(pid, command, &path),
+            _ => (
+                strip_exe_suffix(command_basename(command)).to_string(),
+                None,
+            ),
+        };
         out.push(OtherPane {
             session_name: parts[session_line_field::SESSION_NAME].clone(),
             window_id: window_id.to_string(),
@@ -234,14 +243,11 @@ fn collect_other_panes(
             window_active: parts[session_line_field::WINDOW_ACTIVE] == "1",
             pane_id: pane_fields[pane_line_field::PANE_ID].clone(),
             pane_active: pane_fields[pane_line_field::PANE_ACTIVE] == "1",
-            path: pane_fields[pane_line_field::PANE_CURRENT_PATH].clone(),
-            command: command.clone(),
-            pane_pid: pane_fields[pane_line_field::PANE_PID].parse().ok(),
-            status: classify_pane_status(
-                command,
-                pane_fields[pane_line_field::PANE_PID].parse().ok(),
-                process_snapshot,
-            ),
+            path,
+            command: resolved_command,
+            command_args,
+            pane_pid,
+            status: classify_pane_status(command, pane_pid, process_snapshot),
             last_cmd: {
                 let raw = pane_fields[pane_line_field::LAST_CMD].as_str();
                 if raw.is_empty() {
@@ -690,7 +696,7 @@ pub(crate) fn is_shell_basename(name: &str) -> bool {
     SHELL_COMMANDS.contains(&base.as_str())
 }
 
-fn is_shell_command(command: &str) -> bool {
+pub(crate) fn is_shell_command(command: &str) -> bool {
     let Some(token) = command.split_whitespace().next() else {
         return false;
     };
@@ -764,10 +770,28 @@ fn detect_codex_permission_mode(args: &str) -> PermissionMode {
 }
 
 fn process_snapshot_for_panes(all_panes_output: &str) -> Option<ProcessSnapshot> {
-    if !pane_output_needs_process_snapshot(all_panes_output) {
+    if !pane_output_needs_process_snapshot(all_panes_output)
+        && !pane_output_has_other_panes(all_panes_output)
+    {
         return None;
     }
     ProcessSnapshot::scan()
+}
+
+fn pane_output_has_other_panes(all_panes_output: &str) -> bool {
+    all_panes_output.lines().any(|line| {
+        let parts = split_tmux_fields(line, '|');
+        if parts.len() < session_line_field::MIN_FIELDS {
+            return false;
+        }
+        let pane_fields = &parts[session_line_field::PANE_LINE_OFFSET..];
+        if pane_fields[pane_line_field::PANE_ROLE] == "sidebar" {
+            return false;
+        }
+        let agent_field = &pane_fields[pane_line_field::AGENT];
+        let command = &pane_fields[pane_line_field::PANE_CURRENT_COMMAND];
+        AgentType::from_label(agent_field).is_none() && AgentType::from_label(command).is_none()
+    })
 }
 
 fn pane_output_needs_process_snapshot(all_panes_output: &str) -> bool {
@@ -1364,6 +1388,29 @@ mod tests {
         assert!(!pane_output_needs_process_snapshot(&line("", "htop")));
         // Shell foreground is armed by the existing rule.
         assert!(pane_output_needs_process_snapshot(&line("", "zsh")));
+    }
+
+    #[test]
+    fn pane_output_has_other_panes_detects_non_agent_windows() {
+        let line = |agent: &str, role: &str, command: &str| {
+            let mut fields = full_fields();
+            fields[pane_line_field::AGENT] = agent;
+            fields[pane_line_field::PANE_ROLE] = role;
+            fields[pane_line_field::PANE_CURRENT_COMMAND] = command;
+            let mut segments: Vec<&str> = vec!["main", "@5", "1", "editor", "0", "1"];
+            segments.extend(&fields);
+            segments.join("|")
+        };
+        // Non-agent pane running make
+        assert!(pane_output_has_other_panes(&line("", "", "make")));
+        // Sidebar pane is skipped
+        assert!(!pane_output_has_other_panes(&line(
+            "",
+            "sidebar",
+            "tmux-agent-sidebar"
+        )));
+        // Claude agent pane is skipped
+        assert!(!pane_output_has_other_panes(&line("claude", "", "claude")));
     }
 
     #[test]

@@ -201,7 +201,10 @@ impl AppState {
 
             let (task_command, task_since, finished) = match pane.status {
                 WindowStatus::Task => {
-                    let base = command_basename(&pane.command).to_string();
+                    let base = match &pane.command_args {
+                        Some(args) if !args.is_empty() => format!("{} {args}", pane.command),
+                        _ => command_basename(&pane.command).to_string(),
+                    };
                     let prior = prior_task.as_deref();
                     if prior_finished.is_some() || prior != Some(base.as_str()) {
                         (Some(base), Some(self.now), None)
@@ -216,13 +219,16 @@ impl AppState {
                             pane.last_cmd.is_some() || pane.last_exit.is_some();
                         let confirmed = if integration_active {
                             match pane.last_cmd.as_deref() {
-                                Some(last) if last == task.as_str() => true,
+                                Some(last) if last == task.as_str() || task.starts_with(last) => {
+                                    true
+                                }
                                 // A script task tracks under the interpreter
                                 // name (`bash`); preexec recorded the typed
                                 // line, so any non-shell last command is the
                                 // script mid-run, not a chain gap.
                                 Some(last) => {
-                                    crate::tmux::is_shell_basename(&task)
+                                    let task_base = task.split_whitespace().next().unwrap_or(&task);
+                                    crate::tmux::is_shell_basename(task_base)
                                         && !crate::tmux::is_shell_basename(last)
                                 }
                                 None => false,
