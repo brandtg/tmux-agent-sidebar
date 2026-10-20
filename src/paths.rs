@@ -18,7 +18,14 @@ use std::path::{Path, PathBuf};
 /// (macOS, minimal containers).
 pub(crate) fn runtime_dir() -> PathBuf {
     match std::env::var_os("XDG_RUNTIME_DIR") {
-        Some(dir) if !dir.is_empty() => PathBuf::from(dir),
+        Some(dir) if !dir.is_empty() => {
+            let path = PathBuf::from(dir);
+            if path.is_dir() {
+                path
+            } else {
+                PathBuf::from("/tmp")
+            }
+        }
         _ => PathBuf::from("/tmp"),
     }
 }

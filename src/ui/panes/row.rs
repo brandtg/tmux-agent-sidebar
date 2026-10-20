@@ -241,12 +241,22 @@ pub(super) fn compact_row(
     vec![ctx.row_line_split(left_spans, left_width, right_spans, right_width)]
 }
 
-/// One line for a non-agent window row. Window rows are always a single
-/// line in both densities and use the same gutter as agent rows. A
-/// diamond glyph (`◇`/`◆`) replaces the agent circle so the two kinds of
-/// row are distinguishable at a glance while color still conveys status.
-/// No elapsed counter — a window (an editor, a shell) is not a task worth
-/// timing.
+/// One line for a non-agent window row. Window rows are currently a single
+/// line in both compact and expanded densities, using the same gutter as
+/// agent rows. A diamond glyph (`◇`/`◆`) replaces the agent circle so the
+/// two kinds of row are distinguishable at a glance while color still conveys
+/// status.
+///
+/// Rendering uses two-tone styling: the binary name is highlighted in
+/// [`theme.text_active`], followed by its cleaned arguments in
+/// [`theme.text_muted`], giving immediate visual distinction between
+/// runtime interpreters (`node`, `python`, `cargo`) and what they are running
+/// (`server.js`, `manage.py runserver`, `test`).
+///
+/// Future extension: in an expanded multi-line card layout (occupying 2-3
+/// lines matching the vertical rhythm of agent panes), expanded mode can
+/// render a secondary line showing full uncontracted arguments or the working
+/// directory (`path`), and an optional tertiary line for user window names.
 ///
 /// `finished` carries the completed foreground task tracked runtime-side.
 /// A finished task overrides the plain status: exit 0 (or an unknown
@@ -342,50 +352,79 @@ pub(super) fn window_row(
     }
 
     let icon_w = display_width(icon);
+
     // Non-agent rows represent individual panes (panels), so each panel shows
-    // the name of its own foreground program rather than the tmux window name.
-    // Window names are volatile under tmux's default `automatic-rename` (which
-    // tracks whichever pane has focus, causing inactive panes in the same window
-    // to adopt the focused pane's name, or `tmux-agent-sidebar` when focused here).
-    //
-    // Future (Option B): If a window was explicitly renamed by the user
-    // (tmux `automatic-rename` is off and `window_name != program_name`), we could
-    // append ` [window_name]` as a secondary muted tag when left_budget permits.
-    let raw_name = if let Some(finished) = finished {
-        finished.command.as_str()
+    // the name of its own foreground program and arguments rather than the tmux window name.
+    let (raw_prog, raw_args) = if let Some(finished) = finished {
+        if let Some((prog, rest)) = finished.command.split_once(' ') {
+            (prog, Some(rest))
+        } else {
+            (finished.command.as_str(), None)
+        }
     } else if !window.command.is_empty() {
-        window.command.as_str()
+        (window.command.as_str(), window.command_args.as_deref())
     } else if !window.window_name.is_empty() && window.window_name != "tmux-agent-sidebar" {
-        window.window_name.as_str()
+        (window.window_name.as_str(), None)
     } else {
-        "shell"
+        ("shell", None)
     };
-    let program_name = strip_exe_suffix(command_basename(raw_name));
+    let program_name = strip_exe_suffix(command_basename(raw_prog));
 
-    let mut left_budget = ctx.inner_width.saturating_sub(icon_w + 1 + right_width);
-    let name = truncate_to_width(program_name, left_budget);
-    let name_w = display_width(&name);
-    left_budget = left_budget.saturating_sub(name_w);
+    let left_budget = ctx.inner_width.saturating_sub(icon_w + 1 + right_width);
+    let note_reserve = exit_note
+        .as_ref()
+        .map(|n| display_width(n) + 3)
+        .unwrap_or(0);
+    let text_budget = left_budget.saturating_sub(note_reserve);
 
-    let mut left_spans: Vec<Span<'static>> = Vec::with_capacity(3);
+    let mut left_spans: Vec<Span<'static>> = Vec::with_capacity(4);
     left_spans.push(Span::styled(
         icon,
         ctx.apply_bg(Style::default().fg(icon_color)),
     ));
-    left_spans.push(Span::styled(
-        format!(" {}", name),
-        ctx.apply_bg(Style::default().fg(theme.text_active)),
-    ));
-    let mut left_width = icon_w + 1 + name_w;
+    let mut left_width = icon_w + 1;
 
-    // Failed-run marker: a muted note naming the failing exit code keeps
+    let prog_w = display_width(program_name);
+    if prog_w >= text_budget {
+        let name = truncate_to_width(program_name, text_budget);
+        let name_w = display_width(&name);
+        left_spans.push(Span::styled(
+            format!(" {}", name),
+            ctx.apply_bg(Style::default().fg(theme.text_active)),
+        ));
+        left_width += name_w;
+    } else {
+        left_spans.push(Span::styled(
+            format!(" {}", program_name),
+            ctx.apply_bg(Style::default().fg(theme.text_active)),
+        ));
+        left_width += prog_w;
+
+        let remaining = text_budget.saturating_sub(prog_w);
+        if let Some(args) = raw_args
+            && !args.is_empty()
+            && remaining >= 2
+        {
+            let args_budget = remaining.saturating_sub(1);
+            let name = truncate_to_width(args, args_budget);
+            let name_w = display_width(&name);
+            left_spans.push(Span::styled(
+                format!(" {}", name),
+                ctx.apply_bg(Style::default().fg(theme.text_muted)),
+            ));
+            left_width += 1 + name_w;
+        }
+    }
+
+    // Failed-run marker: a note naming the failing exit code keeps
     // the red diamond unambiguous on theme colors that also tint tasks.
+    let remaining_for_note = ctx.inner_width.saturating_sub(left_width + right_width);
     if let Some(note) = exit_note
-        && left_budget >= 3
+        && remaining_for_note >= 3
     {
         let text = format!(
             " ({})",
-            truncate_to_width(&note, left_budget.saturating_sub(1))
+            truncate_to_width(&note, remaining_for_note.saturating_sub(3))
         );
         let w = display_width(&text);
         left_spans.push(Span::styled(
@@ -1669,6 +1708,15 @@ mod tests {
         command: &str,
         status: crate::tmux::WindowStatus,
     ) -> crate::group::OtherWindow {
+        window_with_args(name, command, None, status)
+    }
+
+    fn window_with_args(
+        name: &str,
+        command: &str,
+        command_args: Option<&str>,
+        status: crate::tmux::WindowStatus,
+    ) -> crate::group::OtherWindow {
         crate::group::OtherWindow {
             window_id: "@5".into(),
             window_index: 0,
@@ -1679,6 +1727,7 @@ mod tests {
             pane_active: true,
             pane_pid: None,
             command: command.into(),
+            command_args: command_args.map(Into::into),
             path: "/repo".into(),
             git_info: PaneGitInfo::default(),
             status,
@@ -1874,5 +1923,113 @@ mod tests {
         let icon_span = &line.spans[2];
         assert_eq!(icon_span.content.as_ref(), "\u{25C6}");
         assert_eq!(icon_span.style.fg, Some(theme.status_error));
+    }
+
+    #[test]
+    fn window_row_renders_program_and_args_two_tone() {
+        let theme = ColorTheme::default();
+        let w = window_with_args(
+            "dev",
+            "node",
+            Some("server.js"),
+            crate::tmux::WindowStatus::Task,
+        );
+        let line = window_row(
+            &w,
+            Some(&[3000]),
+            None,
+            false,
+            false,
+            40,
+            &StatusIcons::default(),
+            &theme,
+            0,
+        );
+        let text = line_text(&line);
+        assert!(text.contains("node"), "program missing: {text}");
+        assert!(text.contains("server.js"), "args missing: {text}");
+        assert!(text.contains(":3000"), "port missing: {text}");
+
+        // Span checks for two-tone styling:
+        // spans: marker, icon, program (" node"), args (" server.js")
+        let prog_span = line
+            .spans
+            .iter()
+            .find(|s| s.content.contains("node"))
+            .expect("node span");
+        assert_eq!(prog_span.style.fg, Some(theme.text_active));
+
+        let args_span = line
+            .spans
+            .iter()
+            .find(|s| s.content.contains("server.js"))
+            .expect("server.js span");
+        assert_eq!(args_span.style.fg, Some(theme.text_muted));
+    }
+
+    #[test]
+    fn window_row_truncates_args_when_width_constrained() {
+        let theme = ColorTheme::default();
+        let w = window_with_args(
+            "test",
+            "cargo",
+            Some("test --all --package very-long-name"),
+            crate::tmux::WindowStatus::Task,
+        );
+        // Small width constraint: 20 columns
+        let line = window_row(
+            &w,
+            None,
+            None,
+            false,
+            false,
+            20,
+            &StatusIcons::default(),
+            &theme,
+            0,
+        );
+        let text = line_text(&line);
+        assert!(text.contains("cargo"), "program must fit: {text}");
+        assert!(text.contains('…'), "args should be truncated: {text}");
+    }
+
+    #[test]
+    fn window_row_finished_shows_split_task_command_and_exit_note() {
+        let theme = ColorTheme::default();
+        let w = window("tests", "zsh", crate::tmux::WindowStatus::Idle);
+        let finished = crate::state::WindowFinished {
+            command: "cargo test".into(),
+            exit_code: Some(101),
+            finished_at: 0,
+        };
+        let line = window_row(
+            &w,
+            None,
+            Some(&finished),
+            false,
+            false,
+            40,
+            &StatusIcons::default(),
+            &theme,
+            0,
+        );
+        let text = line_text(&line);
+        assert!(text.contains("cargo"), "program missing: {text}");
+        assert!(text.contains("test"), "args missing: {text}");
+        assert!(text.contains("(exit 101)"), "exit note missing: {text}");
+
+        let prog_span = line
+            .spans
+            .iter()
+            .find(|s| s.content.contains("cargo"))
+            .expect("cargo span");
+        assert_eq!(prog_span.style.fg, Some(theme.text_active));
+
+        let args_span = line
+            .spans
+            .iter()
+            .find(|s| s.content.contains("test"))
+            .expect("test span");
+        assert_eq!(args_span.style.fg, Some(theme.text_muted));
     }
 }

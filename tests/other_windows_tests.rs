@@ -17,6 +17,7 @@ fn other_window(pane_id: &str, name: &str, command: &str, status: WindowStatus) 
         pane_active: true,
         pane_pid: None,
         command: command.into(),
+        command_args: None,
         path: "/home/user/project".into(),
         git_info: PaneGitInfo::default(),
         status,
@@ -61,6 +62,73 @@ fn snapshot_other_windows_rendered() {
         Waiting for prompt…
       ◆ cargo
       ◆ nvim
+    ╭ Feed │ Repos ──────────────────╮
+    │       No recent activity       │
+    ╰────────────────────────────────╯
+    ");
+}
+
+#[test]
+fn snapshot_other_windows_with_args_rendered() {
+    let pane = make_pane(AgentType::Claude, PaneStatus::Idle);
+    let mut state = make_state(vec![SessionInfo {
+        session_name: "main".into(),
+        windows: vec![WindowInfo {
+            window_id: "@1".into(),
+            window_name: "project".into(),
+            window_active: true,
+            auto_rename: false,
+            panes: vec![pane.clone()],
+        }],
+    }]);
+    state.repo_groups = vec![make_repo_group("project", vec![pane])];
+    state.global.show_windows = true;
+    state.other_windows.insert(
+        "/home/user/project".into(),
+        vec![
+            OtherWindow {
+                window_id: "@5".into(),
+                window_index: 0,
+                window_name: "web".into(),
+                window_active: false,
+                session_name: "main".into(),
+                pane_id: "%10".into(),
+                pane_active: false,
+                pane_pid: None,
+                command: "node".into(),
+                command_args: Some("server.js".into()),
+                path: "/home/user/project".into(),
+                git_info: PaneGitInfo::default(),
+                status: WindowStatus::Task,
+            },
+            OtherWindow {
+                window_id: "@5".into(),
+                window_index: 1,
+                window_name: "tests".into(),
+                window_active: false,
+                session_name: "main".into(),
+                pane_id: "%11".into(),
+                pane_active: false,
+                pane_pid: None,
+                command: "cargo".into(),
+                command_args: Some("test --lib".into()),
+                path: "/home/user/project".into(),
+                git_info: PaneGitInfo::default(),
+                status: WindowStatus::Task,
+            },
+        ],
+    );
+    state.rebuild_row_targets();
+
+    let output = render_to_string(&mut state, 34, 40);
+    insta::assert_snapshot!(output, @"
+     ≡3  ●2  ◎0  ◐0  ○1  ✕0
+    ⓘ                              — ▾
+    project
+    ┃ ○ claude
+        Waiting for prompt…
+      ◆ node server.js
+      ◆ cargo test --lib
     ╭ Feed │ Repos ──────────────────╮
     │       No recent activity       │
     ╰────────────────────────────────╯
@@ -215,6 +283,7 @@ fn tick_window(
         pane_active: true,
         path: "/home/user/project".into(),
         command: command.into(),
+        command_args: None,
         pane_pid: None,
         // Mirror the parse-time classification: `zsh` is an idle shell;
         // every other command arrives as `Task` (a non-shell foreground,

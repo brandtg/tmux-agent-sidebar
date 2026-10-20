@@ -221,6 +221,11 @@ pub(super) fn collect(state: &AppState, width: u16) -> CollectedRows {
                         && row_index == state.global.selected_pane_row;
                     let is_active = window.window_active && window.pane_active;
                     let finished = runtime.and_then(|s| s.window_finished.clone());
+                    // Non-agent window panes currently render as a single line in both
+                    // compact and expanded densities. In a future extension to an expanded
+                    // multi-line card layout (occupying 2-3 lines similar to agent panes),
+                    // window_row can return Vec<Line<'static>>, and collected can push each
+                    // line while mapping them all to Some(row_index).
                     let line = row::window_row(
                         window,
                         runtime.map(|s| s.ports.as_slice()),
@@ -326,6 +331,7 @@ mod tests {
             pane_active: true,
             pane_pid: None,
             command: command.into(),
+            command_args: None,
             path: "/tmp/repo".into(),
             git_info: PaneGitInfo::default(),
             status: crate::tmux::classify_window_status(command),

@@ -71,7 +71,8 @@ fn best_command_for_pane(pane_pid: u32, process_snapshot: &ProcessSnapshot) -> O
         let Some(info) = process_snapshot.info_by_pid.get(&pid) else {
             continue;
         };
-        let basename = command_basename(&info.comm);
+        let first_comm = info.comm.split_whitespace().next().unwrap_or(&info.comm);
+        let basename = command_basename(first_comm);
         if basename.is_empty() || is_shell_command(basename) {
             continue;
         }
