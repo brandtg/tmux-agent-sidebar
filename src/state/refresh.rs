@@ -133,6 +133,7 @@ impl AppState {
         self.prune_pane_states_to_current_panes();
         self.rebuild_row_targets();
         self.find_focused_pane_from(&sidebar_window_panes);
+        self.mark_active_window_panes_seen();
         self.window_has_no_other_panes =
             !self.popup_mode && window_has_only_own_pane(&sidebar_window_panes, &self.tmux_pane);
     }
@@ -161,7 +162,41 @@ impl AppState {
             });
             if !fresh {
                 runtime.window_finished = None;
+                tmux::unset_pane_option(&pane_id, tmux::PANE_ATTENTION);
             }
+        }
+    }
+
+    /// Check all window panes and consume the finished flag for any pane
+    /// that currently holds user focus (`session_attached && window_active && pane_active`),
+    /// subject to the minimum-flash grace ([`ATTENTION_MIN_FLASH_SECS`]).
+    ///
+    /// Unlike agent panes (which share the window with their sidebar),
+    /// a window pane may live in another window or session. A sidebar
+    /// observes all panes across all windows via `list-panes -a`, so
+    /// it can tell when any window pane is currently active on screen.
+    pub(crate) fn mark_active_window_panes_seen(&mut self) {
+        let focused_ids: Vec<String> = self
+            .other_windows
+            .values()
+            .flat_map(|windows| windows.iter())
+            .filter(|w| w.session_attached && w.window_active && w.pane_active)
+            .map(|w| w.pane_id.clone())
+            .collect();
+
+        for pane_id in focused_ids {
+            self.mark_window_finished_seen(&pane_id);
+        }
+
+        let seen_pane_id = if self.popup_mode {
+            Some(self.tmux_pane.clone())
+        } else if self.focus_state.window_active && !self.focus_state.sidebar_focused {
+            self.focus_state.focused_pane_id.clone()
+        } else {
+            None
+        };
+        if let Some(pane_id) = seen_pane_id {
+            self.mark_window_finished_seen(&pane_id);
         }
     }
 
@@ -207,13 +242,25 @@ impl AppState {
                     };
                     let prior = prior_task.as_deref();
                     if prior_finished.is_some() || prior != Some(base.as_str()) {
+                        if prior_finished.is_some() {
+                            tmux::unset_pane_option(&pane_id, tmux::PANE_ATTENTION);
+                        }
                         (Some(base), Some(self.now), None)
                     } else {
                         (prior_task, prior_since, None)
                     }
                 }
                 WindowStatus::Idle | WindowStatus::Busy => match prior_task {
-                    None => (None, None, prior_finished),
+                    None => {
+                        // If tmux says @pane_attention is unset on this window pane,
+                        // another sidebar (or earlier focus check) has already consumed
+                        // the finish flag. Clear any retained finish state.
+                        if prior_finished.is_some() && pane.attention == PaneAttention::None {
+                            (None, None, None)
+                        } else {
+                            (None, None, prior_finished)
+                        }
+                    }
                     Some(task) => {
                         let integration_active =
                             pane.last_cmd.is_some() || pane.last_exit.is_some();
@@ -240,6 +287,7 @@ impl AppState {
                             self.now.saturating_sub(since) >= TASK_MIN_RUN_SECS
                         });
                         if confirmed && ran_long_enough {
+                            tmux::set_pane_option(&pane_id, tmux::PANE_ATTENTION, "done");
                             (
                                 None,
                                 None,

@@ -188,12 +188,14 @@ pub struct SessionInfo {
 #[derive(Debug, Clone)]
 pub struct OtherPane {
     pub session_name: String,
+    pub session_attached: bool,
     pub window_id: String,
     pub window_index: i64,
     pub window_name: String,
     pub window_active: bool,
     pub pane_id: String,
     pub pane_active: bool,
+    pub attention: PaneAttention,
     pub path: String,
     pub command: String,
     /// Cleaned foreground arguments (e.g. `server.js`, `run dev`, `test`),

@@ -64,6 +64,7 @@ pub(super) mod pane_line_field {
     pub const LAST_CMD: usize = 24; // absolute 30 (@pane_last_cmd)
     pub const LAST_EXIT: usize = 25; // absolute 31 (@pane_last_exit)
     pub const BG_PID: usize = 26; // absolute 32 (@pane_bg_pid)
+    pub const SESSION_ATTACHED: usize = 27; // absolute 33 (session_attached)
     /// Minimum number of fields the pane-line suffix must contain.
     /// Equals `session_line_field::MIN_FIELDS - PANE_LINE_OFFSET`.
     pub const MIN_FIELDS: usize = 27;
@@ -107,6 +108,7 @@ fn pane_format() -> String {
         q(PANE_LAST_CMD),
         q(PANE_LAST_EXIT),
         q(PANE_BG_PID),
+        q("session_attached"),
     ]
     .join("|")
 }
@@ -235,14 +237,21 @@ fn collect_other_panes(
                 None,
             ),
         };
+        let session_attached = pane_fields
+            .get(pane_line_field::SESSION_ATTACHED)
+            .map(|s| s.as_str() != "0")
+            .unwrap_or(true);
+        let attention = PaneAttention::from_label(&pane_fields[pane_line_field::PANE_ATTENTION]);
         out.push(OtherPane {
             session_name: parts[session_line_field::SESSION_NAME].clone(),
+            session_attached,
             window_id: window_id.to_string(),
             window_index: parts[session_line_field::WINDOW_INDEX].parse().unwrap_or(0),
             window_name: parts[session_line_field::WINDOW_NAME].clone(),
             window_active: parts[session_line_field::WINDOW_ACTIVE] == "1",
             pane_id: pane_fields[pane_line_field::PANE_ID].clone(),
             pane_active: pane_fields[pane_line_field::PANE_ACTIVE] == "1",
+            attention,
             path,
             command: resolved_command,
             command_args,
