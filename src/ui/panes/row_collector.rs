@@ -219,7 +219,8 @@ pub(super) fn collect(state: &AppState, width: u16) -> CollectedRows {
                     let is_selected = state.focus_state.sidebar_focused
                         && state.focus_state.focus == Focus::Panes
                         && row_index == state.global.selected_pane_row;
-                    let is_active = window.window_active && window.pane_active;
+                    let is_active =
+                        window.session_attached && window.window_active && window.pane_active;
                     let finished = runtime.and_then(|s| s.window_finished.clone());
                     // Non-agent window panes currently render as a single line in both
                     // compact and expanded densities. In a future extension to an expanded
@@ -327,6 +328,8 @@ mod tests {
             window_name: name.into(),
             window_active: false,
             session_name: "main".into(),
+            session_attached: true,
+            attention: crate::tmux::PaneAttention::None,
             pane_id: pane_id.into(),
             pane_active: true,
             pane_pid: None,

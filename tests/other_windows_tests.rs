@@ -13,6 +13,8 @@ fn other_window(pane_id: &str, name: &str, command: &str, status: WindowStatus) 
         window_name: name.into(),
         window_active: false,
         session_name: "main".into(),
+        session_attached: true,
+        attention: tmux_agent_sidebar::tmux::PaneAttention::None,
         pane_id: pane_id.into(),
         pane_active: true,
         pane_pid: None,
@@ -92,6 +94,8 @@ fn snapshot_other_windows_with_args_rendered() {
                 window_name: "web".into(),
                 window_active: false,
                 session_name: "main".into(),
+                session_attached: true,
+                attention: tmux_agent_sidebar::tmux::PaneAttention::None,
                 pane_id: "%10".into(),
                 pane_active: false,
                 pane_pid: None,
@@ -107,6 +111,8 @@ fn snapshot_other_windows_with_args_rendered() {
                 window_name: "tests".into(),
                 window_active: false,
                 session_name: "main".into(),
+                session_attached: true,
+                attention: tmux_agent_sidebar::tmux::PaneAttention::None,
                 pane_id: "%11".into(),
                 pane_active: false,
                 pane_pid: None,
@@ -275,12 +281,22 @@ fn tick_window(
 ) {
     let other = tmux_agent_sidebar::tmux::OtherPane {
         session_name: "main".into(),
+        session_attached: true,
         window_id: "@5".into(),
         window_index: 0,
         window_name: "tests".into(),
         window_active: false,
         pane_id: "%10".into(),
         pane_active: true,
+        attention: if state
+            .pane_state("%10")
+            .and_then(|s| s.window_finished.as_ref())
+            .is_some()
+        {
+            tmux_agent_sidebar::tmux::PaneAttention::Done
+        } else {
+            tmux_agent_sidebar::tmux::PaneAttention::None
+        },
         path: "/home/user/project".into(),
         command: command.into(),
         command_args: None,
@@ -580,4 +596,192 @@ fn window_pane_that_never_ran_a_command_is_idle_only() {
         .collect();
     // The idle agent pane (%1) matches too; the window pane rides along.
     assert_eq!(idle_rows, vec!["%1", "%10"]);
+}
+
+#[test]
+fn window_task_clears_when_other_window_pane_focused() {
+    // When a task finishes in a window separate from the sidebar's window
+    // (sidebar is in @1, task ran in @5), focusing @5 in an attached session
+    // must consume the finish flag after the flash grace expires.
+    let state = &mut tmux_agent_sidebar::state::AppState::new("%99".into());
+    state.global.show_windows = true;
+
+    // Task starts in @5 (%10)
+    tick_window(state, "cargo", "", None);
+    state.now += 20; // past TASK_MIN_RUN_SECS
+    tick_window(state, "zsh", "", None);
+
+    assert!(
+        state
+            .pane_state("%10")
+            .is_some_and(|s| s.window_finished.is_some()),
+        "task finish is armed"
+    );
+
+    // The user switches to window @5: window @5 becomes active with %10 active.
+    // The sidebar's own window (@1) is now inactive (sidebar_window_active = false).
+    let other_active = tmux_agent_sidebar::tmux::OtherPane {
+        session_name: "main".into(),
+        session_attached: true,
+        window_id: "@5".into(),
+        window_index: 0,
+        window_name: "tests".into(),
+        window_active: true,
+        pane_id: "%10".into(),
+        pane_active: true,
+        attention: tmux_agent_sidebar::tmux::PaneAttention::Done,
+        path: "/home/user/project".into(),
+        command: "zsh".into(),
+        command_args: None,
+        pane_pid: None,
+        status: tmux_agent_sidebar::tmux::WindowStatus::Idle,
+        last_cmd: None,
+        last_exit: None,
+    };
+    let sessions = vec![SessionInfo {
+        session_name: "main".into(),
+        windows: vec![WindowInfo {
+            window_id: "@1".into(),
+            window_name: "project".into(),
+            window_active: false, // sidebar window is inactive!
+            auto_rename: false,
+            panes: vec![make_pane(AgentType::Claude, PaneStatus::Idle)],
+        }],
+    }];
+    state.apply_session_snapshot(sessions.clone(), vec![other_active.clone()], Vec::new());
+
+    // Still within grace: flag survives even while focused.
+    state.mark_focused_pane_seen(false);
+    assert!(
+        state
+            .pane_state("%10")
+            .is_some_and(|s| s.window_finished.is_some()),
+        "finish survives while still within grace"
+    );
+
+    // Age past the grace (5 seconds)
+    state.now += 6;
+    state.apply_session_snapshot(sessions, vec![other_active], Vec::new());
+
+    assert!(
+        state
+            .pane_state("%10")
+            .is_none_or(|s| s.window_finished.is_none()),
+        "focusing the other window pane consumes the finish flag once grace expires"
+    );
+}
+
+#[test]
+fn window_task_in_unattached_session_does_not_clear() {
+    // If a session is unattached (in the background), active panes inside it
+    // must not consume the finish flag — the user hasn't looked at them yet.
+    let state = &mut tmux_agent_sidebar::state::AppState::new("%99".into());
+    state.global.show_windows = true;
+
+    tick_window(state, "cargo", "", None);
+    state.now += 20;
+    tick_window(state, "zsh", "", None);
+
+    assert!(
+        state
+            .pane_state("%10")
+            .is_some_and(|s| s.window_finished.is_some())
+    );
+
+    // Age past the grace
+    state.now += 6;
+
+    // Snapshot where window and pane are active, but session_attached is false.
+    let other_unattached = tmux_agent_sidebar::tmux::OtherPane {
+        session_name: "main".into(),
+        session_attached: false, // detached session!
+        window_id: "@5".into(),
+        window_index: 0,
+        window_name: "tests".into(),
+        window_active: true,
+        pane_id: "%10".into(),
+        pane_active: true,
+        attention: tmux_agent_sidebar::tmux::PaneAttention::Done,
+        path: "/home/user/project".into(),
+        command: "zsh".into(),
+        command_args: None,
+        pane_pid: None,
+        status: tmux_agent_sidebar::tmux::WindowStatus::Idle,
+        last_cmd: None,
+        last_exit: None,
+    };
+    let sessions = vec![SessionInfo {
+        session_name: "main".into(),
+        windows: vec![WindowInfo {
+            window_id: "@1".into(),
+            window_name: "project".into(),
+            window_active: false,
+            auto_rename: false,
+            panes: vec![make_pane(AgentType::Claude, PaneStatus::Idle)],
+        }],
+    }];
+    state.apply_session_snapshot(sessions, vec![other_unattached], Vec::new());
+
+    assert!(
+        state
+            .pane_state("%10")
+            .is_some_and(|s| s.window_finished.is_some()),
+        "finish must not be consumed while session is detached"
+    );
+}
+
+#[test]
+fn window_task_clears_across_sessions_when_tmux_attention_is_none() {
+    // Simulates the user's bug: Sidebar 2 (in WE-1193) has window_finished
+    // tracked for a pane from Session A. Session A already consumed the attention,
+    // so in tmux @pane_attention is unset (PaneAttention::None).
+    // Sidebar 2 must drop its stale finished state and return to idle.
+    let state = &mut tmux_agent_sidebar::state::AppState::new("%99".into());
+    state.global.show_windows = true;
+
+    // Seed prior finished state in Sidebar 2's memory (as if it observed the finish earlier)
+    state.pane_state_mut("%10").window_finished = Some(tmux_agent_sidebar::state::WindowFinished {
+        command: "deploy.sh".into(),
+        exit_code: Some(0),
+        finished_at: state.now.saturating_sub(10),
+    });
+
+    // Pane snapshot arrives from tmux: pane is idle, and @pane_attention is None
+    // because Session A consumed the attention.
+    let other_cleared = tmux_agent_sidebar::tmux::OtherPane {
+        session_name: "other_session".into(),
+        session_attached: false,
+        window_id: "@5".into(),
+        window_index: 0,
+        window_name: "deploy".into(),
+        window_active: false,
+        pane_id: "%10".into(),
+        pane_active: false,
+        attention: tmux_agent_sidebar::tmux::PaneAttention::None, // tmux says attention is gone!
+        path: "/home/user/project".into(),
+        command: "zsh".into(),
+        command_args: None,
+        pane_pid: None,
+        status: tmux_agent_sidebar::tmux::WindowStatus::Idle,
+        last_cmd: None,
+        last_exit: None,
+    };
+    let sessions = vec![SessionInfo {
+        session_name: "we_1193".into(),
+        windows: vec![WindowInfo {
+            window_id: "@1".into(),
+            window_name: "agent".into(),
+            window_active: true,
+            auto_rename: false,
+            panes: vec![make_pane(AgentType::Claude, PaneStatus::Running)],
+        }],
+    }];
+    state.apply_session_snapshot(sessions, vec![other_cleared], Vec::new());
+
+    assert!(
+        state
+            .pane_state("%10")
+            .is_none_or(|s| s.window_finished.is_none()),
+        "when tmux @pane_attention is None, stale finish in other sessions is cleared"
+    );
 }

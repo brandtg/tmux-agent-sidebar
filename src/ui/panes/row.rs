@@ -1723,6 +1723,8 @@ mod tests {
             window_name: name.into(),
             window_active: false,
             session_name: "main".into(),
+            session_attached: true,
+            attention: crate::tmux::PaneAttention::None,
             pane_id: "%10".into(),
             pane_active: true,
             pane_pid: None,
