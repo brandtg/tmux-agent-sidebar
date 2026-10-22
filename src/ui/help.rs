@@ -16,7 +16,7 @@ const HELP_ROWS: &[(&str, &str)] = &[
     ("h / l", "Previous / next status filter"),
     ("Tab", "Cycle status filter"),
     ("Shift+Tab", "Switch bottom panel tab"),
-    ("Enter", "Jump to the selected pane"),
+    ("Enter / →", "Jump to the selected pane"),
     ("n", "Spawn worktree + agent"),
     ("x", "Remove the selected spawn pane"),
     ("r", "Open repo filter"),
@@ -143,7 +143,7 @@ mod tests {
         │ h / l      Previous / next status filter  │
         │ Tab        Cycle status filter            │
         │ Shift+Tab  Switch bottom panel tab        │
-        │ Enter      Jump to the selected pane      │
+        │ Enter / →  Jump to the selected pane      │
         │ n          Spawn worktree + agent         │
         │ x          Remove the selected spawn pane │
         │ r          Open repo filter               │
@@ -168,7 +168,7 @@ mod tests {
         │ h / l      Previ…│
         │ Tab        Cycle…│
         │ Shift+Tab  Switc…│
-        │ Enter      Jump …│
+        │ Enter / →  Jump …│
         │ n          Spawn…│
         │ x          Remov…│
         └──────────────────┘
