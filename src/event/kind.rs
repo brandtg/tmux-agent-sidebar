@@ -15,6 +15,7 @@ pub enum AgentEventKind {
     CwdChanged,
     SubagentStart,
     SubagentStop,
+    ToolStart,
     ActivityLog,
     TaskCreated,
     TaskCompleted,
@@ -37,6 +38,7 @@ impl AgentEventKind {
         Self::CwdChanged,
         Self::SubagentStart,
         Self::SubagentStop,
+        Self::ToolStart,
         Self::ActivityLog,
         Self::TaskCreated,
         Self::TaskCompleted,
@@ -59,6 +61,7 @@ impl AgentEventKind {
             Self::CwdChanged => "cwd-changed",
             Self::SubagentStart => "subagent-start",
             Self::SubagentStop => "subagent-stop",
+            Self::ToolStart => "tool-start",
             Self::ActivityLog => "activity-log",
             Self::TaskCreated => "task-created",
             Self::TaskCompleted => "task-completed",
@@ -96,13 +99,14 @@ mod tests {
                 | AgentEventKind::CwdChanged
                 | AgentEventKind::SubagentStart
                 | AgentEventKind::SubagentStop
+                | AgentEventKind::ToolStart
                 | AgentEventKind::ActivityLog
                 | AgentEventKind::TaskCreated
                 | AgentEventKind::TaskCompleted
                 | AgentEventKind::TeammateIdle => {}
             }
         }
-        assert_eq!(AgentEventKind::ALL.len(), 15);
+        assert_eq!(AgentEventKind::ALL.len(), 16);
     }
 
     #[test]

@@ -97,6 +97,19 @@ pub enum AgentEvent {
         last_message: String,
         transcript_path: String,
     },
+    /// A tool call is about to execute (Claude `PreToolUse`). Carries only
+    /// identity fields plus the tool name — it is the earliest "the agent
+    /// took its next action" signal and must never write a feed entry
+    /// (`PostToolUse` logs the same call once it resolves).
+    ToolStart {
+        agent: String,
+        cwd: String,
+        permission_mode: String,
+        tool_name: String,
+        worktree: Option<WorktreeInfo>,
+        agent_id: Option<String>,
+        session_id: Option<String>,
+    },
     ActivityLog {
         tool_name: String,
         tool_input: Value,
@@ -143,6 +156,7 @@ impl AgentEvent {
             | Self::Stop { session_id, .. }
             | Self::StopFailure { session_id, .. }
             | Self::PermissionDenied { session_id, .. }
+            | Self::ToolStart { session_id, .. }
             | Self::CwdChanged { session_id, .. } => session_id.as_deref(),
             _ => None,
         }
@@ -160,6 +174,7 @@ impl AgentEvent {
             Self::StopFailure { .. } => AgentEventKind::StopFailure,
             Self::SubagentStart { .. } => AgentEventKind::SubagentStart,
             Self::SubagentStop { .. } => AgentEventKind::SubagentStop,
+            Self::ToolStart { .. } => AgentEventKind::ToolStart,
             Self::ActivityLog { .. } => AgentEventKind::ActivityLog,
             Self::PermissionDenied { .. } => AgentEventKind::PermissionDenied,
             Self::CwdChanged { .. } => AgentEventKind::CwdChanged,

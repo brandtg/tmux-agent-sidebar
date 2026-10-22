@@ -160,6 +160,16 @@ fn snippet_claude_post_tool_use_maps_to_activity_log() {
 }
 
 #[test]
+fn snippet_claude_pre_tool_use_maps_to_tool_start() {
+    let v = build_agent_snippet("claude", FAKE_HOOK).unwrap();
+    let cmd = v
+        .pointer("/hooks/PreToolUse/0/hooks/0/command")
+        .and_then(Value::as_str)
+        .unwrap();
+    assert_eq!(cmd, "bash /fake/hook.sh claude tool-start");
+}
+
+#[test]
 fn snippet_codex_session_start_has_custom_matcher() {
     let v = build_agent_snippet("codex", FAKE_HOOK).unwrap();
     let entry = v
@@ -716,6 +726,12 @@ const EXPECTED_FULL_OUTPUT: &str = r#"{
           "trigger": "SubagentStop"
         },
         {
+          "command": "bash /fake/hook.sh claude tool-start",
+          "event": "tool-start",
+          "matcher": null,
+          "trigger": "PreToolUse"
+        },
+        {
           "command": "bash /fake/hook.sh claude activity-log",
           "event": "activity-log",
           "matcher": null,
@@ -780,6 +796,17 @@ const EXPECTED_FULL_OUTPUT: &str = r#"{
               "hooks": [
                 {
                   "command": "bash /fake/hook.sh claude activity-log",
+                  "type": "command"
+                }
+              ],
+              "matcher": ""
+            }
+          ],
+          "PreToolUse": [
+            {
+              "hooks": [
+                {
+                  "command": "bash /fake/hook.sh claude tool-start",
                   "type": "command"
                 }
               ],

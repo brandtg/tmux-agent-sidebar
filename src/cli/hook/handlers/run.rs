@@ -43,6 +43,48 @@ pub(in crate::cli::hook) fn on_user_prompt_submit(
     0
 }
 
+/// Claude `PreToolUse`: a tool call is about to execute.
+///
+/// This is the earliest "the agent took its next action" signal available —
+/// upstream fires it before the permission decision, whereas `PostToolUse`
+/// only lands after a tool call succeeds. That gap is what strands a
+/// `PermissionDenied` warning: auto mode denies the call and the agent
+/// continues the same turn, so the next event would only arrive when some
+/// later tool happens to finish — a multi-minute build kept the stale
+/// `waiting`/`permission_denied` row up for its whole run. Treating the
+/// attempt itself as the resume signal clears the stale wait state the
+/// moment the agent acts on a new direction.
+///
+/// No activity entry is written here: `PostToolUse` logs the same call when
+/// it resolves, and a denied call has nothing to log.
+///
+/// Only Claude registers `PreToolUse` today. If another agent ever maps a
+/// pre-tool trigger onto `ToolStart`, revisit the Hermes background-fork
+/// caveat from `handle_activity_log` first — a fork's tool events must not
+/// promote an idle pane to `running`.
+pub(in crate::cli::hook) fn on_tool_start(pane: &str, ctx: &AgentContext<'_>) -> i32 {
+    if ctx.agent == crate::tmux::HERMES_AGENT {
+        return 0;
+    }
+    // Mid-turn tool calls arrive with the pane already `running` — the
+    // common case must stay a read-only probe, not a tmux write storm.
+    if tmux::get_pane_option_value(pane, tmux::PANE_STATUS) == "running" {
+        return 0;
+    }
+    set_agent_meta(pane, ctx);
+    set_status(pane, "running");
+    // Same cleanup as the `handle_activity_log` resume: the reason row
+    // renders for every status, so a stale `permission_denied` (or error
+    // text stored by `on_stop_failure`) must go when the agent resumes.
+    tmux::unset_pane_option(pane, tmux::PANE_ATTENTION);
+    tmux::unset_pane_option(pane, tmux::PANE_WAIT_REASON);
+    let existing_started = tmux::get_pane_option_value(pane, tmux::PANE_STARTED_AT);
+    if existing_started.is_empty() {
+        tmux::set_pane_option(pane, tmux::PANE_STARTED_AT, &now_epoch_secs().to_string());
+    }
+    0
+}
+
 pub(in crate::cli::hook) fn on_stop(
     pane: &str,
     ctx: &AgentContext<'_>,
@@ -327,6 +369,98 @@ mod tests {
             "real prompt must restart the run clock"
         );
         assert!(stamped.is_some());
+    }
+
+    #[test]
+    fn on_tool_start_clears_stale_permission_denied_wait_state() {
+        // Regression: an auto-mode denial (PermissionDenied) leaves the pane
+        // `waiting`/`permission_denied` while the agent continues the same
+        // turn. The next signal used to be the next *successful*
+        // PostToolUse, so a long-running retry kept the stale warning up
+        // for its whole duration. PreToolUse must clear it the moment the
+        // agent attempts anything new.
+        let _guard = tmux::test_mock::install();
+        let pane = "%TOOL_START_CLEAR";
+        tmux::test_mock::set(pane, tmux::PANE_STATUS, "waiting");
+        tmux::test_mock::set(pane, tmux::PANE_WAIT_REASON, "permission_denied");
+        tmux::test_mock::set(pane, tmux::PANE_ATTENTION, "notification");
+        let ctx = AgentContext {
+            agent: "claude",
+            cwd: "/repo",
+            permission_mode: "auto",
+            worktree: &None,
+            session_id: &None,
+        };
+        let exit = on_tool_start(pane, &ctx);
+        assert_eq!(exit, 0);
+        assert_eq!(
+            tmux::test_mock::get(pane, tmux::PANE_STATUS).as_deref(),
+            Some("running")
+        );
+        assert!(
+            !tmux::test_mock::contains(pane, tmux::PANE_WAIT_REASON),
+            "the stale denial reason must clear on the next tool attempt"
+        );
+        assert!(!tmux::test_mock::contains(pane, tmux::PANE_ATTENTION));
+    }
+
+    #[test]
+    fn on_tool_start_is_noop_while_already_running() {
+        // Mid-turn tool calls arrive with the pane already running; they
+        // must not restart the run clock or touch state.
+        let _guard = tmux::test_mock::install();
+        let pane = "%TOOL_START_RUNNING";
+        tmux::test_mock::set(pane, tmux::PANE_STATUS, "running");
+        tmux::test_mock::set(pane, tmux::PANE_STARTED_AT, "1700000000");
+        let ctx = AgentContext {
+            agent: "claude",
+            cwd: "/repo",
+            permission_mode: "auto",
+            worktree: &None,
+            session_id: &None,
+        };
+        let exit = on_tool_start(pane, &ctx);
+        assert_eq!(exit, 0);
+        assert_eq!(
+            tmux::test_mock::get(pane, tmux::PANE_STATUS).as_deref(),
+            Some("running")
+        );
+        assert_eq!(
+            tmux::test_mock::get(pane, tmux::PANE_STARTED_AT).as_deref(),
+            Some("1700000000"),
+            "a running pane must keep its run clock"
+        );
+    }
+
+    #[test]
+    fn on_tool_start_ignores_hermes_background_forks() {
+        // Hermes' background forks emit tool events while the parent turn
+        // is idle; a pre-tool trigger must not promote the pane to
+        // `running` with no stop ever coming (same stance as
+        // `handle_activity_log`). Defensive: only Claude registers
+        // PreToolUse today.
+        let _guard = tmux::test_mock::install();
+        let pane = "%TOOL_START_HERMES";
+        tmux::test_mock::set(pane, tmux::PANE_STATUS, "waiting");
+        tmux::test_mock::set(pane, tmux::PANE_WAIT_REASON, "permission_denied");
+        let ctx = AgentContext {
+            agent: "hermes",
+            cwd: "/repo",
+            permission_mode: "default",
+            worktree: &None,
+            session_id: &None,
+        };
+        let exit = on_tool_start(pane, &ctx);
+        assert_eq!(exit, 0);
+        assert_eq!(
+            tmux::test_mock::get(pane, tmux::PANE_STATUS).as_deref(),
+            Some("waiting"),
+            "hermes tool events must not flip the pane to running"
+        );
+        assert_eq!(
+            tmux::test_mock::get(pane, tmux::PANE_WAIT_REASON).as_deref(),
+            Some("permission_denied")
+        );
     }
 
     #[test]

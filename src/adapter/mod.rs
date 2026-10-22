@@ -157,6 +157,18 @@ impl EventBase {
         }
     }
 
+    pub(crate) fn tool_start(self, tool_name: String) -> AgentEvent {
+        AgentEvent::ToolStart {
+            agent: self.agent.into(),
+            cwd: self.cwd,
+            permission_mode: self.permission_mode,
+            tool_name,
+            worktree: self.worktree,
+            agent_id: self.agent_id,
+            session_id: self.session_id,
+        }
+    }
+
     pub(crate) fn cwd_changed(self) -> AgentEvent {
         AgentEvent::CwdChanged {
             cwd: self.cwd,
@@ -208,6 +220,7 @@ pub(crate) fn minimal_payload(kind: AgentEventKind) -> serde_json::Value {
             "tool_name": "Read",
             "toolCall": {"name": "Read", "args": {}}
         }),
+        AgentEventKind::ToolStart => json!({"tool_name": "Bash"}),
         AgentEventKind::SubagentStart | AgentEventKind::SubagentStop => {
             json!({"agent_type": "Explore"})
         }
