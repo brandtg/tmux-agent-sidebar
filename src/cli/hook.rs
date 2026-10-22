@@ -205,6 +205,17 @@ fn handle_event(pane: &str, agent_name: &str, event: AgentEvent) -> i32 {
         AgentEvent::SubagentStop { agent_id, .. } => {
             handlers::on_subagent_stop(pane, agent_id.as_deref())
         }
+        AgentEvent::ToolStart {
+            agent,
+            cwd,
+            permission_mode,
+            worktree,
+            session_id,
+            ..
+        } => handlers::on_tool_start(
+            pane,
+            &context::make_ctx(&agent, &cwd, &permission_mode, &worktree, &session_id),
+        ),
         AgentEvent::ActivityLog {
             tool_name,
             tool_input,

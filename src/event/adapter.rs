@@ -249,6 +249,33 @@ mod tests {
     }
 
     #[test]
+    fn claude_tool_start_round_trip() {
+        let adapter = resolve_adapter("claude").unwrap();
+        let input = json!({
+            "cwd": "/tmp",
+            "permission_mode": "auto",
+            "tool_name": "Bash",
+            "agent_id": "sub-1"
+        });
+        let event = adapter.parse("tool-start", &input).unwrap();
+        match event {
+            AgentEvent::ToolStart {
+                agent,
+                permission_mode,
+                tool_name,
+                agent_id,
+                ..
+            } => {
+                assert_eq!(agent, "claude");
+                assert_eq!(permission_mode, "auto");
+                assert_eq!(tool_name, "Bash");
+                assert_eq!(agent_id, Some("sub-1".into()));
+            }
+            other => panic!("expected ToolStart, got {:?}", other),
+        }
+    }
+
+    #[test]
     fn claude_cwd_changed_round_trip() {
         let adapter = resolve_adapter("claude").unwrap();
         let input = json!({"cwd": "/new/dir"});
@@ -272,6 +299,7 @@ mod tests {
     fn codex_ignores_new_events() {
         let adapter = resolve_adapter("codex").unwrap();
         assert!(adapter.parse("permission-denied", &json!({})).is_none());
+        assert!(adapter.parse("tool-start", &json!({})).is_none());
         assert!(adapter.parse("cwd-changed", &json!({})).is_none());
         assert!(adapter.parse("task-created", &json!({})).is_none());
         assert!(adapter.parse("task-completed", &json!({})).is_none());

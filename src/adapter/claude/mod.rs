@@ -63,9 +63,9 @@ impl ClaudeAdapter {
     /// `AgentEventKind` the sidebar produces. Drift against `parse()` is
     /// caught by `hook_registrations_match_parse_arms` below.
     ///
-    /// Note: `PostToolUse` maps to `AgentEventKind::ActivityLog` — the only
-    /// entry where the upstream trigger and the internal kind have
-    /// different names.
+    /// Note: `PreToolUse` maps to `AgentEventKind::ToolStart` and
+    /// `PostToolUse` maps to `AgentEventKind::ActivityLog` — the two entries
+    /// where the upstream trigger and the internal kind have different names.
     pub const HOOK_REGISTRATIONS: &'static [HookRegistration] = &[
         HookRegistration {
             trigger: "SessionStart",
@@ -116,6 +116,11 @@ impl ClaudeAdapter {
             trigger: "SubagentStop",
             matcher: None,
             kind: AgentEventKind::SubagentStop,
+        },
+        HookRegistration {
+            trigger: "PreToolUse",
+            matcher: None,
+            kind: AgentEventKind::ToolStart,
         },
         HookRegistration {
             trigger: "PostToolUse",
@@ -201,6 +206,7 @@ impl EventAdapter for ClaudeAdapter {
                     transcript_path: json_str(input, "agent_transcript_path").into(),
                 })
             }
+            "tool-start" => Some(base(input).tool_start(json_str(input, "tool_name").into())),
             "activity-log" => {
                 let tool_name = json_str(input, "tool_name");
                 if tool_name.is_empty() {

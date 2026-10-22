@@ -730,6 +730,39 @@ fn permission_denied_event() {
 }
 
 #[test]
+fn tool_start_event() {
+    let adapter = ClaudeAdapter;
+    let input = json!({
+        "cwd": "/tmp",
+        "permission_mode": "auto",
+        "tool_name": "Bash",
+    });
+    let event = adapter.parse("tool-start", &input).unwrap();
+    assert_eq!(
+        event,
+        AgentEvent::ToolStart {
+            agent: "claude".into(),
+            cwd: "/tmp".into(),
+            permission_mode: "auto".into(),
+            tool_name: "Bash".into(),
+            worktree: None,
+            agent_id: None,
+            session_id: None,
+        }
+    );
+}
+
+#[test]
+fn tool_start_without_tool_name_still_parses() {
+    // The resume-clear behavior does not depend on which tool is starting,
+    // so a payload without `tool_name` (e.g. the drift-test minimal
+    // payload) must still produce an event.
+    let adapter = ClaudeAdapter;
+    let event = adapter.parse("tool-start", &json!({})).unwrap();
+    assert_eq!(event.kind(), AgentEventKind::ToolStart);
+}
+
+#[test]
 fn cwd_changed_event() {
     let adapter = ClaudeAdapter;
     let input = json!({"cwd": "/new/path"});
