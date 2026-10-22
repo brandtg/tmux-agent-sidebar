@@ -155,7 +155,9 @@ pub(super) fn handle_key_event(key: KeyEvent, state: &mut AppState) -> bool {
                 state.rebuild_row_targets();
             }
             Focus::BottomPanel => state.next_bottom_tab(),
-            _ => {}
+            // "Go into" the agent: Right (and its vim pair `l`) mirrors
+            // Enter's jump-to-pane from the agent list.
+            Focus::Panes => state.activate_selected_pane(),
         },
         KeyCode::Char('r') => {
             if state.focus_state.focus == Focus::Filter {
@@ -374,6 +376,22 @@ mod tests {
         handle_key_event(key(KeyCode::Right), &mut state);
         handle_key_event(key(KeyCode::Left), &mut state);
         assert_eq!(state.bottom_tab, BottomTab::Feed);
+    }
+
+    #[test]
+    fn right_arrow_jumps_to_selected_pane_from_panes_focus() {
+        // Under `cargo test` tmux IPC is disabled at the choke point, so
+        // activate_selected_pane's select-pane/switch-client calls are
+        // inert; the observable effect is the focused_pane_id it records.
+        let mut state = state_with_three_panes();
+        assert_eq!(state.focus_state.focused_pane_id, None);
+
+        handle_key_event(key(KeyCode::Right), &mut state);
+        assert_eq!(state.focus_state.focused_pane_id, Some("%1".into()));
+
+        // `l` mirrors Right, matching the j/k ↔ Down/Up pairing.
+        handle_key_event(key(KeyCode::Char('l')), &mut state);
+        assert_eq!(state.focus_state.focused_pane_id, Some("%1".into()));
     }
 
     #[test]

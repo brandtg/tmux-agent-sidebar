@@ -12,9 +12,9 @@ description: Every shortcut in the sidebar, the worktree spawn modal, and the cl
 | `j` / `Down`   | Move selection down                                           |
 | `k` / `Up`     | Move selection up                                             |
 | `h` / `Left`   | Previous status filter                                        |
-| `l` / `Right`  | Next status filter                                            |
+| `l` / `Right`  | Next status filter; jump to the selected pane |
 | `r`            | Open repo filter popup                                        |
-| `Enter`        | Jump to the selected pane                                     |
+| `Enter` / `→`  | Jump to the selected pane                                     |
 | `Tab`          | Cycle status filter                                           |
 | `Shift+Tab`    | Switch bottom panel tab (Feed ⇄ Repos); `←`/`→` also switch while the bottom panel has focus |
 | `c`            | Toggle compact view (one line per agent)                      |
