@@ -241,6 +241,51 @@ pub(super) fn compact_row(
     vec![ctx.row_line_split(left_spans, left_width, right_spans, right_width)]
 }
 
+/// Minimum display columns kept clear between the program name and the
+/// right-aligned port list on a window row. Matches the two-space
+/// separator the agent branch/ports row uses.
+const MIN_PORT_GAP: usize = 2;
+
+/// Build the right-aligned listening-port list for [`window_row`] within
+/// `budget` display columns.
+///
+/// Ports arrive ascending from the scan (they are collected in a
+/// `BTreeSet`), so the lowest ports render first. When the full
+/// `:p1, p2, …` list does not fit, the highest ports are dropped and a
+/// trailing `…` marks the remainder. `None` means there are no ports,
+/// or none fit at all.
+fn port_text_lowest_first(ports: Option<&[u16]>, budget: usize) -> Option<String> {
+    let ports = ports?;
+    if ports.is_empty() {
+        return None;
+    }
+    let join = |slice: &[u16]| {
+        slice
+            .iter()
+            .map(u16::to_string)
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    let full = format!(":{}", join(ports));
+    if display_width(&full) <= budget {
+        return Some(full);
+    }
+    // Keep the lowest ports that still fit beside a trailing ellipsis.
+    let mut kept: Vec<u16> = Vec::new();
+    for port in ports {
+        kept.push(*port);
+        let candidate = format!(":{}\u{2026}", join(&kept));
+        if display_width(&candidate) > budget {
+            kept.pop();
+            break;
+        }
+    }
+    if kept.is_empty() {
+        return None;
+    }
+    Some(format!(":{}\u{2026}", join(&kept)))
+}
+
 /// One line for a non-agent window row. Window rows are currently a single
 /// line in both compact and expanded densities, using the same gutter as
 /// agent rows. A diamond glyph (`◇`/`◆`) replaces the agent circle so the
@@ -328,29 +373,6 @@ pub(super) fn window_row(
         None => (icon, icon_color),
     };
 
-    // Right side: the listening-port list, when there is one.
-    let port_text = ports.and_then(|ports| {
-        if ports.is_empty() {
-            None
-        } else {
-            let joined = ports
-                .iter()
-                .map(u16::to_string)
-                .collect::<Vec<_>>()
-                .join(", ");
-            Some(format!(":{}", joined))
-        }
-    });
-    let mut right_spans: Vec<Span<'static>> = Vec::with_capacity(1);
-    let mut right_width = 0usize;
-    if let Some(text) = port_text {
-        right_width += display_width(&text);
-        right_spans.push(Span::styled(
-            text,
-            ctx.apply_bg(Style::default().fg(theme.port)),
-        ));
-    }
-
     let icon_w = display_width(icon);
 
     // Non-agent rows represent individual panes (panels), so each panel shows
@@ -369,13 +391,41 @@ pub(super) fn window_row(
         ("shell", None)
     };
     let program_name = strip_exe_suffix(command_basename(raw_prog));
+    let prog_w = display_width(program_name);
 
-    let left_budget = ctx.inner_width.saturating_sub(icon_w + 1 + right_width);
+    // The program name is the anchor of the row and always renders in
+    // full — the listening-port list yields instead. A process that
+    // opens a huge port range (e.g. an expo dev server) must not crowd
+    // the name off the row: the ports truncate to the lowest ones that
+    // fit, a `…` marks the rest, and a minimum gap keeps the two apart.
     let note_reserve = exit_note
         .as_ref()
         .map(|n| display_width(n) + 3)
         .unwrap_or(0);
-    let text_budget = left_budget.saturating_sub(note_reserve);
+    let port_budget = ctx
+        .inner_width
+        .saturating_sub(icon_w + 1)
+        .saturating_sub(prog_w + MIN_PORT_GAP)
+        .saturating_sub(note_reserve);
+    let port_text = port_text_lowest_first(ports, port_budget);
+    let mut right_spans: Vec<Span<'static>> = Vec::with_capacity(1);
+    let mut right_width = 0usize;
+    if let Some(text) = port_text {
+        right_width += display_width(&text);
+        right_spans.push(Span::styled(
+            text,
+            ctx.apply_bg(Style::default().fg(theme.port)),
+        ));
+    }
+
+    // Width left for the program name and its arguments, after the
+    // icon, the (possibly truncated) port list, and the port gap. Only
+    // a name too long for the entire row still truncates here.
+    let port_gap = if right_width > 0 { MIN_PORT_GAP } else { 0 };
+    let text_budget = ctx
+        .inner_width
+        .saturating_sub(icon_w + 1 + right_width + port_gap)
+        .saturating_sub(note_reserve);
 
     let mut left_spans: Vec<Span<'static>> = Vec::with_capacity(4);
     left_spans.push(Span::styled(
@@ -384,7 +434,6 @@ pub(super) fn window_row(
     ));
     let mut left_width = icon_w + 1;
 
-    let prog_w = display_width(program_name);
     if prog_w >= text_budget {
         let name = truncate_to_width(program_name, text_budget);
         let name_w = display_width(&name);
@@ -1993,6 +2042,167 @@ mod tests {
         let text = line_text(&line);
         assert!(text.contains("cargo"), "program must fit: {text}");
         assert!(text.contains('…'), "args should be truncated: {text}");
+    }
+
+    #[test]
+    fn window_row_keeps_program_visible_when_ports_are_many() {
+        // Regression: a process listening on a huge port range (expo dev
+        // server) reserved its entire port list first and crowded the
+        // program name off the row. The name must always win; the port
+        // list truncates lowest-first behind an ellipsis instead.
+        let theme = ColorTheme::default();
+        let w = window_with_args(
+            "dev",
+            "node",
+            Some("server.js --port=8081 --host=0.0.0.0"),
+            crate::tmux::WindowStatus::Task,
+        );
+        let ports: Vec<u16> = (8100..8130).collect();
+        let line = window_row(
+            &w,
+            Some(&ports),
+            None,
+            false,
+            false,
+            40,
+            &StatusIcons::default(),
+            &theme,
+            0,
+        );
+        let text = line_text(&line);
+        assert!(
+            text.contains(" node "),
+            "program name must render in full: {text}"
+        );
+        assert!(text.contains(":8100"), "lowest ports render first: {text}");
+        assert!(
+            text.contains('\u{2026}'),
+            "dropped ports need an ellipsis: {text}"
+        );
+        assert!(
+            !text.contains("8129"),
+            "highest ports must be dropped: {text}"
+        );
+        assert!(display_width(&text) <= 40, "row must fit its width: {text}");
+
+        // A guaranteed gap separates the program from the port list.
+        let port_idx = line
+            .spans
+            .iter()
+            .position(|s| s.content.starts_with(':'))
+            .expect("port span should exist");
+        let gap = &line.spans[port_idx - 1];
+        assert!(
+            !gap.content.is_empty()
+                && gap.content.chars().all(|c| c == ' ')
+                && display_width(&gap.content) >= 2,
+            "expected a >= 2 column gap before the ports, got {gap:?}"
+        );
+    }
+
+    #[test]
+    fn window_row_ports_truncate_lowest_first() {
+        let theme = ColorTheme::default();
+        let w = window("web", "node", crate::tmux::WindowStatus::Task);
+        let ports = [3000u16, 3001, 3010, 9050];
+        let line = window_row(
+            &w,
+            Some(&ports),
+            None,
+            false,
+            false,
+            30,
+            &StatusIcons::default(),
+            &theme,
+            0,
+        );
+        let text = line_text(&line);
+        assert!(
+            text.contains(":3000, 3001, 3010\u{2026}"),
+            "lowest ports stay, got: {text}"
+        );
+        assert!(!text.contains("9050"), "highest port dropped: {text}");
+        assert!(text.contains("node"), "program must stay visible: {text}");
+    }
+
+    #[test]
+    fn window_row_shows_full_port_list_when_it_fits() {
+        let theme = ColorTheme::default();
+        let w = window("web", "node", crate::tmux::WindowStatus::Task);
+        let line = window_row(
+            &w,
+            Some(&[3000, 5173]),
+            None,
+            false,
+            false,
+            40,
+            &StatusIcons::default(),
+            &theme,
+            0,
+        );
+        let text = line_text(&line);
+        assert!(text.contains(":3000, 5173"), "full list fits: {text}");
+        assert!(
+            !text.contains('\u{2026}'),
+            "no ellipsis when everything fits: {text}"
+        );
+    }
+
+    #[test]
+    fn window_row_drops_ports_when_program_name_fills_the_row() {
+        // The name outranks the ports even at the extreme: a program
+        // name that needs the whole row leaves no room for ports.
+        let theme = ColorTheme::default();
+        let w = window(
+            "web",
+            "a-very-long-program-name-here",
+            crate::tmux::WindowStatus::Task,
+        );
+        let line = window_row(
+            &w,
+            Some(&[3000]),
+            None,
+            false,
+            false,
+            20,
+            &StatusIcons::default(),
+            &theme,
+            0,
+        );
+        let text = line_text(&line);
+        assert!(
+            !text.contains(":3000"),
+            "no room for ports when the name fills the row: {text}"
+        );
+        assert!(
+            text.contains("a-very-long-pro"),
+            "name still renders (truncated to the row): {text}"
+        );
+    }
+
+    #[test]
+    fn port_text_lowest_first_returns_full_list_when_it_fits() {
+        assert_eq!(
+            port_text_lowest_first(Some(&[3000, 5173]), 40),
+            Some(":3000, 5173".to_string())
+        );
+        assert_eq!(port_text_lowest_first(None, 40), None);
+        assert_eq!(port_text_lowest_first(Some(&[]), 40), None);
+    }
+
+    #[test]
+    fn port_text_lowest_first_keeps_lowest_ports_with_ellipsis() {
+        let ports: Vec<u16> = (3000..3020).collect();
+        let out = port_text_lowest_first(Some(&ports), 20).expect("some ports fit");
+        assert!(out.starts_with(":3000"), "lowest first: {out}");
+        assert!(out.ends_with('\u{2026}'), "ellipsis marks the rest: {out}");
+        assert!(!out.contains("3019"), "highest ports dropped: {out}");
+        assert!(display_width(&out) <= 20, "must honor budget: {out}");
+    }
+
+    #[test]
+    fn port_text_lowest_first_returns_none_when_nothing_fits() {
+        assert_eq!(port_text_lowest_first(Some(&[3000]), 2), None);
     }
 
     #[test]
