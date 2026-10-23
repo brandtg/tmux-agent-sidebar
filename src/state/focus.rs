@@ -192,6 +192,7 @@ mod tests {
             sidebar_spawned: false,
             bg_shell_cmd: None,
             bg_shell_pid: None,
+            pane_title: String::new(),
         }
     }
 

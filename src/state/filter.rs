@@ -139,6 +139,10 @@ pub enum RepoFilter {
     Repo(String),
 }
 
+/// Mirror of `WORKTREE_MARK` in `crate::group` — the prefix a non-main
+/// worktree group's display name carries.
+const WORKTREE_GROUP_MARK: &str = "⎇ ";
+
 impl RepoFilter {
     pub fn as_str(&self) -> &str {
         match self {
@@ -159,7 +163,22 @@ impl RepoFilter {
     pub fn matches_group(&self, group_name: &str) -> bool {
         match self {
             Self::All => true,
-            Self::Repo(name) => name == group_name,
+            Self::Repo(name) => {
+                if name == group_name {
+                    return true;
+                }
+                // Non-main worktree groups are titled `⎇ <name>` (or
+                // `⎇ <name> (<repo>)`, see `WORKTREE_MARK` in group.rs).
+                // A bare `<name>` typed into the filter must still match
+                // them. Only the glyph-marked names get this treatment —
+                // plain group names keep their exact-match semantics.
+                match group_name.strip_prefix(WORKTREE_GROUP_MARK) {
+                    Some(rest) => {
+                        rest == name || rest.split_once(" (").is_some_and(|(n, _)| n == name)
+                    }
+                    None => false,
+                }
+            }
         }
     }
 }
@@ -430,6 +449,23 @@ mod tests {
         assert!(!RepoFilter::Repo("app".into()).matches_group("other"));
     }
 
+    #[test]
+    fn repo_filter_matches_glyph_prefixed_worktree_group() {
+        // Worktree groups render as `⎇ <name>`; a bare name typed into
+        // the filter must still match them (the glyph rides inside
+        // RepoGroup.name, the user types the repo/worktree name).
+        assert!(RepoFilter::Repo("tzcalc-m10".into()).matches_group("⎇ tzcalc-m10"));
+        // The parenthesized long form matches on the worktree name.
+        assert!(RepoFilter::Repo("fix-auth".into()).matches_group("⎇ fix-auth (flapjack)"));
+        // The full glyph-prefixed name (as selected from the repo popup)
+        // still matches via exact equality.
+        assert!(RepoFilter::Repo("⎇ tzcalc-m10".into()).matches_group("⎇ tzcalc-m10"));
+        // Non-glyph names keep exact-match semantics: no substring drift.
+        assert!(!RepoFilter::Repo("app".into()).matches_group("application"));
+        assert!(!RepoFilter::Repo("tzcalc".into()).matches_group("tzcalc-m10"));
+        assert!(!RepoFilter::Repo("other".into()).matches_group("⎇ tzcalc-m10"));
+    }
+
     // ─── AppState status_counts / repo_names ─────────────────────────
 
     use crate::group::{PaneGitInfo, RepoGroup};
@@ -460,6 +496,7 @@ mod tests {
             sidebar_spawned: false,
             bg_shell_cmd: None,
             bg_shell_pid: None,
+            pane_title: String::new(),
         }
     }
 

@@ -97,10 +97,15 @@ impl AppState {
     pub fn rebuild_row_targets(&mut self) {
         // Reset stale repo filter if the repo no longer exists, and
         // persist the reset back to tmux so fresh sidebar instances do
-        // not reload the dead repo name on startup.
-        if let RepoFilter::Repo(ref name) = self.global.repo_filter
-            && !self.repo_groups.iter().any(|g| g.name == *name)
-        {
+        // not reload the dead repo name on startup. Uses the same match
+        // rule as the renderer (`matches_group`) so a bare name typed
+        // for a `⎇`-titled worktree group is not mistaken for stale.
+        let stale = matches!(self.global.repo_filter, RepoFilter::Repo(_))
+            && !self
+                .repo_groups
+                .iter()
+                .any(|g| self.global.repo_filter.matches_group(&g.name));
+        if stale {
             self.global.repo_filter = RepoFilter::All;
             self.global.save_repo_filter();
         }

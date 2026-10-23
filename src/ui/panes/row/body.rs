@@ -123,11 +123,11 @@ pub(super) fn background_hint_row(ctx: &RowCtx, cmd: &str) -> Line<'static> {
 pub(super) fn prompt_rows(pane: &crate::tmux::PaneInfo, ctx: &RowCtx) -> Vec<Line<'static>> {
     let theme = ctx.theme;
     let is_response = pane.prompt_is_response;
-    let prompt_color = if ctx.active {
-        theme.text_active
-    } else {
-        theme.text_inactive
-    };
+    // Detail text stays in the muted gray on every agent — including the
+    // focused one. `text_active` here made the focused agent's prompt
+    // brighter than every surrounding row and flattened the visual
+    // hierarchy the gray exists to create.
+    let prompt_color = theme.text_inactive;
     let wrap_width = ctx.inner_width.saturating_sub(2);
     let wrapped = if is_response {
         wrap_text_char(&pane.prompt, wrap_width, 3)

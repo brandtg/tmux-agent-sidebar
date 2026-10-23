@@ -466,7 +466,7 @@ fn test_response_arrow_uses_response_arrow_color() {
     ⓘ[fg:221]                                    —[fg:252] ▾[fg:252]
     p[fg:153]r[fg:153]o[fg:153]j[fg:153]e[fg:153]c[fg:153]t[fg:153]
     ┃[fg:153] ○[fg:110] [fg:174]c[fg:174]l[fg:174]a[fg:174]u[fg:174]d[fg:174]e[fg:174]
-      ▷[fg:81,bold] [fg:81,bold]T[fg:255]a[fg:255]s[fg:255]k[fg:255] [fg:255]c[fg:255]o[fg:255]m[fg:255]p[fg:255]l[fg:255]e[fg:255]t[fg:255]e[fg:255]d[fg:255] [fg:255]s[fg:255]u[fg:255]c[fg:255]c[fg:255]e[fg:255]s[fg:255]s[fg:255]f[fg:255]u[fg:255]l[fg:255]l[fg:255]y[fg:255]
+      ▷[fg:81,bold] [fg:81,bold]T[fg:244]a[fg:244]s[fg:244]k[fg:244] [fg:244]c[fg:244]o[fg:244]m[fg:244]p[fg:244]l[fg:244]e[fg:244]t[fg:244]e[fg:244]d[fg:244] [fg:244]s[fg:244]u[fg:244]c[fg:244]c[fg:244]e[fg:244]s[fg:244]s[fg:244]f[fg:244]u[fg:244]l[fg:244]l[fg:244]y[fg:244]
 
 
     ╭[fg:240] [fg:240]F[fg:153]e[fg:153]e[fg:153]d[fg:153] [fg:240]│[fg:240] [fg:240]R[fg:252]e[fg:252]p[fg:252]o[fg:252]s[fg:252] [fg:240]─[fg:240]─[fg:240]─[fg:240]─[fg:240]─[fg:240]─[fg:240]─[fg:240]─[fg:240]─[fg:240]─[fg:240]─[fg:240]─[fg:240]─[fg:240]─[fg:240]─[fg:240]─[fg:240]─[fg:240]─[fg:240]─[fg:240]─[fg:240]─[fg:240]─[fg:240]─[fg:240]─[fg:240]╮[fg:240]

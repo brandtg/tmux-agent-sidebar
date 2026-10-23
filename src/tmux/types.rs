@@ -88,6 +88,14 @@ pub struct PaneInfo {
     /// to matching the raw command string against shell-expanded ps args
     /// when absent (a match that quoting or `$(…)` substitution breaks).
     pub bg_shell_pid: Option<u32>,
+    /// Raw `#{pane_title}`. On ssh panes this carries whatever the
+    /// REMOTE side published via terminal-title escape sequences (it
+    /// passes through ssh); when the remote has published nothing it
+    /// still holds what the local shell set before exec — typically the
+    /// local hostname. Empty when tmux never had a title. Agent rows
+    /// ignore it; ssh process cards render it as line 2 when it holds
+    /// real remote content (see `window_context_text`).
+    pub pane_title: String,
 }
 
 impl PaneInfo {
@@ -217,6 +225,9 @@ pub struct OtherPane {
     /// Exit code of the last completed foreground command (same snippet).
     /// `None` when no integration is active or the value failed to parse.
     pub last_exit: Option<i64>,
+    /// Raw `#{pane_title}` — the remote-published terminal title on ssh
+    /// panes (see [`PaneInfo::pane_title`]). Empty when unset.
+    pub pane_title: String,
 }
 
 /// Coarse status for a non-agent window row. Distinct from
