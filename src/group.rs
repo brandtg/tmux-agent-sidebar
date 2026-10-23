@@ -3,6 +3,11 @@ use indexmap::IndexMap;
 use crate::git::run_git;
 use crate::tmux::{OtherPane, PaneInfo, WindowStatus};
 
+/// Marker prefixed to a non-main worktree group's display name. It rides
+/// inside `RepoGroup::name`, so repo-filter substring matches keep working
+/// on the bare name.
+const WORKTREE_MARK: &str = "⎇ ";
+
 /// Per-pane git metadata resolved from the pane's working directory.
 #[derive(Debug, Clone, Default)]
 pub struct PaneGitInfo {
@@ -10,6 +15,11 @@ pub struct PaneGitInfo {
     pub branch: Option<String>,
     pub is_worktree: bool,
     pub worktree_name: Option<String>,
+    /// The pane's own worktree toplevel (`git rev-parse --show-toplevel`),
+    /// populated only when `is_worktree` — a main checkout leaves it `None`
+    /// so "has a worktree_root" stays equivalent to "is not the main
+    /// worktree". `repo_root` keeps pointing at the shared main root.
+    pub worktree_root: Option<String>,
     /// Uncommitted changes (staged + unstaged + untracked) counted from
     /// `git status --porcelain`. 0 until the resolver has answered, which
     /// is indistinguishable from "clean" for one refresh cycle.
@@ -22,7 +32,9 @@ pub struct PaneGitInfo {
 /// A group of panes working in the same repository (or directory).
 #[derive(Debug, Clone)]
 pub struct RepoGroup {
-    /// Display name: repo directory basename, or raw path for non-git
+    /// Display name: repo directory basename for main checkouts, raw path
+    /// for non-git, `⎇ <name>` (with a parenthesized repo when the name
+    /// doesn't carry it) for linked worktrees
     pub name: String,
     /// Whether any pane in the group belongs to the focused (active) window
     pub has_focus: bool,
@@ -57,15 +69,20 @@ pub struct OtherWindow {
     pub path: String,
     pub git_info: PaneGitInfo,
     pub status: WindowStatus,
+    /// Remote-published terminal title (`#{pane_title}`), empty when
+    /// none. Rendered as the expanded ssh card's line 2 when it carries
+    /// real remote content (see `window_context_text`).
+    pub pane_title: String,
 }
 
 /// Repo key for a group, mirroring the key `group_panes_by_repo` assigned:
-/// the first pane's resolved repo root, else its grouping anchor.
+/// the first pane's worktree root (linked worktrees group separately),
+/// else its repo root, else its grouping anchor.
 pub fn repo_group_key(group: &RepoGroup) -> String {
     group
         .panes
         .iter()
-        .find_map(|(_, git)| git.repo_root.clone())
+        .find_map(|(_, git)| git.worktree_root.clone().or(git.repo_root.clone()))
         .or_else(|| {
             group
                 .panes
@@ -96,8 +113,9 @@ pub fn group_other_windows_by_repo(
         }
         let git_info = git_info_cache.get(&pane.path).cloned().unwrap_or_default();
         let key = git_info
-            .repo_root
+            .worktree_root
             .clone()
+            .or(git_info.repo_root.clone())
             .unwrap_or_else(|| pane.path.clone());
         out.entry(key).or_default().push(OtherWindow {
             window_id: pane.window_id.clone(),
@@ -117,6 +135,7 @@ pub fn group_other_windows_by_repo(
             // Precomputed at parse time with the process snapshot, so a
             // script running under a shell foreground arrives as `Task`.
             status: pane.status,
+            pane_title: pane.pane_title.clone(),
         });
     }
 
@@ -164,6 +183,7 @@ pub fn group_other_windows_by_session(
                 // Precomputed at parse time with the process snapshot, so a
                 // script running under a shell foreground arrives as `Task`.
                 status: pane.status,
+                pane_title: pane.pane_title.clone(),
             });
     }
 
@@ -179,7 +199,7 @@ pub fn resolve_pane_git_info(path: &str) -> PaneGitInfo {
         return PaneGitInfo::default();
     }
 
-    // Single git call for all three values (one line per arg)
+    // Single git call for all four values (one line per arg)
     let combined = run_git(
         path,
         &[
@@ -188,17 +208,19 @@ pub fn resolve_pane_git_info(path: &str) -> PaneGitInfo {
             "HEAD",
             "--git-common-dir",
             "--git-dir",
+            "--show-toplevel",
         ],
     );
-    let (branch, git_common_dir, git_dir) = match combined {
+    let (branch, git_common_dir, git_dir, toplevel) = match combined {
         Some(output) => {
             let mut lines = output.lines();
             let b = lines.next().map(|s| s.to_string());
             let c = lines.next().map(|s| s.to_string());
             let d = lines.next().map(|s| s.to_string());
-            (b, c, d)
+            let t = lines.next().map(|s| s.to_string());
+            (b, c, d, t)
         }
-        None => (None, None, None),
+        None => (None, None, None, None),
     };
 
     let is_worktree = match (&git_common_dir, &git_dir) {
@@ -219,6 +241,11 @@ pub fn resolve_pane_git_info(path: &str) -> PaneGitInfo {
             abs.parent().map(|p| p.to_string_lossy().to_string())
         })
         .or_else(|| run_git(path, &["rev-parse", "--show-toplevel"]));
+
+    // The pane's own checkout root, only meaningful for linked worktrees:
+    // a main checkout leaves it None so "is_worktree" and "has a
+    // worktree_root" stay equivalent.
+    let worktree_root = if is_worktree { toplevel } else { None };
 
     // Working-tree health for the Repos tab. Both queries are local git
     // (no network) and bounded by the shared subprocess timeout; they run
@@ -249,6 +276,7 @@ pub fn resolve_pane_git_info(path: &str) -> PaneGitInfo {
         branch,
         is_worktree,
         worktree_name: None,
+        worktree_root,
         dirty_count,
         ahead_behind,
     }
@@ -327,9 +355,52 @@ pub fn ordered_group_rows<'a>(
     rows
 }
 
-/// Group all panes across all sessions by repo root.
-/// Returns groups sorted alphabetically by display name (case-insensitive),
-/// so the order is stable regardless of which pane is encountered first.
+/// Last path segment of `path`, or the whole path when it has no
+/// separator.
+fn path_basename(path: &str) -> &str {
+    path.rsplit('/').next().unwrap_or(path)
+}
+
+/// Display name for a repo group keyed by `group_key`: the plain
+/// basename for main checkouts and non-git paths, and for a pane in a
+/// linked worktree `⎇ <name>` — `<name>` from the hook when provided,
+/// else the worktree directory's basename, with the repo basename
+/// appended in parens when the name doesn't already carry it (Greg's
+/// `<repo>-m<N>` worktrees stay short; `fix-auth` of repo `flapjack`
+/// renders as `⎇ fix-auth (flapjack)`).
+fn repo_group_display_name(group_key: &str, git_info: &PaneGitInfo) -> String {
+    match &git_info.worktree_root {
+        None => path_basename(group_key).to_string(),
+        Some(root) => {
+            let name = git_info
+                .worktree_name
+                .clone()
+                .unwrap_or_else(|| path_basename(root).to_string());
+            match git_info.repo_root.as_deref().map(path_basename) {
+                Some(repo_base) if !name.starts_with(repo_base) => {
+                    format!("{WORKTREE_MARK}{name} ({repo_base})")
+                }
+                _ => format!("{WORKTREE_MARK}{name}"),
+            }
+        }
+    }
+}
+
+/// Case-insensitive sort key for group display names, with the worktree
+/// marker stripped so `⎇`-titled worktree groups interleave alphabetically
+/// next to their repo instead of clumping apart (U+2387 sorts above
+/// letters).
+fn display_sort_key(name: &str) -> String {
+    name.strip_prefix(WORKTREE_MARK)
+        .unwrap_or(name)
+        .to_lowercase()
+}
+
+/// Group all panes across all sessions by repo. Each linked worktree is
+/// its own group (keyed by the pane's own toplevel), while a repo's main
+/// checkout groups by the main root. Returns groups sorted by display
+/// name (case-insensitive, `⎇` marker excluded from the sort key), so
+/// the order is stable regardless of which pane is encountered first.
 ///
 /// Git metadata comes from `git_info`, the path→[`PaneGitInfo`] cache owned
 /// by the background `git_info_poll_loop`. A path missing from the cache
@@ -348,16 +419,13 @@ pub fn group_panes_by_repo(
             for pane in &window.panes {
                 let git_info = pane_git_info(pane, git_info_cache);
 
-                let group_key = match &git_info.repo_root {
-                    Some(root) => root.clone(),
-                    None => pane.grouping_anchor().to_string(),
-                };
+                let group_key = git_info
+                    .worktree_root
+                    .clone()
+                    .or(git_info.repo_root.clone())
+                    .unwrap_or_else(|| pane.grouping_anchor().to_string());
 
-                let display_name = group_key
-                    .rsplit('/')
-                    .next()
-                    .unwrap_or(&group_key)
-                    .to_string();
+                let display_name = repo_group_display_name(&group_key, &git_info);
 
                 let has_focus = window.window_active && pane.pane_active;
 
@@ -377,7 +445,7 @@ pub fn group_panes_by_repo(
     }
 
     let mut result: Vec<RepoGroup> = groups.into_values().collect();
-    result.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    result.sort_by(|a, b| display_sort_key(&a.name).cmp(&display_sort_key(&b.name)));
     result
 }
 
@@ -514,11 +582,55 @@ mod tests {
         );
     }
 
+    #[test]
+    fn linked_worktree_resolves_own_worktree_root() {
+        // A linked worktree carries its own toplevel in `worktree_root`
+        // while `repo_root` keeps pointing at the main checkout — the
+        // split Task B2 keys worktree groups off.
+        let (_tmp, main, worktree) = temp_repo_with_worktree();
+
+        let info = resolve_pane_git_info(worktree.to_str().unwrap());
+        assert!(info.is_worktree, "fixture must be a linked worktree");
+        assert_eq!(
+            std::fs::canonicalize(info.worktree_root.expect("worktree root")).unwrap(),
+            std::fs::canonicalize(&worktree).unwrap(),
+            "worktree_root must be the worktree's own toplevel"
+        );
+        assert_eq!(
+            std::fs::canonicalize(info.repo_root.expect("main repo root")).unwrap(),
+            std::fs::canonicalize(&main).unwrap(),
+            "repo_root must stay the main checkout's root"
+        );
+    }
+
+    #[test]
+    fn main_checkout_has_no_worktree_root() {
+        // `worktree_root` is populated only for non-main worktrees; a main
+        // checkout keeps it None with `repo_root` unchanged.
+        let (_tmp, main, _worktree) = temp_repo_with_worktree();
+
+        let info = resolve_pane_git_info(main.to_str().unwrap());
+        assert!(!info.is_worktree, "main checkout must not be flagged");
+        assert!(
+            info.worktree_root.is_none(),
+            "main checkout must not get a worktree_root"
+        );
+        assert_eq!(
+            std::fs::canonicalize(info.repo_root.expect("main repo root")).unwrap(),
+            std::fs::canonicalize(&main).unwrap()
+        );
+    }
+
     /// Build a hermetic git fixture: a main repo with one commit plus a
-    /// linked worktree, both inside one temp dir. Returns
+    /// linked worktree, both inside one temp dir, with explicit names so
+    /// tests can exercise the display-name rules (`<repo>`-prefixed
+    /// worktree basenames vs unrelated ones). Returns
     /// `(temp_dir, main_repo_path, worktree_path)`; the temp dir cleans
     /// itself up on drop.
-    fn temp_repo_with_worktree() -> (tempfile::TempDir, std::path::PathBuf, std::path::PathBuf) {
+    fn temp_repo_with_named_worktree(
+        repo_name: &str,
+        worktree_name: &str,
+    ) -> (tempfile::TempDir, std::path::PathBuf, std::path::PathBuf) {
         fn git_ok(dir: &Path, args: &[&str]) {
             let output = std::process::Command::new("git")
                 .arg("-C")
@@ -534,8 +646,8 @@ mod tests {
         }
 
         let tmp = tempfile::tempdir().expect("temp dir");
-        let main = tmp.path().join("main-repo");
-        let worktree = tmp.path().join("linked-wt");
+        let main = tmp.path().join(repo_name);
+        let worktree = tmp.path().join(worktree_name);
 
         git_ok(tmp.path(), &["init", "-q", main.to_str().unwrap()]);
         git_ok(
@@ -560,6 +672,12 @@ mod tests {
         );
 
         (tmp, main, worktree)
+    }
+
+    /// The default fixture: repo `main-repo` with a linked worktree
+    /// `linked-wt` (a basename unrelated to the repo).
+    fn temp_repo_with_worktree() -> (tempfile::TempDir, std::path::PathBuf, std::path::PathBuf) {
+        temp_repo_with_named_worktree("main-repo", "linked-wt")
     }
 
     // ─── resolve_git_path tests ─────────────────────────────────────
@@ -603,6 +721,7 @@ mod tests {
             sidebar_spawned: false,
             bg_shell_cmd: None,
             bg_shell_pid: None,
+            pane_title: String::new(),
         }
     }
 
@@ -778,6 +897,113 @@ mod tests {
             groups[0].name, expected_name,
             "display name should be repo basename"
         );
+    }
+
+    #[test]
+    fn group_panes_worktree_splits_from_main_repo_with_glyph_title() {
+        // Worktree-aware grouping: a pane in the main checkout and a pane
+        // in a linked worktree of the same repo land in two distinct
+        // groups; the worktree group is titled with the branch glyph while
+        // the main group keeps the plain repo basename.
+        let (_tmp, main, worktree) = temp_repo_with_worktree();
+
+        let sessions = vec![test_session(vec![test_window(
+            vec![
+                test_pane("%1", main.to_str().unwrap()),
+                test_pane("%2", worktree.to_str().unwrap()),
+            ],
+            true,
+        )])];
+        let groups = group_panes_by_repo(
+            &sessions,
+            &cache_with(&[main.to_str().unwrap(), worktree.to_str().unwrap()]),
+        );
+
+        assert_eq!(groups.len(), 2, "worktree must split from its main repo");
+        let main_group = groups
+            .iter()
+            .find(|g| g.name == "main-repo")
+            .expect("main checkout keeps the plain repo basename");
+        let wt_group = groups
+            .iter()
+            .find(|g| g.name.starts_with(WORKTREE_MARK))
+            .expect("worktree group is glyph-marked");
+        assert_eq!(main_group.panes[0].0.pane_id, "%1");
+        assert_eq!(wt_group.panes[0].0.pane_id, "%2");
+    }
+
+    #[test]
+    fn group_panes_worktree_title_stays_short_when_repo_prefixed() {
+        // Greg's <repo>-m<N> convention: the worktree basename already
+        // carries the repo, so the title stays `⎇ <basename>` with no
+        // parenthesized repo.
+        let (_tmp, _main, worktree) = temp_repo_with_named_worktree("tzcalc", "tzcalc-m10");
+
+        let sessions = vec![test_session(vec![test_window(
+            vec![test_pane("%1", worktree.to_str().unwrap())],
+            true,
+        )])];
+        let groups = group_panes_by_repo(&sessions, &cache_with(&[worktree.to_str().unwrap()]));
+
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].name, "⎇ tzcalc-m10");
+    }
+
+    #[test]
+    fn group_panes_worktree_title_appends_unrelated_repo_name() {
+        // A worktree directory named independently of the repo keeps the
+        // repo association visible: `⎇ <name> (<repo basename>)`.
+        let (_tmp, _main, worktree) = temp_repo_with_named_worktree("flapjack", "fix-auth");
+
+        let sessions = vec![test_session(vec![test_window(
+            vec![test_pane("%1", worktree.to_str().unwrap())],
+            true,
+        )])];
+        let groups = group_panes_by_repo(&sessions, &cache_with(&[worktree.to_str().unwrap()]));
+
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].name, "⎇ fix-auth (flapjack)");
+    }
+
+    #[test]
+    fn group_panes_worktree_title_prefers_hook_provided_name() {
+        // Hook-provided worktree names win over the directory basename and
+        // get the repo parenthetical when unrelated to the repo.
+        let (_tmp, _main, worktree) = temp_repo_with_worktree();
+        let mut pane = test_pane("%1", worktree.to_str().unwrap());
+        pane.worktree.name = "custom-name".into();
+
+        let sessions = vec![test_session(vec![test_window(vec![pane], true)])];
+        let groups = group_panes_by_repo(&sessions, &cache_with(&[worktree.to_str().unwrap()]));
+
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].name, "⎇ custom-name (main-repo)");
+    }
+
+    #[test]
+    fn group_panes_sort_strips_worktree_glyph_so_worktrees_interleave() {
+        // `⎇`-titled groups sort by the name after the glyph: `aaa-m1`
+        // lands between `aaa` and `mmm` instead of clumping apart (U+2387
+        // sorts above letters).
+        let (tmp, main, worktree) = temp_repo_with_named_worktree("aaa", "aaa-m1");
+        let plain = tmp.path().join("mmm");
+        std::fs::create_dir_all(&plain).expect("mkdir plain dir");
+
+        let sessions = vec![test_session(vec![test_window(
+            vec![
+                test_pane("%1", main.to_str().unwrap()),
+                test_pane("%2", worktree.to_str().unwrap()),
+                test_pane("%3", plain.to_str().unwrap()),
+            ],
+            true,
+        )])];
+        let groups = group_panes_by_repo(
+            &sessions,
+            &cache_with(&[main.to_str().unwrap(), worktree.to_str().unwrap()]),
+        );
+
+        let names: Vec<&str> = groups.iter().map(|g| g.name.as_str()).collect();
+        assert_eq!(names, vec!["aaa", "⎇ aaa-m1", "mmm"]);
     }
 
     #[test]
@@ -1090,6 +1316,7 @@ mod tests {
             status: crate::tmux::classify_window_status(command),
             last_cmd: None,
             last_exit: None,
+            pane_title: String::new(),
         }
     }
 
@@ -1184,6 +1411,34 @@ mod tests {
         assert_eq!(windows[2].window_index, 1);
     }
 
+    #[test]
+    fn group_other_windows_split_main_and_worktree_buckets() {
+        // A worktree's dev-server panes bucket into the worktree's own
+        // root, not the shared main repo root, so they land in the
+        // worktree's group next to its agent.
+        let (_tmp, main, worktree) = temp_repo_with_worktree();
+        let main_shell = other_pane("@1", "%1", main.to_str().unwrap(), "zsh", true);
+        let wt_shell = other_pane("@2", "%2", worktree.to_str().unwrap(), "zsh", true);
+
+        let grouped = group_other_windows_by_repo(
+            &[main_shell, wt_shell],
+            &cache_with(&[main.to_str().unwrap(), worktree.to_str().unwrap()]),
+        );
+
+        let wt_key = resolve_pane_git_info(worktree.to_str().unwrap())
+            .worktree_root
+            .expect("fixture worktree root");
+        assert_eq!(
+            grouped.len(),
+            2,
+            "main and worktree must not share a bucket"
+        );
+        assert!(
+            grouped.contains_key(&wt_key),
+            "worktree shell buckets by its own root, not the main repo root"
+        );
+    }
+
     // ─── ordered_group_rows ─────────────────────────────────────────
 
     fn agent_pane(id: &str, session: &str, window_index: i64) -> (PaneInfo, PaneGitInfo) {
@@ -1210,6 +1465,7 @@ mod tests {
             path: "/repo".into(),
             git_info: PaneGitInfo::default(),
             status: WindowStatus::Task,
+            pane_title: String::new(),
         }
     }
 
@@ -1331,5 +1587,28 @@ mod tests {
         )])];
         let groups = group_panes_by_repo(&sessions, &HashMap::new());
         assert_eq!(repo_group_key(&groups[0]), "/tmp/plain");
+
+        // Worktree-aware mirror: a pane whose git info resolved a
+        // worktree root keys by that root, not the shared main repo root.
+        let mut cache = HashMap::new();
+        cache.insert(
+            "/work/dir".to_string(),
+            PaneGitInfo {
+                repo_root: Some("/repos/shared".into()),
+                worktree_root: Some("/repos/shared-wt".into()),
+                is_worktree: true,
+                ..Default::default()
+            },
+        );
+        let sessions = vec![test_session(vec![test_window(
+            vec![test_pane("%1", "/work/dir")],
+            true,
+        )])];
+        let groups = group_panes_by_repo(&sessions, &cache);
+        assert_eq!(
+            repo_group_key(&groups[0]),
+            "/repos/shared-wt",
+            "worktree groups key by the worktree root"
+        );
     }
 }

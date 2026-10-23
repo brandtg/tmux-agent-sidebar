@@ -286,11 +286,11 @@ fn port_text_lowest_first(ports: Option<&[u16]>, budget: usize) -> Option<String
     Some(format!(":{}\u{2026}", join(&kept)))
 }
 
-/// One line for a non-agent window row. Window rows are currently a single
-/// line in both compact and expanded densities, using the same gutter as
-/// agent rows. A diamond glyph (`◇`/`◆`) replaces the agent circle so the
-/// two kinds of row are distinguishable at a glance while color still conveys
-/// status.
+/// Lines for a non-agent window row.
+///
+/// Line 1 (both densities) uses the same gutter as agent rows. A diamond
+/// glyph (`◇`/`◆`) replaces the agent circle so the two kinds of row are
+/// distinguishable at a glance while color still conveys status.
 ///
 /// Rendering uses two-tone styling: the binary name is highlighted in
 /// [`theme.text_active`], followed by its cleaned arguments in
@@ -298,10 +298,17 @@ fn port_text_lowest_first(ports: Option<&[u16]>, budget: usize) -> Option<String
 /// runtime interpreters (`node`, `python`, `cargo`) and what they are running
 /// (`server.js`, `manage.py runserver`, `test`).
 ///
-/// Future extension: in an expanded multi-line card layout (occupying 2-3
-/// lines matching the vertical rhythm of agent panes), expanded mode can
-/// render a secondary line showing full uncontracted arguments or the working
-/// directory (`path`), and an optional tertiary line for user window names.
+/// In expanded mode the card grows a second detail line —
+/// `<other dimension> · <window_name>` in [`theme.text_inactive`], indented
+/// like the agent detail rows. "Other dimension" is whichever of
+/// (session, repo) is *not* the group title, which `group_by` selects.
+/// The window name is otherwise invisible while a foreground command
+/// runs (line 1 only falls back to it when the command is empty), so the
+/// card doubles as its label. The detail line is plain — no selection
+/// background, no active marker — but still maps back to the row, so the
+/// whole card is clickable. The card degrades back to its single status
+/// line when line 2 has nothing to show, or when fewer than 3 meaningful
+/// columns of it fit after the indent.
 ///
 /// `finished` carries the completed foreground task tracked runtime-side.
 /// A finished task overrides the plain status: exit 0 (or an unknown
@@ -315,11 +322,13 @@ pub(super) fn window_row(
     finished: Option<&crate::state::WindowFinished>,
     selected: bool,
     active: bool,
+    expanded: bool,
+    group_by: crate::state::GroupBy,
     width: usize,
     icons: &StatusIcons,
     theme: &ColorTheme,
     spinner_frame: usize,
-) -> Line<'static> {
+) -> Vec<Line<'static>> {
     use crate::tmux::WindowStatus;
 
     let bg = if selected {
@@ -483,13 +492,145 @@ pub(super) fn window_row(
         left_width += w;
     }
 
-    ctx.row_line_split(left_spans, left_width, right_spans, right_width)
+    // Expanded mode appends the context detail line; compact stays on
+    // the single status line. Line 2 renders through a plain context —
+    // it is a content row, so no selection background and no active
+    // marker ride on it (same treatment as agent detail rows).
+    let mut lines = Vec::with_capacity(2);
+    lines.push(ctx.row_line_split(left_spans, left_width, right_spans, right_width));
+    if expanded {
+        let detail_ctx = RowCtx {
+            marker_char: " ",
+            marker_style: Style::default(),
+            inner_width: ctx.inner_width,
+            theme,
+            bg: None,
+            active,
+        };
+        if let Some(line) = window_context_row(window, group_by, &detail_ctx) {
+            lines.push(line);
+        }
+    }
+    lines
+}
+
+/// Two-space indent shared with the agent detail rows (`└`/`├`, prompt
+/// wrapping) — the expanded window card's second line hangs from it.
+const CONTEXT_INDENT: &str = "  ";
+
+/// Minimum meaningful display columns line 2 must have room for after
+/// the indent. Below that the truncated fragment would be a couple of
+/// characters plus an ellipsis — noise rather than context.
+const MIN_CONTEXT_COLUMNS: usize = 3;
+
+/// Last path segment of a repo root — the session view's "other"
+/// dimension. `None` for missing repos, path roots (`/`), and empty
+/// paths alike: none of them leave a name worth showing.
+fn repo_basename(repo_root: Option<&str>) -> Option<String> {
+    let root = repo_root?;
+    std::path::Path::new(root)
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .filter(|name| !name.is_empty())
+}
+
+/// Compose the expanded card's line-2 text: the grouping dimension that
+/// is *not* the group title (whichever of session/repo that is, per
+/// `group_by`), then the tmux window name. `None` when every segment is
+/// empty — there is nothing the line could say.
+///
+/// Exception — ssh cards: line 1 is `ssh <host>` and the grouping
+/// dimensions describe the LOCAL cwd's repo tag, which is useless. tmux's
+/// `#{pane_title}` passes through ssh carrying whatever the REMOTE side
+/// published, so when it holds real remote content (non-empty, and not
+/// the stale local-hostname default the shell set before exec) it
+/// becomes line 2 verbatim. The existing truncation/degradation logic in
+/// [`window_context_row`] applies unchanged.
+fn window_context_text(
+    window: &crate::group::OtherWindow,
+    group_by: crate::state::GroupBy,
+) -> Option<String> {
+    let command_base = strip_exe_suffix(command_basename(window.command.as_str()));
+    let title = window.pane_title.trim();
+    if command_base == "ssh"
+        && !title.is_empty()
+        && title != crate::process::local_hostname().trim()
+    {
+        return Some(window.pane_title.clone());
+    }
+    let window_name = window.window_name.as_str();
+    let mut parts: Vec<String> = Vec::with_capacity(2);
+    match group_by {
+        // Repo-grouped view: the group title is the repo, so line 2
+        // names the session and the tmux `index:name` window selector.
+        crate::state::GroupBy::Repo => {
+            let session = window.session_name.as_str();
+            if !session.is_empty() {
+                parts.push(session.to_string());
+            }
+            if !window_name.is_empty() {
+                parts.push(format!("{}:{}", window.window_index, window_name));
+            }
+        }
+        // Session-grouped view: the group title is the session, so line
+        // 2 names the repo (its basename) and the window name. A pane
+        // outside a repo still shows the window name alone.
+        crate::state::GroupBy::Session => {
+            if let Some(repo) = repo_basename(window.git_info.repo_root.as_deref()) {
+                parts.push(repo);
+            }
+            if !window_name.is_empty() {
+                parts.push(window_name.to_string());
+            }
+        }
+    }
+    if parts.is_empty() {
+        return None;
+    }
+    Some(parts.join(" · "))
+}
+
+/// The expanded window card's second line: `<other dimension> ·
+/// <window_name>` in muted text, indented like the agent detail rows.
+/// `None` collapses the card back to its single status line — either
+/// there is nothing to show, or the sidebar is too narrow to render at
+/// least [`MIN_CONTEXT_COLUMNS`] meaningful columns of it. Truncation
+/// cuts the tail, so the window name (the last segment) yields first
+/// and the `other` segment stays as long as possible.
+fn window_context_row(
+    window: &crate::group::OtherWindow,
+    group_by: crate::state::GroupBy,
+    ctx: &RowCtx,
+) -> Option<Line<'static>> {
+    let budget = ctx
+        .inner_width
+        .saturating_sub(display_width(CONTEXT_INDENT));
+    if budget < MIN_CONTEXT_COLUMNS {
+        return None;
+    }
+    let text = window_context_text(window, group_by)?;
+    if text.trim().is_empty() {
+        return None;
+    }
+    let text = truncate_to_width(&text, budget);
+    let content = format!("{CONTEXT_INDENT}{text}");
+    let content_w = display_width(&content);
+    Some(ctx.row_line(
+        vec![Span::styled(
+            content,
+            // Same gray as the agent prompt/detail rows: the context line
+            // must recede behind line 1, not compete with it.
+            ctx.apply_bg(Style::default().fg(ctx.theme.text_inactive)),
+        )],
+        content_w,
+    ))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::group::PaneGitInfo;
+    use crate::state::GroupBy;
     use crate::tmux::{AgentType, PaneAttention, PaneInfo, PermissionMode, WorktreeMetadata};
     use crate::ui::icons::StatusIcons;
     use crate::ui::text::display_width;
@@ -529,6 +670,7 @@ mod tests {
             sidebar_spawned: false,
             bg_shell_cmd: None,
             bg_shell_pid: None,
+            pane_title: String::new(),
         }
     }
 
@@ -1782,6 +1924,7 @@ mod tests {
             path: "/repo".into(),
             git_info: PaneGitInfo::default(),
             status,
+            pane_title: String::new(),
         }
     }
 
@@ -1789,18 +1932,22 @@ mod tests {
     fn window_row_renders_program_and_port() {
         let theme = ColorTheme::default();
         let w = window("web", "node", crate::tmux::WindowStatus::Task);
-        let line = window_row(
+        let lines = window_row(
             &w,
             Some(&[3000]),
             None,
             false,
             false,
+            false,
+            GroupBy::Repo,
             40,
             &StatusIcons::default(),
             &theme,
             0,
         );
-        let text = line_text(&line);
+        assert_eq!(lines.len(), 1, "window rows render a single line");
+        let line = &lines[0];
+        let text = line_text(line);
         assert!(text.contains('\u{25C6}'), "diamond glyph missing: {text}");
         assert!(text.contains("node"), "program missing: {text}");
         // Displays the pane's own foreground program, not the window name.
@@ -1812,18 +1959,22 @@ mod tests {
     fn window_row_omits_port_when_empty() {
         let theme = ColorTheme::default();
         let w = window("nvim", "nvim", crate::tmux::WindowStatus::Busy);
-        let line = window_row(
+        let lines = window_row(
             &w,
             None,
             None,
             false,
             false,
+            false,
+            GroupBy::Repo,
             40,
             &StatusIcons::default(),
             &theme,
             0,
         );
-        let text = line_text(&line);
+        assert_eq!(lines.len(), 1, "window rows render a single line");
+        let line = &lines[0];
+        let text = line_text(line);
         assert!(text.contains("nvim"), "program missing: {text}");
         assert_eq!(
             text.matches("nvim").count(),
@@ -1843,18 +1994,22 @@ mod tests {
             exit_code: Some(0),
             finished_at: 0,
         };
-        let line = window_row(
+        let lines = window_row(
             &w,
             None,
             Some(&finished),
             false,
             false,
+            false,
+            GroupBy::Repo,
             40,
             &StatusIcons::default(),
             &theme,
             0,
         );
-        let text = line_text(&line);
+        assert_eq!(lines.len(), 1, "window rows render a single line");
+        let line = &lines[0];
+        let text = line_text(line);
         assert!(
             text.contains("cargo"),
             "finished task command missing: {text}"
@@ -1869,18 +2024,22 @@ mod tests {
     fn window_row_suppresses_tmux_agent_sidebar_window_name() {
         let theme = ColorTheme::default();
         let w = window("tmux-agent-sidebar", "", crate::tmux::WindowStatus::Idle);
-        let line = window_row(
+        let lines = window_row(
             &w,
             None,
             None,
             false,
             false,
+            false,
+            GroupBy::Repo,
             40,
             &StatusIcons::default(),
             &theme,
             0,
         );
-        let text = line_text(&line);
+        assert_eq!(lines.len(), 1, "window rows render a single line");
+        let line = &lines[0];
+        let text = line_text(line);
         assert!(
             !text.contains("tmux-agent-sidebar"),
             "sidebar binary name must not appear: {text}"
@@ -1894,18 +2053,46 @@ mod tests {
         // Pick name/command with no "m"/"s" so a stray duration like
         // "2m14s" would be the only source of those characters.
         let w = window("web", "node", crate::tmux::WindowStatus::Task);
-        let line = window_row(
+        let lines = window_row(
             &w,
             None,
             None,
             false,
             false,
+            false,
+            GroupBy::Repo,
             40,
             &StatusIcons::default(),
             &theme,
             0,
         );
-        let text = line_text(&line);
+        assert_eq!(lines.len(), 1, "window rows render a single line");
+        let line = &lines[0];
+        let text = line_text(line);
+        assert!(
+            !text.contains('m') && !text.contains('s'),
+            "window rows must not show a time counter: {text}"
+        );
+
+        // The invariant extends to the expanded card's second line: it
+        // shows session/repo context, never a duration.
+        let mut w = w;
+        w.session_name = "dev".into();
+        let lines = window_row(
+            &w,
+            None,
+            None,
+            false,
+            false,
+            true,
+            GroupBy::Repo,
+            40,
+            &StatusIcons::default(),
+            &theme,
+            0,
+        );
+        assert_eq!(lines.len(), 2, "expanded window rows render two lines");
+        let text = lines.iter().map(line_text).collect::<Vec<_>>().join("\n");
         assert!(
             !text.contains('m') && !text.contains('s'),
             "window rows must not show a time counter: {text}"
@@ -1924,18 +2111,22 @@ mod tests {
             exit_code: None,
             finished_at: 0,
         };
-        let line = window_row(
+        let lines = window_row(
             &w,
             None,
             Some(&finished),
             false,
             false,
+            false,
+            GroupBy::Repo,
             40,
             &StatusIcons::default(),
             &theme,
             0,
         );
-        let text = line_text(&line);
+        assert_eq!(lines.len(), 1, "window rows render a single line");
+        let line = &lines[0];
+        let text = line_text(line);
         assert!(text.contains('\u{25C7}'), "hollow diamond missing: {text}");
         let icon_span = &line.spans[2];
         assert_eq!(icon_span.content.as_ref(), "\u{25C7}");
@@ -1958,18 +2149,22 @@ mod tests {
             exit_code: Some(1),
             finished_at: 0,
         };
-        let line = window_row(
+        let lines = window_row(
             &w,
             None,
             Some(&finished),
             false,
             false,
+            false,
+            GroupBy::Repo,
             40,
             &StatusIcons::default(),
             &theme,
             0,
         );
-        let text = line_text(&line);
+        assert_eq!(lines.len(), 1, "window rows render a single line");
+        let line = &lines[0];
+        let text = line_text(line);
         assert!(text.contains("(exit 1)"), "exit note missing: {text}");
         let icon_span = &line.spans[2];
         assert_eq!(icon_span.content.as_ref(), "\u{25C6}");
@@ -1985,18 +2180,22 @@ mod tests {
             Some("server.js"),
             crate::tmux::WindowStatus::Task,
         );
-        let line = window_row(
+        let lines = window_row(
             &w,
             Some(&[3000]),
             None,
             false,
             false,
+            false,
+            GroupBy::Repo,
             40,
             &StatusIcons::default(),
             &theme,
             0,
         );
-        let text = line_text(&line);
+        assert_eq!(lines.len(), 1, "window rows render a single line");
+        let line = &lines[0];
+        let text = line_text(line);
         assert!(text.contains("node"), "program missing: {text}");
         assert!(text.contains("server.js"), "args missing: {text}");
         assert!(text.contains(":3000"), "port missing: {text}");
@@ -2028,18 +2227,22 @@ mod tests {
             crate::tmux::WindowStatus::Task,
         );
         // Small width constraint: 20 columns
-        let line = window_row(
+        let lines = window_row(
             &w,
             None,
             None,
             false,
             false,
+            false,
+            GroupBy::Repo,
             20,
             &StatusIcons::default(),
             &theme,
             0,
         );
-        let text = line_text(&line);
+        assert_eq!(lines.len(), 1, "window rows render a single line");
+        let line = &lines[0];
+        let text = line_text(line);
         assert!(text.contains("cargo"), "program must fit: {text}");
         assert!(text.contains('…'), "args should be truncated: {text}");
     }
@@ -2058,18 +2261,22 @@ mod tests {
             crate::tmux::WindowStatus::Task,
         );
         let ports: Vec<u16> = (8100..8130).collect();
-        let line = window_row(
+        let lines = window_row(
             &w,
             Some(&ports),
             None,
             false,
             false,
+            false,
+            GroupBy::Repo,
             40,
             &StatusIcons::default(),
             &theme,
             0,
         );
-        let text = line_text(&line);
+        assert_eq!(lines.len(), 1, "window rows render a single line");
+        let line = &lines[0];
+        let text = line_text(line);
         assert!(
             text.contains(" node "),
             "program name must render in full: {text}"
@@ -2105,18 +2312,22 @@ mod tests {
         let theme = ColorTheme::default();
         let w = window("web", "node", crate::tmux::WindowStatus::Task);
         let ports = [3000u16, 3001, 3010, 9050];
-        let line = window_row(
+        let lines = window_row(
             &w,
             Some(&ports),
             None,
             false,
             false,
+            false,
+            GroupBy::Repo,
             30,
             &StatusIcons::default(),
             &theme,
             0,
         );
-        let text = line_text(&line);
+        assert_eq!(lines.len(), 1, "window rows render a single line");
+        let line = &lines[0];
+        let text = line_text(line);
         assert!(
             text.contains(":3000, 3001, 3010\u{2026}"),
             "lowest ports stay, got: {text}"
@@ -2129,18 +2340,22 @@ mod tests {
     fn window_row_shows_full_port_list_when_it_fits() {
         let theme = ColorTheme::default();
         let w = window("web", "node", crate::tmux::WindowStatus::Task);
-        let line = window_row(
+        let lines = window_row(
             &w,
             Some(&[3000, 5173]),
             None,
             false,
             false,
+            false,
+            GroupBy::Repo,
             40,
             &StatusIcons::default(),
             &theme,
             0,
         );
-        let text = line_text(&line);
+        assert_eq!(lines.len(), 1, "window rows render a single line");
+        let line = &lines[0];
+        let text = line_text(line);
         assert!(text.contains(":3000, 5173"), "full list fits: {text}");
         assert!(
             !text.contains('\u{2026}'),
@@ -2158,18 +2373,22 @@ mod tests {
             "a-very-long-program-name-here",
             crate::tmux::WindowStatus::Task,
         );
-        let line = window_row(
+        let lines = window_row(
             &w,
             Some(&[3000]),
             None,
             false,
             false,
+            false,
+            GroupBy::Repo,
             20,
             &StatusIcons::default(),
             &theme,
             0,
         );
-        let text = line_text(&line);
+        assert_eq!(lines.len(), 1, "window rows render a single line");
+        let line = &lines[0];
+        let text = line_text(line);
         assert!(
             !text.contains(":3000"),
             "no room for ports when the name fills the row: {text}"
@@ -2214,18 +2433,22 @@ mod tests {
             exit_code: Some(101),
             finished_at: 0,
         };
-        let line = window_row(
+        let lines = window_row(
             &w,
             None,
             Some(&finished),
             false,
             false,
+            false,
+            GroupBy::Repo,
             40,
             &StatusIcons::default(),
             &theme,
             0,
         );
-        let text = line_text(&line);
+        assert_eq!(lines.len(), 1, "window rows render a single line");
+        let line = &lines[0];
+        let text = line_text(line);
         assert!(text.contains("cargo"), "program missing: {text}");
         assert!(text.contains("test"), "args missing: {text}");
         assert!(text.contains("(exit 101)"), "exit note missing: {text}");
@@ -2243,5 +2466,437 @@ mod tests {
             .find(|s| s.content.contains("test"))
             .expect("test span");
         assert_eq!(args_span.style.fg, Some(theme.text_muted));
+    }
+
+    // ─── expanded window card: line 2 ───────────────────────────────
+
+    #[test]
+    fn window_row_expanded_renders_session_and_window_on_second_line() {
+        // Repo-grouped view: the group title is the repo, so line 2
+        // names the *other* dimension — the session plus the tmux
+        // `index:name` window selector.
+        let theme = ColorTheme::default();
+        let mut w = window_with_args(
+            "web",
+            "node",
+            Some("server.js"),
+            crate::tmux::WindowStatus::Task,
+        );
+        w.session_name = "main".into();
+        w.window_index = 2;
+        let lines = window_row(
+            &w,
+            Some(&[3000]),
+            None,
+            false,
+            false,
+            true,
+            GroupBy::Repo,
+            40,
+            &StatusIcons::default(),
+            &theme,
+            0,
+        );
+        assert_eq!(
+            lines.len(),
+            2,
+            "expanded window rows render a two-line card"
+        );
+        let second = line_text(&lines[1]);
+        assert!(
+            second.contains("main · 2:web"),
+            "line 2 must carry session · index:name, got: {second}"
+        );
+        assert!(
+            second.starts_with("    "),
+            "line 2 must carry the gutter plus 2-column detail indent, got: {second:?}"
+        );
+        let detail_span = lines[1]
+            .spans
+            .iter()
+            .find(|s| s.content.contains("main · 2:web"))
+            .expect("context span");
+        assert_eq!(detail_span.style.fg, Some(theme.text_inactive));
+
+        // Line 1 is unchanged: diamond, program, args, ports.
+        let first = line_text(&lines[0]);
+        assert!(first.contains('\u{25C6}'), "diamond missing: {first}");
+        assert!(
+            first.contains("node") && first.contains("server.js"),
+            "program line changed: {first}"
+        );
+        assert!(first.contains(":3000"), "ports missing: {first}");
+    }
+
+    #[test]
+    fn window_row_expanded_session_view_renders_repo_basename() {
+        // Session-grouped view: the group title is the session, so line
+        // 2 names the repo (basename of its root) plus the window name.
+        let theme = ColorTheme::default();
+        let mut w = window("web", "node", crate::tmux::WindowStatus::Busy);
+        w.git_info.repo_root = Some("/home/dev/tmux-agent-sidebar".into());
+        let lines = window_row(
+            &w,
+            None,
+            None,
+            false,
+            false,
+            true,
+            GroupBy::Session,
+            40,
+            &StatusIcons::default(),
+            &theme,
+            0,
+        );
+        assert_eq!(lines.len(), 2);
+        let second = line_text(&lines[1]);
+        assert!(
+            second.contains("tmux-agent-sidebar · web"),
+            "line 2 must carry repo basename · window name, got: {second}"
+        );
+    }
+
+    #[test]
+    fn window_row_expanded_session_view_without_repo_shows_window_name_only() {
+        let theme = ColorTheme::default();
+        let w = window("web", "node", crate::tmux::WindowStatus::Busy);
+        let lines = window_row(
+            &w,
+            None,
+            None,
+            false,
+            false,
+            true,
+            GroupBy::Session,
+            40,
+            &StatusIcons::default(),
+            &theme,
+            0,
+        );
+        assert_eq!(lines.len(), 2);
+        let second = line_text(&lines[1]);
+        assert!(second.contains("web"), "window name must render: {second}");
+        assert!(
+            !second.contains('·'),
+            "no repo means no separator, got: {second}"
+        );
+    }
+
+    #[test]
+    fn window_row_expanded_second_line_has_no_selection_background() {
+        // Mirrors
+        // `render_pane_lines_selected_leaves_content_rows_unhighlighted`:
+        // the detail line is content, so the selection background stays
+        // on the status line only.
+        let theme = ColorTheme::default();
+        let mut w = window("web", "node", crate::tmux::WindowStatus::Task);
+        w.session_name = "main".into();
+        w.window_index = 2;
+        let lines = window_row(
+            &w,
+            None,
+            None,
+            true,
+            false,
+            true,
+            GroupBy::Repo,
+            40,
+            &StatusIcons::default(),
+            &theme,
+            0,
+        );
+        assert_eq!(lines.len(), 2);
+        assert!(
+            lines[0]
+                .spans
+                .iter()
+                .any(|s| s.style.bg == Some(theme.selection_bg)),
+            "line 1 keeps the selection background"
+        );
+        assert!(
+            lines[1]
+                .spans
+                .iter()
+                .all(|s| s.style.bg != Some(theme.selection_bg)),
+            "line 2 must not carry the selection background"
+        );
+    }
+
+    #[test]
+    fn window_row_expanded_second_line_has_no_active_marker() {
+        let theme = ColorTheme::default();
+        let mut w = window("web", "node", crate::tmux::WindowStatus::Task);
+        w.session_name = "main".into();
+        let lines = window_row(
+            &w,
+            None,
+            None,
+            false,
+            true,
+            true,
+            GroupBy::Repo,
+            40,
+            &StatusIcons::default(),
+            &theme,
+            0,
+        );
+        assert_eq!(lines.len(), 2);
+        assert_eq!(
+            lines[0].spans[0].content, SELECTION_MARKER,
+            "line 1 carries the active marker"
+        );
+        assert_eq!(
+            lines[1].spans[0].content, " ",
+            "line 2 is a plain detail row without the active marker"
+        );
+    }
+
+    #[test]
+    fn window_row_expanded_degrades_to_one_line_when_nothing_to_show() {
+        let theme = ColorTheme::default();
+        // Session view: no repo and an empty window name — both
+        // segments of line 2 are empty.
+        let w = window("", "node", crate::tmux::WindowStatus::Busy);
+        let lines = window_row(
+            &w,
+            None,
+            None,
+            false,
+            false,
+            true,
+            GroupBy::Session,
+            40,
+            &StatusIcons::default(),
+            &theme,
+            0,
+        );
+        assert_eq!(lines.len(), 1, "nothing to show on line 2 → single line");
+        // Repo view: no session name and no window name degrades too.
+        let mut w = w;
+        w.session_name = String::new();
+        let lines = window_row(
+            &w,
+            None,
+            None,
+            false,
+            false,
+            true,
+            GroupBy::Repo,
+            40,
+            &StatusIcons::default(),
+            &theme,
+            0,
+        );
+        assert_eq!(lines.len(), 1, "nothing to show on line 2 → single line");
+    }
+
+    #[test]
+    fn window_row_expanded_degrades_to_one_line_when_too_narrow() {
+        // An inner width of 18 leaves 16 columns for line 2 after the
+        // indent: the composed text truncates with an ellipsis, keeping
+        // the `other` segment (the session) as long as possible — the
+        // window name, as the last segment, is the tail that gets cut.
+        let theme = ColorTheme::default();
+        let mut w = window("web", "node", crate::tmux::WindowStatus::Busy);
+        w.session_name = "a-very-long-session-name".into();
+        w.window_index = 2;
+        let lines = window_row(
+            &w,
+            None,
+            None,
+            false,
+            false,
+            true,
+            GroupBy::Repo,
+            20,
+            &StatusIcons::default(),
+            &theme,
+            0,
+        );
+        assert_eq!(lines.len(), 2);
+        let second = line_text(&lines[1]);
+        assert!(
+            second.contains('\u{2026}'),
+            "line 2 must truncate with an ellipsis: {second}"
+        );
+        assert!(
+            display_width(&second) <= 20,
+            "line 2 must fit the row width: {second}"
+        );
+        assert!(
+            second.contains("a-very-long-ses\u{2026}"),
+            "other segment stays as long as possible: {second}"
+        );
+        assert!(
+            !second.contains("web"),
+            "the window name is the truncated tail: {second}"
+        );
+    }
+
+    #[test]
+    fn window_row_expanded_degrades_to_one_line_below_three_columns() {
+        // Width 6 leaves only 2 columns for line 2 content (6 − gutter 2
+        // − indent 2): fewer than the 3 meaningful columns the fragment
+        // needs, so the card stays on its single status line.
+        let theme = ColorTheme::default();
+        let mut w = window("web", "node", crate::tmux::WindowStatus::Busy);
+        w.session_name = "main".into();
+        w.window_index = 2;
+        let lines = window_row(
+            &w,
+            None,
+            None,
+            false,
+            false,
+            true,
+            GroupBy::Repo,
+            6,
+            &StatusIcons::default(),
+            &theme,
+            0,
+        );
+        assert_eq!(lines.len(), 1, "a 2-column line 2 is pure noise");
+    }
+
+    // ─── ssh cards: remote pane title on line 2 ─────────────────────
+
+    #[test]
+    fn window_context_text_ssh_shows_remote_title_verbatim() {
+        let mut w = window("shell", "ssh", crate::tmux::WindowStatus::Idle);
+        w.pane_title = "✳ React.framework codesign errSecInternalComponent".into();
+        assert_eq!(
+            window_context_text(&w, GroupBy::Repo).as_deref(),
+            Some("✳ React.framework codesign errSecInternalComponent"),
+            "a real remote title becomes line 2 exactly"
+        );
+        assert_eq!(
+            window_context_text(&w, GroupBy::Session).as_deref(),
+            Some("✳ React.framework codesign errSecInternalComponent"),
+            "the remote title replaces both grouping dimensions"
+        );
+    }
+
+    #[test]
+    fn window_context_text_ssh_stale_local_hostname_falls_back() {
+        // Before the remote publishes its own title, pane_title still
+        // holds what the local shell set before exec: the local
+        // hostname. That is not remote content — today's context line
+        // stays. (Uses the helper's own value, so the assertion holds
+        // whether or not gethostname succeeds on this host.)
+        let mut w = window("shell", "ssh", crate::tmux::WindowStatus::Idle);
+        w.session_name = "main".into();
+        w.window_index = 2;
+        w.pane_title = crate::process::local_hostname().to_string();
+        assert_eq!(
+            window_context_text(&w, GroupBy::Repo).as_deref(),
+            Some("main · 2:shell"),
+            "stale local-hostname title must keep the fallback line"
+        );
+    }
+
+    #[test]
+    fn window_context_text_ssh_empty_title_falls_back() {
+        let mut w = window("shell", "ssh", crate::tmux::WindowStatus::Idle);
+        w.session_name = "main".into();
+        w.window_index = 2;
+        w.pane_title = String::new();
+        assert_eq!(
+            window_context_text(&w, GroupBy::Repo).as_deref(),
+            Some("main · 2:shell")
+        );
+    }
+
+    #[test]
+    fn window_context_text_non_ssh_ignores_pane_title() {
+        let mut w = window("web", "node", crate::tmux::WindowStatus::Task);
+        w.session_name = "main".into();
+        w.window_index = 2;
+        w.pane_title = "✳ remote session".into();
+        assert_eq!(
+            window_context_text(&w, GroupBy::Repo).as_deref(),
+            Some("main · 2:web"),
+            "the title is honored on ssh cards only"
+        );
+    }
+
+    #[test]
+    fn window_row_expanded_ssh_card_second_line_is_remote_title() {
+        let theme = ColorTheme::default();
+        let mut w = window("shell", "ssh", crate::tmux::WindowStatus::Idle);
+        w.pane_title = "✳ React.framework codesign errSecInternalComponent".into();
+        let lines = window_row(
+            &w,
+            None,
+            None,
+            false,
+            false,
+            true,
+            GroupBy::Repo,
+            80,
+            &StatusIcons::default(),
+            &theme,
+            0,
+        );
+        assert_eq!(lines.len(), 2, "expanded ssh cards stay two-line");
+        let second = line_text(&lines[1]);
+        assert!(
+            second.contains("React.framework codesign errSecInternalComponent"),
+            "line 2 must carry the remote title, got: {second}"
+        );
+        assert!(
+            !second.contains("main"),
+            "the local-cwd repo tag must not leak onto the ssh card: {second}"
+        );
+    }
+
+    #[test]
+    fn window_row_compact_ssh_card_stays_single_line() {
+        let theme = ColorTheme::default();
+        let mut w = window("shell", "ssh", crate::tmux::WindowStatus::Idle);
+        w.pane_title = "✳ React.framework codesign errSecInternalComponent".into();
+        let lines = window_row(
+            &w,
+            None,
+            None,
+            false,
+            false,
+            false,
+            GroupBy::Repo,
+            80,
+            &StatusIcons::default(),
+            &theme,
+            0,
+        );
+        assert_eq!(lines.len(), 1, "compact stays strictly one line");
+    }
+
+    #[test]
+    fn window_row_compact_stays_single_line_with_context_available() {
+        // Density contract: session/repo context is available, but
+        // compact mode renders strictly one line.
+        let theme = ColorTheme::default();
+        let mut w = window("web", "node", crate::tmux::WindowStatus::Task);
+        w.session_name = "main".into();
+        w.window_index = 2;
+        w.git_info.repo_root = Some("/tmp/project".into());
+        let lines = window_row(
+            &w,
+            None,
+            None,
+            false,
+            false,
+            false,
+            GroupBy::Repo,
+            40,
+            &StatusIcons::default(),
+            &theme,
+            0,
+        );
+        assert_eq!(lines.len(), 1, "compact window rows are strictly one line");
+        let text = line_text(&lines[0]);
+        assert!(
+            !text.contains("main"),
+            "compact must not render the context line: {text}"
+        );
     }
 }

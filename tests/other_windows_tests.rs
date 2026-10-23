@@ -23,6 +23,7 @@ fn other_window(pane_id: &str, name: &str, command: &str, status: WindowStatus) 
         path: "/home/user/project".into(),
         git_info: PaneGitInfo::default(),
         status,
+        pane_title: String::new(),
     }
 }
 
@@ -63,7 +64,9 @@ fn snapshot_other_windows_rendered() {
     ┃ ○ claude
         Waiting for prompt…
       ◆ cargo
+        main · 0:cargo test
       ◆ nvim
+        main · 0:nvim
     ╭ Feed │ Repos ──────────────────╮
     │       No recent activity       │
     ╰────────────────────────────────╯
@@ -104,6 +107,7 @@ fn snapshot_other_windows_with_args_rendered() {
                 path: "/home/user/project".into(),
                 git_info: PaneGitInfo::default(),
                 status: WindowStatus::Task,
+                pane_title: String::new(),
             },
             OtherWindow {
                 window_id: "@5".into(),
@@ -121,6 +125,7 @@ fn snapshot_other_windows_with_args_rendered() {
                 path: "/home/user/project".into(),
                 git_info: PaneGitInfo::default(),
                 status: WindowStatus::Task,
+                pane_title: String::new(),
             },
         ],
     );
@@ -134,7 +139,9 @@ fn snapshot_other_windows_with_args_rendered() {
     ┃ ○ claude
         Waiting for prompt…
       ◆ node server.js
+        main · 0:web
       ◆ cargo test --lib
+        main · 1:tests
     ╭ Feed │ Repos ──────────────────╮
     │       No recent activity       │
     ╰────────────────────────────────╯
@@ -173,6 +180,7 @@ fn snapshot_other_windows_visible_under_matching_status_filter() {
     ⓘ                              — ▾
     project
       ◆ cargo
+        main · 0:cargo test
     ╭ Feed │ Repos ──────────────────╮
     │       No recent activity       │
     ╰────────────────────────────────╯
@@ -315,6 +323,7 @@ fn tick_window(
             Some(last_cmd.into())
         },
         last_exit,
+        pane_title: String::new(),
     };
     let sessions = vec![SessionInfo {
         session_name: "main".into(),
@@ -637,6 +646,7 @@ fn window_task_clears_when_other_window_pane_focused() {
         status: tmux_agent_sidebar::tmux::WindowStatus::Idle,
         last_cmd: None,
         last_exit: None,
+        pane_title: String::new(),
     };
     let sessions = vec![SessionInfo {
         session_name: "main".into(),
@@ -709,6 +719,7 @@ fn window_task_in_unattached_session_does_not_clear() {
         status: tmux_agent_sidebar::tmux::WindowStatus::Idle,
         last_cmd: None,
         last_exit: None,
+        pane_title: String::new(),
     };
     let sessions = vec![SessionInfo {
         session_name: "main".into(),
@@ -765,6 +776,7 @@ fn window_task_clears_across_sessions_when_tmux_attention_is_none() {
         status: tmux_agent_sidebar::tmux::WindowStatus::Idle,
         last_cmd: None,
         last_exit: None,
+        pane_title: String::new(),
     };
     let sessions = vec![SessionInfo {
         session_name: "we_1193".into(),

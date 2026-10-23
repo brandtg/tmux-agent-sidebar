@@ -65,8 +65,11 @@ pub(super) mod pane_line_field {
     pub const LAST_EXIT: usize = 25; // absolute 31 (@pane_last_exit)
     pub const BG_PID: usize = 26; // absolute 32 (@pane_bg_pid)
     pub const SESSION_ATTACHED: usize = 27; // absolute 33 (session_attached)
+    pub const PANE_TITLE: usize = 28; // absolute 34 (#{pane_title})
     /// Minimum number of fields the pane-line suffix must contain.
     /// Equals `session_line_field::MIN_FIELDS - PANE_LINE_OFFSET`.
+    /// `PANE_TITLE` sits beyond this minimum and is read leniently
+    /// (`parts.get`), so older-format lines still parse.
     pub const MIN_FIELDS: usize = 27;
 }
 
@@ -109,6 +112,7 @@ fn pane_format() -> String {
         q(PANE_LAST_EXIT),
         q(PANE_BG_PID),
         q("session_attached"),
+        q("pane_title"),
     ]
     .join("|")
 }
@@ -266,6 +270,10 @@ fn collect_other_panes(
                 }
             },
             last_exit: pane_fields[pane_line_field::LAST_EXIT].parse().ok(),
+            pane_title: pane_fields
+                .get(pane_line_field::PANE_TITLE)
+                .cloned()
+                .unwrap_or_default(),
         });
     }
     out
@@ -609,6 +617,12 @@ fn parse_pane_fields_with_processes(
             }
         },
         bg_shell_pid: parts[pane_line_field::BG_PID].parse().ok(),
+        // Trailing optional field: older-format lines (and the test
+        // wrapper's suffix-only fixtures) may stop before it.
+        pane_title: parts
+            .get(pane_line_field::PANE_TITLE)
+            .cloned()
+            .unwrap_or_default(),
     })
 }
 
@@ -1008,6 +1022,7 @@ mod tests {
             sidebar_spawned: false,
             bg_shell_cmd: None,
             bg_shell_pid: None,
+            pane_title: String::new(),
         }
     }
 
@@ -1595,6 +1610,58 @@ mod tests {
         assert!(pane.session_name.is_empty());
     }
 
+    // ─── pane_title ─────────────────────────────────────────────────
+
+    #[test]
+    fn parse_pane_line_reads_pane_title_field() {
+        // pane_title is the LAST format field. A remote side publishing a
+        // terminal title through ssh must surface verbatim — #{q:}
+        // quoting already keeps spaces and pipes intact through the split.
+        let mut fields = full_fields();
+        fields.resize(pane_line_field::PANE_TITLE + 1, "");
+        fields[pane_line_field::PANE_TITLE] = "✳ React.framework codesign errSecInternalComponent";
+        let pane = parse_pane_line(&make_pane_line(&fields)).unwrap();
+        assert_eq!(
+            pane.pane_title, "✳ React.framework codesign errSecInternalComponent",
+            "remote pane title should surface as parsed"
+        );
+
+        // Embedded delimiters survive the existing backslash unescaping.
+        let mut fields = full_fields();
+        fields.resize(pane_line_field::PANE_TITLE + 1, "");
+        fields[pane_line_field::PANE_TITLE] = "user@host: ~/a\\|b";
+        let pane = parse_pane_line(&make_pane_line(&fields)).unwrap();
+        assert_eq!(pane.pane_title, "user@host: ~/a|b");
+    }
+
+    #[test]
+    fn parse_pane_line_tolerates_missing_pane_title_field() {
+        // An old-style fixture line without the trailing pane_title (the
+        // MIN_FIELDS contract) must still parse, reading an empty title.
+        let pane = parse_pane_line(&make_pane_line(&full_fields())).unwrap();
+        assert!(pane.pane_title.is_empty());
+    }
+
+    #[test]
+    fn collect_other_panes_carries_pane_title() {
+        let mut fields = full_fields();
+        fields[pane_line_field::PANE_ROLE] = ""; // not the sidebar
+        fields[pane_line_field::AGENT] = ""; // @pane_agent unset
+        fields[pane_line_field::PANE_CURRENT_COMMAND] = "ssh"; // plain ssh card
+        fields.resize(pane_line_field::PANE_TITLE + 1, "");
+        fields[pane_line_field::PANE_TITLE] = "✳ remote session";
+        let mut segments: Vec<&str> = vec!["main", "@5", "1", "editor", "0", "1"];
+        segments.extend(&fields);
+        let line = segments.join("|");
+
+        let panes = collect_other_panes(&line, None);
+        assert_eq!(panes.len(), 1);
+        assert_eq!(
+            panes[0].pane_title, "✳ remote session",
+            "the OtherPane copy must carry the raw pane title"
+        );
+    }
+
     #[test]
     fn parse_pane_line_rejects_sidebar_role() {
         let mut fields = full_fields();
@@ -1943,6 +2010,7 @@ mod tests {
                     sidebar_spawned: false,
                     bg_shell_cmd: None,
                     bg_shell_pid: None,
+                    pane_title: String::new(),
                 }],
             },
         );

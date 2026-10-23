@@ -116,6 +116,7 @@ fn test_line_to_row_two_agents() {
         sidebar_spawned: false,
         bg_shell_cmd: None,
         bg_shell_pid: None,
+        pane_title: String::new(),
     };
     let pane2 = PaneInfo {
         pane_id: "%2".into(),
@@ -141,6 +142,7 @@ fn test_line_to_row_two_agents() {
         sidebar_spawned: false,
         bg_shell_cmd: None,
         bg_shell_pid: None,
+        pane_title: String::new(),
     };
 
     let mut state = make_state(vec![SessionInfo {

@@ -222,24 +222,31 @@ pub(super) fn collect(state: &AppState, width: u16) -> CollectedRows {
                     let is_active =
                         window.session_attached && window.window_active && window.pane_active;
                     let finished = runtime.and_then(|s| s.window_finished.clone());
-                    // Non-agent window panes currently render as a single line in both
-                    // compact and expanded densities. In a future extension to an expanded
-                    // multi-line card layout (occupying 2-3 lines similar to agent panes),
-                    // window_row can return Vec<Line<'static>>, and collected can push each
-                    // line while mapping them all to Some(row_index).
-                    let line = row::window_row(
+                    // Window rows carry the same density flag as agent
+                    // rows: expanded renders the two-line card whose
+                    // second line names the *other* grouping dimension
+                    // plus the window name (see `row::window_row`), so
+                    // `group_by` rides along to pick which dimension is
+                    // "other". Every returned line maps to this row so
+                    // the whole card is clickable.
+                    let lines = row::window_row(
                         window,
                         runtime.map(|s| s.ports.as_slice()),
                         finished.as_ref(),
                         is_selected,
                         is_active,
+                        !state.global.compact,
+                        state.global.group_by,
                         width,
                         &state.icons,
                         theme,
                         state.spinner_frame,
                     );
-                    collected.lines.push(line);
-                    collected.line_to_row.push(Some(row_index));
+                    let line_count = lines.len();
+                    collected.lines.extend(lines);
+                    for _ in 0..line_count {
+                        collected.line_to_row.push(Some(row_index));
+                    }
                     row_index += 1;
                 }
             }
@@ -283,6 +290,7 @@ mod tests {
             sidebar_spawned: false,
             bg_shell_cmd: None,
             bg_shell_pid: None,
+            pane_title: String::new(),
         }
     }
 
@@ -338,6 +346,7 @@ mod tests {
             path: "/tmp/repo".into(),
             git_info: PaneGitInfo::default(),
             status: crate::tmux::classify_window_status(command),
+            pane_title: String::new(),
         }
     }
 
@@ -373,11 +382,39 @@ mod tests {
         assert!(text.contains("cargo"), "window row missing:\n{text}");
         assert!(text.contains('\u{25C6}'), "window glyph missing:\n{text}");
         // Layout: repo header, agent status, agent idle hint, then the
-        // window row (row index 1). No sub-header line.
+        // two-line window card (both lines map to row index 1). No
+        // sub-header line.
         assert_eq!(
             collected.line_to_row,
-            vec![None, Some(0), Some(0), Some(1)],
-            "the window row must be selectable as row 1"
+            vec![None, Some(0), Some(0), Some(1), Some(1)],
+            "the window card must be selectable as row 1 on both lines"
+        );
+    }
+
+    #[test]
+    fn collect_window_rows_stay_single_line_in_compact_mode() {
+        // Density contract: compact mode is strictly one line per row, so
+        // the window arm's `expanded = !compact` flag must keep the line
+        // map at exactly one entry per row.
+        let mut state = AppState::new("%0".into());
+        state.global.show_windows = true;
+        state.global.compact = true;
+        state.repo_groups = vec![RepoGroup {
+            name: "repo".into(),
+            has_focus: false,
+            panes: vec![(make_pane("%1", PaneStatus::Idle), PaneGitInfo::default())],
+        }];
+        state.other_windows.insert(
+            "/tmp/repo".into(),
+            vec![other_window("%10", "cargo test", "cargo")],
+        );
+
+        let collected = collect(&state, 40);
+        // Header, one compact agent line, one window line.
+        assert_eq!(
+            collected.line_to_row,
+            vec![None, Some(0), Some(1)],
+            "compact density keeps every row to a single line"
         );
     }
 
@@ -430,8 +467,9 @@ mod tests {
             "rows must interleave by window:\n{text}"
         );
 
-        // Selection targets follow the same order: window-0 rows sit
-        // between the two agents, window-1's row after agent2.
+        // Selection targets follow the same order: window-0 card (both
+        // lines) sits between the two agents, window-1's card after
+        // agent2. Expanded window cards occupy two lines each.
         assert_eq!(
             collected.line_to_row,
             vec![
@@ -439,9 +477,12 @@ mod tests {
                 Some(0),
                 Some(0),
                 Some(1),
+                Some(1),
+                Some(2),
                 Some(2),
                 Some(3),
                 Some(3),
+                Some(4),
                 Some(4)
             ],
             "line_to_row must match the interleaved render order"
@@ -570,6 +611,40 @@ mod tests {
         assert_eq!(collected.pending_spawn[0].2, "/tmp/repo");
         // At least the header plus one pane row should have been pushed.
         assert!(!collected.lines.is_empty());
+    }
+
+    #[test]
+    fn collect_pending_spawn_for_worktree_group_targets_main_repo_root() {
+        // Deliberate contract (see Part B of the two-line-process-view
+        // plan): the `+` button on a worktree group must spawn a NEW
+        // worktree off the MAIN checkout, so it registers the main
+        // `repo_root`, never the group's `worktree_root` (the key the
+        // group itself is bucketed under). Pin this so nobody later
+        // "fixes" the collector to key off the worktree path.
+        let mut state = AppState::new("%0".into());
+        let git_info = PaneGitInfo {
+            repo_root: Some("/tmp/repo".into()),
+            branch: None,
+            is_worktree: true,
+            worktree_root: Some("/tmp/repo-wt/tzcalc-m10".into()),
+            ..Default::default()
+        };
+        state.repo_groups = vec![RepoGroup {
+            name: "⎇ tzcalc-m10".into(),
+            has_focus: false,
+            panes: vec![(make_pane("%1", PaneStatus::Running), git_info)],
+        }];
+        let collected = collect(&state, 40);
+        assert_eq!(
+            collected.pending_spawn.len(),
+            1,
+            "worktree groups must still emit a spawn target"
+        );
+        assert_eq!(collected.pending_spawn[0].1, "⎇ tzcalc-m10");
+        assert_eq!(
+            collected.pending_spawn[0].2, "/tmp/repo",
+            "the spawn target must be the main repo_root, not the worktree path"
+        );
     }
 
     #[test]

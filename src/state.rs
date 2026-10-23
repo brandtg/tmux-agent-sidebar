@@ -305,6 +305,7 @@ mod tests {
             sidebar_spawned: false,
             bg_shell_cmd: None,
             bg_shell_pid: None,
+            pane_title: String::new(),
         }
     }
 
@@ -1318,6 +1319,48 @@ mod tests {
 
         state.handle_mouse_click(4, 5); // row 4 → line_index = (4-2) = 2 → agent row 1
         assert_eq!(state.global.selected_pane_row, 1);
+    }
+
+    #[test]
+    fn mouse_click_on_either_line_of_two_line_card_selects_row() {
+        // Two-line process cards occupy two entries in `line_to_row`, both
+        // mapped to the same row: the whole card is the click target, not
+        // just its first line.
+        let mut state = AppState::new("%99".into());
+        state.layout.pane_row_targets = vec![
+            RowTarget {
+                pane_id: "%10".into(),
+                is_window: true,
+            },
+            RowTarget {
+                pane_id: "%11".into(),
+                is_window: true,
+            },
+        ];
+        // line_to_row: line 0 = group header (None), lines 1-2 = the
+        // two-line card for row 0, lines 3-4 = the card for row 1.
+        state.layout.line_to_row = vec![None, Some(0), Some(0), Some(1), Some(1)];
+        state.scrolls.panes.offset = 0;
+        state.global.selected_pane_row = 1;
+
+        // row 0 = filter bar, row 1 = secondary header, row 2+ = list lines.
+        state.handle_mouse_click(4, 5); // row 4 → line_index = (4-2) = 2 → card 0, second line
+        assert_eq!(state.global.selected_pane_row, 0);
+        assert_eq!(
+            state.focus_state.focused_pane_id.as_deref(),
+            Some("%10"),
+            "the second line must click through to activate_selected_pane"
+        );
+
+        state.global.selected_pane_row = 1;
+        state.focus_state.focused_pane_id = None;
+        state.handle_mouse_click(3, 5); // row 3 → line_index = (3-2) = 1 → card 0, first line
+        assert_eq!(state.global.selected_pane_row, 0);
+        assert_eq!(state.focus_state.focused_pane_id.as_deref(), Some("%10"));
+
+        state.handle_mouse_click(6, 5); // row 6 → line_index = (6-2) = 4 → card 1, second line
+        assert_eq!(state.global.selected_pane_row, 1);
+        assert_eq!(state.focus_state.focused_pane_id.as_deref(), Some("%11"));
     }
 
     #[test]

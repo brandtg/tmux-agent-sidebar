@@ -1,6 +1,7 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::Path;
 use std::process::Command;
+use std::sync::OnceLock;
 use std::time::Duration;
 
 use crate::subprocess;
@@ -467,6 +468,34 @@ pub(crate) fn strip_exe_suffix(name: &str) -> &str {
     name.strip_suffix(".exe").unwrap_or(name)
 }
 
+/// The local machine's hostname, or the empty string when it cannot be
+/// determined. Used to detect the stale ssh-title case: before exec'ing
+/// ssh, the local shell usually sets the terminal title to the local
+/// hostname, and that value lingers in `#{pane_title}` until the remote
+/// side publishes its own. Cached — the value cannot meaningfully
+/// change within the sidebar's lifetime.
+pub(crate) fn local_hostname() -> &'static str {
+    static HOSTNAME: OnceLock<String> = OnceLock::new();
+    HOSTNAME.get_or_init(|| {
+        // HOST_NAME_MAX per POSIX is 255; one spare byte for the NUL
+        // gethostname writes (or doesn't, when truncating).
+        let mut buf = [0u8; 256];
+        // SAFETY: `buf` outlives the call and is large enough for any
+        // conformant hostname plus its terminator.
+        if unsafe { libc::gethostname(buf.as_mut_ptr().cast(), buf.len()) } != 0 {
+            return String::new();
+        }
+        hostname_from_bytes(&buf)
+    })
+}
+
+/// Decode a NUL-padded gethostname buffer: cut at the first NUL (or at
+/// the end, for a non-terminated truncated name), then trim whitespace.
+fn hostname_from_bytes(bytes: &[u8]) -> String {
+    let end = bytes.iter().position(|&b| b == 0).unwrap_or(bytes.len());
+    String::from_utf8_lossy(&bytes[..end]).trim().to_string()
+}
+
 /// Shell and meta-invocation names that never count as "work" when
 /// scanning a pane's process tree. The shell set is the same list
 /// [`crate::tmux::classify_window_status`] classifies with; `tmux`,
@@ -857,6 +886,25 @@ mod tests {
         let snapshot =
             ProcessSnapshot::from_ps_output("100 1 zsh zsh\n101 100 tmux tmux set-option -p x y\n");
         assert!(!snapshot.tree_has_non_shell(&[100]));
+    }
+
+    // ─── local_hostname ─────────────────────────────────────────────
+
+    #[test]
+    fn hostname_from_bytes_trims_nul_and_whitespace() {
+        assert_eq!(hostname_from_bytes(b"myhost\0"), "myhost");
+        assert_eq!(hostname_from_bytes(b"  padded \0"), "padded");
+        assert_eq!(hostname_from_bytes(b"\0"), "");
+        // A truncated (non-NUL-terminated) name still decodes to the end.
+        assert_eq!(hostname_from_bytes(b"trunc"), "trunc");
+    }
+
+    #[test]
+    fn local_hostname_returns_trimmed_value() {
+        // The libc call is environment-dependent; only the invariant is
+        // asserted, never a concrete hostname.
+        let name = local_hostname();
+        assert_eq!(name.trim(), name, "local_hostname must be pre-trimmed");
     }
 
     #[test]
