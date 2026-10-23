@@ -25,12 +25,15 @@ pub(in crate::cli::hook) fn is_permission_wait_reason(wait_reason: &str) -> bool
     )
 }
 
-/// Wait reasons whose agent emits an explicit reply event to clear the wait
-/// (OpenCode's `permission.asked` / `question.asked`). While one is pending
-/// the pane must stay `waiting`: a concurrent tool result is not the resume
-/// signal and must not flip it back to `running`. Claude has no reply event
-/// — its `PostToolUse` is the resume signal — so its reasons are absent
-/// here and its activity-log transitions are unchanged.
+/// Wait reasons whose agent does not clear the wait from a tool result.
+/// OpenCode emits an explicit reply event (`permission.asked` /
+/// `question.asked`); Antigravity's waiting state is maintained and
+/// cleared by the sidebar's approval-prompt scan worker. While one of
+/// these is pending the pane must stay `waiting`: a concurrent tool
+/// result is not the resume signal and must not flip it back to
+/// `running`. Claude has no reply event — its `PostToolUse` is the
+/// resume signal — so its reasons are absent here and its
+/// activity-log transitions are unchanged.
 pub(in crate::cli::hook) fn is_pending_action_wait_reason(wait_reason: &str) -> bool {
     matches!(wait_reason, "permission" | "question")
 }
@@ -72,7 +75,7 @@ mod tests {
     }
 
     #[test]
-    fn is_pending_action_wait_reason_covers_opencode_only() {
+    fn is_pending_action_wait_reason_allowlist() {
         assert!(is_pending_action_wait_reason("permission"));
         assert!(is_pending_action_wait_reason("question"));
 

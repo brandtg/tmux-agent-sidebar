@@ -26,16 +26,20 @@ const APPROVAL_CAPTURE_TIMEOUT: Duration = Duration::from_secs(2);
 const APPROVAL_TAIL_LINES: usize = 15;
 
 /// Text agy renders while a tool call waits for a permission decision.
-/// Verified live against agy 1.4.2 (command and URL prompts); the
-/// changelog documents the same family for tool calls ("Allow calling
-/// this tool?"). Matched against line starts in the pane tail — the
-/// prompt block is left-aligned, and start-anchoring keeps quoted
-/// prompt text mid-conversation from matching.
-const PERMISSION_PROMPT_PATTERNS: [&str; 4] = [
+/// Verified against the agy 1.4.6 binary's UI strings (command, URL, file
+/// access/creation, tool, elevation and sandbox-bypass prompts); the
+/// match is start-anchored and tail-restricted so quoted prompt text in
+/// conversation cannot flag the pane.
+const PERMISSION_PROMPT_PATTERNS: [&str; 9] = [
     "Requesting permission for",
     "Run this command?",
     "Allow access to this URL?",
+    "Allow access to this file?",
+    "Allow creation of this file?",
     "Allow calling this tool?",
+    "Allow administrator elevation?",
+    "Allow sandbox bypass for command execution?",
+    "Allow remote debugging?",
 ];
 
 /// Channels and shared flags produced by [`spawn`] that the main event loop
@@ -52,8 +56,9 @@ pub(super) struct Workers {
     pub port_scan_tx: mpsc::Sender<Vec<PaneScanTarget>>,
     pub port_scan_rx: Receiver<Option<PaneProcessSnapshot>>,
     /// Requests the approval-scan worker: the Antigravity pane ids whose
-    /// status is `running` (its own flagged set is merged in worker-side).
-    /// Fire-and-forget — the worker writes pane options directly.
+    /// status is `running` or `waiting` (its own flagged set is merged in
+    /// worker-side). Fire-and-forget — the worker writes pane options
+    /// directly.
     pub approval_tx: mpsc::Sender<Vec<String>>,
 }
 
@@ -166,10 +171,15 @@ pub(super) fn port_scan_loop(
 ///
 /// The worker remembers which panes it flagged so a waiting pane keeps
 /// being rescanned until the prompt is answered even though its status is
-/// no longer `running` (the TUI only queues running panes). Writes are
-/// fire-and-forget: the next `list-panes` parse reads the options like any
-/// hook-written state, and `notify_sidebars_of_pane` pokes the sidebar for
-/// an instant repaint.
+/// no longer `running` (the TUI queues running and waiting panes — the
+/// latter so a restart mid-prompt, which loses this set, still heals).
+/// agy's own hook events leave the state alone: `handle_activity_log`
+/// treats an agy permission/question wait as a pending action and refuses
+/// to promote over it, since its PostToolUse churn (parallel sibling
+/// completions, internal pseudo-tools) lands while a prompt is open.
+/// Writes are fire-and-forget: the next `list-panes` parse reads the
+/// options like any hook-written state, and `notify_sidebars_of_pane`
+/// pokes the sidebar for an instant repaint.
 pub(super) fn approval_scan_loop(rx: &mpsc::Receiver<Vec<String>>) {
     let mut flagged: HashSet<String> = HashSet::new();
     while let Ok(targets) = rx.recv() {
@@ -203,7 +213,18 @@ pub(super) fn approval_scan_loop(rx: &mpsc::Receiver<Vec<String>>) {
                 (Some(_), true) => {
                     still_flagged.insert(pane_id.clone());
                 }
-                (None, false) => {}
+                (None, false) => {
+                    // Heal a stale flag the worker doesn't remember (the
+                    // TUI restarted mid-prompt, losing `flagged`): the
+                    // queue includes waiting panes, so one still reading
+                    // `waiting` with no visible prompt is cleared here.
+                    // agy hooks never write `waiting` themselves, so the
+                    // flag is unambiguously this worker's to clear.
+                    if tmux::get_pane_option_value(&pane_id, tmux::PANE_STATUS) == "waiting" {
+                        clear_waiting(&pane_id);
+                        crate::cli::notify_focus::notify_sidebars_of_pane(&pane_id);
+                    }
+                }
             }
         }
         flagged = still_flagged;
@@ -307,9 +328,10 @@ mod approval_tests {
 
     #[test]
     fn detects_the_permission_prompt_family() {
-        // Real renderings captured from agy 1.4.2: the command prompt
+        // Real renderings captured from agy 1.4.2/1.4.6: the command prompt
         // carries a "Requesting permission for:" header, the URL prompt
-        // leads with its own question line.
+        // leads with its own question line, and 1.4.6 adds file
+        // access/creation prompts to the family.
         let command_prompt: Vec<String> = vec![
             "Requesting permission for:".into(),
             "   touch permission-test.txt".into(),
@@ -322,8 +344,27 @@ mod approval_tests {
             "Allow access to this URL?".into(),
             "> 1. Yes, allow access".into(),
         ];
+        let file_prompt: Vec<String> = vec![
+            "   /tmp/outside-probe.txt".into(),
+            "Reason: outside workspace".into(),
+            "Allow access to this file?".into(),
+            "> 1. Yes, allow access".into(),
+        ];
         assert_eq!(detect_prompt_reason(&command_prompt), Some("permission"));
         assert_eq!(detect_prompt_reason(&url_prompt), Some("permission"));
+        assert_eq!(detect_prompt_reason(&file_prompt), Some("permission"));
+        for line in [
+            "Allow creation of this file?",
+            "Allow administrator elevation?",
+            "Allow sandbox bypass for command execution?",
+            "Allow remote debugging?",
+        ] {
+            assert_eq!(
+                detect_prompt_reason(&[line.to_string()]),
+                Some("permission"),
+                "{line}"
+            );
+        }
     }
 
     #[test]
