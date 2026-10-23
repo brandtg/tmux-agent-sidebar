@@ -608,10 +608,15 @@ impl AppState {
     /// Due-check for the Antigravity approval-prompt capture scan. Antigravity
     /// has no hook for "waiting on a permission decision", so the approval
     /// worker capture-scans these panes to maintain the waiting state (see
-    /// `approval_scan_loop`). Only `running` Antigravity panes are queued —
-    /// panes the worker itself flagged `waiting` are re-checked worker-side
-    /// from its own flagged set, and idle/error panes have no turn in
-    /// flight to prompt on.
+    /// `approval_scan_loop`). Both `running` and `waiting` Antigravity panes
+    /// are queued: hook events no longer clear a sticky agy wait (see
+    /// `handle_activity_log`'s pending-action guard), and the worker's
+    /// flagged set dies with the process — a sidebar restart mid-prompt
+    /// would otherwise strand the pane yellow until its next Stop.
+    /// Re-scanning a waiting pane is idempotent (prompt still visible →
+    /// re-flag, gone → clear), and queueing it keeps a batch flowing while
+    /// only waiting panes exist, so the worker never starves on `recv`.
+    /// Idle/error panes have no turn in flight to prompt on.
     pub(crate) fn queue_approval_scan_if_due(&mut self, sessions: &[SessionInfo]) {
         const APPROVAL_REFRESH_INTERVAL: Duration = Duration::from_secs(2);
 
@@ -627,11 +632,16 @@ impl AppState {
             .flat_map(|session| session.windows.iter())
             .flat_map(|window| window.panes.iter())
             .filter(|pane| pane.agent == crate::tmux::AgentType::Antigravity)
-            .filter(|pane| pane.status == crate::tmux::PaneStatus::Running)
+            .filter(|pane| {
+                matches!(
+                    pane.status,
+                    crate::tmux::PaneStatus::Running | crate::tmux::PaneStatus::Waiting
+                )
+            })
             .map(|pane| pane.pane_id.clone())
             .collect();
         crate::debug::log(&format!(
-            "approval-scan: queued {} antigravity running pane(s)",
+            "approval-scan: queued {} antigravity running/waiting pane(s)",
             targets.len()
         ));
         if targets.is_empty() {
@@ -1493,6 +1503,46 @@ mod tests {
         advance_dead_scan_streaks(&mut pane_states, &scanned(&["%1"]), &HashSet::new());
 
         assert!(pane_states.get("%2").is_none());
+    }
+
+    // ─── queue_approval_scan_if_due ─────────────────────────────────
+
+    #[test]
+    fn queue_approval_scan_includes_waiting_antigravity_panes() {
+        // The worker's flagged set dies with the process, so a waiting
+        // pane must be re-queued TUI-side: hooks no longer clear a sticky
+        // agy wait, and only the worker's rescan can (prompt gone →
+        // clear). A sidebar restart mid-prompt must still heal.
+        let _guard = tmux::test_mock::install();
+        let mut state = AppState::new("%99".into());
+        let mut pane = test_pane("%AGY_WAITING");
+        pane.agent = AgentType::Antigravity;
+        pane.status = PaneStatus::Waiting;
+        pane.wait_reason = "permission".into();
+
+        state.queue_approval_scan_if_due(&test_session(vec![pane]));
+
+        assert_eq!(
+            state.take_pending_approval_scan(),
+            Some(vec!["%AGY_WAITING".to_string()]),
+        );
+    }
+
+    #[test]
+    fn queue_approval_scan_skips_idle_antigravity_and_waiting_other_agents() {
+        let _guard = tmux::test_mock::install();
+        let mut state = AppState::new("%99".into());
+        let mut agy_idle = test_pane("%AGY_IDLE");
+        agy_idle.agent = AgentType::Antigravity;
+        agy_idle.status = PaneStatus::Idle;
+        let mut claude_waiting = test_pane("%CLAUDE_WAITING");
+        claude_waiting.agent = AgentType::Claude;
+        claude_waiting.status = PaneStatus::Waiting;
+        claude_waiting.wait_reason = "permission".into();
+
+        state.queue_approval_scan_if_due(&test_session(vec![agy_idle, claude_waiting]));
+
+        assert_eq!(state.take_pending_approval_scan(), None);
     }
 
     // ─── refresh_session_names ──────────────────────────────────────

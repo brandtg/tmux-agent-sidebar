@@ -122,13 +122,20 @@ pub(super) fn handle_activity_log(
     }
 
     let current_status = tmux::get_pane_option_value(pane, tmux::PANE_STATUS);
-    // OpenCode's permission/question prompts are cleared by the agent's
-    // explicit reply event, not by a tool result. A sibling tool finishing
-    // while the prompt is open (OpenCode runs a step's tool calls in
-    // parallel) must not flip the pane back to `running` and hide the
-    // prompt. Claude has no reply event — its `PostToolUse` is the resume
-    // signal — so the guard is scoped to OpenCode.
-    let pending_action = agent_name == crate::tmux::OPENCODE_AGENT
+    // Permission/question prompts are cleared by something other than a
+    // tool result, so a tool event landing while the prompt is open must
+    // not flip the pane back to `running` and hide it. OpenCode runs a
+    // step's tool calls in parallel and clears its prompts with an
+    // explicit reply event. Antigravity has no waiting hook at all — its
+    // waiting state is maintained by the sidebar's approval-prompt scan
+    // worker (see `approval_scan_loop`) — and its own PostToolUse churn
+    // (sibling completions in a parallel step, internal pseudo-tools like
+    // `__task_reset__`) lands while a prompt is open and would stomp the
+    // flag; the worker itself clears the state once the prompt disappears.
+    // Claude has no prompt pending at PostToolUse time — its `PostToolUse`
+    // IS the resume signal — so it stays unguarded.
+    let pending_action = (agent_name == crate::tmux::OPENCODE_AGENT
+        || agent_name == crate::tmux::ANTIGRAVITY_AGENT)
         && current_status == "waiting"
         && super::handlers::is_pending_action_wait_reason(&tmux::get_pane_option_value(
             pane,
@@ -143,17 +150,27 @@ pub(super) fn handle_activity_log(
     // pane to `running` with no stop ever coming, glowing forever until the
     // next real turn ends. For every other agent a tool call really is
     // unambiguous activity, so the inference stays.
+    // agy's internal pseudo-tools (`__task_reset__` and friends, matched by
+    // their `__` prefix) are state churn, not user-visible work: agy fires
+    // one at boot and after tool batches, so promoting off them would show
+    // "working" while agy sits at its input box between turns.
     // An empty status is promoted too: a tool just ran in this pane, so the
     // agent is unambiguously active. The old empty-status guard left
     // bootstrapped OpenCode panes (claimed without a run-state event, e.g.
     // when two same-directory sessions raced for bindings) blue forever.
-    if agent_name != crate::tmux::HERMES_AGENT && current_status != "running" && !pending_action {
+    let agy_internal_churn =
+        agent_name == crate::tmux::ANTIGRAVITY_AGENT && tool_name.starts_with("__");
+    if agent_name != crate::tmux::HERMES_AGENT
+        && !agy_internal_churn
+        && current_status != "running"
+        && !pending_action
+    {
         set_status(pane, "running");
         // Any resume into `running` clears a stale wait reason, not just
         // resumes from `waiting`: `on_stop_failure` stores error text in
         // @pane_wait_reason under status `error`, and the renderer shows
-        // the reason row for every status. The OpenCode pending-action
-        // guard above is what keeps a live prompt intact, not this gate.
+        // the reason row for every status. The pending-action guard above
+        // is what keeps a live prompt intact, not this gate.
         tmux::unset_pane_option(pane, tmux::PANE_ATTENTION);
         tmux::unset_pane_option(pane, tmux::PANE_WAIT_REASON);
         let existing_started = tmux::get_pane_option_value(pane, tmux::PANE_STARTED_AT);
@@ -715,6 +732,123 @@ mod tests {
         assert_eq!(
             tmux::test_mock::get(pane_id, tmux::PANE_WAIT_REASON).as_deref(),
             Some("question")
+        );
+        fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn handle_activity_log_keeps_antigravity_permission_wait_sticky() {
+        // Regression: Antigravity's waiting state is maintained by the
+        // approval-prompt scan worker, and agy's own PostToolUse churn
+        // (parallel sibling completions, internal pseudo-tools like
+        // `__task_reset__`) lands while a permission prompt is open. A
+        // tool result must not clear the wait — only the worker's rescan
+        // (prompt gone) does.
+        let _guard = tmux::test_mock::install();
+        let pane_id = "%CLI_AGY_PERM_STICKY";
+        let path = crate::activity::log_file_path(pane_id);
+        let _ = fs::remove_file(&path);
+        tmux::test_mock::set(pane_id, tmux::PANE_STATUS, "waiting");
+        tmux::test_mock::set(pane_id, tmux::PANE_ATTENTION, "notification");
+        tmux::test_mock::set(pane_id, tmux::PANE_WAIT_REASON, "permission");
+
+        handle_activity_log(
+            pane_id,
+            "antigravity",
+            "Read",
+            &json!({"file_path": "/home/user/src/main.rs"}),
+            &Value::Null,
+        );
+
+        assert_eq!(
+            tmux::test_mock::get(pane_id, tmux::PANE_STATUS).as_deref(),
+            Some("waiting"),
+            "a concurrent tool result must not clear a pending permission"
+        );
+        assert_eq!(
+            tmux::test_mock::get(pane_id, tmux::PANE_WAIT_REASON).as_deref(),
+            Some("permission")
+        );
+        assert!(tmux::test_mock::contains(pane_id, tmux::PANE_ATTENTION));
+        // The activity entry is still recorded.
+        assert!(fs::read_to_string(&path).unwrap().contains("|Read|main.rs"));
+        fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn handle_activity_log_keeps_antigravity_question_wait_sticky() {
+        let _guard = tmux::test_mock::install();
+        let pane_id = "%CLI_AGY_QUESTION_STICKY";
+        let path = crate::activity::log_file_path(pane_id);
+        let _ = fs::remove_file(&path);
+        tmux::test_mock::set(pane_id, tmux::PANE_STATUS, "waiting");
+        tmux::test_mock::set(pane_id, tmux::PANE_WAIT_REASON, "question");
+
+        handle_activity_log(
+            pane_id,
+            "antigravity",
+            "__task_reset__",
+            &json!({}),
+            &Value::Null,
+        );
+
+        assert_eq!(
+            tmux::test_mock::get(pane_id, tmux::PANE_STATUS).as_deref(),
+            Some("waiting")
+        );
+        assert_eq!(
+            tmux::test_mock::get(pane_id, tmux::PANE_WAIT_REASON).as_deref(),
+            Some("question")
+        );
+        fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn handle_activity_log_agy_internal_pseudo_tool_does_not_promote() {
+        // agy fires `__task_reset__` at boot and after tool batches; it is
+        // state churn, not user-visible work, and must not light up an
+        // idle pane sitting at agy's input box between turns.
+        let _guard = tmux::test_mock::install();
+        let pane_id = "%AGY_CHURN_IDLE";
+        let path = crate::activity::log_file_path(pane_id);
+        let _ = fs::remove_file(&path);
+        tmux::test_mock::set(pane_id, tmux::PANE_STATUS, "idle");
+
+        handle_activity_log(
+            pane_id,
+            "antigravity",
+            "__task_reset__",
+            &json!({}),
+            &Value::Null,
+        );
+
+        assert_eq!(
+            tmux::test_mock::get(pane_id, tmux::PANE_STATUS).as_deref(),
+            Some("idle"),
+            "internal agy state churn must not show the pane as working"
+        );
+        fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn handle_activity_log_agy_real_tool_still_promotes_idle() {
+        let _guard = tmux::test_mock::install();
+        let pane_id = "%AGY_REAL_TOOL";
+        let path = crate::activity::log_file_path(pane_id);
+        let _ = fs::remove_file(&path);
+        tmux::test_mock::set(pane_id, tmux::PANE_STATUS, "idle");
+
+        handle_activity_log(
+            pane_id,
+            "antigravity",
+            "Read",
+            &json!({"file_path": "/home/user/src/main.rs"}),
+            &Value::Null,
+        );
+
+        assert_eq!(
+            tmux::test_mock::get(pane_id, tmux::PANE_STATUS).as_deref(),
+            Some("running")
         );
         fs::remove_file(&path).ok();
     }

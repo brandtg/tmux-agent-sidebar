@@ -22,8 +22,27 @@ pub(in crate::cli::hook) fn on_user_prompt_submit(
     prompt: &str,
 ) -> i32 {
     set_agent_meta(pane, ctx);
-    set_attention(pane, "clear");
-    set_status(pane, "running");
+    // agy's `PreInvocation` maps here but fires before *every* model call
+    // in a turn, not just the first — including the boot title-generation
+    // call (empty recovered prompt) and calls that race an
+    // approval-prompt scan flag (parallel sibling work). Neither is a
+    // resume signal: a boot call must not light up an idle pane sitting
+    // at agy's input box, and a pending prompt stays `waiting` until the
+    // scan worker sees it disappear. OpenCode's submission is a genuine
+    // user submit and Claude's fires once per turn, so neither needs the
+    // guard. A real agy turn still promotes: its recovered prompt is
+    // non-empty, and its tool completions resume via the activity log.
+    let current_status = tmux::get_pane_option_value(pane, tmux::PANE_STATUS);
+    let agy_background_call = ctx.agent == crate::tmux::ANTIGRAVITY_AGENT
+        && ((current_status == "idle" && prompt.is_empty())
+            || (current_status == "waiting"
+                && super::status_priority::is_pending_action_wait_reason(
+                    &tmux::get_pane_option_value(pane, tmux::PANE_WAIT_REASON),
+                )));
+    if !agy_background_call {
+        set_attention(pane, "clear");
+        set_status(pane, "running");
+    }
     set_notification_run_id(pane);
     if !prompt.is_empty() && !is_system_message(prompt) {
         let p = sanitize_tmux_value(prompt);
@@ -39,7 +58,9 @@ pub(in crate::cli::hook) fn on_user_prompt_submit(
     if !prompt.is_empty() || tmux::get_pane_option_value(pane, tmux::PANE_STARTED_AT).is_empty() {
         tmux::set_pane_option(pane, tmux::PANE_STARTED_AT, &now_epoch_secs().to_string());
     }
-    tmux::unset_pane_option(pane, tmux::PANE_WAIT_REASON);
+    if !agy_background_call {
+        tmux::unset_pane_option(pane, tmux::PANE_WAIT_REASON);
+    }
     0
 }
 
@@ -268,6 +289,59 @@ mod tests {
         assert_eq!(
             tmux::test_mock::get(pane, tmux::PANE_STATUS).as_deref(),
             Some("running")
+        );
+    }
+
+    #[test]
+    fn on_user_prompt_submit_keeps_antigravity_pending_wait() {
+        // agy's PreInvocation fires before every model call in a turn; a
+        // call racing an approval-prompt scan flag must not clear the
+        // wait — the scan worker clears it when the prompt disappears.
+        let _guard = tmux::test_mock::install();
+        let pane = "%AGY_PROMPT_STICKY";
+        tmux::test_mock::set(pane, tmux::PANE_STATUS, "waiting");
+        tmux::test_mock::set(pane, tmux::PANE_WAIT_REASON, "permission");
+        let ctx = AgentContext {
+            agent: "antigravity",
+            cwd: "/repo",
+            permission_mode: "default",
+            worktree: &None,
+            session_id: &None,
+        };
+        let exit = on_user_prompt_submit(pane, &ctx, "continue");
+        assert_eq!(exit, 0);
+        assert_eq!(
+            tmux::test_mock::get(pane, tmux::PANE_STATUS).as_deref(),
+            Some("waiting"),
+            "a model call must not clear a pending agy permission prompt"
+        );
+        assert_eq!(
+            tmux::test_mock::get(pane, tmux::PANE_WAIT_REASON).as_deref(),
+            Some("permission")
+        );
+    }
+
+    #[test]
+    fn on_user_prompt_submit_agy_boot_call_does_not_promote_idle() {
+        // agy fires PreInvocation ~24ms after SessionStart for its boot
+        // title-generation model call — empty recovered prompt, no turn
+        // in flight. The pane must stay idle at agy's input box.
+        let _guard = tmux::test_mock::install();
+        let pane = "%AGY_BOOT_CALL";
+        tmux::test_mock::set(pane, tmux::PANE_STATUS, "idle");
+        let ctx = AgentContext {
+            agent: "antigravity",
+            cwd: "/repo",
+            permission_mode: "default",
+            worktree: &None,
+            session_id: &None,
+        };
+        let exit = on_user_prompt_submit(pane, &ctx, "");
+        assert_eq!(exit, 0);
+        assert_eq!(
+            tmux::test_mock::get(pane, tmux::PANE_STATUS).as_deref(),
+            Some("idle"),
+            "agy's boot model call must not show the pane as working"
         );
     }
 
