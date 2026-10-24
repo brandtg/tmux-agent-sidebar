@@ -25,8 +25,6 @@ pub struct ColorTheme {
     pub agent_opencode: Color,
     pub agent_hermes: Color,
     pub agent_antigravity: Color,
-    pub pet_body: Color,
-    pub pet_eye: Color,
     pub text_active: Color,
     pub text_muted: Color,
     pub text_inactive: Color,
@@ -70,8 +68,7 @@ impl Default for ColorTheme {
             // periwinkle (codex), powder blue (opencode), and gold (hermes);
             // a second blue would read as OpenCode's.
             agent_antigravity: Color::Indexed(78),
-            pet_body: Color::Indexed(208),
-            pet_eye: Color::Indexed(114),
+
             text_active: Color::Indexed(255),
             text_muted: Color::Indexed(252),
             text_inactive: Color::Indexed(244),
@@ -131,8 +128,6 @@ impl ColorTheme {
             tmux::SIDEBAR_COLOR_AGENT_ANTIGRAVITY,
             theme.agent_antigravity,
         );
-        theme.pet_body = read(tmux::SIDEBAR_COLOR_PET_BODY, theme.pet_body);
-        theme.pet_eye = read(tmux::SIDEBAR_COLOR_PET_EYE, theme.pet_eye);
         theme.text_active = read(tmux::SIDEBAR_COLOR_TEXT_ACTIVE, theme.text_active);
         theme.text_muted = read(tmux::SIDEBAR_COLOR_TEXT_MUTED, theme.text_muted);
         theme.text_inactive = read(tmux::SIDEBAR_COLOR_TEXT_INACTIVE, theme.text_inactive);
@@ -276,13 +271,6 @@ mod tests {
         assert_eq!(theme.agent_color(&AgentType::OpenCode), Color::Indexed(117));
         assert_eq!(theme.agent_color(&AgentType::Hermes), Color::Indexed(214));
         assert_eq!(theme.agent_color(&AgentType::Unknown), theme.status_unknown);
-    }
-
-    #[test]
-    fn pet_color_defaults_match_current_palette() {
-        let theme = ColorTheme::default();
-        assert_eq!(theme.pet_body, Color::Indexed(208));
-        assert_eq!(theme.pet_eye, Color::Indexed(114));
     }
 
     #[test]

@@ -33,9 +33,6 @@ pub fn run(
     needs_refresh: &'static AtomicBool,
 ) -> io::Result<()> {
     let mut state = setup::init_state(tmux_pane);
-    // Short viewports start with the bottom panel minimized so the agent
-    // list keeps usable space; the user can expand it with `m`.
-    state.apply_auto_minimize(terminal.size()?.height);
     // Worktree spawn/remove run on per-operation worker threads (they
     // can spend minutes in git under a hung repo); results land here
     // for the loop to apply — the same one-way-mpsc pattern as the
@@ -80,7 +77,7 @@ pub fn run(
         if event::poll(timeout)? {
             loop {
                 let ev = event::read()?;
-                if input::handle_event(ev, &mut state, terminal) {
+                if input::handle_event(ev, &mut state) {
                     needs_redraw = true;
                 }
                 if !event::poll(Duration::ZERO)? {
@@ -103,22 +100,12 @@ pub fn run(
 
         if last_spinner.elapsed() >= spinner_interval {
             state.spinner_frame = (state.spinner_frame + 1) % SPINNER_PULSE.len();
-            if state.pet_enabled {
-                let term_width = terminal.size().map(|s| s.width).unwrap_or(60);
-                state.tick_pet(term_width);
-            }
             last_spinner = std::time::Instant::now();
             needs_redraw = true;
         }
 
         let sigusr1 = needs_refresh.swap(false, Ordering::Relaxed);
         if sigusr1 || last_refresh.elapsed() >= refresh_interval {
-            // Re-check the viewport each tick as a safety net for resize
-            // signals a pane may miss; cheap, and only mutates state while
-            // the user has not pinned the panel with `m`.
-            if let Ok(size) = terminal.size() {
-                state.apply_auto_minimize(size.height);
-            }
             let previous_sidebar_focused = state.focus_state.sidebar_focused;
             let is_window_active = state.refresh();
             // A sidebar whose window has no panes left besides itself
@@ -187,10 +174,6 @@ pub fn run(
             // transition for the second branch to catch.
             if sigusr1 || (is_window_active && window_inactive_count >= 2) {
                 state.global.load_from_tmux();
-                // The sync may have delivered a bottom-panel minimize pin
-                // written by another sidebar; land it on the effective
-                // collapsed state before the next render.
-                state.adopt_shared_bottom_minimize();
                 state.rebuild_row_targets();
                 // A window/pane switch reloads the shared cursor, which
                 // another window may have moved. Re-anchor this sidebar at

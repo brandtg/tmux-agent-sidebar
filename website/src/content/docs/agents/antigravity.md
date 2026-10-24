@@ -43,7 +43,7 @@ Antigravity's summaries store.
   - `question` for `ask_question` pickers ("Question 1/1: …")
 - The finished-turn flag on `Stop` (breathing green until you focus the pane)
 - A `Stop` with termination reason `error` (or a populated `error` field)
-  marks the pane failed and surfaces the error in the feed
+  marks the pane failed and surfaces the error in the pane row
 - Desktop notifications on turn completion and on failed turns
 
 ### Activity log

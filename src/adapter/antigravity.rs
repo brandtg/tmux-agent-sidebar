@@ -84,7 +84,7 @@ impl AntigravityAdapter {
 /// Antigravity tool names are lowercase snake_case (`run_command`,
 /// `write_to_file`, …); normalize the common ones onto the canonical
 /// Claude-style vocabulary so the activity log's label strategies
-/// (command/file extraction) and feed classification fire. Unknown names
+/// (command/file extraction) fire. Unknown names
 /// pass through unchanged, exactly like the Hermes adapter.
 fn normalize_tool_name(raw: &str) -> String {
     let canonical = match raw {

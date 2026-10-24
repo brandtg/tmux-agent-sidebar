@@ -99,8 +99,8 @@ pub enum AgentEvent {
     },
     /// A tool call is about to execute (Claude `PreToolUse`). Carries only
     /// identity fields plus the tool name — it is the earliest "the agent
-    /// took its next action" signal and must never write a feed entry
-    /// (`PostToolUse` logs the same call once it resolves).
+    /// took its next action" signal and must never write an activity-log
+    /// entry (`PostToolUse` logs the same call once it resolves).
     ToolStart {
         agent: String,
         cwd: String,

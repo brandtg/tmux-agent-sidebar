@@ -66,8 +66,7 @@ pub const PANE_PENDING_WORKTREE_REMOVE: &str = "@pane_pending_worktree_remove";
 /// Permission mode in use by the agent (e.g. `plan`,
 /// `acceptEdits`, `bypassPermissions`).
 pub const PANE_PERMISSION_MODE: &str = "@pane_permission_mode";
-/// Last user prompt the agent received. Shown in the bottom tab
-/// as activity context.
+/// Last user prompt the agent received. Shown in the agent row body.
 pub const PANE_PROMPT: &str = "@pane_prompt";
 /// Where the prompt came from (e.g. `UserPromptSubmit` vs
 /// resumed session) — drives rendering nuance.
@@ -147,14 +146,6 @@ pub const SIDEBAR_GROUP_BY: &str = "@sidebar_group_by";
 /// `off`, default `off`). Read once at startup; the live
 /// [`SIDEBAR_SHOW_WINDOWS`] value is never restored on reopen.
 pub const SIDEBAR_DEFAULT_SHOW_WINDOWS: &str = "@sidebar_default_show_windows";
-/// Live bottom-panel minimize pin (`1`/`0`), written when a sidebar
-/// toggles the panel with `m`. Shared across every open sidebar like
-/// [`SIDEBAR_COMPACT`], and unlike it the value persists: a sidebar that
-/// opens later adopts the pin too, so the collapsed/expanded choice is
-/// sticky across sessions. Unset means no pin — each sidebar follows its
-/// own viewport height (auto-minimize).
-pub const SIDEBAR_BOTTOM_MINIMIZED: &str = "@sidebar_bottom_minimized";
-pub const SIDEBAR_BOTTOM_HEIGHT: &str = "@sidebar_bottom_height";
 /// Windows narrower than this many columns open the sidebar as a tmux
 /// popup instead of a split pane (mobile viewports). `0` disables the
 /// popup path entirely. Read by the `toggle` subcommand.
@@ -180,7 +171,6 @@ pub const SIDEBAR_SAVED_LAYOUT: &str = "@sidebar_saved_layout";
 /// the latest observation instead of a stale one. Cleared never — it is
 /// simply overwritten on every observation.
 pub const SIDEBAR_LAST_WINDOW_WIDTH: &str = "@sidebar_last_window_width";
-pub const SIDEBAR_PET: &str = "@sidebar_pet";
 pub const SIDEBAR_NOTIFICATIONS: &str = "@sidebar_notifications";
 pub const SIDEBAR_NOTIFICATIONS_EVENTS: &str = "@sidebar_notifications_events";
 /// Comma-separated allow-list of agents (`claude`, `codex`, `opencode`,
@@ -231,8 +221,6 @@ pub const SIDEBAR_COLOR_AGENT_CODEX: &str = "@sidebar_color_agent_codex";
 pub const SIDEBAR_COLOR_AGENT_OPENCODE: &str = "@sidebar_color_agent_opencode";
 pub const SIDEBAR_COLOR_AGENT_HERMES: &str = "@sidebar_color_agent_hermes";
 pub const SIDEBAR_COLOR_AGENT_ANTIGRAVITY: &str = "@sidebar_color_agent_antigravity";
-pub const SIDEBAR_COLOR_PET_BODY: &str = "@sidebar_color_pet_body";
-pub const SIDEBAR_COLOR_PET_EYE: &str = "@sidebar_color_pet_eye";
 pub const SIDEBAR_COLOR_TEXT_ACTIVE: &str = "@sidebar_color_text_active";
 pub const SIDEBAR_COLOR_TEXT_MUTED: &str = "@sidebar_color_text_muted";
 pub const SIDEBAR_COLOR_TEXT_INACTIVE: &str = "@sidebar_color_text_inactive";

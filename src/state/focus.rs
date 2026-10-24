@@ -7,8 +7,6 @@ pub enum Focus {
     Filter,
     #[default]
     Panes,
-    /// The bottom panel (Feed/Repos tabs) has keyboard focus for scrolling.
-    BottomPanel,
 }
 
 #[derive(Debug, Clone)]
@@ -70,7 +68,7 @@ impl AppState {
     /// panes, so activity/git info can be displayed even when the focused
     /// pane has no agent running. When the sidebar has focus the list
     /// yields no active non-sidebar pane — preserve the previously focused
-    /// pane so bottom panel data stays stable.
+    /// pane so row data stays stable.
     pub(crate) fn find_focused_pane_from(&mut self, panes: &[(String, bool, String)]) {
         if let Some((id, _)) = tmux::pick_active_pane(&self.tmux_pane, panes) {
             self.focus_state.focused_pane_id = Some(id);
@@ -92,9 +90,8 @@ impl AppState {
         }
     }
 
-    /// Page-jump the selection by roughly one viewport of rows. Unlike
-    /// [`Self::move_pane_selection`] — whose `false` at the boundary hands
-    /// focus to the bottom panel — a page that overshoots clamps to the
+    /// Page-jump the selection by roughly one viewport of rows. A page
+    /// that overshoots clamps to the
     /// edge row: paging to the end should land on the last row, not fall
     /// through. The page size is the agent list's last rendered visible
     /// height (the same viewport the render's auto-scroll keeps the

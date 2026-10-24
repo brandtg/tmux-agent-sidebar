@@ -462,9 +462,7 @@ impl AppState {
     }
 
     fn refresh_activity_data(&mut self) {
-        self.refresh_feed();
         self.refresh_task_progress();
-        self.auto_switch_tab();
     }
 
     /// Fast refresh: tmux state + activity log (called every 1s).
@@ -796,28 +794,6 @@ impl AppState {
         }
         sweep_dead_bg_shells(sessions, process_snapshot);
         self.timers.last_bg_shell_sweep = Some(std::time::Instant::now());
-    }
-
-    /// Rebuild the cross-agent feed from every agent pane's activity log.
-    ///
-    /// Each pane's log is read at most once per mtime change (per-pane
-    /// cache in [`FeedState`]); the filtered entries are then merged
-    /// newest-first. Panes that left the snapshot drop out of both the
-    /// cache and the feed — their logs are removed by the dead-agent
-    /// teardown anyway.
-    pub(crate) fn refresh_feed(&mut self) {
-        let panes: Vec<(String, crate::tmux::AgentType)> = self
-            .repo_groups
-            .iter()
-            .flat_map(|group| group.panes.iter())
-            .map(|(pane, _)| (pane.pane_id.clone(), pane.agent.clone()))
-            .collect();
-        let pane_ids: Vec<String> = panes.iter().map(|(id, _)| id.clone()).collect();
-        self.feed.retain_panes(&pane_ids);
-        for (pane_id, agent) in &panes {
-            self.feed.refresh_pane(pane_id, agent);
-        }
-        self.feed.rebuild();
     }
 }
 

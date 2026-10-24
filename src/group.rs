@@ -65,7 +65,7 @@ pub struct OtherWindow {
     /// or `None` if the command is bare or arguments could not be resolved.
     pub command_args: Option<String>,
     /// Live cwd of the active pane. The git-info cache is keyed by this
-    /// exact path, so it rides along for the worker feed in `app.rs`.
+    /// exact path, so it rides along when `app.rs` feeds the git worker.
     pub path: String,
     pub git_info: PaneGitInfo,
     pub status: WindowStatus,
@@ -247,9 +247,10 @@ pub fn resolve_pane_git_info(path: &str) -> PaneGitInfo {
     // worktree_root" stay equivalent.
     let worktree_root = if is_worktree { toplevel } else { None };
 
-    // Working-tree health for the Repos tab. Both queries are local git
-    // (no network) and bounded by the shared subprocess timeout; they run
-    // on the resolver worker thread, TTL-gated like the branch probe.
+    // Working-tree health rendered on the agent row's branch line. Both
+    // queries are local git (no network) and bounded by the shared
+    // subprocess timeout; they run on the resolver worker thread,
+    // TTL-gated like the branch probe.
     let dirty_count = run_git(path, &["status", "--porcelain"])
         .map(|output| {
             output
