@@ -50,7 +50,7 @@ TUI event loop (app::run) → AppState::sync_global_state()
 
 ### Key Modules
 
-- **`state.rs` + `state/`** — `AppState` central struct plus topical submodules (`activity`, `session`, `focus`, `scroll`, `pane_runtime`, `layout`, `popup`, `notices`, `timers`, `filter`, `global`, `refresh`, `tab`). All UI is computed from this state.
+- **`state.rs` + `state/`** — `AppState` central struct plus topical submodules (`activity`, `session`, `focus`, `scroll`, `pane_runtime`, `layout`, `popup`, `notices`, `timers`, `filter`, `global`, `refresh`). All UI is computed from this state.
 - **`app.rs` + `app/`** — TUI orchestration: `setup` (prime `AppState`), `workers` (background git/session/version threads, plus the Antigravity approval-prompt capture scan that maintains waiting state for permission prompts), `input` (keyboard/mouse handling), `render` (per-frame render entry). Split out from `main.rs` so the binary entry point only handles CLI dispatch, signal wiring, and TUI session setup.
 - **`tmux.rs`** — Tmux integration: queries all panes via single `list-panes -a` call, defines `PaneInfo`/`PaneStatus`/`AgentType`/`PermissionMode`/`WorktreeMetadata`.
 - **`adapter/`** — Per-agent hook adapters (`claude`, `codex`, `opencode`, `hermes`, `antigravity`). Each exposes a `HOOK_REGISTRATIONS` table binding upstream hook triggers to an internal `AgentEventKind`, plus a `parse()` that maps raw JSON payloads into `AgentEvent`. Single source of truth consumed by the setup wizard, README snippets, and tests. Hermes is the one agent whose wire payload nests event fields under `extra` and whose launcher hides the agent name behind a `python3` shim (see `detect_shimmed_agent` in `src/tmux/query.rs`). Antigravity's executable is `agy` rather than its label, so its process matching goes through the `AGY_BIN` alias, and its `hooks.json` maps hook names to events (no `hooks` wrapper — see `build_antigravity_snippet`); its hook payloads carry no prompt/response text, so the adapter recovers both from the tail of the transcript the payload points at, and session titles come from a `conversation_summaries.db` probe in `src/session.rs`.
@@ -62,7 +62,7 @@ TUI event loop (app::run) → AppState::sync_global_state()
 - **`paths.rs`** — Runtime-dir resolution (`$XDG_RUNTIME_DIR`, `/tmp` fallback) and hardened opens (O_NOFOLLOW, `0600` creation) shared by activity logs and the debug trace.
 - **`group.rs`** — Groups panes by repository path.
 - **`session.rs` / `worktree.rs` / `tool_name.rs` / `version.rs` / `port.rs` / `clipboard.rs` / `desktop_notification.rs`** — Leaf helpers used across modules (session name resolution, worktree metadata parsing, tool-name classification, version reporting, port detection, clipboard + desktop notification shims).
-- **`ui/`** — Rendering layer: `mod.rs` (entry `draw`), `panes.rs` (agent list + repo filter) with submodules (`filter_bar`, `row`, `row_collector`, `click_targets`, `popups`); `bottom.rs` + `bottom/` with submodules (`feed`, `repos`) for the cross-agent Feed and Repos tabs; `colors.rs` (256-color theme); `icons.rs` (agent/status glyphs); `notices.rs` (transient banner rendering); `text.rs` (text formatting/truncation).
+- **`ui/`** — Rendering layer: `mod.rs` (entry `draw`), `panes.rs` (agent list + repo filter) with submodules (`filter_bar`, `row`, `row_collector`, `click_targets`, `popups`); `colors.rs` (256-color theme); `icons.rs` (agent/status glyphs); `notices.rs` (transient banner rendering); `text.rs` (text formatting/truncation).
 
 ### State Management
 

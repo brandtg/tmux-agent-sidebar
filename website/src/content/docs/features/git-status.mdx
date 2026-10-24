@@ -1,30 +1,30 @@
 ---
-title: Repos
-description: One row per agent — repo, branch, upstream movement, and dirty count.
+title: Git
+description: Branch, upstream movement, and dirty count on every agent row.
 ---
 
 import { Image } from 'astro:assets';
-import gitFocus from '../../../assets/captures/git-focus.png';
+import agentPane from '../../../assets/captures/agent-pane-focus.png';
 
-<Image src={gitFocus} alt="Repos tab screenshot" densities={[1.5, 2]} />
+<Image src={agentPane} alt="agent pane rows with branch labels" densities={[1.5, 2]} />
 
-The bottom panel's **Repos** tab answers "where is every agent, and how dirty is its tree" in one glance — one row per agent pane, grouped by repository.
+Every agent row carries its own git context, resolved by a background worker so the render thread never spawns git.
 
 ## Rows
 
 Each agent row shows:
 
-- **Agent** — labeled and colored like the main list
-- **Branch** — the branch checked out in the pane's working directory
+- **Branch** — the branch checked out in the pane's working directory; worktrees render as `+ <name>: <branch>`
 - **Ahead / behind** — `↑N` / `↓N` counts vs. the configured upstream
 - **Dirty count** — `~N` uncommitted paths (staged + unstaged + untracked) from `git status --porcelain`
+- **Ports** — listening dev-server ports detected in the pane's process tree
 
-Rows render only the movement that exists: a clean, synced branch shows no right-side cluster at all.
+The movement and dirty cluster renders only what exists: a clean, synced branch shows no right-side cluster at all, and short sidebars truncate the branch text before sacrificing it.
 
 ## Repo groups
 
-Repos with multiple agents get a group header line, matching the grouping in the main agent list. Panes without resolvable git metadata are skipped.
+Panes are grouped by git repo root (or launch directory when no repo resolves), with one header per group. Worktrees group under their original repository. The grouping mode is configurable with `@sidebar_group_by` (`repo` or `session`).
 
 ## Data source
 
-Everything comes from the sidebar's background git-info resolver, TTL-gated per path — the render thread never spawns git. Detailed staging work (add, commit, diff) happens in the agent pane itself, where `git` already runs.
+Everything comes from the sidebar's background git-info resolver, TTL-gated per path. Detailed staging work (add, commit, diff) happens in the agent pane itself, where `git` already runs.

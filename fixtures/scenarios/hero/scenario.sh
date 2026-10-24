@@ -24,9 +24,9 @@ build_layout
 paint_stream "$MAIN_PANE" \
     "$ROOT/fixtures/scenarios/hero/main-pane.stream"
 
-# Seed the Activity tab with recent tool calls + tasks on the
-# focused (Codex Waiting) pane — the fix/login-redirect
-# investigation right before it hit the permission prompt.
+# Seed the focused (Codex Waiting) pane's activity log — the fix/
+# login-redirect investigation right before it hit the permission
+# prompt. Task progress renders from the TaskCreate/TaskUpdate lines.
 cat >> "$FOCUSED_LOG" <<'ACTIVITY'
 14:02|TaskCreate|#1 reproduce the deep-link regression
 14:02|TaskCreate|#2 preserve window.location.search through the redirect

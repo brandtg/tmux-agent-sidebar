@@ -10,7 +10,6 @@
 #   run_fake_agent <pane> <agent> [port]
 #                         — respawn a pane with just the fake agent binary
 #                           (and optional TCP listener on `port`)
-#   enable_pet           — set @sidebar_pet on before start_sidebar
 #   start_sidebar         — launch the real sidebar binary in $SIDEBAR_PANE
 #   capture_loop <ms> <fps>
 #                         — call `capture --frames-out …` for a loop
@@ -19,7 +18,6 @@
 # Per-scenario env vars (optional, set before build_layout):
 #   FOCUS=PANE_WAITING|PANE_BACKGROUND|PANE_ERROR|MAIN_PANE
 #         which agent pane is the "focused" one. Default MAIN_PANE.
-#   BOTTOM_HEIGHT=N — override @sidebar_bottom_height (0 hides the panel).
 #   CROP_ROWS=N:M  — vertical crop applied to capture_single output.
 #   CROP_COLS=N:M  — horizontal crop applied to capture_single output.
 #
@@ -116,9 +114,6 @@ build_layout() {
 
     # Reset persisted state so every run renders predictably.
     tmux set-option -g @sidebar_filter all
-    if [[ -n "${BOTTOM_HEIGHT:-}" ]]; then
-        tmux set-option -g @sidebar_bottom_height "$BOTTOM_HEIGHT"
-    fi
 
     export WINDOW
     WINDOW=$(tmux display-message -t "$SESSION" -p '#{window_id}')
@@ -330,13 +325,6 @@ run_fake_agent() {
 }
 
 # -- sidebar + capture ---------------------------------------------
-
-# Enable the sidebar pet (cat at the bottom of the sidebar). Must be
-# called before start_sidebar so the initial @sidebar_pet read picks
-# it up — the option is read once at startup and not refreshed.
-enable_pet() {
-    tmux set-option -g @sidebar_pet on
-}
 
 # Start the real sidebar binary in $SIDEBAR_PANE and wait for the
 # first frame. 2 s is enough for the port-scan cycle to identify

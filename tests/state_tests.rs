@@ -4,8 +4,7 @@ mod test_helpers;
 use test_helpers::*;
 use tmux_agent_sidebar::group::{PaneGitInfo, RepoGroup};
 use tmux_agent_sidebar::state::{
-    AppState, BottomTab, Focus, GlobalState, GroupBy, PopupState, RepoFilter, RowTarget,
-    StatusFilter,
+    AppState, Focus, GlobalState, GroupBy, PopupState, RepoFilter, RowTarget, StatusFilter,
 };
 use tmux_agent_sidebar::tmux::{
     self, AgentType, PaneAttention, PaneInfo, PaneStatus, SessionInfo, WindowInfo, WorktreeMetadata,
@@ -43,26 +42,6 @@ fn test_move_pane_selection_empty() {
     let mut state = make_state(vec![]);
     state.move_pane_selection(1);
     assert_eq!(state.global.selected_pane_row, 0);
-}
-
-#[test]
-fn test_scroll_feed_bounds() {
-    let mut state = make_state(vec![]);
-    state.feed.entries = vec![tmux_agent_sidebar::state::FeedEntry {
-        epoch: 0,
-        timestamp: "10:00".into(),
-        agent: tmux_agent_sidebar::tmux::AgentType::Claude,
-        kind: tmux_agent_sidebar::activity::FeedKind::FileChange,
-        label: "a".into(),
-    }];
-    state.feed.scroll.total_lines = 6;
-    state.feed.scroll.visible_height = 4;
-    state.feed.scroll.scroll(1);
-    assert_eq!(state.feed.scroll.offset, 1);
-    state.feed.scroll.scroll(5);
-    assert_eq!(state.feed.scroll.offset, 2); // clamped to 6-4=2
-    state.feed.scroll.scroll(-10);
-    assert_eq!(state.feed.scroll.offset, 0);
 }
 
 // ─── line_to_row Mapping Tests ─────────────────────────────────────
@@ -285,39 +264,6 @@ fn test_rebuild_row_targets_clamps_selection() {
 // tested via unit tests in tmux.rs. focused_pane_id is pub, so tests
 // can set it directly.
 
-#[test]
-fn test_scroll_repos_empty_is_noop() {
-    let mut state = make_state(vec![]);
-    state.scrolls.repos.offset = 0;
-    state.bottom_tab = BottomTab::Repos;
-    state.scroll_bottom(5);
-    assert_eq!(
-        state.scrolls.repos.offset, 0,
-        "scrolling empty repos should be no-op"
-    );
-}
-
-// ─── State: scroll_git Tests ────────────────────────────────────────
-
-#[test]
-fn test_scroll_repos_bounds() {
-    let mut state = make_state(vec![]);
-    state.scrolls.repos.total_lines = 8;
-    state.scrolls.repos.visible_height = 3;
-    state.scrolls.repos.offset = 0;
-
-    state.scrolls.repos.scroll(2);
-    assert_eq!(state.scrolls.repos.offset, 2);
-
-    // Clamp to max (8 - 3 = 5)
-    state.scrolls.repos.scroll(10);
-    assert_eq!(state.scrolls.repos.offset, 5);
-
-    // Clamp to 0
-    state.scrolls.repos.scroll(-100);
-    assert_eq!(state.scrolls.repos.offset, 0);
-}
-
 // ─── State: new Tests ───────────────────────────────────────────────
 
 #[test]
@@ -331,14 +277,9 @@ fn test_state_new_defaults() {
     assert_eq!(state.spinner_frame, 0);
     assert_eq!(state.global.selected_pane_row, 0);
     assert!(state.layout.pane_row_targets.is_empty());
-    assert!(state.feed.entries.is_empty());
-    assert_eq!(state.feed.scroll.offset, 0);
-    assert_eq!(state.feed.max_entries, 100);
     assert_eq!(state.scrolls.panes.offset, 0);
     assert_eq!(state.scrolls.panes.total_lines, 0);
     assert_eq!(state.scrolls.panes.visible_height, 0);
-    assert_eq!(state.bottom_tab, BottomTab::Feed);
-    assert_eq!(state.scrolls.repos.offset, 0);
 }
 
 // ─── State: move_pane_selection return value Tests ─────────────────
@@ -378,78 +319,6 @@ fn test_move_pane_selection_return_value() {
 
 // find_focused_pane edge case tests were removed because the function now
 // queries tmux directly. See tmux::find_active_pane tests instead.
-
-// ─── State: scroll_bottom dispatch Tests ────────────────────────────
-
-#[test]
-fn test_scroll_bottom_dispatches_to_repos() {
-    let mut state = make_state(vec![]);
-    state.bottom_tab = BottomTab::Repos;
-    state.scrolls.repos.total_lines = 10;
-    state.scrolls.repos.visible_height = 3;
-    state.scrolls.repos.offset = 0;
-
-    state.scroll_bottom(2);
-    assert_eq!(state.scrolls.repos.offset, 2);
-}
-
-#[test]
-fn test_scroll_bottom_dispatches_to_feed() {
-    let mut state = make_state(vec![]);
-    state.bottom_tab = BottomTab::Feed;
-    state.feed.entries = vec![tmux_agent_sidebar::state::FeedEntry {
-        epoch: 0,
-        timestamp: "10:00".into(),
-        agent: tmux_agent_sidebar::tmux::AgentType::Claude,
-        kind: tmux_agent_sidebar::activity::FeedKind::FileChange,
-        label: "a".into(),
-    }];
-    state.feed.scroll.total_lines = 10;
-    state.feed.scroll.visible_height = 3;
-    state.feed.scroll.offset = 0;
-
-    state.scroll_bottom(2);
-    assert_eq!(state.feed.scroll.offset, 2);
-}
-
-// ─── State: next_bottom_tab cycle Tests ─────────────────────────────
-
-#[test]
-fn test_next_bottom_tab_full_cycle() {
-    let mut state = make_state(vec![]);
-    assert_eq!(state.bottom_tab, BottomTab::Feed);
-    state.next_bottom_tab();
-    assert_eq!(state.bottom_tab, BottomTab::Repos);
-    state.next_bottom_tab();
-    assert_eq!(state.bottom_tab, BottomTab::Feed);
-}
-
-// ─── State: scroll_activity empty Tests ─────────────────────────────
-
-#[test]
-fn test_scroll_feed_empty_is_noop() {
-    let mut state = make_state(vec![]);
-    state.feed.scroll.offset = 0;
-    state.feed.scroll.scroll(5);
-    assert_eq!(
-        state.feed.scroll.offset, 0,
-        "scrolling empty feed should be no-op"
-    );
-}
-
-// ─── State: tab cycle after explicit switch Tests ────────────────────
-
-#[test]
-fn test_bottom_tab_after_explicit_switch() {
-    let mut state = make_state(vec![]);
-    assert_eq!(state.bottom_tab, BottomTab::Feed);
-
-    state.next_bottom_tab();
-    assert_eq!(state.bottom_tab, BottomTab::Repos);
-
-    state.next_bottom_tab();
-    assert_eq!(state.bottom_tab, BottomTab::Feed);
-}
 
 // ─── State: global sync → rebuild consistency Tests ─────────────
 
@@ -1019,60 +888,6 @@ fn default_compact_view_is_case_insensitive() {
     g.apply_default_view(&opts);
 
     assert!(g.compact);
-}
-
-// ─── bottom-panel minimize pin tests ────────────────────────────────
-// The `m` pin is shared via `@sidebar_bottom_minimized` so the collapsed
-// state is sticky across every sidebar. Unset means no pin: each sidebar
-// follows its own viewport (auto-minimize). Unlike compact there is no
-// landing default — a sidebar opened later adopts the pin as-is.
-
-#[test]
-fn bottom_minimize_defaults_to_no_pin() {
-    let g = make_global();
-    assert_eq!(
-        g.bottom_minimize_override, None,
-        "no pin by default: the panel follows the viewport"
-    );
-}
-
-#[test]
-fn bottom_minimize_syncs_from_tmux_when_changed_by_other_instance() {
-    let mut g = make_global();
-
-    g.apply_all(&make_opts(&[(tmux::SIDEBAR_BOTTOM_MINIMIZED, "1")]));
-    assert_eq!(
-        g.bottom_minimize_override,
-        Some(true),
-        "another sidebar pinned minimized; must sync in"
-    );
-
-    g.apply_all(&make_opts(&[(tmux::SIDEBAR_BOTTOM_MINIMIZED, "0")]));
-    assert_eq!(
-        g.bottom_minimize_override,
-        Some(false),
-        "another sidebar pinned expanded; must sync in"
-    );
-}
-
-#[test]
-fn bottom_minimize_ignores_unrecognized_value() {
-    let mut g = make_global();
-
-    g.apply_all(&make_opts(&[(tmux::SIDEBAR_BOTTOM_MINIMIZED, "maybe")]));
-    assert_eq!(g.bottom_minimize_override, None);
-}
-
-#[test]
-fn bottom_minimize_absent_option_leaves_existing_pin_alone() {
-    let mut g = make_global();
-
-    // Adopt a pin, then simulate a sync where the option vanished (fresh
-    // server, failed unset). The last-saved guard keeps the current pin
-    // instead of flapping back to viewport mode.
-    g.apply_all(&make_opts(&[(tmux::SIDEBAR_BOTTOM_MINIMIZED, "1")]));
-    g.apply_all(&std::collections::HashMap::new());
-    assert_eq!(g.bottom_minimize_override, Some(true));
 }
 
 // ─── group-by tests ─────────────────────────────────────────────────

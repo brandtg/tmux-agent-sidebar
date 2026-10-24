@@ -13,19 +13,17 @@ Most options must be set **before** loading the plugin in your `tmux.conf`. Colo
 | `@sidebar_key_all`               | `E`     | Prefix-triggered keybinding to toggle the sidebar in all windows                        |
 | `@sidebar_width`                 | `15%`   | Width in columns or as a percentage                                                     |
 | `@sidebar_position`              | `left`  | Sidebar placement (`left` or `right`)                                                   |
-| `@sidebar_bottom_height`         | `20`    | Bottom panel height in lines (set `0` to hide). When the terminal is too short to fit this panel plus ~10 rows of agent list, the panel auto-minimizes to its Feed/Repos tab header; press `m` to expand or minimize it manually — the choice is shared across all open sidebars and sticks until toggled again |
 | `@sidebar_default_view`          | `all`   | Status filter view the sidebar lands on when it opens (`all`, `running`, `background`, `waiting`, `idle`, `error`). Filter changes still sync across open sidebars but are not restored on reopen |
 | `@sidebar_group_by`              | `repo`  | How the agents panel groups panes: `repo` buckets them by git repo root, `session` by tmux session name. With `w` (other windows) enabled, `session` turns the panel into an agent-forward session manager — sessions without agents list their plain windows too. Config-time: set it before the sidebar opens |
 | `@sidebar_default_compact_view`  | `off`   | Whether a newly opened sidebar starts in compact mode — one line per agent. Toggle live with `c` inside the sidebar; the toggle syncs across open sidebars but is not restored on reopen |
 | `@sidebar_auto_create`           | `on`    | Auto-create the sidebar on new windows and sessions (set `off` to disable). Consulted at window/session-create time, and only while no `@sidebar_mode` is recorded — a toggle-all sweep or a mobile takeover overrides it until the takeover releases or the next toggle-all |
 | `@sidebar_mode`                  | unset   | Sidebar mode written by `prefix+E` (globally) and the mobile auto-hide takeover (per-session, on the session the narrow client is driving) (`open` / `closed`). New windows and sessions follow it (read session-first, falling back to the global value), so toggle-all means "always on/off everywhere" rather than a one-shot sweep, while a mobile takeover only suppresses auto-create in its own session. Per-window toggles ignore it. Unset at both scopes falls back to `@sidebar_auto_create` |
 | `@sidebar_auto_create_delay`     | `0`     | Seconds to defer auto-create after a window or session opens, so a declaratively-built window (e.g. tmuxinator's `select-layout`) finishes before the sidebar pane is injected; accepts fractional seconds. `0` keeps the create synchronous |
-| `@sidebar_popup_max_width`       | `100`   | Windows narrower than this many columns open the sidebar as a tmux popup instead of a split pane — for phones and small SSH viewports. The popup hides the activity/git bottom panel; entering the popup view stops any split-pane sidebars still running in the session, and a toggle press on a narrow window swaps a desktop split pane for the popup directly. Auto-create skips narrow windows; the toggle-all sweep ignores the threshold so "open everywhere" stays uniform. Set `0` to always use a split pane |
+| `@sidebar_popup_max_width`       | `100`   | Windows narrower than this many columns open the sidebar as a tmux popup instead of a split pane — for phones and small SSH viewports. Entering the popup view stops any split-pane sidebars still running in the session, and a toggle press on a narrow window swaps a desktop split pane for the popup directly. Auto-create skips narrow windows; the toggle-all sweep ignores the threshold so "open everywhere" stays uniform. Set `0` to always use a split pane |
 | `@sidebar_auto_hide`             | `on`    | Auto-hide split-pane sidebars when a window shrinks below `@sidebar_popup_max_width` (a phone or other small client attached, or resized the window): the mobile takeover takes down the split-pane sidebars of the resized window's session in every window that is genuinely narrow — a phone client sees the whole session, so closing only the resized window's pane would leave slivers behind on session switches — and records `@sidebar_mode=closed` (session-scoped) so auto-create stays off there until the takeover releases. Wide desktop windows in any session keep their sidebars. The next toggle press then opens the modal popup. Only an actual downward crossing of the threshold counts, so sidebars the toggle-all sweep deliberately created on narrow windows are left alone, and the hook's regular firings never act. Set `off` to keep split panes at every width |
 | `@sidebar_notifications`         | `on`    | Master switch for desktop notifications                                                 |
 | `@sidebar_notifications_events`  | unset   | Restrict events — see [Notifications](/tmux-agent-sidebar/features/notifications/)       |
 | `@sidebar_agents`                | unset   | Comma-separated allow-list of agents (`claude`, `codex`, `opencode`, `hermes`, `antigravity`) the ⓘ notices evaluates for missing hooks — e.g. `set -g @sidebar_agents "claude,opencode"` silences the Codex warning for non-Codex users. Unset checks every agent; pane rows and status parsing are unaffected |
-| `@sidebar_pet`                  | `off`   | Show the animated pet in a 5-row band above the bottom panel                           |
 
 ## Worktree spawn defaults
 
@@ -50,8 +48,8 @@ Most options must be set **before** loading the plugin in your `tmux.conf`. Colo
 
 | Option                     | Default              | What it paints                                                                                          |
 | -------------------------- | -------------------- | ------------------------------------------------------------------------------------------------------- |
-| `@sidebar_color_border`    | `240`&nbsp;(dark gray)    | Unfocused panel borders and tab separators                                                              |
-| `@sidebar_color_accent`    | `153`&nbsp;(pale sky blue) | Active pane marker, focused repo header, focused bottom panel border, repo popup border — the brand color |
+| `@sidebar_color_border`    | `240`&nbsp;(dark gray)    | Unfocused panel borders                                                              |
+| `@sidebar_color_accent`    | `153`&nbsp;(pale sky blue) | Active pane marker, focused repo header, repo popup border — the brand color |
 | `@sidebar_color_session`   | `39`&nbsp;(blue)          | Session name                                                                                            |
 | `@sidebar_color_selection` | `239`&nbsp;(dark gray)    | Selected row background                                                                                 |
 
@@ -70,7 +68,7 @@ Most options must be set **before** loading the plugin in your `tmux.conf`. Colo
 | Option                         | Default          | What it paints                                                                                   |
 | ------------------------------ | ---------------- | ------------------------------------------------------------------------------------------------ |
 | `@sidebar_color_text_active`   | `255`&nbsp;(white)    | Primary text — active rows, counts, filtered repo label                                          |
-| `@sidebar_color_text_muted`    | `252`&nbsp;(light gray) | Secondary text — tree branches, empty-state messages, inactive bottom tabs, activity log labels |
+| `@sidebar_color_text_muted`    | `252`&nbsp;(light gray) | Secondary text — tree branches, empty-state messages, dirty counts |
 | `@sidebar_color_text_inactive` | `244`&nbsp;(mid gray) | Body text of unfocused pane rows — prompt / response, idle hint                                  |
 | `@sidebar_color_port`          | `246`&nbsp;(light gray) | Port numbers                                                                                   |
 | `@sidebar_color_wait_reason`   | `221`&nbsp;(yellow)   | Wait reason text                                                                                 |
@@ -83,7 +81,7 @@ Most options must be set **before** loading the plugin in your `tmux.conf`. Colo
 | `@sidebar_color_task_progress`  | `223`&nbsp;(pale yellow) | Task progress summary |
 | `@sidebar_color_subagent`       | `73`&nbsp;(soft teal)  | Sub-agent tree        |
 
-## Repos tab colors
+## Git colors
 
 | Option                          | Default            | What it paints      |
 | ------------------------------- | ------------------ | ------------------- |
@@ -91,12 +89,11 @@ Most options must be set **before** loading the plugin in your `tmux.conf`. Colo
 | `@sidebar_color_diff_added`     | `114`&nbsp;(green)      | Ahead arrows        |
 | `@sidebar_color_diff_deleted`   | `174`&nbsp;(terracotta) | Behind arrows       |
 
-## Section titles and timestamps
+## Section titles
 
 | Option                                | Default      | What it paints      |
 | ------------------------------------- | ------------ | ------------------- |
 | `@sidebar_color_section_title`        | `109`&nbsp;(teal) | Section titles      |
-| `@sidebar_color_activity_timestamp`   | `109`&nbsp;(teal) | Feed timestamps |
 
 ## Status icons
 
@@ -141,7 +138,6 @@ Written and maintained by the plugin itself; no need to touch them.
 set -g @sidebar_key T
 set -g @sidebar_width 32
 set -g @sidebar_position right
-set -g @sidebar_bottom_height 25
 set -g @sidebar_notifications_events "stop,notification"
 set -g @agent-sidebar-default-agent codex
 

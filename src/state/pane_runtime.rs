@@ -63,15 +63,12 @@ pub struct PaneRuntimeState {
 #[derive(Debug, Clone)]
 pub struct PaneRuntimeMap {
     pub map: HashMap<String, PaneRuntimeState>,
-    /// Agent pane IDs that have already been seen.
-    pub seen: HashSet<String>,
 }
 
 impl PaneRuntimeMap {
     pub fn new() -> Self {
         Self {
             map: HashMap::new(),
-            seen: HashSet::new(),
         }
     }
 
@@ -183,14 +180,12 @@ mod tests {
     fn new_starts_empty() {
         let map = PaneRuntimeMap::new();
         assert!(map.map.is_empty());
-        assert!(map.seen.is_empty());
     }
 
     #[test]
     fn default_delegates_to_new() {
         let map = PaneRuntimeMap::default();
         assert!(map.map.is_empty());
-        assert!(map.seen.is_empty());
     }
 
     #[test]

@@ -1,45 +1,24 @@
-use std::io;
-
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEventKind};
-use ratatui::{Terminal, backend::CrosstermBackend};
 
-use crate::state::{AppState, BottomTab, Focus};
+use crate::state::{AppState, Focus};
 use crate::worktree::RemoveMode;
 
 /// Dispatch a single crossterm [`Event`] into the [`AppState`], returning
 /// `true` when a redraw should be scheduled.
-///
-/// The terminal handle is only borrowed to query its size for mouse
-/// coordinate conversion; it is never written to from here.
-pub(super) fn handle_event(
-    ev: Event,
-    state: &mut AppState,
-    terminal: &Terminal<CrosstermBackend<io::Stdout>>,
-) -> bool {
+pub(super) fn handle_event(ev: Event, state: &mut AppState) -> bool {
     match ev {
         Event::Key(key) => handle_key_event(key, state),
         Event::Mouse(mouse) => match mouse.kind {
             MouseEventKind::Down(MouseButton::Left) => {
-                let term_height = terminal.size().map(|s| s.height).unwrap_or(0);
-                let bottom_h = state.effective_bottom_height();
-                let bottom_start = term_height.saturating_sub(bottom_h);
-                if mouse.row < bottom_start {
-                    state.handle_mouse_click(mouse.row, mouse.column);
-                } else if mouse.row == bottom_start {
-                    state.handle_bottom_tab_click(mouse.column);
-                }
+                state.handle_mouse_click(mouse.row, mouse.column);
                 true
             }
             MouseEventKind::ScrollDown => {
-                let term_height = terminal.size().map(|s| s.height).unwrap_or(0);
-                let bottom_h = state.effective_bottom_height();
-                state.handle_mouse_scroll(mouse.row, term_height, bottom_h, 3);
+                state.handle_mouse_scroll(3);
                 true
             }
             MouseEventKind::ScrollUp => {
-                let term_height = terminal.size().map(|s| s.height).unwrap_or(0);
-                let bottom_h = state.effective_bottom_height();
-                state.handle_mouse_scroll(mouse.row, term_height, bottom_h, -3);
+                state.handle_mouse_scroll(-3);
                 true
             }
             // Motion, drag, and button-release events mutate nothing; only
@@ -48,21 +27,13 @@ pub(super) fn handle_event(
             // a full frame render on each movement burst.
             _ => false,
         },
-        // Re-evaluate auto-minimize immediately when the viewport changes;
-        // without this a short terminal keeps the full-height panel until
-        // the next refresh tick.
-        Event::Resize(_, height) => {
-            state.apply_auto_minimize(height);
-            true
-        }
         _ => false,
     }
 }
 
 /// Dispatch a single [`KeyEvent`]. Split out from [`handle_event`] so that
 /// unit tests can drive the keyboard path without constructing a real
-/// terminal handle (the [`Terminal`] argument is only needed for mouse
-/// coordinate conversion).
+/// terminal handle.
 pub(super) fn handle_key_event(key: KeyEvent, state: &mut AppState) -> bool {
     if state.is_notices_popup_open() {
         if key.code == KeyCode::Esc {
@@ -127,9 +98,7 @@ pub(super) fn handle_key_event(key: KeyEvent, state: &mut AppState) -> bool {
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
     match key.code {
         KeyCode::Esc => {
-            if state.focus_state.focus == Focus::BottomPanel
-                || state.focus_state.focus == Focus::Filter
-            {
+            if state.focus_state.focus == Focus::Filter {
                 state.focus_state.focus = Focus::Panes;
             }
         }
@@ -140,27 +109,24 @@ pub(super) fn handle_key_event(key: KeyEvent, state: &mut AppState) -> bool {
         KeyCode::Char('p') if ctrl => pane_nav_up(state),
         KeyCode::PageDown => page_scroll(state, 1),
         KeyCode::PageUp => page_scroll(state, -1),
-        KeyCode::Char('h') | KeyCode::Left => match state.focus_state.focus {
-            Focus::Filter => {
+        KeyCode::Char('h') | KeyCode::Left => {
+            if state.focus_state.focus == Focus::Filter {
                 state.global.status_filter = state.global.status_filter.prev();
                 state.global.save_filter();
                 state.rebuild_row_targets();
             }
-            // Two tabs, so both directions cycle the same pair.
-            Focus::BottomPanel => state.next_bottom_tab(),
-            _ => {}
-        },
-        KeyCode::Char('l') | KeyCode::Right => match state.focus_state.focus {
-            Focus::Filter => {
+        }
+        KeyCode::Char('l') | KeyCode::Right => {
+            if state.focus_state.focus == Focus::Filter {
                 state.global.status_filter = state.global.status_filter.next();
                 state.global.save_filter();
                 state.rebuild_row_targets();
+            } else if state.focus_state.focus == Focus::Panes {
+                // "Go into" the agent: Right (and its vim pair `l`) mirrors
+                // Enter's jump-to-pane from the agent list.
+                state.activate_selected_pane();
             }
-            Focus::BottomPanel => state.next_bottom_tab(),
-            // "Go into" the agent: Right (and its vim pair `l`) mirrors
-            // Enter's jump-to-pane from the agent list.
-            Focus::Panes => state.activate_selected_pane(),
-        },
+        }
         KeyCode::Char('r') => {
             if state.focus_state.focus == Focus::Filter {
                 state.toggle_repo_popup();
@@ -187,11 +153,6 @@ pub(super) fn handle_key_event(key: KeyEvent, state: &mut AppState) -> bool {
         KeyCode::Char('?') => {
             state.toggle_help_popup();
         }
-        KeyCode::Char('m') => {
-            if state.bottom_panel_height > 0 {
-                state.toggle_bottom_minimized();
-            }
-        }
         KeyCode::Enter => {
             if state.focus_state.focus == Focus::Panes {
                 state.activate_selected_pane();
@@ -201,9 +162,6 @@ pub(super) fn handle_key_event(key: KeyEvent, state: &mut AppState) -> bool {
             state.global.status_filter = state.global.status_filter.next();
             state.global.save_filter();
             state.rebuild_row_targets();
-        }
-        KeyCode::BackTab => {
-            state.next_bottom_tab();
         }
         _ => {}
     }
@@ -218,32 +176,21 @@ fn pane_nav_down(state: &mut AppState) {
         Focus::Panes => {
             if state.move_pane_selection(1) {
                 state.global.queue_cursor_save();
-            } else {
-                state.focus_state.focus = Focus::BottomPanel;
             }
         }
-        Focus::BottomPanel => state.scroll_bottom(1),
     }
 }
 
 /// PageUp/PageDown: a viewport-sized jump in whatever has focus. The
 /// agent list moves the selection (the render's auto-scroll keeps it in
-/// view, so the viewport follows); the bottom panel scrolls its active
-/// tab's offset by that tab's own visible height. No-op from the filter
-/// row, where h/l own horizontal movement.
+/// view, so the viewport follows). No-op from the filter row, where h/l
+/// own horizontal movement.
 fn page_scroll(state: &mut AppState, direction: isize) {
     match state.focus_state.focus {
         Focus::Panes => {
             if state.page_pane_selection(direction) {
                 state.global.queue_cursor_save();
             }
-        }
-        Focus::BottomPanel => {
-            let visible = match state.bottom_tab {
-                BottomTab::Feed => state.feed.scroll.visible_height,
-                BottomTab::Repos => state.scrolls.repos.visible_height,
-            };
-            state.scroll_bottom(direction * visible.max(1) as isize);
         }
         Focus::Filter => {}
     }
@@ -257,17 +204,6 @@ fn pane_nav_up(state: &mut AppState) {
                 state.global.queue_cursor_save();
             } else {
                 state.focus_state.focus = Focus::Filter;
-            }
-        }
-        Focus::BottomPanel => {
-            let at_top = match state.bottom_tab {
-                BottomTab::Feed => state.feed.scroll.offset == 0,
-                BottomTab::Repos => state.scrolls.repos.offset == 0,
-            };
-            if at_top {
-                state.focus_state.focus = Focus::Panes;
-            } else {
-                state.scroll_bottom(-1);
             }
         }
     }
@@ -376,34 +312,6 @@ mod tests {
     }
 
     #[test]
-    fn arrows_switch_bottom_tab_while_panel_focused() {
-        let mut state = state_with_three_panes();
-        state.focus_state.focus = Focus::BottomPanel;
-        assert_eq!(state.bottom_tab, BottomTab::Feed);
-
-        handle_key_event(key(KeyCode::Right), &mut state);
-        assert_eq!(state.bottom_tab, BottomTab::Repos);
-        handle_key_event(key(KeyCode::Left), &mut state);
-        assert_eq!(state.bottom_tab, BottomTab::Feed);
-
-        // h/l mirror the arrows, matching j/k pane navigation.
-        handle_key_event(key(KeyCode::Char('l')), &mut state);
-        assert_eq!(state.bottom_tab, BottomTab::Repos);
-        handle_key_event(key(KeyCode::Char('h')), &mut state);
-        assert_eq!(state.bottom_tab, BottomTab::Feed);
-    }
-
-    #[test]
-    fn arrows_do_not_switch_tabs_from_panes_focus() {
-        let mut state = state_with_three_panes();
-        assert_eq!(state.focus_state.focus, Focus::Panes);
-
-        handle_key_event(key(KeyCode::Right), &mut state);
-        handle_key_event(key(KeyCode::Left), &mut state);
-        assert_eq!(state.bottom_tab, BottomTab::Feed);
-    }
-
-    #[test]
     fn right_arrow_jumps_to_selected_pane_from_panes_focus() {
         // Under `cargo test` tmux IPC is disabled at the choke point, so
         // activate_selected_pane's select-pane/switch-client calls are
@@ -459,21 +367,6 @@ mod tests {
         state.global.selected_pane_row = 0;
         handle_key_event(key(KeyCode::PageUp), &mut state);
         assert_eq!(state.global.selected_pane_row, 0, "clamped to first row");
-    }
-
-    #[test]
-    fn page_down_pages_the_bottom_panel_offset() {
-        let mut state = state_with_three_panes();
-        state.focus_state.focus = Focus::BottomPanel;
-        state.bottom_tab = BottomTab::Feed;
-        state.feed.scroll.total_lines = 20;
-        state.feed.scroll.visible_height = 5;
-
-        handle_key_event(key(KeyCode::PageDown), &mut state);
-        assert_eq!(state.feed.scroll.offset, 5);
-
-        handle_key_event(key(KeyCode::PageUp), &mut state);
-        assert_eq!(state.feed.scroll.offset, 0);
     }
 
     #[test]
@@ -550,7 +443,7 @@ mod tests {
     #[test]
     fn c_toggles_compact_without_flash() {
         // `c` is global (any non-modal focus) so the toggle works from the
-        // activity log or filter bar too, not just Panes focus.
+        // filter bar too, not just Panes focus.
         let mut state = state_with_three_panes();
         assert!(!state.global.compact);
 
@@ -629,21 +522,6 @@ mod tests {
         if let PopupState::SpawnInput { input, .. } = &state.popup {
             assert_eq!(input, "w");
         }
-    }
-
-    #[test]
-    fn m_toggles_bottom_minimize() {
-        // `m` is global (any non-modal focus) like `c`, so the panel can be
-        // minimized without first returning to the pane list.
-        let mut state = state_with_three_panes();
-        assert!(!state.bottom_minimized);
-
-        handle_key_event(key(KeyCode::Char('m')), &mut state);
-        assert!(state.bottom_minimized);
-        assert!(state.flash.is_none(), "no toggle feedback expected");
-
-        handle_key_event(key(KeyCode::Char('m')), &mut state);
-        assert!(!state.bottom_minimized);
     }
 
     #[test]

@@ -11,16 +11,14 @@ description: Every shortcut in the sidebar, the worktree spawn modal, and the cl
 | `prefix + E`   | Toggle sidebar in all windows                                 |
 | `j` / `Down`   | Move selection down                                           |
 | `k` / `Up`     | Move selection up                                             |
-| `PageUp` / `PageDown` | Page the agent list / bottom panel by a viewport       |
+| `PageUp` / `PageDown` | Page the agent list by a viewport                      |
 | `h` / `Left`   | Previous status filter                                        |
 | `l` / `Right`  | Next status filter; jump to the selected pane |
 | `r`            | Open repo filter popup                                        |
 | `Enter` / `→`  | Jump to the selected pane                                     |
 | `Tab`          | Cycle status filter                                           |
-| `Shift+Tab`    | Switch bottom panel tab (Feed ⇄ Repos); `←`/`→` also switch while the bottom panel has focus |
 | `c`            | Toggle compact view (one line per agent)                      |
 | `w`            | Toggle listing non-agent panes (long-running tasks)           |
-| `m`            | Minimize / expand the bottom panel (collapses to the tab header); shared across all open sidebars |
 | `?`            | Show keyboard reference popup                                 |
 | `Esc`          | Return focus or close the popup                               |
 | `q`            | Quit the sidebar                                              |

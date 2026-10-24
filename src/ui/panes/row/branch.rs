@@ -1,5 +1,5 @@
 use ratatui::{
-    style::Style,
+    style::{Color, Style},
     text::{Line, Span},
 };
 
@@ -80,6 +80,33 @@ pub(super) fn branch_ports_row(
 
     let mut right_spans: Vec<Span<'static>> = Vec::new();
     let mut right_width: usize = 0;
+    // Upstream movement and dirty count ride the same right-aligned
+    // cluster as the ports label (they used to live on the Repos tab).
+    // Only existing movement renders: a clean, synced branch adds
+    // nothing, so short sidebars never lose branch text to it.
+    if let Some((ahead, behind)) = git_info.ahead_behind {
+        let mut pieces: Vec<(String, Color)> = Vec::new();
+        if ahead > 0 {
+            pieces.push((format!("↑{ahead}"), theme.diff_added));
+        }
+        if behind > 0 {
+            pieces.push((format!("↓{behind}"), theme.diff_deleted));
+        }
+        for (text, color) in pieces {
+            let width = display_width(&text);
+            right_spans.push(Span::styled(text, ctx.apply_bg(Style::default().fg(color))));
+            right_width += width;
+        }
+    }
+    if git_info.dirty_count > 0 {
+        let text = format!("~{}", git_info.dirty_count);
+        let width = display_width(&text);
+        right_spans.push(Span::styled(
+            text,
+            ctx.apply_bg(Style::default().fg(theme.text_muted)),
+        ));
+        right_width += width;
+    }
     if let Some(text) = port_text.as_ref() {
         let display = format!("{}{}", right_prefix, text);
         let width = display_width(&display);

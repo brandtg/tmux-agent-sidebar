@@ -4,22 +4,18 @@ use std::time::Instant;
 use crate::ui::colors::ColorTheme;
 use crate::ui::icons::StatusIcons;
 
-mod feed;
 mod filter;
 mod focus;
 mod global;
 mod layout;
 mod notices;
 mod pane_runtime;
-mod pet;
 mod popup;
 mod refresh;
 mod scroll;
 mod session;
-mod tab;
 mod timers;
 
-pub use feed::{FeedEntry, FeedState};
 pub use filter::{RepoFilter, StatusFilter};
 pub use focus::{Focus, FocusState};
 pub use global::{GlobalState, GroupBy};
@@ -34,14 +30,6 @@ pub(crate) use refresh::{TaskProgressDecision, classify_task_progress};
 pub use scroll::{ScrollState, ScrollStates};
 pub use session::SessionNamesState;
 pub use timers::RefreshTimers;
-
-#[derive(Debug, Clone, PartialEq)]
-pub enum BottomTab {
-    /// Cross-agent feed of notable events (the old per-pane Activity tab).
-    Feed,
-    /// One row per agent: repo, branch, movement, dirty count.
-    Repos,
-}
 
 pub struct AppState {
     pub now: u64,
@@ -61,15 +49,11 @@ pub struct AppState {
     /// the UI layer; consumed by mouse/keyboard handlers before the
     /// next render.
     pub layout: FrameLayout,
-    /// Cross-agent feed of notable events (bottom panel Feed tab).
-    pub feed: FeedState,
     pub tmux_pane: String,
-    /// Scroll offsets for the agents list and the Repos tab. Feed tab
-    /// scroll lives in [`FeedState::scroll`].
+    /// Scroll offsets for the agents list.
     pub scrolls: ScrollStates,
     pub theme: ColorTheme,
     pub icons: StatusIcons,
-    pub bottom_tab: BottomTab,
     /// Resolved git metadata per pane working directory, maintained by
     /// `git_info_poll_loop` (a background thread) and consumed by
     /// `group_panes_by_repo`. The first snapshot primes it synchronously;
@@ -98,54 +82,10 @@ pub struct AppState {
     /// click region, cached hook/plugin diagnostics, per-agent copy targets,
     /// and the transient "copied" feedback label.
     pub notices: NoticesState,
-    pub pet_state: crate::ui::pet::PetState,
-    /// Pet animation X position (character offset from left of bottom panel).
-    pub pet_x: u16,
-    /// Pet animation frame index (0 = sitting, 1-4 = running/working).
-    pub pet_frame: usize,
-    /// Working animation tick used to slow the hand motion down a bit.
-    pub pet_working_frame_tick: usize,
-    /// Walking animation tick used to pace the optional bounce.
-    pub pet_walk_tick: usize,
-    /// Seed used to randomize walking bounce timing.
-    pub pet_walk_seed: usize,
-    /// Tick at which the next walk bounce should start.
-    pub pet_walk_bounce_next_tick: usize,
-    /// Tick until which the current walk bounce stays lifted.
-    pub pet_walk_bounce_lift_until: usize,
-    pub pet_bob_timer: usize,
-    /// Idle animation schedule tick for jump motion within the bob cycle.
-    pub pet_idle_jump_tick: usize,
-    /// Idle animation schedule tick for blink motion within the bob cycle.
-    pub pet_idle_blink_tick: usize,
-    /// Idle animation schedule tick for the hand-raise motion within the bob cycle.
-    pub pet_idle_wave_tick: usize,
-    /// Whether the hand-raise motion is enabled for the current idle cycle.
-    pub pet_idle_wave_enabled: bool,
-    /// Seed used to reshuffle idle motion timing.
-    pub pet_idle_seed: usize,
-    /// Current working animation tick, used to pace paper motion.
-    pub pet_working_paper_timer: usize,
-    /// Tick at which the paper stack should next lift.
-    pub pet_working_paper_next_lift_tick: usize,
-    /// Tick until which the paper stack stays lifted after a trigger.
-    pub pet_working_paper_lift_until: usize,
-    /// Horizontal offset applied to the paper stack during a lift.
-    pub pet_working_paper_x_offset: u16,
-    /// Seed used to reshuffle working paper motion timing.
-    pub pet_working_paper_seed: usize,
     /// Update notice shown when a newer GitHub release is available.
     pub version_notice: Option<crate::version::UpdateNotice>,
     /// Shared state across sidebar instances, persisted to tmux global variables.
     pub global: GlobalState,
-    /// Height of the bottom panel in lines. Loaded once at startup from
-    /// the `@sidebar_bottom_height` tmux option. A value of 0 hides the panel.
-    pub bottom_panel_height: u16,
-    /// Whether the bottom panel is collapsed to just its tab header row.
-    /// Follows the viewport (auto-minimized on short terminals) while
-    /// [`GlobalState::bottom_minimize_override`] — the shared, sticky
-    /// `m`-pin — is `None`.
-    pub bottom_minimized: bool,
     /// Maps session_id → session name, refreshed periodically by
     /// `session_poll_loop` (Claude `/rename` labels plus Hermes session
     /// titles).
@@ -156,15 +96,11 @@ pub struct AppState {
     /// one HashMap lookup per pane; the filesystem scan lives in the polling
     /// thread.
     pub sessions: SessionNamesState,
-    /// Whether the pet animation is drawn and ticked. Loaded once at startup
-    /// from the `@sidebar_pet` tmux option. Defaults to `false`.
-    pub pet_enabled: bool,
     /// Running inside a tmux popup on a narrow (mobile) viewport. Set by
     /// the `toggle` subcommand via `SIDEBAR_POPUP=1`. The popup anchors to
     /// the window's active pane but always holds keyboard focus itself, so
-    /// popup mode also forces window-active/focused semantics and hides
-    /// the bottom panel (activity/git tabs) to keep the compact viewport
-    /// readable.
+    /// popup mode also forces window-active/focused semantics to keep the
+    /// compact viewport readable.
     pub popup_mode: bool,
     /// Whether the sidebar's window currently contains no pane other than
     /// the sidebar's own pane. Recomputed on every session snapshot;
@@ -186,7 +122,7 @@ pub struct AppState {
 impl AppState {
     pub fn new(tmux_pane: String) -> Self {
         let global = GlobalState::new(tmux_pane.clone());
-        let mut state = Self {
+        Self {
             now: 0,
             repo_groups: vec![],
             other_windows: indexmap::IndexMap::new(),
@@ -194,12 +130,10 @@ impl AppState {
             flash: None,
             spinner_frame: 0,
             layout: FrameLayout::default(),
-            feed: FeedState::new(),
             tmux_pane,
             scrolls: ScrollStates::default(),
             theme: ColorTheme::default(),
             icons: StatusIcons::default(),
-            bottom_tab: BottomTab::Feed,
             git_info_cache: HashMap::new(),
             pending_port_scan: None,
             pending_approval_scan: None,
@@ -208,37 +142,13 @@ impl AppState {
             popup: PopupState::None,
             popup_op_tx: None,
             notices: NoticesState::default(),
-            pet_state: crate::ui::pet::PetState::Idle,
-            pet_x: crate::ui::pet::PET_HOME_X,
-            pet_frame: 0,
-            pet_working_frame_tick: 0,
-            pet_walk_tick: 0,
-            pet_walk_seed: 1,
-            pet_walk_bounce_next_tick: 0,
-            pet_walk_bounce_lift_until: 0,
-            pet_bob_timer: 0,
-            pet_idle_jump_tick: 8,
-            pet_idle_blink_tick: 24,
-            pet_idle_wave_tick: 0,
-            pet_idle_wave_enabled: false,
-            pet_idle_seed: 1,
-            pet_working_paper_timer: 0,
-            pet_working_paper_next_lift_tick: 0,
-            pet_working_paper_lift_until: 0,
-            pet_working_paper_x_offset: 0,
-            pet_working_paper_seed: 1,
             version_notice: None,
             global,
-            bottom_panel_height: crate::ui::BOTTOM_PANEL_HEIGHT,
-            bottom_minimized: false,
             sessions: SessionNamesState::default(),
-            pet_enabled: false,
             popup_mode: false,
             window_has_no_other_panes: false,
             quit_requested: false,
-        };
-        crate::state::pet::reseed_pet_idle_motion(&mut state);
-        state
+        }
     }
 
     // ─── Flash banner ────────────────────────────────────────────────
@@ -491,60 +401,6 @@ mod tests {
         let mut state = AppState::new("%99".into());
         state.refresh_now();
         assert!(state.now > 0);
-    }
-
-    #[test]
-    fn refresh_feed_reads_all_agent_panes_newest_first() {
-        let mut state = AppState::new("%99".into());
-        let pane_a = "%201";
-        let pane_b = "%202";
-        // Epoch-seconds wire format; the display `HH:MM` is derived from
-        // the epoch in the reader's local timezone, so assert on epochs
-        // and labels, not display strings.
-        fs::write(
-            crate::activity::log_file_path(pane_a),
-            "1729000000|Read|noise\n1729000240|Edit|a.rs\n",
-        )
-        .unwrap();
-        fs::write(
-            crate::activity::log_file_path(pane_b),
-            "1729000120|Write|b.rs\n",
-        )
-        .unwrap();
-        state.repo_groups = vec![RepoGroup {
-            name: "test".into(),
-            has_focus: true,
-            panes: vec![
-                (test_pane(pane_a), PaneGitInfo::default()),
-                (test_pane(pane_b), PaneGitInfo::default()),
-            ],
-        }];
-
-        state.refresh_feed();
-
-        // Read/Grep noise is filtered; the rest merges newest-first by
-        // epoch.
-        let stamps: Vec<u64> = state.feed.entries.iter().map(|e| e.epoch).collect();
-        assert_eq!(stamps, vec![1729000240, 1729000120]);
-        assert_eq!(state.feed.entries[0].label, "a.rs");
-        assert_eq!(state.feed.entries[1].label, "b.rs");
-
-        fs::remove_file(crate::activity::log_file_path(pane_a)).ok();
-        fs::remove_file(crate::activity::log_file_path(pane_b)).ok();
-    }
-
-    #[test]
-    fn refresh_feed_ignores_panes_outside_the_snapshot() {
-        let mut state = AppState::new("%99".into());
-        // Unique pane id: %209's log is shared with the task-progress
-        // dismissal test, and parallel log writes there make it flaky.
-        let log_path = crate::activity::log_file_path("%299");
-        fs::write(&log_path, "10:00|Edit|stray\n").unwrap();
-
-        state.refresh_feed();
-
-        assert!(state.feed.entries.is_empty());
-        fs::remove_file(&log_path).ok();
     }
 
     #[test]
@@ -997,67 +853,7 @@ mod tests {
         // preserved (unset) in this test.
     }
 
-    // ─── auto_switch_tab tests are in state/tab.rs ────────────────
-
-    // ─── next_bottom_tab / scroll_bottom tests ──────────────────────
-
-    #[test]
-    fn next_bottom_tab_toggles() {
-        let mut state = AppState::new("%99".into());
-        assert_eq!(state.bottom_tab, BottomTab::Feed);
-        state.next_bottom_tab();
-        assert_eq!(state.bottom_tab, BottomTab::Repos);
-        state.next_bottom_tab();
-        assert_eq!(state.bottom_tab, BottomTab::Feed);
-    }
-
-    #[test]
-    fn scroll_bottom_dispatches_to_feed() {
-        let mut state = AppState::new("%99".into());
-        state.bottom_tab = BottomTab::Feed;
-        state.feed.scroll = ScrollState {
-            offset: 0,
-            total_lines: 10,
-            visible_height: 3,
-        };
-
-        state.scroll_bottom(2);
-        assert_eq!(state.feed.scroll.offset, 2);
-        assert_eq!(state.scrolls.repos.offset, 0);
-    }
-
-    #[test]
-    fn scroll_bottom_dispatches_to_repos() {
-        let mut state = AppState::new("%99".into());
-        state.bottom_tab = BottomTab::Repos;
-        state.scrolls.repos = ScrollState {
-            offset: 0,
-            total_lines: 10,
-            visible_height: 3,
-        };
-
-        state.scroll_bottom(2);
-        assert_eq!(state.scrolls.repos.offset, 2);
-        assert_eq!(state.feed.scroll.offset, 0);
-    }
-
     // ─── handle_mouse_scroll tests ────────────────────────────────────
-
-    #[test]
-    fn mouse_scroll_in_bottom_panel_scrolls_feed() {
-        let mut state = AppState::new("%99".into());
-        state.bottom_tab = BottomTab::Feed;
-        state.feed.scroll = ScrollState {
-            offset: 0,
-            total_lines: 30,
-            visible_height: 10,
-        };
-        // term_height=50, bottom_panel=20 → bottom starts at row 30
-        // mouse at row 35 → in bottom panel
-        state.handle_mouse_scroll(35, 50, 20, 3);
-        assert_eq!(state.feed.scroll.offset, 3);
-        assert_eq!(state.scrolls.panes.offset, 0);
-    }
 
     #[test]
     fn mouse_scroll_in_agents_panel_scrolls_agents() {
@@ -1067,11 +863,8 @@ mod tests {
             total_lines: 40,
             visible_height: 20,
         };
-        // term_height=50, bottom_panel=20 → bottom starts at row 30
-        // mouse at row 10 → in agents panel
-        state.handle_mouse_scroll(10, 50, 20, 3);
+        state.handle_mouse_scroll(3);
         assert_eq!(state.scrolls.panes.offset, 3);
-        assert_eq!(state.feed.scroll.offset, 0);
     }
 
     #[test]
@@ -1085,7 +878,7 @@ mod tests {
         };
         // A compact row is one line, so a 3-line notch must collapse to a
         // single line — otherwise the wheel skips three panes at a time.
-        state.handle_mouse_scroll(10, 50, 20, 3);
+        state.handle_mouse_scroll(3);
         assert_eq!(state.scrolls.panes.offset, 1);
     }
 
@@ -1098,7 +891,7 @@ mod tests {
             total_lines: 40,
             visible_height: 20,
         };
-        state.handle_mouse_scroll(10, 50, 20, -3);
+        state.handle_mouse_scroll(-3);
         assert_eq!(state.scrolls.panes.offset, 4);
     }
 
@@ -1110,38 +903,8 @@ mod tests {
             total_lines: 40,
             visible_height: 20,
         };
-        state.handle_mouse_scroll(10, 50, 20, -3);
+        state.handle_mouse_scroll(-3);
         assert_eq!(state.scrolls.panes.offset, 2);
-    }
-
-    #[test]
-    fn mouse_scroll_at_boundary_row_goes_to_bottom() {
-        let mut state = AppState::new("%99".into());
-        state.bottom_tab = BottomTab::Repos;
-        state.scrolls.repos = ScrollState {
-            offset: 0,
-            total_lines: 20,
-            visible_height: 10,
-        };
-        // term_height=50, bottom_panel=20 → bottom starts at row 30
-        // mouse at exactly row 30 → in bottom panel
-        state.handle_mouse_scroll(30, 50, 20, 3);
-        assert_eq!(state.scrolls.repos.offset, 3);
-        assert_eq!(state.scrolls.panes.offset, 0);
-    }
-
-    #[test]
-    fn mouse_scroll_just_above_boundary_goes_to_agents() {
-        let mut state = AppState::new("%99".into());
-        state.scrolls.panes = ScrollState {
-            offset: 0,
-            total_lines: 40,
-            visible_height: 20,
-        };
-        // row 29, just above bottom_start=30
-        state.handle_mouse_scroll(29, 50, 20, 3);
-        assert_eq!(state.scrolls.panes.offset, 3);
-        assert_eq!(state.feed.scroll.offset, 0);
     }
 
     // ─── move_pane_selection edge cases ─────────────────────────────

@@ -13,17 +13,15 @@ use crate::ui::text::{display_width, truncate_to_width};
 /// follow the keybindings doc so the two can be diffed by eye.
 const HELP_ROWS: &[(&str, &str)] = &[
     ("j / k", "Move selection"),
-    ("PgUp / PgDn", "Page the list / bottom panel"),
+    ("PgUp / PgDn", "Page the list"),
     ("h / l", "Previous / next status filter"),
     ("Tab", "Cycle status filter"),
-    ("Shift+Tab", "Switch bottom panel tab"),
     ("Enter / →", "Jump to the selected pane"),
     ("n", "Spawn worktree + agent"),
     ("x", "Remove the selected spawn pane"),
     ("r", "Open repo filter"),
     ("c", "Toggle compact view"),
     ("w", "List non-agent panes"),
-    ("m", "Minimize / expand bottom panel"),
     ("Esc", "Return focus / close popup"),
     ("?", "Toggle this help"),
     ("q", "Quit"),
@@ -141,17 +139,15 @@ mod tests {
         ┌─────────────────────────────────────────────┐
         │ Help                                        │
         │ j / k        Move selection                 │
-        │ PgUp / PgDn  Page the list / bottom panel   │
+        │ PgUp / PgDn  Page the list                  │
         │ h / l        Previous / next status filter  │
         │ Tab          Cycle status filter            │
-        │ Shift+Tab    Switch bottom panel tab        │
         │ Enter / →    Jump to the selected pane      │
         │ n            Spawn worktree + agent         │
         │ x            Remove the selected spawn pane │
         │ r            Open repo filter               │
         │ c            Toggle compact view            │
         │ w            List non-agent panes           │
-        │ m            Minimize / expand bottom panel │
         │ Esc          Return focus / close popup     │
         │ ?            Toggle this help               │
         │ q            Quit                           │
@@ -170,9 +166,9 @@ mod tests {
         │ PgUp / PgDn  Pag…│
         │ h / l        Pre…│
         │ Tab          Cyc…│
-        │ Shift+Tab    Swi…│
         │ Enter / →    Jum…│
         │ n            Spa…│
+        │ x            Rem…│
         └──────────────────┘
         ");
     }

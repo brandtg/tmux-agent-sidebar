@@ -67,9 +67,6 @@ fn snapshot_other_windows_rendered() {
         main · 0:cargo test
       ◆ nvim
         main · 0:nvim
-    ╭ Feed │ Repos ──────────────────╮
-    │       No recent activity       │
-    ╰────────────────────────────────╯
     ");
 }
 
@@ -142,9 +139,6 @@ fn snapshot_other_windows_with_args_rendered() {
         main · 0:web
       ◆ cargo test --lib
         main · 1:tests
-    ╭ Feed │ Repos ──────────────────╮
-    │       No recent activity       │
-    ╰────────────────────────────────╯
     ");
 }
 
@@ -159,9 +153,6 @@ fn snapshot_other_windows_hidden_when_off() {
     project
     ┃ ○ claude
         Waiting for prompt…
-    ╭ Feed │ Repos ──────────────────╮
-    │       No recent activity       │
-    ╰────────────────────────────────╯
     ");
 }
 
@@ -181,9 +172,6 @@ fn snapshot_other_windows_visible_under_matching_status_filter() {
     project
       ◆ cargo
         main · 0:cargo test
-    ╭ Feed │ Repos ──────────────────╮
-    │       No recent activity       │
-    ╰────────────────────────────────╯
     ");
 }
 

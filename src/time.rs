@@ -28,8 +28,8 @@ pub fn now_epoch_millis() -> u64 {
 }
 
 /// Local wall-clock `HH:MM` for an epoch-seconds timestamp. Activity-log
-/// lines carry epoch seconds on the wire (so the feed can order entries
-/// correctly across midnight) and display this short local form.
+/// lines carry epoch seconds on the wire (so entries order correctly
+/// across midnight) and display this short local form.
 pub fn format_epoch_hhmm(epoch: u64) -> String {
     unsafe {
         let mut tm: libc::tm = std::mem::zeroed();
