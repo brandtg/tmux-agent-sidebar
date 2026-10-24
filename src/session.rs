@@ -15,12 +15,14 @@ const HERMES_TITLE_LIMIT: usize = 2000;
 
 /// Scan the agents' session stores for `session_id → title` labels.
 ///
-/// Three sources share one map because the key spaces never collide: Claude
+/// Four sources share one map because the key spaces never collide: Claude
 /// Code ids are UUIDs (`~/.claude/sessions/*.json`), Hermes ids are
-/// `YYYYMMDD_HHMMSS_hex` (the `sessions` table of `~/.hermes/state.db`), and
+/// `YYYYMMDD_HHMMSS_hex` (the `sessions` table of `~/.hermes/state.db`),
 /// Antigravity ids are UUIDs (the `conversation_summaries` table of
-/// `~/.gemini/antigravity-cli/conversation_summaries.db`) — and those are the
-/// same ids the agents put in their hook payloads, so the map keys match
+/// `~/.gemini/antigravity-cli/conversation_summaries.db`), and OpenCode ids
+/// are `ses_…` (the `session_v2` table of
+/// `~/.local/share/opencode/opencode.db`) — and those are the same ids the
+/// agents put in their hook payloads, so the map keys match
 /// `@pane_session_id` on the pane.
 pub fn scan_session_names() -> HashMap<String, String> {
     let mut map = scan_claude_session_names();
@@ -28,6 +30,9 @@ pub fn scan_session_names() -> HashMap<String, String> {
         map.insert(session_id, name);
     }
     for (session_id, name) in scan_antigravity_session_titles() {
+        map.insert(session_id, name);
+    }
+    for (session_id, name) in scan_opencode_session_titles() {
         map.insert(session_id, name);
     }
     map
@@ -94,6 +99,8 @@ fn scan_hermes_session_titles() -> HashMap<String, String> {
 }
 
 /// Parse `sqlite3 -json` output (`[{"id": "...", "title": "..."}, ...]`).
+/// Shared with [`scan_opencode_session_titles`], whose `session_v2` rows
+/// carry the same `id`/`title` shape.
 /// Empty results print as nothing at all; malformed output, a non-array
 /// payload, and rows missing either field all degrade to "skip" rather than
 /// erroring, so a schema change upstream can never break the scan.
@@ -201,6 +208,50 @@ fn parse_antigravity_titles(json: &str) -> HashMap<String, String> {
         map.insert(id.to_string(), name.to_string());
     }
     map
+}
+
+/// Return the path to OpenCode's session store, when present.
+fn opencode_session_db() -> Option<PathBuf> {
+    let home = std::env::var("HOME").ok()?;
+    let db = PathBuf::from(home)
+        .join(".local")
+        .join("share")
+        .join("opencode")
+        .join("opencode.db");
+    if db.is_file() { Some(db) } else { None }
+}
+
+/// Read `(id, title)` pairs from OpenCode's SQLite session store via the
+/// `sqlite3` CLI in JSON mode.
+///
+/// OpenCode auto-titles sessions after the first turn and delivers the
+/// rename through the plugin bridge, but the write can be lost — a session
+/// switch rebinds the pane and clears `@pane_session_title`, and the
+/// auto-title `session.renamed` never fires again. The store read is the
+/// self-healing path: every tick re-applies the stored title to any pane
+/// whose `@pane_session_id` matches.
+///
+/// v2.1.x keeps sessions in `session_v2`; the legacy `session` table is no
+/// longer written and holds only pre-upgrade rows, so it is ignored. A
+/// missing table (older/never-installed versions) just errors the probe
+/// into an empty map. `-readonly` keeps the probe from taking write locks
+/// on the live WAL database.
+fn scan_opencode_session_titles() -> HashMap<String, String> {
+    let Some(db) = opencode_session_db() else {
+        return HashMap::new();
+    };
+    let mut command = Command::new("sqlite3");
+    command.arg("-json").arg("-readonly").arg(&db).arg(format!(
+        "SELECT id, title FROM session_v2 WHERE title IS NOT NULL \
+              ORDER BY time_updated DESC LIMIT {HERMES_TITLE_LIMIT}"
+    ));
+    let Ok(output) = subprocess::run_with_timeout(&mut command, HERMES_QUERY_TIMEOUT) else {
+        return HashMap::new();
+    };
+    if !output.status.success() {
+        return HashMap::new();
+    }
+    parse_hermes_titles(&String::from_utf8_lossy(&output.stdout))
 }
 
 /// Parse a single session JSON file, returning `(sessionId, name)` if both exist.

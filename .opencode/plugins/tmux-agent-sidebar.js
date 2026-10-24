@@ -175,6 +175,17 @@ const PANE_CACHE_MAX = 64;
 // lookup, so repeated resolutions never re-query.
 let resolveSessionTitle = null;
 
+// Set by setup(): maps a sessionID to the id the pane hooks should see.
+// Child (subagent) sessions share the parent pane, and events forwarded
+// with the child's own id would rebind `@pane_session_id` to the child on
+// every forwarded permission ask / question / tool result — clearing
+// `@pane_session_title` on each flip (a mismatched rebind drops it), with
+// the parent's next event flipping the binding back and clearing the title
+// again. An auto-titled session never emits another `session.renamed`, so
+// the title would stay gone for the pane's lifetime. Routing child events
+// under the parent's identity keeps the binding (and the title) stable.
+let routeSessionId = null;
+
 async function sessionTitleOf(sessionId) {
   if (sessionId === "" || typeof resolveSessionTitle !== "function") return "";
   try {
@@ -363,6 +374,17 @@ async function resolvePaneId(cwd, sessionId) {
 
 const hook = (eventName, payload) => {
   hookChain = hookChain.then(async () => {
+    // Child-session events ride under the parent's identity so they cannot
+    // rebind the pane or wipe its title (see routeSessionId). Unknown ids
+    // pass through unchanged.
+    if (
+      payload &&
+      typeof payload.session_id === "string" &&
+      payload.session_id !== "" &&
+      typeof routeSessionId === "function"
+    ) {
+      payload = { ...payload, session_id: await routeSessionId(payload.session_id) };
+    }
     // The daemon has no trustworthy TMUX_PANE; inject the resolved one into
     // the spawned hook's environment. With no match, inherit the inherited
     // environment unchanged so non-daemon setups behave exactly as before.
@@ -507,6 +529,19 @@ export default {
       if (session_id === "") return "";
       const info = await lookupSessionInfo(session_id);
       return info?.title ?? "";
+    };
+
+    // Child sessions route under their parent's id in forwarded hook
+    // payloads (see routeSessionId at module scope). A never-seen session
+    // (the daemon restarted mid-turn and its session.created was missed)
+    // resolves parentage once via the server; lookupSessionInfo caches the
+    // answer either way.
+    routeSessionId = async (session_id) => {
+      const knownParent = parents.get(session_id);
+      if (knownParent) return knownParent;
+      if (mainSessions.has(session_id)) return session_id;
+      const info = await lookupSessionInfo(session_id);
+      return info?.parentID || session_id;
     };
 
     // While no main session is known every event passes through (the
