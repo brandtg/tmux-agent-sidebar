@@ -202,8 +202,9 @@ test("subagent lifecycle never touches the main session's run state", async () =
       "session-title " + JSON.stringify({ cwd: "/repo", session_id: MAIN, title: "Main" }),
       "user-prompt-submit " + JSON.stringify({ cwd: "/repo", session_id: MAIN, prompt: "fix the bug" }),
       // The child's prompt, busy, and idle are all dropped; its mid-turn
-      // tool result is kept (that is what the subagent is doing).
-      "activity-log " + JSON.stringify({ cwd: "/repo", session_id: CHILD, tool_name: "read", tool_input: {}, tool_response: { output: "o", metadata: null } }),
+      // tool result is kept (that is what the subagent is doing) and rides
+      // under the parent's session id so it cannot rebind the pane.
+      "activity-log " + JSON.stringify({ cwd: "/repo", session_id: MAIN, tool_name: "read", tool_input: {}, tool_response: { output: "o", metadata: null } }),
       // Exactly one stop fires — for the main session.
       "stop " + JSON.stringify({ cwd: "/repo", session_id: MAIN, last_message: "" }),
     ]);
@@ -299,6 +300,9 @@ test("subagent permission asks pass mid-turn but not between turns", async () =>
   try {
     const plugin = await h.init("/repo");
     await plugin.event({ type: "session.created", data: { sessionID: MAIN, title: "Main" } });
+    // The task tool creates the child session (with parentID) before its
+    // events flow, so the bridge knows the parentage when the ask arrives.
+    await plugin.event({ type: "session.created", data: { sessionID: CHILD, parentID: MAIN, title: "subagent" } });
     await plugin.prompt({ sessionID: MAIN, prompt: { text: "go" } });
     await plugin.event({ type: "permission.asked", data: { sessionID: CHILD, id: "per_1" } });
     await plugin.event({ type: "session.idle", data: { sessionID: MAIN } });
@@ -310,7 +314,10 @@ test("subagent permission asks pass mid-turn but not between turns", async () =>
       "session-start " + JSON.stringify({ cwd: "/repo", session_id: MAIN, source: "startup" }),
       "session-title " + JSON.stringify({ cwd: "/repo", session_id: MAIN, title: "Main" }),
       "user-prompt-submit " + JSON.stringify({ cwd: "/repo", session_id: MAIN, prompt: "go" }),
-      "notification " + JSON.stringify({ cwd: "/repo", session_id: CHILD, wait_reason: "permission" }),
+      // The child's ask keeps its wait_reason but carries the parent's
+      // session id — a child-id payload would rebind @pane_session_id to
+      // the child and wipe the pane's title on every flip.
+      "notification " + JSON.stringify({ cwd: "/repo", session_id: MAIN, wait_reason: "permission" }),
       "stop " + JSON.stringify({ cwd: "/repo", session_id: MAIN, last_message: "" }),
       "notification " + JSON.stringify({ cwd: "/repo", session_id: MAIN, wait_reason: "permission" }),
     ]);
@@ -324,6 +331,7 @@ test("question asks map to a waiting notification like permissions", async () =>
   try {
     const plugin = await h.init("/repo");
     await plugin.event({ type: "session.created", data: { sessionID: MAIN, title: "Main" } });
+    await plugin.event({ type: "session.created", data: { sessionID: CHILD, parentID: MAIN, title: "subagent" } });
     await plugin.prompt({ sessionID: MAIN, prompt: { text: "go" } });
     // Mid-turn child question passes (the whole turn is blocked).
     await plugin.event({ type: "question.asked", data: { sessionID: CHILD, id: "que_1" } });
@@ -337,7 +345,8 @@ test("question asks map to a waiting notification like permissions", async () =>
       "session-start " + JSON.stringify({ cwd: "/repo", session_id: MAIN, source: "startup" }),
       "session-title " + JSON.stringify({ cwd: "/repo", session_id: MAIN, title: "Main" }),
       "user-prompt-submit " + JSON.stringify({ cwd: "/repo", session_id: MAIN, prompt: "go" }),
-      "notification " + JSON.stringify({ cwd: "/repo", session_id: CHILD, wait_reason: "question" }),
+      // Same parent-id routing as permission asks.
+      "notification " + JSON.stringify({ cwd: "/repo", session_id: MAIN, wait_reason: "question" }),
       "stop " + JSON.stringify({ cwd: "/repo", session_id: MAIN, last_message: "" }),
       "notification " + JSON.stringify({ cwd: "/repo", session_id: MAIN, wait_reason: "question" }),
     ]);
@@ -987,7 +996,9 @@ test("a child's tool activity is gated on its own parent's turn", async () => {
       "session-start " + JSON.stringify({ cwd: "/repo", session_id: "ses_b", source: "startup" }),
       "session-title " + JSON.stringify({ cwd: "/repo", session_id: "ses_b", title: "B" }),
       "user-prompt-submit " + JSON.stringify({ cwd: "/repo", session_id: "ses_b", prompt: "turn b" }),
-      "activity-log " + JSON.stringify({ cwd: "/repo", session_id: "ses_child_b", tool_name: "read", tool_input: {}, tool_response: { output: "o", metadata: null } }),
+      // Kept (child_b's parent's turn is active) and routed under the
+      // parent's id; child_a's result is dropped (its parent is idle).
+      "activity-log " + JSON.stringify({ cwd: "/repo", session_id: "ses_b", tool_name: "read", tool_input: {}, tool_response: { output: "o", metadata: null } }),
     ]);
   } finally {
     h.dispose();
