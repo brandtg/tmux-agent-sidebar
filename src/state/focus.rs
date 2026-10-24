@@ -1,4 +1,5 @@
 use super::AppState;
+use crate::cli::toggle::popup_max_width_from_setting;
 use crate::tmux;
 
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -91,6 +92,29 @@ impl AppState {
         }
     }
 
+    /// Page-jump the selection by roughly one viewport of rows. Unlike
+    /// [`Self::move_pane_selection`] — whose `false` at the boundary hands
+    /// focus to the bottom panel — a page that overshoots clamps to the
+    /// edge row: paging to the end should land on the last row, not fall
+    /// through. The page size is the agent list's last rendered visible
+    /// height (the same viewport the render's auto-scroll keeps the
+    /// selection within), with a 1-row floor for keypresses before the
+    /// first frame. Returns whether the selection moved.
+    pub fn page_pane_selection(&mut self, direction: isize) -> bool {
+        let len = self.layout.pane_row_targets.len();
+        if len == 0 {
+            return false;
+        }
+        let page = self.scrolls.panes.visible_height.max(1) as isize;
+        let current = self.global.selected_pane_row as isize;
+        let next = (current + direction * page).clamp(0, len as isize - 1);
+        if next == current {
+            return false;
+        }
+        self.global.selected_pane_row = next as usize;
+        true
+    }
+
     pub fn activate_selected_pane(&mut self) {
         let Some(target) = self
             .layout
@@ -100,7 +124,6 @@ impl AppState {
             return;
         };
         let target_pane_id = target.pane_id.clone();
-        let is_window = target.is_window;
 
         // Update the sidebar immediately so the active marker and
         // repo header highlight move without waiting for the next
@@ -108,27 +131,44 @@ impl AppState {
         self.focus_state.focused_pane_id = Some(target_pane_id.clone());
         tmux::select_pane(&target_pane_id);
 
-        // A non-agent window row is a jump target only: it has no sidebar
-        // of its own to summon, and creating one would spawn a sidebar
-        // where the user keeps an editor or a test run.
-        if is_window {
+        // The jump may land on a window that has no sidebar of its own —
+        // `@sidebar_auto_create off`, or one the mobile takeover closed
+        // while a narrow client was attached to its session. Summon one
+        // there so the sidebar "follows" the jump instead of disappearing.
+        // Window rows summon too: under toggle-all the user opted into
+        // sidebars on every window, and the create-only path still
+        // respects the recorded mode, `@sidebar_auto_create`, and the
+        // popup threshold, so this never spawns where the user keeps an
+        // editor or a test run unless the mode says so. create-only is a
+        // no-op when that window already has a sidebar.
+        let window_id = tmux::display_message(&target_pane_id, "#{window_id}");
+        if window_id.is_empty() {
             return;
         }
-
-        // The jump may land on a window that has no sidebar of its own
-        // (e.g. with @sidebar_auto_create off). Summon one there so the
-        // sidebar "follows" the jump instead of disappearing. create-only
-        // is a no-op when that window already has a sidebar.
-        let window_id = tmux::display_message(&target_pane_id, "#{window_id}");
-        if !window_id.is_empty() {
-            let pane_path = tmux::display_message(&target_pane_id, "#{pane_current_path}");
-            let pane_path = if pane_path.is_empty() {
-                "~".to_string()
-            } else {
-                pane_path
-            };
-            crate::cli::toggle::cmd_toggle(&["--create-only".to_string(), window_id, pane_path]);
+        // Below the popup threshold a window is popup territory: a forced
+        // split would strand a sliver, and the summon must not fight the
+        // auto-hide. This reads the post-jump width — `select_pane` may
+        // have just grown the window (the switched-to client becomes the
+        // latest active one, and `window-size latest` resizes to it), so
+        // a desktop jump into a session a phone was driving summons
+        // normally while a genuinely narrow arrival does not.
+        let width: u32 = tmux::display_message(&window_id, "#{window_width}")
+            .parse()
+            .unwrap_or(0);
+        let threshold = popup_max_width_from_setting(&tmux::display_message(
+            &window_id,
+            &format!("#{{{}}}", tmux::SIDEBAR_POPUP_MAX_WIDTH),
+        ));
+        if threshold > 0 && width > 0 && width < threshold {
+            return;
         }
+        let pane_path = tmux::display_message(&target_pane_id, "#{pane_current_path}");
+        let pane_path = if pane_path.is_empty() {
+            "~".to_string()
+        } else {
+            pane_path
+        };
+        crate::cli::toggle::cmd_toggle(&["--create-only".to_string(), window_id, pane_path]);
     }
 }
 

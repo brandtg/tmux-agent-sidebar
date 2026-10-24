@@ -138,6 +138,8 @@ pub(super) fn handle_key_event(key: KeyEvent, state: &mut AppState) -> bool {
         KeyCode::Char('n') if ctrl => pane_nav_down(state),
         KeyCode::Char('k') | KeyCode::Up => pane_nav_up(state),
         KeyCode::Char('p') if ctrl => pane_nav_up(state),
+        KeyCode::PageDown => page_scroll(state, 1),
+        KeyCode::PageUp => page_scroll(state, -1),
         KeyCode::Char('h') | KeyCode::Left => match state.focus_state.focus {
             Focus::Filter => {
                 state.global.status_filter = state.global.status_filter.prev();
@@ -221,6 +223,29 @@ fn pane_nav_down(state: &mut AppState) {
             }
         }
         Focus::BottomPanel => state.scroll_bottom(1),
+    }
+}
+
+/// PageUp/PageDown: a viewport-sized jump in whatever has focus. The
+/// agent list moves the selection (the render's auto-scroll keeps it in
+/// view, so the viewport follows); the bottom panel scrolls its active
+/// tab's offset by that tab's own visible height. No-op from the filter
+/// row, where h/l own horizontal movement.
+fn page_scroll(state: &mut AppState, direction: isize) {
+    match state.focus_state.focus {
+        Focus::Panes => {
+            if state.page_pane_selection(direction) {
+                state.global.queue_cursor_save();
+            }
+        }
+        Focus::BottomPanel => {
+            let visible = match state.bottom_tab {
+                BottomTab::Feed => state.feed.scroll.visible_height,
+                BottomTab::Repos => state.scrolls.repos.visible_height,
+            };
+            state.scroll_bottom(direction * visible.max(1) as isize);
+        }
+        Focus::Filter => {}
     }
 }
 
@@ -411,6 +436,55 @@ mod tests {
         state.global.selected_pane_row = 1;
         handle_key_event(key(KeyCode::Char('p')), &mut state);
         assert_eq!(state.global.selected_pane_row, 1);
+    }
+
+    #[test]
+    fn page_down_moves_selection_by_a_page() {
+        let mut state = state_with_three_panes();
+        state.scrolls.panes.visible_height = 2;
+
+        handle_key_event(key(KeyCode::PageDown), &mut state);
+
+        assert_eq!(state.global.selected_pane_row, 2);
+    }
+
+    #[test]
+    fn page_keys_clamp_at_the_list_edges() {
+        let mut state = state_with_three_panes();
+        state.global.selected_pane_row = 2;
+        state.scrolls.panes.visible_height = 10;
+        handle_key_event(key(KeyCode::PageDown), &mut state);
+        assert_eq!(state.global.selected_pane_row, 2, "clamped to last row");
+
+        state.global.selected_pane_row = 0;
+        handle_key_event(key(KeyCode::PageUp), &mut state);
+        assert_eq!(state.global.selected_pane_row, 0, "clamped to first row");
+    }
+
+    #[test]
+    fn page_down_pages_the_bottom_panel_offset() {
+        let mut state = state_with_three_panes();
+        state.focus_state.focus = Focus::BottomPanel;
+        state.bottom_tab = BottomTab::Feed;
+        state.feed.scroll.total_lines = 20;
+        state.feed.scroll.visible_height = 5;
+
+        handle_key_event(key(KeyCode::PageDown), &mut state);
+        assert_eq!(state.feed.scroll.offset, 5);
+
+        handle_key_event(key(KeyCode::PageUp), &mut state);
+        assert_eq!(state.feed.scroll.offset, 0);
+    }
+
+    #[test]
+    fn page_up_moves_selection_up_by_a_page() {
+        let mut state = state_with_three_panes();
+        state.global.selected_pane_row = 2;
+        state.scrolls.panes.visible_height = 2;
+
+        handle_key_event(key(KeyCode::PageUp), &mut state);
+
+        assert_eq!(state.global.selected_pane_row, 0);
     }
 
     #[test]

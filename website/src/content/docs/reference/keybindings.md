@@ -11,6 +11,7 @@ description: Every shortcut in the sidebar, the worktree spawn modal, and the cl
 | `prefix + E`   | Toggle sidebar in all windows                                 |
 | `j` / `Down`   | Move selection down                                           |
 | `k` / `Up`     | Move selection up                                             |
+| `PageUp` / `PageDown` | Page the agent list / bottom panel by a viewport       |
 | `h` / `Left`   | Previous status filter                                        |
 | `l` / `Right`  | Next status filter; jump to the selected pane |
 | `r`            | Open repo filter popup                                        |

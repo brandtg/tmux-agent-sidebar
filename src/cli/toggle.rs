@@ -571,14 +571,19 @@ fn all_session_ids() -> Vec<String> {
 /// - the session's effective `@sidebar_mode` is `closed` (the takeover
 ///   pinned it; read session-first with global fallback),
 /// - a takeover marker exists for the session (only the takeover writes
-///   it — a deliberate `toggle-all` close is sticky, as documented),
-/// - no client narrower than the threshold is attached to THAT session.
-///   While the phone is still connected to this session it can re-shrink
-///   its windows at any moment and re-trigger the takeover; restoring
-///   under those conditions would just feed a close/open flap between
-///   the two clients. A phone attached to some other session must not
-///   block this release — which session a narrow client is attached to
-///   is what the per-session client query answers.
+///   it — a deliberate `toggle-all` close is sticky, as documented).
+///
+/// Whether another client narrower than the threshold is still attached
+/// to the session is deliberately NOT consulted: with
+/// `window-size latest` the window is only at or above the threshold
+/// when a wide client is actually driving it, and the upward-crossing
+/// check below already proves exactly that. A narrow client parked on
+/// the session but not driving it must not keep the desktop
+/// sidebar-less (the shared-session case). If the narrow client takes
+/// over again, the window shrinks, the next downward crossing re-runs
+/// the takeover, and the sidebar closes — each active-client switch
+/// lands in the state that client needs, with no oscillation while
+/// either client holds the window.
 ///
 /// Windows still below the threshold (narrow clients still driving
 /// them) are skipped — reopening there would strand a sliver — and
@@ -597,15 +602,7 @@ fn maybe_release_mobile_takeover(
     };
     let mode = read_scoped_option(&session_id, tmux::SIDEBAR_MODE).unwrap_or_default();
     let marker_present = read_scoped_option(&session_id, tmux::SIDEBAR_MOBILE_RESTORE).is_some();
-    let narrowest_client = narrowest_client_width(&session_id);
-    if !should_release_takeover(
-        last_width,
-        current,
-        threshold,
-        &mode,
-        marker_present,
-        narrowest_client,
-    ) {
+    if !should_release_takeover(last_width, current, threshold, &mode, marker_present) {
         return;
     }
     let restore = read_scoped_option(&session_id, tmux::SIDEBAR_MOBILE_RESTORE).unwrap_or_default();
@@ -645,24 +642,25 @@ fn maybe_release_mobile_takeover(
 
 /// Pure decision core of [`maybe_release_mobile_takeover`]: a completed
 /// upward crossing of the threshold, a `closed` mode (the releasing
-/// session's effective one), a takeover marker, and no client attached
-/// to the releasing session narrower than the threshold.
+/// session's effective one), and a takeover marker.
+///
+/// No client-roster check: the crossing itself proves a wide client is
+/// driving the window right now (with `window-size latest` the window
+/// tracks the latest active client). A narrow client parked on the
+/// session must not keep the desktop sidebar-less, and when it takes
+/// over again the next downward crossing re-runs the takeover.
 fn should_release_takeover(
     last_width: Option<u32>,
     current: u32,
     threshold: u32,
     mode: &str,
     marker_present: bool,
-    narrowest_client: Option<u32>,
 ) -> bool {
     let crossed_up = match last_width {
         Some(last) => threshold > 0 && current > 0 && last < threshold && current >= threshold,
         None => false,
     };
-    crossed_up
-        && mode.trim() == "closed"
-        && marker_present
-        && narrowest_client.is_none_or(|width| width >= threshold)
+    crossed_up && mode.trim() == "closed" && marker_present
 }
 
 /// Parse the takeover marker's comma-separated window-id list.
@@ -672,18 +670,6 @@ fn parse_restore_windows(raw: &str) -> Vec<String> {
         .filter(|id| id.starts_with('@'))
         .map(str::to_string)
         .collect()
-}
-
-/// Narrowest client width among the clients attached to `session_id`,
-/// `None` when no clients (or the query fails) — treated as "no narrow
-/// client" by the release gate. Scoped to the session: a phone attached
-/// to another session is that session's problem and must not block this
-/// release.
-fn narrowest_client_width(session_id: &str) -> Option<u32> {
-    tmux::run_tmux(&["list-clients", "-t", session_id, "-F", "#{client_width}"])?
-        .lines()
-        .filter_map(|line| line.trim().parse().ok())
-        .min()
 }
 
 /// First pane's `#{pane_current_path}` in `window_id`, for re-opening a
@@ -1080,7 +1066,7 @@ fn split_window_flags(position: SidebarPosition) -> &'static str {
 /// or invalid values fall back to the default of 100 columns; `0`
 /// explicitly disables popup mode so the split-pane sidebar is always
 /// used regardless of window width.
-fn popup_max_width_from_setting(setting: &str) -> u32 {
+pub(crate) fn popup_max_width_from_setting(setting: &str) -> u32 {
     const DEFAULT_POPUP_MAX_WIDTH: u32 = 100;
     setting
         .trim()
@@ -1756,25 +1742,18 @@ mod tests {
     // ─── mobile takeover release ─────────────────────────────────────
 
     #[test]
-    fn release_fires_on_upward_crossing_with_marker_and_no_narrow_client() {
-        assert!(should_release_takeover(
-            Some(58),
-            295,
-            100,
-            "closed",
-            true,
-            Some(295)
-        ));
-        // No clients at all (query failed / everything detached) is not a
-        // blocker: nothing attached can re-shrink the window.
-        assert!(should_release_takeover(
-            Some(58),
-            295,
-            100,
-            "closed",
-            true,
-            None
-        ));
+    fn release_fires_on_upward_crossing_with_marker() {
+        assert!(should_release_takeover(Some(58), 295, 100, "closed", true,));
+    }
+
+    #[test]
+    fn release_fires_while_a_narrow_client_stays_attached() {
+        // The crossing already proves a wide client is driving the window
+        // (with `window-size latest` the width tracks the latest active
+        // client); a narrow client parked on the session but not driving
+        // it must not keep the desktop sidebar-less. When it takes over
+        // again, the next downward crossing re-runs the takeover.
+        assert!(should_release_takeover(Some(58), 295, 100, "closed", true,));
     }
 
     #[test]
@@ -1786,38 +1765,14 @@ mod tests {
             100,
             "closed",
             true,
-            None
         ));
         // Downward crossing is the takeover's job, not the release's.
-        assert!(!should_release_takeover(
-            Some(295),
-            58,
-            100,
-            "closed",
-            true,
-            None
-        ));
+        assert!(!should_release_takeover(Some(295), 58, 100, "closed", true,));
         // Missing observation proves no crossing.
-        assert!(!should_release_takeover(
-            None, 295, 100, "closed", true, None
-        ));
+        assert!(!should_release_takeover(None, 295, 100, "closed", true));
         // Degenerate thresholds/widths.
-        assert!(!should_release_takeover(
-            Some(58),
-            295,
-            0,
-            "closed",
-            true,
-            None
-        ));
-        assert!(!should_release_takeover(
-            Some(58),
-            0,
-            100,
-            "closed",
-            true,
-            None
-        ));
+        assert!(!should_release_takeover(Some(58), 295, 0, "closed", true,));
+        assert!(!should_release_takeover(Some(58), 0, 100, "closed", true,));
     }
 
     #[test]
@@ -1830,51 +1785,11 @@ mod tests {
             100,
             "closed",
             false,
-            None
         ));
         // A marker without the closed mode is a stale leftover (e.g. mode
         // was re-opened by hand); the release must not fire.
-        assert!(!should_release_takeover(
-            Some(58),
-            295,
-            100,
-            "open",
-            true,
-            None
-        ));
-        assert!(!should_release_takeover(Some(58), 295, 100, "", true, None));
-    }
-
-    #[test]
-    fn release_waits_until_the_narrow_client_detaches() {
-        // The phone is still attached: restoring now would feed a
-        // close/open flap between the two clients.
-        assert!(!should_release_takeover(
-            Some(58),
-            295,
-            100,
-            "closed",
-            true,
-            Some(58)
-        ));
-        assert!(!should_release_takeover(
-            Some(58),
-            295,
-            100,
-            "closed",
-            true,
-            Some(99)
-        ));
-        // At exactly the threshold the client is not "narrow" — popups are
-        // a below-threshold concept.
-        assert!(should_release_takeover(
-            Some(58),
-            295,
-            100,
-            "closed",
-            true,
-            Some(100)
-        ));
+        assert!(!should_release_takeover(Some(58), 295, 100, "open", true,));
+        assert!(!should_release_takeover(Some(58), 295, 100, "", true));
     }
 
     #[test]
