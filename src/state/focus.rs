@@ -92,6 +92,29 @@ impl AppState {
         }
     }
 
+    /// Page-jump the selection by roughly one viewport of rows. Unlike
+    /// [`Self::move_pane_selection`] — whose `false` at the boundary hands
+    /// focus to the bottom panel — a page that overshoots clamps to the
+    /// edge row: paging to the end should land on the last row, not fall
+    /// through. The page size is the agent list's last rendered visible
+    /// height (the same viewport the render's auto-scroll keeps the
+    /// selection within), with a 1-row floor for keypresses before the
+    /// first frame. Returns whether the selection moved.
+    pub fn page_pane_selection(&mut self, direction: isize) -> bool {
+        let len = self.layout.pane_row_targets.len();
+        if len == 0 {
+            return false;
+        }
+        let page = self.scrolls.panes.visible_height.max(1) as isize;
+        let current = self.global.selected_pane_row as isize;
+        let next = (current + direction * page).clamp(0, len as isize - 1);
+        if next == current {
+            return false;
+        }
+        self.global.selected_pane_row = next as usize;
+        true
+    }
+
     pub fn activate_selected_pane(&mut self) {
         let Some(target) = self
             .layout

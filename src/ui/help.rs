@@ -13,6 +13,7 @@ use crate::ui::text::{display_width, truncate_to_width};
 /// follow the keybindings doc so the two can be diffed by eye.
 const HELP_ROWS: &[(&str, &str)] = &[
     ("j / k", "Move selection"),
+    ("PgUp / PgDn", "Page the list / bottom panel"),
     ("h / l", "Previous / next status filter"),
     ("Tab", "Cycle status filter"),
     ("Shift+Tab", "Switch bottom panel tab"),
@@ -137,23 +138,24 @@ mod tests {
         let output = render_help_text(60, 20);
         insta::assert_snapshot!(output, @"
 
-        ┌───────────────────────────────────────────┐
-        │ Help                                      │
-        │ j / k      Move selection                 │
-        │ h / l      Previous / next status filter  │
-        │ Tab        Cycle status filter            │
-        │ Shift+Tab  Switch bottom panel tab        │
-        │ Enter / →  Jump to the selected pane      │
-        │ n          Spawn worktree + agent         │
-        │ x          Remove the selected spawn pane │
-        │ r          Open repo filter               │
-        │ c          Toggle compact view            │
-        │ w          List non-agent panes           │
-        │ m          Minimize / expand bottom panel │
-        │ Esc        Return focus / close popup     │
-        │ ?          Toggle this help               │
-        │ q          Quit                           │
-        └───────────────────────────────────────────┘
+        ┌─────────────────────────────────────────────┐
+        │ Help                                        │
+        │ j / k        Move selection                 │
+        │ PgUp / PgDn  Page the list / bottom panel   │
+        │ h / l        Previous / next status filter  │
+        │ Tab          Cycle status filter            │
+        │ Shift+Tab    Switch bottom panel tab        │
+        │ Enter / →    Jump to the selected pane      │
+        │ n            Spawn worktree + agent         │
+        │ x            Remove the selected spawn pane │
+        │ r            Open repo filter               │
+        │ c            Toggle compact view            │
+        │ w            List non-agent panes           │
+        │ m            Minimize / expand bottom panel │
+        │ Esc          Return focus / close popup     │
+        │ ?            Toggle this help               │
+        │ q            Quit                           │
+        └─────────────────────────────────────────────┘
         ");
     }
 
@@ -164,13 +166,13 @@ mod tests {
         insta::assert_snapshot!(output, @"
         ┌──────────────────┐
         │ Help             │
-        │ j / k      Move …│
-        │ h / l      Previ…│
-        │ Tab        Cycle…│
-        │ Shift+Tab  Switc…│
-        │ Enter / →  Jump …│
-        │ n          Spawn…│
-        │ x          Remov…│
+        │ j / k        Mov…│
+        │ PgUp / PgDn  Pag…│
+        │ h / l        Pre…│
+        │ Tab          Cyc…│
+        │ Shift+Tab    Swi…│
+        │ Enter / →    Jum…│
+        │ n            Spa…│
         └──────────────────┘
         ");
     }
