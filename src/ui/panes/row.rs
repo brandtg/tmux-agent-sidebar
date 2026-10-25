@@ -32,6 +32,7 @@ pub(super) fn render_pane_lines_with_ports(
     task_progress: Option<&crate::activity::TaskProgress>,
     selected: bool,
     active: bool,
+    flagged: bool,
     width: usize,
     icons: &StatusIcons,
     theme: &ColorTheme,
@@ -52,10 +53,18 @@ pub(super) fn render_pane_lines_with_ports(
     // the status row and the branch/ports row (when present) — never on
     // deeper details like task progress or prompt wrapping. The sidebar
     // cursor position (`selected`) still paints the full pane with the
-    // selection background.
+    // selection background. A flagged row ("inbox pin", `f` key) renders
+    // the same gutter in the flag color on those same rows — the flag
+    // wins when a row is both, so a pinned row stays findable.
     let marker_ctx = RowCtx {
-        marker_char: if active { SELECTION_MARKER } else { " " },
-        marker_style: if active {
+        marker_char: if active || flagged {
+            SELECTION_MARKER
+        } else {
+            " "
+        },
+        marker_style: if flagged {
+            apply_bg(Style::default().fg(theme.flag))
+        } else if active {
             apply_bg(Style::default().fg(theme.accent))
         } else {
             apply_bg(Style::default())
@@ -113,6 +122,7 @@ pub(super) fn compact_row(
     git_info: &crate::group::PaneGitInfo,
     selected: bool,
     active: bool,
+    flagged: bool,
     width: usize,
     icons: &StatusIcons,
     theme: &ColorTheme,
@@ -128,9 +138,17 @@ pub(super) fn compact_row(
         Some(c) => style.bg(c),
         None => style,
     };
+    // Same gutter contract as the full row: flag wins over active (see
+    // `render_pane_lines_with_ports`).
     let ctx = RowCtx {
-        marker_char: if active { SELECTION_MARKER } else { " " },
-        marker_style: if active {
+        marker_char: if active || flagged {
+            SELECTION_MARKER
+        } else {
+            " "
+        },
+        marker_style: if flagged {
+            apply_bg(Style::default().fg(theme.flag))
+        } else if active {
             apply_bg(Style::default().fg(theme.accent))
         } else {
             apply_bg(Style::default())
@@ -322,6 +340,7 @@ pub(super) fn window_row(
     finished: Option<&crate::state::WindowFinished>,
     selected: bool,
     active: bool,
+    flagged: bool,
     expanded: bool,
     group_by: crate::state::GroupBy,
     width: usize,
@@ -340,9 +359,18 @@ pub(super) fn window_row(
         Some(c) => style.bg(c),
         None => style,
     };
+    // Line 1 is the only gutter row of the window card, so the flag
+    // rides on the same shared context as the active marker — and wins
+    // over it (see `render_pane_lines_with_ports`).
     let ctx = RowCtx {
-        marker_char: if active { SELECTION_MARKER } else { " " },
-        marker_style: if active {
+        marker_char: if active || flagged {
+            SELECTION_MARKER
+        } else {
+            " "
+        },
+        marker_style: if flagged {
+            apply_bg(Style::default().fg(theme.flag))
+        } else if active {
             apply_bg(Style::default().fg(theme.accent))
         } else {
             apply_bg(Style::default())
@@ -671,6 +699,7 @@ mod tests {
             bg_shell_cmd: None,
             bg_shell_pid: None,
             pane_title: String::new(),
+            flagged: false,
         }
     }
 
@@ -703,6 +732,7 @@ mod tests {
             None,
             false,
             false,
+            false,
             40,
             &StatusIcons::default(),
             &theme,
@@ -723,6 +753,7 @@ mod tests {
             &PaneGitInfo::default(),
             None,
             None,
+            false,
             false,
             false,
             40,
@@ -749,6 +780,7 @@ mod tests {
             &PaneGitInfo::default(),
             None,
             None,
+            false,
             false,
             false,
             40,
@@ -786,6 +818,7 @@ mod tests {
             &PaneGitInfo::default(),
             None,
             None,
+            false,
             false,
             false,
             30,
@@ -833,6 +866,7 @@ mod tests {
             None,
             false,
             false,
+            false,
             40,
             &StatusIcons::default(),
             &theme,
@@ -862,6 +896,7 @@ mod tests {
             },
             Some(&ports),
             None,
+            false,
             false,
             false,
             40,
@@ -894,6 +929,7 @@ mod tests {
             &PaneGitInfo::default(),
             None,
             None,
+            false,
             false,
             false,
             40,
@@ -941,6 +977,7 @@ mod tests {
             None,
             false,
             false,
+            false,
             40,
             &StatusIcons::default(),
             &theme,
@@ -969,6 +1006,7 @@ mod tests {
             None,
             false,
             false,
+            false,
             40,
             &StatusIcons::default(),
             &theme,
@@ -995,6 +1033,7 @@ mod tests {
             None,
             false,
             false,
+            false,
             40,
             &StatusIcons::default(),
             &theme,
@@ -1019,6 +1058,7 @@ mod tests {
             &PaneGitInfo::default(),
             None,
             None,
+            false,
             false,
             false,
             40,
@@ -1048,6 +1088,7 @@ mod tests {
             &PaneGitInfo::default(),
             None,
             None,
+            false,
             false,
             false,
             20,
@@ -1082,6 +1123,7 @@ mod tests {
             None,
             false,
             false,
+            false,
             18,
             &StatusIcons::default(),
             &theme,
@@ -1107,6 +1149,7 @@ mod tests {
             None,
             false,
             false,
+            false,
             40,
             &StatusIcons::default(),
             &theme,
@@ -1130,6 +1173,7 @@ mod tests {
             &PaneGitInfo::default(),
             None,
             None,
+            false,
             false,
             false,
             40,
@@ -1159,6 +1203,7 @@ mod tests {
             &PaneGitInfo::default(),
             None,
             None,
+            false,
             false,
             false,
             40,
@@ -1191,6 +1236,7 @@ mod tests {
             None,
             false,
             false,
+            false,
             40,
             &StatusIcons::default(),
             &theme,
@@ -1220,6 +1266,7 @@ mod tests {
             None,
             false,
             false,
+            false,
             20,
             &StatusIcons::default(),
             &theme,
@@ -1244,6 +1291,7 @@ mod tests {
             &PaneGitInfo::default(),
             None,
             None,
+            false,
             false,
             false,
             40,
@@ -1278,6 +1326,7 @@ mod tests {
             Some(&progress),
             false,
             false,
+            false,
             40,
             &StatusIcons::default(),
             &theme,
@@ -1302,6 +1351,7 @@ mod tests {
             &PaneGitInfo::default(),
             None,
             Some(&progress),
+            false,
             false,
             false,
             40,
@@ -1587,6 +1637,7 @@ mod tests {
             None,
             true, // selected
             false,
+            false,
             40,
             &StatusIcons::default(),
             &theme,
@@ -1618,6 +1669,7 @@ mod tests {
             None,
             true, // selected
             false,
+            false,
             40,
             &StatusIcons::default(),
             &theme,
@@ -1645,7 +1697,8 @@ mod tests {
             None,
             None,
             false,
-            true, // active
+            true,
+            false, // active
             40,
             &StatusIcons::default(),
             &theme,
@@ -1716,6 +1769,7 @@ mod tests {
             git,
             false,
             false,
+            false,
             width,
             &StatusIcons::default(),
             &theme,
@@ -1743,6 +1797,7 @@ mod tests {
         let lines = compact_row(
             &p,
             &git,
+            false,
             false,
             false,
             40,
@@ -1785,6 +1840,7 @@ mod tests {
         let lines = compact_row(
             &p,
             &git,
+            false,
             false,
             false,
             16,
@@ -1837,6 +1893,7 @@ mod tests {
             &git,
             false,
             false,
+            false,
             width,
             &StatusIcons::default(),
             &theme,
@@ -1876,6 +1933,7 @@ mod tests {
             &p,
             &PaneGitInfo::default(),
             true,
+            false,
             false,
             40,
             &StatusIcons::default(),
@@ -1925,6 +1983,7 @@ mod tests {
             git_info: PaneGitInfo::default(),
             status,
             pane_title: String::new(),
+            flagged: false,
         }
     }
 
@@ -1936,6 +1995,7 @@ mod tests {
             &w,
             Some(&[3000]),
             None,
+            false,
             false,
             false,
             false,
@@ -1963,6 +2023,7 @@ mod tests {
             &w,
             None,
             None,
+            false,
             false,
             false,
             false,
@@ -2001,6 +2062,7 @@ mod tests {
             false,
             false,
             false,
+            false,
             GroupBy::Repo,
             40,
             &StatusIcons::default(),
@@ -2028,6 +2090,7 @@ mod tests {
             &w,
             None,
             None,
+            false,
             false,
             false,
             false,
@@ -2060,6 +2123,7 @@ mod tests {
             false,
             false,
             false,
+            false,
             GroupBy::Repo,
             40,
             &StatusIcons::default(),
@@ -2082,6 +2146,7 @@ mod tests {
             &w,
             None,
             None,
+            false,
             false,
             false,
             true,
@@ -2115,6 +2180,7 @@ mod tests {
             &w,
             None,
             Some(&finished),
+            false,
             false,
             false,
             false,
@@ -2156,6 +2222,7 @@ mod tests {
             false,
             false,
             false,
+            false,
             GroupBy::Repo,
             40,
             &StatusIcons::default(),
@@ -2184,6 +2251,7 @@ mod tests {
             &w,
             Some(&[3000]),
             None,
+            false,
             false,
             false,
             false,
@@ -2234,6 +2302,7 @@ mod tests {
             false,
             false,
             false,
+            false,
             GroupBy::Repo,
             20,
             &StatusIcons::default(),
@@ -2265,6 +2334,7 @@ mod tests {
             &w,
             Some(&ports),
             None,
+            false,
             false,
             false,
             false,
@@ -2319,6 +2389,7 @@ mod tests {
             false,
             false,
             false,
+            false,
             GroupBy::Repo,
             30,
             &StatusIcons::default(),
@@ -2344,6 +2415,7 @@ mod tests {
             &w,
             Some(&[3000, 5173]),
             None,
+            false,
             false,
             false,
             false,
@@ -2377,6 +2449,7 @@ mod tests {
             &w,
             Some(&[3000]),
             None,
+            false,
             false,
             false,
             false,
@@ -2440,6 +2513,7 @@ mod tests {
             false,
             false,
             false,
+            false,
             GroupBy::Repo,
             40,
             &StatusIcons::default(),
@@ -2488,6 +2562,7 @@ mod tests {
             &w,
             Some(&[3000]),
             None,
+            false,
             false,
             false,
             true,
@@ -2541,6 +2616,7 @@ mod tests {
             None,
             false,
             false,
+            false,
             true,
             GroupBy::Session,
             40,
@@ -2564,6 +2640,7 @@ mod tests {
             &w,
             None,
             None,
+            false,
             false,
             false,
             true,
@@ -2597,6 +2674,7 @@ mod tests {
             None,
             None,
             true,
+            false,
             false,
             true,
             GroupBy::Repo,
@@ -2633,6 +2711,7 @@ mod tests {
             None,
             false,
             true,
+            false,
             true,
             GroupBy::Repo,
             40,
@@ -2663,6 +2742,7 @@ mod tests {
             None,
             false,
             false,
+            false,
             true,
             GroupBy::Session,
             40,
@@ -2678,6 +2758,7 @@ mod tests {
             &w,
             None,
             None,
+            false,
             false,
             false,
             true,
@@ -2704,6 +2785,7 @@ mod tests {
             &w,
             None,
             None,
+            false,
             false,
             false,
             true,
@@ -2746,6 +2828,7 @@ mod tests {
             &w,
             None,
             None,
+            false,
             false,
             false,
             true,
@@ -2830,6 +2913,7 @@ mod tests {
             None,
             false,
             false,
+            false,
             true,
             GroupBy::Repo,
             80,
@@ -2861,6 +2945,7 @@ mod tests {
             false,
             false,
             false,
+            false,
             GroupBy::Repo,
             80,
             &StatusIcons::default(),
@@ -2886,6 +2971,7 @@ mod tests {
             false,
             false,
             false,
+            false,
             GroupBy::Repo,
             40,
             &StatusIcons::default(),
@@ -2898,5 +2984,193 @@ mod tests {
             !text.contains("main"),
             "compact must not render the context line: {text}"
         );
+    }
+
+    // ─── flag marker ─────────────────────────────────────────────────
+
+    #[test]
+    fn flagged_row_renders_orange_marker_on_gutter_rows() {
+        let theme = ColorTheme::default();
+        let mut p = pane(PermissionMode::Default, PaneStatus::Running, "fix the bug");
+        p.flagged = true;
+        let git = PaneGitInfo {
+            repo_root: Some("/r".into()),
+            branch: Some("feat/x".into()),
+            is_worktree: false,
+            ..Default::default()
+        };
+        let lines = render_pane_lines_with_ports(
+            &p,
+            &git,
+            None,
+            None,
+            false, // selected
+            false, // active
+            true,  // flagged
+            40,
+            &StatusIcons::default(),
+            &theme,
+            0,
+            0,
+        );
+
+        fn marker<'a>(line: &'a Line<'a>) -> &'a Span<'a> {
+            line.spans.first().expect("marker span")
+        }
+        // Status row and branch/ports row carry the flag marker…
+        assert_eq!(marker(&lines[0]).content, SELECTION_MARKER);
+        assert_eq!(marker(&lines[0]).style.fg, Some(theme.flag));
+        assert_eq!(marker(&lines[1]).content, SELECTION_MARKER);
+        assert_eq!(marker(&lines[1]).style.fg, Some(theme.flag));
+        // …but deeper detail rows stay plain, exactly like the active marker.
+        assert_eq!(marker(&lines[2]).content, " ");
+    }
+
+    #[test]
+    fn flagged_wins_over_active_marker() {
+        let theme = ColorTheme::default();
+        let p = pane(PermissionMode::Default, PaneStatus::Running, "");
+        let lines = render_pane_lines_with_ports(
+            &p,
+            &PaneGitInfo::default(),
+            None,
+            None,
+            false, // selected
+            true,  // active
+            true,  // flagged
+            40,
+            &StatusIcons::default(),
+            &theme,
+            0,
+            0,
+        );
+        let marker = &lines[0].spans[0];
+        assert_eq!(marker.content, SELECTION_MARKER);
+        assert_eq!(
+            marker.style.fg,
+            Some(theme.flag),
+            "flag must win the gutter"
+        );
+        assert_ne!(marker.style.fg, Some(theme.accent));
+    }
+
+    #[test]
+    fn flagged_selected_row_keeps_selection_bg_on_marker() {
+        let theme = ColorTheme::default();
+        let p = pane(PermissionMode::Default, PaneStatus::Running, "");
+        let lines = render_pane_lines_with_ports(
+            &p,
+            &PaneGitInfo::default(),
+            None,
+            None,
+            true,  // selected
+            false, // active
+            true,  // flagged
+            40,
+            &StatusIcons::default(),
+            &theme,
+            0,
+            0,
+        );
+        let marker = &lines[0].spans[0];
+        assert_eq!(marker.style.fg, Some(theme.flag));
+        assert_eq!(
+            marker.style.bg,
+            Some(theme.selection_bg),
+            "the flag marker must carry the selection background"
+        );
+    }
+
+    #[test]
+    fn unflagged_row_keeps_today_s_marker_behavior() {
+        let theme = ColorTheme::default();
+        let p = pane(PermissionMode::Default, PaneStatus::Running, "");
+
+        // Inactive + unflagged: blank gutter, no flag color anywhere.
+        let lines = render_pane_lines_with_ports(
+            &p,
+            &PaneGitInfo::default(),
+            None,
+            None,
+            false,
+            false,
+            false,
+            40,
+            &StatusIcons::default(),
+            &theme,
+            0,
+            0,
+        );
+        let marker = &lines[0].spans[0];
+        assert_eq!(marker.content, " ");
+        assert_ne!(marker.style.fg, Some(theme.flag));
+
+        // Active + unflagged: the blue accent marker, as before.
+        let lines = render_pane_lines_with_ports(
+            &p,
+            &PaneGitInfo::default(),
+            None,
+            None,
+            false,
+            true,
+            false,
+            40,
+            &StatusIcons::default(),
+            &theme,
+            0,
+            0,
+        );
+        let marker = &lines[0].spans[0];
+        assert_eq!(marker.content, SELECTION_MARKER);
+        assert_eq!(marker.style.fg, Some(theme.accent));
+    }
+
+    #[test]
+    fn compact_row_renders_flag_marker() {
+        let theme = ColorTheme::default();
+        let mut p = pane(PermissionMode::Default, PaneStatus::Running, "");
+        p.flagged = true;
+        let lines = compact_row(
+            &p,
+            &PaneGitInfo::default(),
+            false, // selected
+            false, // active
+            true,  // flagged
+            40,
+            &StatusIcons::default(),
+            &theme,
+            0,
+            0,
+        );
+        let marker = &lines[0].spans[0];
+        assert_eq!(marker.content, SELECTION_MARKER);
+        assert_eq!(marker.style.fg, Some(theme.flag));
+    }
+
+    #[test]
+    fn window_row_renders_flag_marker_on_line_1_only() {
+        let theme = ColorTheme::default();
+        let mut w = window("web", "node", crate::tmux::WindowStatus::Task);
+        w.flagged = true;
+        let lines = window_row(
+            &w,
+            None,
+            None,
+            false, // selected
+            false, // active
+            true,  // flagged
+            true,  // expanded
+            GroupBy::Repo,
+            60,
+            &StatusIcons::default(),
+            &theme,
+            0,
+        );
+        assert!(lines.len() >= 2, "expanded card renders a detail line");
+        let marker = &lines[0].spans[0];
+        assert_eq!(marker.content, SELECTION_MARKER);
+        assert_eq!(marker.style.fg, Some(theme.flag));
+        let detail_marker = &lines[1].spans[0];
+        assert_eq!(detail_marker.content, " ", "detail line has no flag marker");
     }
 }

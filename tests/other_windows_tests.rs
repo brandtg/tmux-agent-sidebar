@@ -24,6 +24,7 @@ fn other_window(pane_id: &str, name: &str, command: &str, status: WindowStatus) 
         git_info: PaneGitInfo::default(),
         status,
         pane_title: String::new(),
+        flagged: false,
     }
 }
 
@@ -105,6 +106,7 @@ fn snapshot_other_windows_with_args_rendered() {
                 git_info: PaneGitInfo::default(),
                 status: WindowStatus::Task,
                 pane_title: String::new(),
+                flagged: false,
             },
             OtherWindow {
                 window_id: "@5".into(),
@@ -123,6 +125,7 @@ fn snapshot_other_windows_with_args_rendered() {
                 git_info: PaneGitInfo::default(),
                 status: WindowStatus::Task,
                 pane_title: String::new(),
+                flagged: false,
             },
         ],
     );
@@ -312,6 +315,7 @@ fn tick_window(
         },
         last_exit,
         pane_title: String::new(),
+        flagged: false,
     };
     let sessions = vec![SessionInfo {
         session_name: "main".into(),
@@ -635,6 +639,7 @@ fn window_task_clears_when_other_window_pane_focused() {
         last_cmd: None,
         last_exit: None,
         pane_title: String::new(),
+        flagged: false,
     };
     let sessions = vec![SessionInfo {
         session_name: "main".into(),
@@ -708,6 +713,7 @@ fn window_task_in_unattached_session_does_not_clear() {
         last_cmd: None,
         last_exit: None,
         pane_title: String::new(),
+        flagged: false,
     };
     let sessions = vec![SessionInfo {
         session_name: "main".into(),
@@ -765,6 +771,7 @@ fn window_task_clears_across_sessions_when_tmux_attention_is_none() {
         last_cmd: None,
         last_exit: None,
         pane_title: String::new(),
+        flagged: false,
     };
     let sessions = vec![SessionInfo {
         session_name: "we_1193".into(),

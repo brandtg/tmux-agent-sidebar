@@ -352,6 +352,7 @@ fn snapshot_two_agents_same_window_ui() {
         bg_shell_cmd: None,
         bg_shell_pid: None,
         pane_title: String::new(),
+        flagged: false,
     };
     let pane2 = PaneInfo {
         pane_id: "%2".into(),
@@ -378,6 +379,7 @@ fn snapshot_two_agents_same_window_ui() {
         bg_shell_cmd: None,
         bg_shell_pid: None,
         pane_title: String::new(),
+        flagged: false,
     };
 
     let mut state = make_state(vec![SessionInfo {

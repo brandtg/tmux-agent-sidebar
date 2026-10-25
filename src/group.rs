@@ -73,6 +73,9 @@ pub struct OtherWindow {
     /// none. Rendered as the expanded ssh card's line 2 when it carries
     /// real remote content (see `window_context_text`).
     pub pane_title: String,
+    /// User "inbox pin" (`@sidebar_flagged`), rendered as the orange
+    /// gutter marker on the window row.
+    pub flagged: bool,
 }
 
 /// Repo key for a group, mirroring the key `group_panes_by_repo` assigned:
@@ -136,6 +139,7 @@ pub fn group_other_windows_by_repo(
             // script running under a shell foreground arrives as `Task`.
             status: pane.status,
             pane_title: pane.pane_title.clone(),
+            flagged: pane.flagged,
         });
     }
 
@@ -184,6 +188,7 @@ pub fn group_other_windows_by_session(
                 // script running under a shell foreground arrives as `Task`.
                 status: pane.status,
                 pane_title: pane.pane_title.clone(),
+                flagged: pane.flagged,
             });
     }
 
@@ -723,6 +728,7 @@ mod tests {
             bg_shell_cmd: None,
             bg_shell_pid: None,
             pane_title: String::new(),
+            flagged: false,
         }
     }
 
@@ -1318,6 +1324,7 @@ mod tests {
             last_cmd: None,
             last_exit: None,
             pane_title: String::new(),
+            flagged: false,
         }
     }
 
@@ -1387,6 +1394,20 @@ mod tests {
         let grouped = group_other_windows_by_repo(&[pane.clone(), pane], &cache);
 
         assert_eq!(grouped.get("/repo").expect("repo bucket").len(), 1);
+    }
+
+    #[test]
+    fn group_other_windows_carries_flag_to_window_row() {
+        // The `f`-key pin lives on the pane option; the grouped
+        // `OtherWindow` row must inherit it so the orange marker can
+        // render on non-agent rows too.
+        let mut flagged = other_pane("@5", "%5", "/repo", "zsh", true);
+        flagged.flagged = true;
+
+        let grouped = group_other_windows_by_repo(&[flagged], &HashMap::new());
+
+        let row = &grouped.get("/repo").expect("repo bucket")[0];
+        assert!(row.flagged);
     }
 
     #[test]
@@ -1467,6 +1488,7 @@ mod tests {
             git_info: PaneGitInfo::default(),
             status: WindowStatus::Task,
             pane_title: String::new(),
+            flagged: false,
         }
     }
 

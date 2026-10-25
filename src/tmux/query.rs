@@ -5,11 +5,11 @@ use crate::process::{ProcessSnapshot, command_basename, strip_exe_suffix};
 
 use super::commands::run_tmux;
 use super::options::{
-    PANE_AGENT, PANE_ATTENTION, PANE_BG_CMD, PANE_BG_PID, PANE_CWD, PANE_LAST_CMD, PANE_LAST_EXIT,
-    PANE_LAUNCH_CWD, PANE_NAME, PANE_PENDING_SESSION_END, PANE_PENDING_WORKTREE_REMOVE,
-    PANE_PERMISSION_MODE, PANE_PROMPT, PANE_PROMPT_SOURCE, PANE_ROLE, PANE_SESSION_ID,
-    PANE_SESSION_TITLE, PANE_STARTED_AT, PANE_STATUS, PANE_SUBAGENTS, PANE_WAIT_REASON,
-    PANE_WORKTREE_BRANCH, PANE_WORKTREE_NAME, unset_pane_option,
+    PANE_AGENT, PANE_ATTENTION, PANE_BG_CMD, PANE_BG_PID, PANE_CWD, PANE_FLAGGED, PANE_LAST_CMD,
+    PANE_LAST_EXIT, PANE_LAUNCH_CWD, PANE_NAME, PANE_PENDING_SESSION_END,
+    PANE_PENDING_WORKTREE_REMOVE, PANE_PERMISSION_MODE, PANE_PROMPT, PANE_PROMPT_SOURCE, PANE_ROLE,
+    PANE_SESSION_ID, PANE_SESSION_TITLE, PANE_STARTED_AT, PANE_STATUS, PANE_SUBAGENTS,
+    PANE_WAIT_REASON, PANE_WORKTREE_BRANCH, PANE_WORKTREE_NAME, unset_pane_option,
 };
 use super::types::{
     AgentType, CODEX_AGENT, OtherPane, PaneAttention, PaneInfo, PaneStatus, PermissionMode,
@@ -66,10 +66,11 @@ pub(super) mod pane_line_field {
     pub const BG_PID: usize = 26; // absolute 32 (@pane_bg_pid)
     pub const SESSION_ATTACHED: usize = 27; // absolute 33 (session_attached)
     pub const PANE_TITLE: usize = 28; // absolute 34 (#{pane_title})
+    pub const FLAGGED: usize = 29; // absolute 35 (@sidebar_flagged)
     /// Minimum number of fields the pane-line suffix must contain.
     /// Equals `session_line_field::MIN_FIELDS - PANE_LINE_OFFSET`.
-    /// `PANE_TITLE` sits beyond this minimum and is read leniently
-    /// (`parts.get`), so older-format lines still parse.
+    /// `PANE_TITLE` and `FLAGGED` sit beyond this minimum and are read
+    /// leniently (`parts.get`), so older-format lines still parse.
     pub const MIN_FIELDS: usize = 27;
 }
 
@@ -113,6 +114,7 @@ fn pane_format() -> String {
         q(PANE_BG_PID),
         q("session_attached"),
         q("pane_title"),
+        q(PANE_FLAGGED),
     ]
     .join("|")
 }
@@ -274,6 +276,9 @@ fn collect_other_panes(
                 .get(pane_line_field::PANE_TITLE)
                 .cloned()
                 .unwrap_or_default(),
+            flagged: pane_fields
+                .get(pane_line_field::FLAGGED)
+                .is_some_and(|v| v == "1"),
         });
     }
     out
@@ -623,6 +628,11 @@ fn parse_pane_fields_with_processes(
             .get(pane_line_field::PANE_TITLE)
             .cloned()
             .unwrap_or_default(),
+        // Same lenient read: the flag was appended after `pane_title`,
+        // so short lines (older fixtures) parse as unflagged.
+        flagged: parts
+            .get(pane_line_field::FLAGGED)
+            .is_some_and(|v| v == "1"),
     })
 }
 
@@ -1023,6 +1033,7 @@ mod tests {
             bg_shell_cmd: None,
             bg_shell_pid: None,
             pane_title: String::new(),
+            flagged: false,
         }
     }
 
@@ -1642,6 +1653,53 @@ mod tests {
         assert!(pane.pane_title.is_empty());
     }
 
+    // ─── flagged ────────────────────────────────────────────────────
+
+    #[test]
+    fn parse_pane_line_reads_flagged_field() {
+        let mut fields = full_fields();
+        fields.resize(pane_line_field::FLAGGED + 1, "");
+        fields[pane_line_field::FLAGGED] = "1";
+        let pane = parse_pane_line(&make_pane_line(&fields)).unwrap();
+        assert!(pane.flagged, "@sidebar_flagged=1 should surface as flagged");
+
+        fields[pane_line_field::FLAGGED] = "0";
+        let pane = parse_pane_line(&make_pane_line(&fields)).unwrap();
+        assert!(!pane.flagged, "explicit 0 parses as unflagged");
+
+        fields[pane_line_field::FLAGGED] = "";
+        let pane = parse_pane_line(&make_pane_line(&fields)).unwrap();
+        assert!(!pane.flagged, "empty value parses as unflagged");
+    }
+
+    #[test]
+    fn parse_pane_line_tolerates_missing_flagged_field() {
+        // Older-format fixtures stop before the appended flag field;
+        // the lenient read defaults to unflagged instead of failing.
+        let pane = parse_pane_line(&make_pane_line(&full_fields())).unwrap();
+        assert!(!pane.flagged);
+    }
+
+    #[test]
+    fn collect_other_panes_carries_flagged() {
+        let mut fields = full_fields();
+        fields[pane_line_field::PANE_ROLE] = ""; // not the sidebar
+        fields[pane_line_field::AGENT] = ""; // @pane_agent unset
+        fields[pane_line_field::PANE_CURRENT_COMMAND] = "zsh"; // plain shell
+        fields.resize(pane_line_field::FLAGGED + 1, "");
+        fields[pane_line_field::FLAGGED] = "1";
+        let mut segments: Vec<&str> = vec!["main", "@5", "1", "editor", "0", "1"];
+        segments.extend(&fields);
+        let line = segments.join("|");
+
+        let panes = collect_other_panes(&line, None);
+        assert_eq!(panes.len(), 1);
+        assert!(
+            panes[0].flagged,
+            "the OtherPane copy must carry the flag for the window row"
+        );
+    }
+
     #[test]
     fn collect_other_panes_carries_pane_title() {
         let mut fields = full_fields();
@@ -2011,6 +2069,7 @@ mod tests {
                     bg_shell_cmd: None,
                     bg_shell_pid: None,
                     pane_title: String::new(),
+                    flagged: false,
                 }],
             },
         );

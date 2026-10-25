@@ -167,11 +167,64 @@ impl AppState {
         };
         crate::cli::toggle::cmd_toggle(&["--create-only".to_string(), window_id, pane_path]);
     }
+
+    /// Toggle the user's inbox flag (`@sidebar_flagged`) on the
+    /// currently selected row — agent panes and non-agent window rows
+    /// alike; a selection with no row behind it (header, empty list)
+    /// does nothing. Writes the pane option first so the pin survives
+    /// restarts and is visible to every sidebar instance, then flips
+    /// the in-memory copy so the marker renders on the very next frame
+    /// instead of waiting for the next tmux tick. The option write goes
+    /// through `set_pane_option`, whose failures are traced like every
+    /// other pane-option write (see `exec_tmux`).
+    pub fn toggle_selected_flag(&mut self) {
+        let Some(target) = self
+            .layout
+            .pane_row_targets
+            .get(self.global.selected_pane_row)
+        else {
+            return;
+        };
+        let pane_id = target.pane_id.clone();
+
+        let flagged = if target.is_window {
+            let mut found = None;
+            for windows in self.other_windows.values_mut() {
+                for window in windows.iter_mut() {
+                    if window.pane_id == pane_id {
+                        window.flagged = !window.flagged;
+                        found = Some(window.flagged);
+                    }
+                }
+            }
+            found
+        } else {
+            let mut found = None;
+            for group in &mut self.repo_groups {
+                for (pane, _) in &mut group.panes {
+                    if pane.pane_id == pane_id {
+                        pane.flagged = !pane.flagged;
+                        found = Some(pane.flagged);
+                    }
+                }
+            }
+            found
+        };
+        let Some(flagged) = flagged else {
+            return;
+        };
+        tmux::set_pane_option(
+            &pane_id,
+            tmux::PANE_FLAGGED,
+            if flagged { "1" } else { "0" },
+        );
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tmux::{PANE_FLAGGED, test_mock};
 
     #[test]
     fn focus_default_is_panes() {
@@ -230,6 +283,7 @@ mod tests {
             bg_shell_cmd: None,
             bg_shell_pid: None,
             pane_title: String::new(),
+            flagged: false,
         }
     }
 
@@ -309,5 +363,61 @@ mod tests {
         assert!(state.move_pane_selection(1));
         assert_eq!(state.global.selected_pane_row, 1);
         assert!(!state.move_pane_selection(5));
+    }
+
+    // ─── toggle_selected_flag ────────────────────────────────────────
+
+    fn test_window_row(pane_id: &str) -> crate::group::OtherWindow {
+        crate::group::OtherWindow {
+            window_id: "@5".into(),
+            window_index: 0,
+            window_name: "tests".into(),
+            window_active: false,
+            session_name: "main".into(),
+            session_attached: true,
+            attention: PaneAttention::None,
+            pane_id: pane_id.into(),
+            pane_active: true,
+            pane_pid: None,
+            command: "cargo".into(),
+            command_args: None,
+            path: "/tmp".into(),
+            git_info: crate::group::PaneGitInfo::default(),
+            status: crate::tmux::WindowStatus::Idle,
+            pane_title: String::new(),
+            flagged: false,
+        }
+    }
+
+    #[test]
+    fn toggle_selected_flag_flips_window_row_and_writes_option() {
+        let _guard = test_mock::install();
+        let mut state = AppState::new("%99".into());
+        state.layout.pane_row_targets = vec![RowTarget {
+            pane_id: "%10".into(),
+            is_window: true,
+        }];
+        state.global.selected_pane_row = 0;
+        state
+            .other_windows
+            .insert("repo".into(), vec![test_window_row("%10")]);
+
+        state.toggle_selected_flag();
+        assert!(state.other_windows["repo"][0].flagged);
+        assert_eq!(test_mock::get("%10", PANE_FLAGGED).as_deref(), Some("1"));
+
+        state.toggle_selected_flag();
+        assert!(!state.other_windows["repo"][0].flagged);
+        assert_eq!(test_mock::get("%10", PANE_FLAGGED).as_deref(), Some("0"));
+    }
+
+    #[test]
+    fn toggle_selected_flag_without_a_row_is_a_no_op() {
+        let _guard = test_mock::install();
+        let mut state = AppState::new("%99".into());
+        // No rendered rows: the cursor points at nothing (header/empty
+        // list). The toggle must neither panic nor write an option.
+        state.toggle_selected_flag();
+        assert_eq!(test_mock::get("%1", PANE_FLAGGED).as_deref(), Some(""));
     }
 }

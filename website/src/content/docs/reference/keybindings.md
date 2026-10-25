@@ -19,6 +19,7 @@ description: Every shortcut in the sidebar, the worktree spawn modal, and the cl
 | `Tab`          | Cycle status filter                                           |
 | `c`            | Toggle compact view (one line per agent)                      |
 | `w`            | Toggle listing non-agent panes (long-running tasks)           |
+| `f`            | Flag / unflag the selected agent (orange inbox-pin marker)    |
 | `?`            | Show keyboard reference popup                                 |
 | `Esc`          | Return focus or close the popup                               |
 | `q`            | Quit the sidebar                                              |
