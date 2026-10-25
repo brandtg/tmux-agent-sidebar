@@ -19,6 +19,7 @@ const HELP_ROWS: &[(&str, &str)] = &[
     ("Enter / →", "Jump to the selected pane"),
     ("n", "Spawn worktree + agent"),
     ("x", "Remove the selected spawn pane"),
+    ("f", "Flag / unflag the selected agent"),
     ("r", "Open repo filter"),
     ("c", "Toggle compact view"),
     ("w", "List non-agent panes"),
@@ -136,22 +137,23 @@ mod tests {
         let output = render_help_text(60, 20);
         insta::assert_snapshot!(output, @"
 
-        ┌─────────────────────────────────────────────┐
-        │ Help                                        │
-        │ j / k        Move selection                 │
-        │ PgUp / PgDn  Page the list                  │
-        │ h / l        Previous / next status filter  │
-        │ Tab          Cycle status filter            │
-        │ Enter / →    Jump to the selected pane      │
-        │ n            Spawn worktree + agent         │
-        │ x            Remove the selected spawn pane │
-        │ r            Open repo filter               │
-        │ c            Toggle compact view            │
-        │ w            List non-agent panes           │
-        │ Esc          Return focus / close popup     │
-        │ ?            Toggle this help               │
-        │ q            Quit                           │
-        └─────────────────────────────────────────────┘
+        ┌───────────────────────────────────────────────┐
+        │ Help                                          │
+        │ j / k        Move selection                   │
+        │ PgUp / PgDn  Page the list                    │
+        │ h / l        Previous / next status filter    │
+        │ Tab          Cycle status filter              │
+        │ Enter / →    Jump to the selected pane        │
+        │ n            Spawn worktree + agent           │
+        │ x            Remove the selected spawn pane   │
+        │ f            Flag / unflag the selected agent │
+        │ r            Open repo filter                 │
+        │ c            Toggle compact view              │
+        │ w            List non-agent panes             │
+        │ Esc          Return focus / close popup       │
+        │ ?            Toggle this help                 │
+        │ q            Quit                             │
+        └───────────────────────────────────────────────┘
         ");
     }
 

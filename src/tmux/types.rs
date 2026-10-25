@@ -96,6 +96,10 @@ pub struct PaneInfo {
     /// ignore it; ssh process cards render it as line 2 when it holds
     /// real remote content (see `window_context_text`).
     pub pane_title: String,
+    /// User "inbox pin" (`@sidebar_flagged`, toggled with `f`). Flagged
+    /// rows render the orange gutter marker until unflagged; the flag
+    /// wins over the active-pane accent.
+    pub flagged: bool,
 }
 
 impl PaneInfo {
@@ -228,6 +232,9 @@ pub struct OtherPane {
     /// Raw `#{pane_title}` — the remote-published terminal title on ssh
     /// panes (see [`PaneInfo::pane_title`]). Empty when unset.
     pub pane_title: String,
+    /// User "inbox pin" (`@sidebar_flagged`), carried through to the
+    /// `OtherWindow` row so non-agent panes can be flagged too.
+    pub flagged: bool,
 }
 
 /// Coarse status for a non-agent window row. Distinct from

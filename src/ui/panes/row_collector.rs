@@ -155,6 +155,7 @@ pub(super) fn collect(state: &AppState, width: u16) -> CollectedRows {
                             git_info,
                             is_selected,
                             is_active,
+                            pane.flagged,
                             width,
                             &state.icons,
                             theme,
@@ -169,6 +170,7 @@ pub(super) fn collect(state: &AppState, width: u16) -> CollectedRows {
                             task_progress,
                             is_selected,
                             is_active,
+                            pane.flagged,
                             width,
                             &state.icons,
                             theme,
@@ -235,6 +237,7 @@ pub(super) fn collect(state: &AppState, width: u16) -> CollectedRows {
                         finished.as_ref(),
                         is_selected,
                         is_active,
+                        window.flagged,
                         !state.global.compact,
                         state.global.group_by,
                         width,
@@ -291,6 +294,7 @@ mod tests {
             bg_shell_cmd: None,
             bg_shell_pid: None,
             pane_title: String::new(),
+            flagged: false,
         }
     }
 
@@ -347,6 +351,7 @@ mod tests {
             git_info: PaneGitInfo::default(),
             status: crate::tmux::classify_window_status(command),
             pane_title: String::new(),
+            flagged: false,
         }
     }
 

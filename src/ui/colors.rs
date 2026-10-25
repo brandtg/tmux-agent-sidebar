@@ -12,6 +12,10 @@ pub struct ColorTheme {
     /// bottom panel border when Activity/Git is focused, and the repo
     /// popup border.
     pub accent: Color,
+    /// Left-gutter marker color for flagged ("inbox pin") rows — the
+    /// orange `┃` on a row the user wants to come back to. When a row
+    /// is both flagged and active, the flag wins the gutter.
+    pub flag: Color,
     pub border_inactive: Color,
     pub status_all: Color,
     pub status_running: Color,
@@ -52,6 +56,9 @@ impl Default for ColorTheme {
     fn default() -> Self {
         Self {
             accent: Color::Indexed(153),
+            // Orange — reads as a "sticky note" next to the blue active
+            // accent without colliding with any status color.
+            flag: Color::Indexed(208),
             border_inactive: Color::Indexed(240),
             status_all: Color::Indexed(111),
             status_running: Color::Indexed(114),
@@ -113,6 +120,7 @@ impl ColorTheme {
         };
 
         theme.accent = read(tmux::SIDEBAR_COLOR_ACCENT, theme.accent);
+        theme.flag = read(tmux::SIDEBAR_COLOR_FLAG, theme.flag);
         theme.border_inactive = read(tmux::SIDEBAR_COLOR_BORDER, theme.border_inactive);
         theme.status_all = read(tmux::SIDEBAR_COLOR_ALL, theme.status_all);
         theme.status_running = read(tmux::SIDEBAR_COLOR_RUNNING, theme.status_running);

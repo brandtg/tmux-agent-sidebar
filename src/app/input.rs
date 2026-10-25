@@ -142,6 +142,14 @@ pub(super) fn handle_key_event(key: KeyEvent, state: &mut AppState) -> bool {
                 state.open_remove_confirm();
             }
         }
+        // Flag the selected row as an "inbox pin" (orange gutter marker).
+        // Popups own their keys before this match, and `f` is only bound
+        // under Panes focus, so it never swallows other input.
+        KeyCode::Char('f') => {
+            if state.focus_state.focus == Focus::Panes {
+                state.toggle_selected_flag();
+            }
+        }
         // Toggles are self-evident in the pane list; `?` explains them.
         KeyCode::Char('c') => {
             state.global.toggle_compact();
@@ -227,8 +235,12 @@ fn repo_popup_nav_up(state: &mut AppState) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::group::RepoGroup;
+    use crate::group::{PaneGitInfo, RepoGroup};
     use crate::state::{PopupState, RowTarget, SpawnField};
+    use crate::tmux::{
+        AgentType, PANE_FLAGGED, PaneAttention, PaneInfo, PaneStatus, PermissionMode,
+        WorktreeMetadata, test_mock,
+    };
 
     fn key(code: KeyCode) -> KeyEvent {
         KeyEvent::new(code, KeyModifiers::NONE)
@@ -540,5 +552,83 @@ mod tests {
         handle_key_event(key(KeyCode::Char('c')), &mut state);
         assert!(!state.global.compact, "popup must swallow the key");
         assert!(state.flash.is_none(), "no toggle feedback expected");
+    }
+
+    // ─── f (flag) ────────────────────────────────────────────────────
+
+    fn test_pane(id: &str) -> PaneInfo {
+        PaneInfo {
+            pane_id: id.into(),
+            pane_active: false,
+            status: PaneStatus::Idle,
+            attention: PaneAttention::None,
+            agent: AgentType::Claude,
+            path: "/tmp".into(),
+            launch_cwd: String::new(),
+            current_command: String::new(),
+            prompt: String::new(),
+            prompt_is_response: false,
+            started_at: None,
+            wait_reason: String::new(),
+            permission_mode: PermissionMode::Default,
+            subagents: vec![],
+            pane_pid: None,
+            worktree: WorktreeMetadata::default(),
+            session_id: None,
+            session_name: String::new(),
+            tmux_session: String::new(),
+            window_index: 0,
+            sidebar_spawned: false,
+            bg_shell_cmd: None,
+            bg_shell_pid: None,
+            pane_title: String::new(),
+            flagged: false,
+        }
+    }
+
+    fn state_with_one_pane() -> AppState {
+        let mut state = state_with_three_panes();
+        state.repo_groups = vec![RepoGroup {
+            name: "repo".into(),
+            has_focus: false,
+            panes: vec![(test_pane("%1"), PaneGitInfo::default())],
+        }];
+        state
+    }
+
+    #[test]
+    fn f_toggles_flag_on_the_selected_agent_pane() {
+        let _guard = test_mock::install();
+        let mut state = state_with_one_pane();
+
+        handle_key_event(key(KeyCode::Char('f')), &mut state);
+        assert!(state.pane_by_id("%1").unwrap().flagged);
+        assert_eq!(test_mock::get("%1", PANE_FLAGGED).as_deref(), Some("1"));
+
+        handle_key_event(key(KeyCode::Char('f')), &mut state);
+        assert!(!state.pane_by_id("%1").unwrap().flagged);
+        assert_eq!(test_mock::get("%1", PANE_FLAGGED).as_deref(), Some("0"));
+    }
+
+    #[test]
+    fn f_does_not_fire_under_filter_focus() {
+        let _guard = test_mock::install();
+        let mut state = state_with_one_pane();
+        state.focus_state.focus = Focus::Filter;
+
+        handle_key_event(key(KeyCode::Char('f')), &mut state);
+        assert!(!state.pane_by_id("%1").unwrap().flagged);
+        assert_eq!(test_mock::get("%1", PANE_FLAGGED).as_deref(), Some(""));
+    }
+
+    #[test]
+    fn f_without_a_row_selection_is_a_no_op() {
+        let _guard = test_mock::install();
+        let mut state = AppState::new("%99".into());
+        state.focus_state.focus = Focus::Panes;
+        // No rendered rows: the cursor points at nothing. Must not panic
+        // and must not write an option.
+        handle_key_event(key(KeyCode::Char('f')), &mut state);
+        assert_eq!(test_mock::get("%1", PANE_FLAGGED).as_deref(), Some(""));
     }
 }

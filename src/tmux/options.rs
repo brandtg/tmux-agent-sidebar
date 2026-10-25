@@ -99,6 +99,12 @@ pub const PANE_WAIT_REASON: &str = "@pane_wait_reason";
 pub const PANE_WORKTREE_BRANCH: &str = "@pane_worktree_branch";
 /// Worktree slug (directory basename) for the attached worktree.
 pub const PANE_WORKTREE_NAME: &str = "@pane_worktree_name";
+/// User "inbox pin" toggled with the sidebar's `f` key: `1` = flagged,
+/// `0` (or unset) = unflagged. Written by the TUI on toggle and read
+/// back through the single `list-panes` query, so the pin survives
+/// sidebar restarts and is visible from every sidebar instance. It
+/// dies with the pane — that is acceptable for a come-back-later hint.
+pub const PANE_FLAGGED: &str = "@sidebar_flagged";
 /// Basename of the last foreground command the pane's interactive shell
 /// started, written by the optional shell-integration snippet (`preexec`
 /// on zsh, a DEBUG-trap preexec on bash). Paired with
@@ -222,6 +228,8 @@ pub const SIDEBAR_COLOR_AGENT_OPENCODE: &str = "@sidebar_color_agent_opencode";
 pub const SIDEBAR_COLOR_AGENT_HERMES: &str = "@sidebar_color_agent_hermes";
 pub const SIDEBAR_COLOR_AGENT_ANTIGRAVITY: &str = "@sidebar_color_agent_antigravity";
 pub const SIDEBAR_COLOR_TEXT_ACTIVE: &str = "@sidebar_color_text_active";
+/// Left-gutter marker color for flagged rows (see [`PANE_FLAGGED`]).
+pub const SIDEBAR_COLOR_FLAG: &str = "@sidebar_color_flag";
 pub const SIDEBAR_COLOR_TEXT_MUTED: &str = "@sidebar_color_text_muted";
 pub const SIDEBAR_COLOR_TEXT_INACTIVE: &str = "@sidebar_color_text_inactive";
 pub const SIDEBAR_COLOR_SESSION: &str = "@sidebar_color_session";

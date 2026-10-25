@@ -666,6 +666,7 @@ mod tests {
             bg_shell_cmd: None,
             bg_shell_pid: None,
             pane_title: String::new(),
+            flagged: false,
         };
         state.repo_groups = vec![crate::group::RepoGroup {
             name: "myrepo".into(),
