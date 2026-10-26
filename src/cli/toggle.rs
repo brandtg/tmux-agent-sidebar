@@ -55,23 +55,14 @@ pub(crate) fn cmd_toggle(args: &[String]) -> i32 {
 
     // Auto-create decision: `--create-only` runs from the new-window
     // hook and from the toggle-all sweep. A recorded mode
-    // (`@sidebar_mode`, written globally by toggle-all and per-session
-    // by the mobile takeover) outranks `@sidebar_auto_create`, so
-    // prefix+E means "sidebars always on/off everywhere" — including
-    // windows created after the sweep, not just the ones that existed
-    // at press time. Explicit per-window `toggle` presses (no
-    // `--create-only`) never consult the mode. The mode is read with
-    // session-first precedence: the takeover pins its `closed` on the
-    // session the narrow client is driving, and a session without its
-    // own value falls back to the global one, so state written by an
-    // older, server-global binary keeps resolving until restart.
+    // (`@sidebar_mode`, written globally by toggle-all) outranks
+    // `@sidebar_auto_create`, so prefix+E means "sidebars always
+    // on/off everywhere" — including windows created after the sweep,
+    // not just the ones that existed at press time. Explicit
+    // per-window `toggle` presses (no `--create-only`) never consult
+    // the mode.
     if create_only {
-        let mode = match window_session_id(window_id) {
-            Some(session_id) => {
-                read_scoped_option(&session_id, tmux::SIDEBAR_MODE).unwrap_or_default()
-            }
-            None => read_global_option(tmux::SIDEBAR_MODE),
-        };
+        let mode = read_global_option(tmux::SIDEBAR_MODE);
         let auto_create =
             tmux::display_message(window_id, &format!("#{{{}}}", tmux::SIDEBAR_AUTO_CREATE));
         let decision = auto_create_decision(&mode, &auto_create);
@@ -93,7 +84,7 @@ pub(crate) fn cmd_toggle(args: &[String]) -> i32 {
             return 0;
         }
         close_sidebar(&sidebar_pane, window_id);
-        // Mobile takeover: mobile usually attaches to a session the
+        // A narrow viewport: mobile usually attaches to a session the
         // desktop already set up, so the first toggle press in a narrow
         // viewport lands on a live split-pane sidebar. Reopen it as the
         // popup right away instead of demanding a second press.
@@ -166,6 +157,12 @@ pub(crate) fn cmd_toggle(args: &[String]) -> i32 {
 
     if !sidebar_pane.is_empty() {
         tmux::set_pane_option(&sidebar_pane, tmux::PANE_ROLE, "sidebar");
+        // The `@pane_role` tag only lands after `split-window` returns, so
+        // two concurrent creates (e.g. double-pressed keys, stacked hooks)
+        // can both pass the `find_window_sidebar` check above and split.
+        // Collapse any duplicate to the first-listed pane; a lone sidebar
+        // makes this a cheap no-op scan.
+        dedupe_window_sidebars();
     }
 
     // Restore focus
@@ -367,11 +364,10 @@ fn auto_create_decision(mode: &str, auto_create: &str) -> AutoCreateDecision {
 
 /// Whether `--create-only` should return without creating a sidebar for
 /// `decision`. A `Skip` (recorded `closed` mode, or auto-create off) is
-/// overridden when `--force-split` was passed: the toggle-all sweep and
-/// the takeover restore are explicit "create now" instructions, and the
-/// restore runs while the takeover's own `closed` mode is still pinned —
-/// a mode veto there would silently reopen nothing. Extracted as a pure
-/// function so the override rule is directly unit-testable.
+/// overridden when `--force-split` was passed: the toggle-all sweep is
+/// an explicit "create now" instruction, and a recorded `closed` mode
+/// must not veto it. Extracted as a pure function so the override rule
+/// is directly unit-testable.
 fn create_only_skips(decision: &AutoCreateDecision, force_split: bool) -> bool {
     matches!(decision, AutoCreateDecision::Skip) && !force_split
 }
@@ -386,14 +382,6 @@ pub(crate) fn cmd_toggle_all(_args: &[String]) -> i32 {
         close_all_sidebars();
     } else {
         let _ = tmux::run_tmux(&["set", "-g", tmux::SIDEBAR_MODE, "open"]);
-        // An explicit open supersedes any pending mobile-takeover restore:
-        // the user is asking for sidebars everywhere right now, and a
-        // stale marker must not resurrect a second wave on the next
-        // upward width crossing. Session-scoped markers and takeover
-        // modes are dropped on every session too, so no stale session
-        // `closed` can skip a window of this sweep or strand a later
-        // new-window auto-create in modal-popup land.
-        clear_all_mobile_takeover_state();
         let all_windows = tmux::run_tmux(&[
             "list-panes",
             "-a",
@@ -426,13 +414,9 @@ pub(crate) fn cmd_toggle_all(_args: &[String]) -> i32 {
 /// role-tagged sidebar pane across all sessions and windows (restoring
 /// each window's layout via the normal close path), and pin the global
 /// `closed` mode so windows created while the sweep runs stay
-/// sidebar-less too. "Off everywhere" is sticky: every pending
-/// takeover marker — session-scoped on all sessions, plus the legacy
-/// server-global ones — is dropped first, so nothing resurrects the
-/// sidebars on a later upward width crossing. The mobile takeover has
-/// its own scoped sweep in [`takeover_session_sidebars`].
+/// sidebar-less too. "Off everywhere" is sticky until the next
+/// `toggle-all` open.
 fn close_all_sidebars() {
-    clear_all_mobile_takeover_state();
     let _ = tmux::run_tmux(&["set", "-g", tmux::SIDEBAR_MODE, "closed"]);
     let all_panes =
         tmux::run_tmux(&["list-panes", "-a", "-F", &pane_window_role_format()]).unwrap_or_default();
@@ -443,296 +427,12 @@ fn close_all_sidebars() {
     }
 }
 
-/// The mobile takeover for the session that owns `window_id` — the
-/// window that just crossed the popup threshold downward. Records the
-/// session's pre-takeover state ([`record_mobile_takeover_state`]), pins
-/// the session's mode to `closed` (so auto-create stays off here while
-/// the takeover is live and the next toggle press opens the modal
-/// popup), and closes split-pane sidebars in every window that is
-/// genuinely narrow right now — across sessions, but only below the
-/// threshold ([`takeover_closes_window`]).
-///
-/// The response is deliberately not server-wide: tmux sizes windows
-/// per-session by the latest active client (`window-size latest`), so a
-/// window's width is the ground truth for which client is currently
-/// driving it. A wide desktop window in any session keeps its sidebar;
-/// a session the phone later switches to resizes (firing this hook
-/// again) and takes its own takeover then. Closing only the crossing
-/// window would still strand slivers: the phone sees the whole session,
-/// and its other already-narrow windows have no hook firing in them
-/// (no layout change happens there on a session switch).
-fn takeover_session_sidebars(window_id: &str) {
-    let Some(session_id) = window_session_id(window_id) else {
-        return;
-    };
-    let all_panes =
-        tmux::run_tmux(&["list-panes", "-a", "-F", &pane_window_role_format()]).unwrap_or_default();
-    let mut close_targets: Vec<(String, String)> = Vec::new();
-    let mut restore_windows: Vec<String> = Vec::new();
-    for line in all_panes.lines() {
-        let Some((sidebar_pane, pane_window)) = parse_sidebar_close_target(line) else {
-            continue;
-        };
-        let width: u32 = tmux::display_message(&pane_window, "#{window_width}")
-            .parse()
-            .unwrap_or(0);
-        let threshold = popup_max_width_from_setting(&tmux::display_message(
-            &pane_window,
-            &format!("#{{{}}}", tmux::SIDEBAR_POPUP_MAX_WIDTH),
-        ));
-        if !takeover_closes_window(width, threshold) {
-            continue;
-        }
-        restore_windows.push(pane_window.clone());
-        close_targets.push((sidebar_pane, pane_window));
-    }
-    restore_windows.sort();
-    restore_windows.dedup();
-    // Record and pin the mode before the first close: the closes re-fire
-    // this hook in other processes, and a death mid-sweep must leave
-    // behind state a later release can still undo.
-    record_mobile_takeover_state(&session_id, &restore_windows);
-    set_session_option(&session_id, tmux::SIDEBAR_MODE, "closed");
-    for (sidebar_pane, pane_window) in close_targets {
-        close_sidebar(&sidebar_pane, &pane_window);
-    }
-}
-
-/// Snapshot the pre-takeover state of `session_id` at session scope so
-/// [`maybe_release_mobile_takeover`] can reverse the sweep: which
-/// windows had sidebars closed (only the ones genuinely narrow at
-/// takeover time — wide windows keep theirs and are not recorded), and
-/// what the session's effective `@sidebar_mode` was. Must run before the
-/// caller writes the session-scoped `closed` mode.
-fn record_mobile_takeover_state(session_id: &str, restore_windows: &[String]) {
-    let prior_mode = read_scoped_option(session_id, tmux::SIDEBAR_MODE).unwrap_or_default();
-    set_session_option(
-        session_id,
-        tmux::SIDEBAR_MOBILE_RESTORE,
-        &tmux::sanitize_option_value(&restore_windows.join(",")),
-    );
-    set_session_option(
-        session_id,
-        tmux::SIDEBAR_MOBILE_PRIOR_MODE,
-        prior_mode.trim(),
-    );
-}
-
-/// Drop the legacy server-global takeover markers (written by binaries
-/// predating session-scoped takeover state). No-op when absent.
-fn clear_mobile_takeover_state() {
-    let _ = tmux::run_tmux(&["set", "-gu", tmux::SIDEBAR_MOBILE_RESTORE]);
-    let _ = tmux::run_tmux(&["set", "-gu", tmux::SIDEBAR_MOBILE_PRIOR_MODE]);
-}
-
-/// Drop the session-scoped takeover markers on `session_id`. Called when
-/// that session's restore has run and by the explicit-state sweeps.
-fn clear_session_mobile_takeover_state(session_id: &str) {
-    unset_session_option(session_id, tmux::SIDEBAR_MOBILE_RESTORE);
-    unset_session_option(session_id, tmux::SIDEBAR_MOBILE_PRIOR_MODE);
-}
-
-/// Drop every trace of pending takeover state: the session-scoped
-/// markers and takeover-written modes on all sessions, plus the legacy
-/// server-global markers. Explicit toggle-all actions mean "behave as if
-/// no mobile takeover had ever happened" — a stale session-scoped marker
-/// must never resurrect a second wave on a later upward crossing, and a
-/// stale session-scoped `closed` must never flip a wide window into
-/// skip/modal-popup behavior.
-fn clear_all_mobile_takeover_state() {
-    for session_id in all_session_ids() {
-        unset_session_option(&session_id, tmux::SIDEBAR_MODE);
-        clear_session_mobile_takeover_state(&session_id);
-    }
-    clear_mobile_takeover_state();
-}
-
-/// Every live session id (`$N`) on the server. Empty when no sessions
-/// exist (or tmux fails to answer).
-fn all_session_ids() -> Vec<String> {
-    tmux::run_tmux(&["list-sessions", "-F", "#{session_id}"])
-        .unwrap_or_default()
-        .lines()
-        .map(str::trim)
-        .filter(|s| s.starts_with('$'))
-        .map(str::to_string)
-        .collect()
-}
-
-/// Reverse the mobile takeover of the session that owns `window_id` when
-/// the desktop comes back.
-///
-/// The takeover records its state via [`record_mobile_takeover_state`] at
-/// session scope; this path watches for the mirror-image signal — a
-/// window of that session climbing back to the popup threshold or
-/// beyond, i.e. a big viewport is driving it again — and only acts when
-/// every marker lines up:
-///
-/// - the session's effective `@sidebar_mode` is `closed` (the takeover
-///   pinned it; read session-first with global fallback),
-/// - a takeover marker exists for the session (only the takeover writes
-///   it — a deliberate `toggle-all` close is sticky, as documented).
-///
-/// Whether another client narrower than the threshold is still attached
-/// to the session is deliberately NOT consulted: with
-/// `window-size latest` the window is only at or above the threshold
-/// when a wide client is actually driving it, and the upward-crossing
-/// check below already proves exactly that. A narrow client parked on
-/// the session but not driving it must not keep the desktop
-/// sidebar-less (the shared-session case). If the narrow client takes
-/// over again, the window shrinks, the next downward crossing re-runs
-/// the takeover, and the sidebar closes — each active-client switch
-/// lands in the state that client needs, with no oscillation while
-/// either client holds the window.
-///
-/// Windows still below the threshold (narrow clients still driving
-/// them) are skipped — reopening there would strand a sliver — and
-/// simply stay closed. The recorded pre-takeover mode is restored
-/// verbatim at session scope so a takeover that fired while mode was
-/// unset does not leave a session-scoped `open` pin overriding
-/// `@sidebar_auto_create`.
-fn maybe_release_mobile_takeover(
-    window_id: &str,
-    last_width: Option<u32>,
-    current: u32,
-    threshold: u32,
-) {
-    let Some(session_id) = window_session_id(window_id) else {
-        return;
-    };
-    let mode = read_scoped_option(&session_id, tmux::SIDEBAR_MODE).unwrap_or_default();
-    let marker_present = read_scoped_option(&session_id, tmux::SIDEBAR_MOBILE_RESTORE).is_some();
-    if !should_release_takeover(last_width, current, threshold, &mode, marker_present) {
-        return;
-    }
-    let restore = read_scoped_option(&session_id, tmux::SIDEBAR_MOBILE_RESTORE).unwrap_or_default();
-    for restored_window in parse_restore_windows(&restore) {
-        let width: u32 = tmux::display_message(&restored_window, "#{window_width}")
-            .parse()
-            .unwrap_or(0);
-        if width < threshold {
-            continue;
-        }
-        let Some(path) = window_pane_path(&restored_window) else {
-            continue;
-        };
-        cmd_toggle(&[
-            "--create-only".to_string(),
-            "--force-split".to_string(),
-            restored_window,
-            path,
-        ]);
-    }
-
-    let prior_mode =
-        read_scoped_option(&session_id, tmux::SIDEBAR_MOBILE_PRIOR_MODE).unwrap_or_default();
-    let prior_mode = prior_mode.trim();
-    if prior_mode.is_empty() {
-        unset_session_option(&session_id, tmux::SIDEBAR_MODE);
-    } else {
-        set_session_option(&session_id, tmux::SIDEBAR_MODE, prior_mode);
-    }
-    clear_session_mobile_takeover_state(&session_id);
-    // Legacy markers: a pre-session-scoping binary wrote its takeover
-    // state globally, so consuming it here (rather than leaving it to
-    // haunt later releases) keeps the upgrade path clean. A new-binary
-    // takeover never writes globally, so this is a no-op for it.
-    clear_mobile_takeover_state();
-}
-
-/// Pure decision core of [`maybe_release_mobile_takeover`]: a completed
-/// upward crossing of the threshold, a `closed` mode (the releasing
-/// session's effective one), and a takeover marker.
-///
-/// No client-roster check: the crossing itself proves a wide client is
-/// driving the window right now (with `window-size latest` the window
-/// tracks the latest active client). A narrow client parked on the
-/// session must not keep the desktop sidebar-less, and when it takes
-/// over again the next downward crossing re-runs the takeover.
-fn should_release_takeover(
-    last_width: Option<u32>,
-    current: u32,
-    threshold: u32,
-    mode: &str,
-    marker_present: bool,
-) -> bool {
-    let crossed_up = match last_width {
-        Some(last) => threshold > 0 && current > 0 && last < threshold && current >= threshold,
-        None => false,
-    };
-    crossed_up && mode.trim() == "closed" && marker_present
-}
-
-/// Parse the takeover marker's comma-separated window-id list.
-fn parse_restore_windows(raw: &str) -> Vec<String> {
-    raw.split(',')
-        .map(str::trim)
-        .filter(|id| id.starts_with('@'))
-        .map(str::to_string)
-        .collect()
-}
-
-/// First pane's `#{pane_current_path}` in `window_id`, for re-opening a
-/// recorded sidebar at its original working directory.
-fn window_pane_path(window_id: &str) -> Option<String> {
-    tmux::run_tmux(&["list-panes", "-t", window_id, "-F", "#{pane_current_path}"])
-        .unwrap_or_default()
-        .lines()
-        .next()
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .map(str::to_string)
-}
-
 fn read_global_option(key: &str) -> String {
     read_global_option_value(key).unwrap_or_default()
 }
 
 fn read_global_option_value(key: &str) -> Option<String> {
     tmux::run_tmux(&["show", "-gv", key])
-}
-
-/// Read a user option at session scope. `None` when the option is unset
-/// on the session (tmux exits non-zero) or the query fails. Session user
-/// options do not inherit from global ones — the fallback lives in
-/// [`read_scoped_option`].
-fn read_session_option(session_id: &str, key: &str) -> Option<String> {
-    tmux::run_tmux(&["show", "-v", "-t", session_id, key]).map(|s| s.trim().to_string())
-}
-
-fn set_session_option(session_id: &str, key: &str, value: &str) {
-    let _ = tmux::run_tmux(&[
-        "set",
-        "-t",
-        session_id,
-        "--",
-        key,
-        &tmux::sanitize_option_value(value),
-    ]);
-}
-
-fn unset_session_option(session_id: &str, key: &str) {
-    let _ = tmux::run_tmux(&["set", "-u", "-t", session_id, "--", key]);
-}
-
-/// Session-first read of a user option: the session-scoped value wins
-/// when the option is set on the session; an unset session option falls
-/// back to the global one. The fallback keeps state written by an older,
-/// server-global binary resolving until restart, and lets a global
-/// `toggle-all` mode govern sessions that never got a session-scoped
-/// write. An empty `session_id` (unresolvable window) reads global only.
-fn read_scoped_option(session_id: &str, key: &str) -> Option<String> {
-    let global = read_global_option_value(key);
-    if session_id.is_empty() {
-        return global;
-    }
-    session_first_value(read_session_option(session_id, key), global)
-}
-
-/// Pure precedence core of [`read_scoped_option`]: an explicitly set
-/// session value wins; otherwise the global value applies.
-fn session_first_value(session: Option<String>, global: Option<String>) -> Option<String> {
-    session.or(global)
 }
 
 /// Resolve the owning session id (`$N`) of `window_id`. `None` when the
@@ -770,21 +470,18 @@ fn dedupe_window_sidebars() {
 // ─── maintain-width (auto-hide a split sidebar on a shrink) ─────────
 
 /// Auto-hide entry point (`maintain-width <window_id>`), wired to the
-/// tmux `window-layout-changed` and `client-resized` hooks. When a
-/// window with a split-pane sidebar shrinks below the popup threshold —
-/// a phone client attached, or an existing small client shrank the
-/// window — the split pane degenerates into a sliver. That window is
-/// proof a mobile viewport is driving it, and the response is scoped to
-/// the window's session (see `takeover_session_sidebars`): the session's
-/// currently-narrow windows lose their sidebars and its mode records
-/// `closed`, so the next toggle press opens the modal popup and
-/// auto-create stays off until the takeover releases. Windows that are
-/// still wide — in this or any other session — keep their sidebars and
-/// their normal mode.
-///
-/// Deliberately cheap and side-effect-free when it does nothing: a
-/// couple of `display-message` queries, one `list-panes`, and at most
-/// one `set-option` plus one close. It fires on every layout change.
+/// tmux `window-layout-changed` and `client-resized` hooks. Responsive
+/// behavior, media-query style: the layout is a pure function of the
+/// current viewport. When a window with a split-pane sidebar shrinks
+/// below the popup threshold — a phone client attached, or an existing
+/// small client shrank the window — the split pane would degenerate
+/// into a sliver, so the window's own sidebar closes (its saved layout
+/// replays via the normal close path). No session state, no markers, no
+/// restore waves: a window that grows back simply has no sidebar until
+/// the user opens one (the toggle/summon keys, or auto-create for new
+/// windows). Deliberately cheap and idempotent under the dual-hook
+/// double fire: both instances read the same width and close the same
+/// pane, and the second kill/restore is a no-op.
 pub(crate) fn cmd_maintain_width(args: &[String]) -> i32 {
     let Some(window_id) = args.first().map(String::as_str) else {
         return 0;
@@ -828,22 +525,16 @@ pub(crate) fn cmd_maintain_width(args: &[String]) -> i32 {
     record_last_window_width(window_id, current_width);
 
     if should_auto_hide(last_width, current_width, threshold, sidebar_pane.is_some()) {
-        // Mobile viewport detected in this window's session. Don't just
-        // close this window's sidebar: the phone client sees the whole
-        // session, and its other narrow windows would linger as slivers
-        // (no layout hook fires in them on a session switch). Take over
-        // the session — its currently-narrow windows lose their sidebars
-        // and its mode records `closed` — while wide windows everywhere
-        // keep theirs. The width recording above already ran, so the
-        // layout churn the closes cause re-fires this hook as a no-op.
-        // The session-scoped markers written here are what let
-        // `maybe_release_mobile_takeover` undo the whole thing when a
-        // desktop client is driving this session again.
-        takeover_session_sidebars(window_id);
-        return 0;
+        // Narrow viewport detected: hide this window's sidebar so the
+        // real panes keep the whole viewport. The close replays the
+        // saved pre-sidebar layout; the user brings the sidebar back
+        // with the normal toggle/summon keys when a wide viewport is
+        // driving the window again.
+        close_sidebar(
+            &sidebar_pane.expect("checked by should_auto_hide"),
+            window_id,
+        );
     }
-
-    maybe_release_mobile_takeover(window_id, last_width, current_width, threshold);
 
     0
 }
@@ -1083,19 +774,6 @@ fn should_use_popup(max_width_setting: &str, window_width: u32) -> bool {
     max_width > 0 && window_width > 0 && window_width < max_width
 }
 
-/// Whether the mobile takeover may close a sidebar in a window that is
-/// currently `window_width` columns wide with popup threshold
-/// `threshold`: only genuinely narrow windows (strictly below the
-/// threshold) lose their sidebars. A wide desktop window must never lose
-/// its sidebar because another session shrank — tmux sizes windows
-/// per-session by the latest active client, so the width is the ground
-/// truth for which client is driving. A zero width (failed
-/// `#{window_width}` query) and a zero threshold (popup mode disabled)
-/// never count as narrow.
-fn takeover_closes_window(window_width: u32, threshold: u32) -> bool {
-    threshold > 0 && window_width > 0 && window_width < threshold
-}
-
 /// Open the sidebar as a tmux popup instead of a split pane. `-E`
 /// tears the popup down when the sidebar exits, and tmux's default
 /// Escape/C-c handling dismisses it earlier — either close kills the
@@ -1185,10 +863,10 @@ fn stop_session_sidebar_panes(window_id: &str) {
 }
 
 fn open_popup(window_id: &str, start_directory: &str) -> i32 {
-    // Entering the popup view is the mobile takeover point: stop the
-    // split-pane sidebars the desktop left running in this session before
-    // drawing the popup. Runs before the anchor pane resolves so
-    // `TMUX_PANE` is never pinned to a pane about to be killed.
+    // The popup replaces the desktop split-pane sidebars of the session:
+    // stop the ones still running here before drawing the popup. Runs
+    // before the anchor pane resolves so `TMUX_PANE` is never pinned to a
+    // pane about to be killed.
     stop_session_sidebar_panes(window_id);
 
     let self_bin = std::env::current_exe()
@@ -1739,133 +1417,16 @@ mod tests {
         assert!(!auto_hide_enabled("garbage"));
     }
 
-    // ─── mobile takeover release ─────────────────────────────────────
-
-    #[test]
-    fn release_fires_on_upward_crossing_with_marker() {
-        assert!(should_release_takeover(Some(58), 295, 100, "closed", true,));
-    }
-
-    #[test]
-    fn release_fires_while_a_narrow_client_stays_attached() {
-        // The crossing already proves a wide client is driving the window
-        // (with `window-size latest` the width tracks the latest active
-        // client); a narrow client parked on the session but not driving
-        // it must not keep the desktop sidebar-less. When it takes over
-        // again, the next downward crossing re-runs the takeover.
-        assert!(should_release_takeover(Some(58), 295, 100, "closed", true,));
-    }
-
-    #[test]
-    fn release_requires_an_upward_crossing() {
-        // No crossing at all (last == current).
-        assert!(!should_release_takeover(
-            Some(295),
-            295,
-            100,
-            "closed",
-            true,
-        ));
-        // Downward crossing is the takeover's job, not the release's.
-        assert!(!should_release_takeover(Some(295), 58, 100, "closed", true,));
-        // Missing observation proves no crossing.
-        assert!(!should_release_takeover(None, 295, 100, "closed", true));
-        // Degenerate thresholds/widths.
-        assert!(!should_release_takeover(Some(58), 295, 0, "closed", true,));
-        assert!(!should_release_takeover(Some(58), 0, 100, "closed", true,));
-    }
-
-    #[test]
-    fn release_requires_closed_mode_and_takeover_marker() {
-        // A deliberate toggle-all close writes `closed` but no marker:
-        // sticky, as documented.
-        assert!(!should_release_takeover(
-            Some(58),
-            295,
-            100,
-            "closed",
-            false,
-        ));
-        // A marker without the closed mode is a stale leftover (e.g. mode
-        // was re-opened by hand); the release must not fire.
-        assert!(!should_release_takeover(Some(58), 295, 100, "open", true,));
-        assert!(!should_release_takeover(Some(58), 295, 100, "", true));
-    }
-
-    #[test]
-    fn parse_restore_windows_keeps_window_ids_only() {
-        assert_eq!(
-            parse_restore_windows(" @1,@7, @28 "),
-            vec!["@1".to_string(), "@7".to_string(), "@28".to_string()]
-        );
-        assert!(parse_restore_windows("").is_empty());
-        assert!(parse_restore_windows(",,").is_empty());
-        assert_eq!(
-            parse_restore_windows("%5,@2"),
-            vec!["@2".to_string()],
-            "pane ids are not window ids"
-        );
-    }
-
-    // ─── mobile takeover session scoping ─────────────────────────────
-
-    #[test]
-    fn takeover_closes_only_genuinely_narrow_windows() {
-        // Strictly below the threshold is popup territory: those windows
-        // are the ones the takeover exists to clear.
-        assert!(takeover_closes_window(99, 100));
-        assert!(takeover_closes_window(1, 100));
-        // At the threshold the window is not "narrow" — a split pane is
-        // correct AT the boundary, so a desktop window sitting there
-        // keeps its sidebar.
-        assert!(!takeover_closes_window(100, 100));
-        assert!(!takeover_closes_window(240, 100));
-    }
-
-    #[test]
-    fn takeover_never_closes_on_zero_width_or_threshold() {
-        // A failed `#{window_width}` query must not be read as "narrow" —
-        // that would let a tmux hiccup close live desktop sidebars.
-        assert!(!takeover_closes_window(0, 100));
-        // A zero threshold means popup mode is disabled: there is no
-        // below-threshold territory at all. (`should_auto_hide` already
-        // refuses to fire on it; this is the defensive mirror.)
-        assert!(!takeover_closes_window(80, 0));
-        assert!(!takeover_closes_window(0, 0));
-    }
+    // ─── responsive auto-hide is stateless ───────────────────────────
 
     #[test]
     fn create_only_skip_is_overridden_by_force_split() {
-        // The toggle-all sweep and the takeover restore both pass
-        // `--force-split`: a recorded `closed` mode must not veto an
-        // explicit "create now", or a restore running under the
-        // takeover's own pinned `closed` mode would silently reopen
-        // nothing.
+        // The toggle-all sweep passes `--force-split`: a recorded
+        // `closed` mode must not veto an explicit "create now".
         assert!(create_only_skips(&AutoCreateDecision::Skip, false));
         assert!(!create_only_skips(&AutoCreateDecision::Skip, true));
         assert!(!create_only_skips(&AutoCreateDecision::ForceSplit, false));
         assert!(!create_only_skips(&AutoCreateDecision::Default, true));
-    }
-
-    #[test]
-    fn session_first_value_prefers_the_session_scope() {
-        assert_eq!(
-            session_first_value(Some("session".to_string()), Some("global".to_string())),
-            Some("session".to_string()),
-            "session-scoped user options do not inherit from global ones — \
-             an explicit session value must win"
-        );
-        assert_eq!(
-            session_first_value(None, Some("global".to_string())),
-            Some("global".to_string()),
-            "state written by an older, server-global binary must keep \
-             resolving until restart"
-        );
-        assert_eq!(
-            session_first_value(Some("session".to_string()), None),
-            Some("session".to_string())
-        );
-        assert_eq!(session_first_value(None, None), None);
     }
 
     // ─── should_kill_window ───────────────────────────────────────────

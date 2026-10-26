@@ -45,7 +45,7 @@ first row applies as usual.
 | `selected_pane_row` | `@sidebar_cursor` | User input (j/k key); tmux write flushed after a short debounce | Cursor position in agent list; re-anchored to the first row on a window/pane (focus-change) reload, or to the row of the pre-focus context pane when the sidebar itself gains focus |
 | `repo_filter` | `@sidebar_repo_filter` | User input (repo popup) | Repository filter (All or specific repo) |
 | `compact` | `@sidebar_compact` | User input (`c` key) | Compact one-line-per-pane rendering; the live value is shared by all open sidebars, and `@sidebar_default_compact_view` seeds it only before the first toggle |
-| sidebar mode | `@sidebar_mode` | `toggle-all` sweep and the `maintain-width` mobile takeover | System-level `open`/`closed` intent; consulted by the new-window and new-session hooks (falling back to `@sidebar_auto_create` while unset) so toggle-all covers windows and sessions created afterwards |
+| sidebar mode | `@sidebar_mode` | `toggle-all` sweep | Server-global `open`/`closed` intent; consulted by the new-window and new-session hooks (falling back to `@sidebar_auto_create` while unset) so toggle-all covers windows and sessions created afterwards |
 
 `status_filter`, `selected_pane_row`, and `repo_filter` each have a corresponding `last_saved_*` marker to prevent sync conflicts — tmux only overwrites the local value when it differs from what this instance last wrote. `compact` is exempt: the live tmux value is adopted unconditionally so sidebars can never diverge on density.
 

@@ -156,13 +156,13 @@ pub const SIDEBAR_DEFAULT_SHOW_WINDOWS: &str = "@sidebar_default_show_windows";
 /// popup instead of a split pane (mobile viewports). `0` disables the
 /// popup path entirely. Read by the `toggle` subcommand.
 pub const SIDEBAR_POPUP_MAX_WIDTH: &str = "@sidebar_popup_max_width";
-/// Whether the `maintain-width` hook may auto-hide split-pane sidebars
-/// when a window shrinks below [`SIDEBAR_POPUP_MAX_WIDTH`] (`on` / `off`,
-/// default `on` via agent-sidebar.conf seeding). The hide is the mobile
-/// takeover: the crossing window's session loses its currently-narrow
-/// windows' sidebars (see `src/cli/toggle.rs`); wide windows everywhere
-/// keep theirs. Read by the `maintain-width` subcommand; empty is
-/// treated as `on`.
+/// Whether the `maintain-width` hook may auto-hide a split-pane sidebar
+/// when its window shrinks below [`SIDEBAR_POPUP_MAX_WIDTH`] (`on` /
+/// `off`, default `on` via agent-sidebar.conf seeding). The hide is
+/// stateless and per-window: the crossing window's own sidebar closes
+/// (its saved layout replays), and nothing records which windows were
+/// hidden. Read by the `maintain-width` subcommand; empty is treated as
+/// `on`.
 pub const SIDEBAR_AUTO_HIDE: &str = "@sidebar_auto_hide";
 /// Window-scoped `#{window_layout}` snapshot taken immediately before the
 /// sidebar split is created. The close paths replay it with
@@ -185,32 +185,14 @@ pub const SIDEBAR_NOTIFICATIONS_EVENTS: &str = "@sidebar_notifications_events";
 pub const SIDEBAR_AGENTS: &str = "@sidebar_agents";
 
 pub const SIDEBAR_COLOR_ACCENT: &str = "@sidebar_color_accent";
-/// Sidebar mode written by `toggle-all` (globally) and by the
-/// `maintain-width` mobile takeover (session-scoped, on the session the
-/// narrow client is driving) (`open` / `closed`). New windows consult it
-/// at creation time (via the auto-create hook and the `toggle
-/// --create-only` decision, read session-first with global fallback), so
-/// prefix+E means "sidebars always on/off everywhere", including windows
-/// created afterwards, while a mobile takeover only suppresses
-/// auto-create in its own session. Unset at both scopes means no mode
-/// recorded: creation is governed by [`SIDEBAR_AUTO_CREATE`] alone.
-/// Per-window `toggle` presses ignore the mode — they remain explicit
-/// user actions.
+/// Sidebar mode written by `toggle-all` (globally, `open` / `closed`).
+/// New windows consult it at creation time (via the auto-create hook and
+/// the `toggle --create-only` decision), so prefix+E means "sidebars
+/// always on/off everywhere", including windows created afterwards.
+/// Unset means no mode recorded: creation is governed by
+/// [`SIDEBAR_AUTO_CREATE`] alone. Per-window `toggle` presses ignore
+/// the mode — they remain explicit user actions.
 pub const SIDEBAR_MODE: &str = "@sidebar_mode";
-/// Comma-separated window ids that had sidebars when the `maintain-width`
-/// mobile takeover closed them, recorded at session scope on the session
-/// the narrow client is driving so the takeover can reverse itself when
-/// a desktop viewport is driving that session again. Written only by the
-/// takeover path — a deliberate `toggle-all` close records nothing and is
-/// therefore never undone automatically. Cleared once the restore has
-/// run.
-pub const SIDEBAR_MOBILE_RESTORE: &str = "@sidebar_mobile_restore";
-/// Effective `@sidebar_mode` value observed on the session when the
-/// mobile takeover fired, recorded at session scope. The release path
-/// restores it verbatim (including unset) so a takeover that fired while
-/// mode was unset does not leave a session-scoped `open` pin behind that
-/// would override [`SIDEBAR_AUTO_CREATE`] for later windows.
-pub const SIDEBAR_MOBILE_PRIOR_MODE: &str = "@sidebar_mobile_prior_mode";
 /// Whether a sidebar is created automatically for new windows (`on` /
 /// `off`, default `on` via agent-sidebar.conf seeding). Consulted at
 /// window-create time; only consulted while [`SIDEBAR_MODE`] is unset.

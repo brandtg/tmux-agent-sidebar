@@ -9,3 +9,5 @@
 dist
 node_modules
 tmp
+tmux-client-*.log
+tmux-server-*.log
