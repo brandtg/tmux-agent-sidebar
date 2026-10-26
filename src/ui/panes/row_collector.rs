@@ -70,11 +70,29 @@ pub(super) fn collect(state: &AppState, width: u16) -> CollectedRows {
         }
         first_group = false;
 
-        let group_has_focused_pane = state
-            .focus_state
-            .focused_pane_id
-            .as_ref()
-            .is_some_and(|fid| group.panes.iter().any(|(p, _)| p.pane_id == *fid));
+        // A focused agent pane lights the header. In session mode a
+        // focused process pane does too: the user is still in that
+        // session, but `group.panes` only holds agent panes, so a
+        // pane-id membership check against it alone would drop the
+        // accent the moment they sat in a plain shell. Session-mode
+        // process panes bucket under the tmux session name (see
+        // `group_window_key`), and pane ids are unique tmux-wide, so
+        // only the owning session's bucket can match. Repo mode keeps
+        // the agent-only rule: its bucket key is a git-resolved repo
+        // root, not a session the user sits in.
+        let group_has_focused_pane =
+            state
+                .focus_state
+                .focused_pane_id
+                .as_ref()
+                .is_some_and(|fid| {
+                    group.panes.iter().any(|(p, _)| p.pane_id == *fid)
+                        || (state.global.group_by == crate::state::GroupBy::Session
+                            && state
+                                .other_windows
+                                .get(&group.name)
+                                .is_some_and(|windows| windows.iter().any(|w| &w.pane_id == fid)))
+                });
 
         // Plain group header at column 0. In repo mode a `[+]` spawn
         // button rides right-aligned on the same row, rendered only when
@@ -554,6 +572,51 @@ mod tests {
             collected.pending_spawn.is_empty(),
             "session headers must not register spawn targets"
         );
+    }
+
+    #[test]
+    fn collect_session_mode_header_stays_accent_for_focused_process_pane() {
+        // The user sits in a plain shell (process pane) of session
+        // "main": the header must keep its accent even though the
+        // focused pane is not an agent row — and only that session's
+        // header lights up, since a process pane belongs to exactly one
+        // session. Works with `w` off: the bucket lookup does not go
+        // through the rendered window rows.
+        let mut state = AppState::new("%0".into());
+        state.global.group_by = GroupBy::Session;
+        state.repo_groups = vec![
+            RepoGroup {
+                name: "main".into(),
+                has_focus: false,
+                panes: vec![(make_pane("%1", PaneStatus::Idle), PaneGitInfo::default())],
+            },
+            RepoGroup {
+                name: "other".into(),
+                has_focus: false,
+                panes: vec![(make_pane("%2", PaneStatus::Idle), PaneGitInfo::default())],
+            },
+        ];
+        state.other_windows.insert(
+            "main".into(),
+            vec![other_window("%10", "dev server", "node")],
+        );
+        state.focus_state.focused_pane_id = Some("%10".into());
+
+        let collected = collect(&state, 40);
+        let title_fg = |name: &str| {
+            collected
+                .lines
+                .iter()
+                .find(|l| line_text(l) == name)
+                .expect("title line")
+                .spans
+                .first()
+                .expect("title span")
+                .style
+                .fg
+        };
+        assert_eq!(title_fg("main"), Some(state.theme.accent));
+        assert_eq!(title_fg("other"), Some(state.theme.text_active));
     }
 
     #[test]
