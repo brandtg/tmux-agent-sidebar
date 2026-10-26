@@ -129,9 +129,9 @@ impl AppState {
         tmux::select_pane(&target_pane_id);
 
         // The jump may land on a window that has no sidebar of its own —
-        // `@sidebar_auto_create off`, or one the mobile takeover closed
-        // while a narrow client was attached to its session. Summon one
-        // there so the sidebar "follows" the jump instead of disappearing.
+        // `@sidebar_auto_create off`, or one auto-hide closed while a
+        // narrow client was attached. Summon one there so the sidebar
+        // "follows" the jump instead of disappearing.
         // Window rows summon too: under toggle-all the user opted into
         // sidebars on every window, and the create-only path still
         // respects the recorded mode, `@sidebar_auto_create`, and the
