@@ -470,6 +470,84 @@ fn test_accent_vs_border_inactive_colors() {
     ");
 }
 
+// ─── Session-mode header focus with a process pane ──────────────────
+
+#[test]
+fn test_session_mode_header_accent_with_focused_process_pane() {
+    let mut pane1 = make_pane(AgentType::Claude, PaneStatus::Idle);
+    pane1.pane_id = "%1".into();
+    let mut pane2 = make_pane(AgentType::Codex, PaneStatus::Idle);
+    pane2.pane_id = "%2".into();
+
+    let mut state = make_state(vec![SessionInfo {
+        session_name: "main".into(),
+        windows: vec![WindowInfo {
+            window_id: "@0".into(),
+            window_name: "fish".into(),
+            window_active: true,
+            auto_rename: true,
+            panes: vec![pane1.clone(), pane2.clone()],
+        }],
+    }]);
+    state.global.group_by = tmux_agent_sidebar::state::GroupBy::Session;
+    state.repo_groups = vec![
+        tmux_agent_sidebar::group::RepoGroup {
+            name: "main".into(),
+            has_focus: false,
+            panes: vec![(pane1, tmux_agent_sidebar::group::PaneGitInfo::default())],
+        },
+        tmux_agent_sidebar::group::RepoGroup {
+            name: "unfocused".into(),
+            has_focus: false,
+            panes: vec![(pane2, tmux_agent_sidebar::group::PaneGitInfo::default())],
+        },
+    ];
+    // The user sits in a plain shell of session "main" — a process
+    // pane, not an agent row. The session header must keep its accent;
+    // the other session's header stays plain.
+    state.other_windows.insert(
+        "main".into(),
+        vec![tmux_agent_sidebar::group::OtherWindow {
+            window_id: "@5".into(),
+            window_index: 0,
+            window_name: "fish".into(),
+            window_active: true,
+            session_name: "main".into(),
+            session_attached: true,
+            attention: PaneAttention::None,
+            pane_id: "%10".into(),
+            pane_active: true,
+            pane_pid: None,
+            command: "fish".into(),
+            command_args: None,
+            path: "/home/user/project".into(),
+            git_info: tmux_agent_sidebar::group::PaneGitInfo::default(),
+            status: tmux_agent_sidebar::tmux::WindowStatus::Idle,
+            pane_title: String::new(),
+            flagged: false,
+        }],
+    );
+    state.focus_state.sidebar_focused = false;
+    state.focus_state.focused_pane_id = Some("%10".into());
+    state.rebuild_row_targets();
+
+    // Styled snapshot locks in:
+    //   • the session holding the focused process pane rendered with
+    //     accent (fg:153)
+    //   • the other session's header rendered with text_active (fg:255)
+    insta::assert_snapshot!(render_to_styled_string(&mut state, 28, 30), @"
+     ≡[fg:111]2[fg:255]  ●[fg:245]0[fg:245]  ◎[fg:245]0[fg:245]  ◐[fg:245]0[fg:245]  ○[fg:245]2[fg:255]  ✕[fg:245]0[fg:245]
+    ⓘ[fg:221]                        —[fg:252] ▾[fg:252]
+    m[fg:153]a[fg:153]i[fg:153]n[fg:153]
+      ○[fg:110] [fg:174]c[fg:174]l[fg:174]a[fg:174]u[fg:174]d[fg:174]e[fg:174]
+       [fg:244] [fg:244]W[fg:244]a[fg:244]i[fg:244]t[fg:244]i[fg:244]n[fg:244]g[fg:244] [fg:244]f[fg:244]o[fg:244]r[fg:244] [fg:244]p[fg:244]r[fg:244]o[fg:244]m[fg:244]p[fg:244]t[fg:244]…[fg:244]
+
+    u[fg:255]n[fg:255]f[fg:255]o[fg:255]c[fg:255]u[fg:255]s[fg:255]e[fg:255]d[fg:255]
+      ○[fg:110] [fg:141]c[fg:141]o[fg:141]d[fg:141]e[fg:141]x[fg:141]
+       [fg:244] [fg:244]W[fg:244]a[fg:244]i[fg:244]t[fg:244]i[fg:244]n[fg:244]g[fg:244] [fg:244]f[fg:244]o[fg:244]r[fg:244] [fg:244]p[fg:244]r[fg:244]o[fg:244]m[fg:244]p[fg:244]t[fg:244]…[fg:244]
+    ");
+}
+
 // ─── Status color rendering for each PaneStatus ─────────────────────
 
 #[test]
