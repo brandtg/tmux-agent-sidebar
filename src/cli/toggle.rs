@@ -261,12 +261,28 @@ fn parse_dimensions(s: &str) -> Option<(u32, u32)> {
     Some((width.trim().parse().ok()?, height.trim().parse().ok()?))
 }
 
-/// Dimensions a tmux layout string was captured at. Layouts serialize as
-/// `checksum,WxH,cells...`, so the pair right after the checksum is the
-/// window size the layout belongs to. Returns `None` for anything that
-/// does not match that grammar.
+/// Dimensions a tmux layout string was captured at. Two serializations
+/// exist across tmux versions: the classic `checksum,WxH,cells...` form,
+/// where the pair right after the checksum is the window size the layout
+/// belongs to, and the JSON tree form `{"V":2,"L":{...}}` (tmux 3.8),
+/// whose root tree object carries the window size in `"w"`/`"h"`.
+/// Returns `None` for anything that matches neither grammar.
 fn layout_dimensions(layout: &str) -> Option<(u32, u32)> {
+    if layout.trim_start().starts_with('{') {
+        return json_layout_dimensions(layout);
+    }
     parse_dimensions(layout.split(',').nth(1)?)
+}
+
+/// Root `"w"`/`"h"` of a JSON layout tree. The size lives on the root
+/// tree object under `L`; child cells carry their own `w`/`h`, so the
+/// lookup must stay on that object rather than scan the whole string.
+fn json_layout_dimensions(layout: &str) -> Option<(u32, u32)> {
+    let value: serde_json::Value = serde_json::from_str(layout).ok()?;
+    let tree = value.get("L").unwrap_or(&value);
+    let width = tree.get("w")?.as_u64()?;
+    let height = tree.get("h")?.as_u64()?;
+    Some((u32::try_from(width).ok()?, u32::try_from(height).ok()?))
 }
 
 /// Pure core of [`saved_layout_matches_window`] so the comparison is
@@ -1140,6 +1156,48 @@ mod tests {
         assert_eq!(layout_dimensions("onlyonefield"), None);
         assert_eq!(layout_dimensions("chk,notdims,0,0"), None);
         assert_eq!(layout_dimensions("chk,180xnope,0,0"), None);
+    }
+
+    #[test]
+    fn layout_dimensions_parses_json_layout_root_size() {
+        // tmux 3.8 serializes `#{window_layout}` as a JSON tree; the
+        // guard must read the window size from the root object or every
+        // restore is rejected and toggle cycles drift (the regression
+        // behind "closing the sidebar makes the neighbor pane wider").
+        let multi = r#"{"V":2,"L":{"t":"h","w":178,"h":51,"x":0,"y":0,"c":[{"t":"p","w":89,"h":51,"x":0,"y":0,"l":1,"i":0,"I":"%0"},{"t":"v","w":88,"h":51,"x":90,"y":0,"c":[{"t":"p","w":88,"h":25,"x":90,"y":0,"l":0,"i":1,"I":"%1"},{"t":"p","w":88,"h":25,"x":90,"y":26,"a":true,"i":2,"I":"%2"}]}]}}"#;
+        assert_eq!(layout_dimensions(multi), Some((178, 51)));
+        let single = r#"{"V":2,"L":{"t":"p","w":178,"h":51,"x":0,"y":0,"a":true,"i":0,"I":"%0"}}"#;
+        assert_eq!(layout_dimensions(single), Some((178, 51)));
+    }
+
+    #[test]
+    fn layout_dimensions_rejects_malformed_json() {
+        assert_eq!(layout_dimensions("{\"V\":2,\"L\":{\"t\":\"h\"}}"), None);
+        assert_eq!(layout_dimensions("{not json"), None);
+        // Child-cell sizes must not be mistaken for the root size: this
+        // root has no "w"/"h" of its own.
+        assert_eq!(
+            layout_dimensions("{\"V\":2,\"L\":{\"c\":[{\"t\":\"p\",\"w\":89,\"h\":51}]}}"),
+            None
+        );
+    }
+
+    #[test]
+    fn dimensions_match_accepts_json_layouts() {
+        let layout = r#"{"V":2,"L":{"t":"h","w":178,"h":51,"x":0,"y":0,"c":[{"t":"p","w":89,"h":51,"x":0,"y":0,"i":0,"I":"%0"}]}}"#;
+        assert!(dimensions_match("178x51", layout));
+        // A window resized since the snapshot is still stale — the JSON
+        // root's own "w" decides, not the nested cells.
+        assert!(!dimensions_match("226x62", layout));
+    }
+
+    #[test]
+    fn scheduled_restore_command_guards_with_json_layout_dimensions() {
+        let command = scheduled_restore_command(
+            "@5",
+            r#"{"V":2,"L":{"t":"h","w":237,"h":58,"x":0,"y":0,"c":[]}}"#,
+        );
+        assert!(command.contains(r#""237x58""#), "{command}");
     }
 
     #[test]
