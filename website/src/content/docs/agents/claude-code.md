@@ -18,7 +18,7 @@ Claude Code is the reference agent for the sidebar — every feature is wired th
 
 - Waiting status + wait reason from `Notification`, `PermissionDenied`, `TeammateIdle`
 - API failure reason from `StopFailure`
-- Permission badges: `plan`, `edit`, `auto`, `dontAsk`, `defer`, `!`
+- Permission badges: `plan` and `!` (the auto-accept family — `edit`, `auto`, `dontAsk`, `defer` — is unbadged steady state)
 
 ### Work-in-progress view
 

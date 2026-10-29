@@ -67,13 +67,15 @@ impl Default for ColorTheme {
             status_error: Color::Indexed(167),
             status_unknown: Color::Indexed(244),
             filter_inactive: Color::Indexed(245),
-            agent_claude: Color::Indexed(174),
+            // Claude's brand color is #D97757; xterm 173 (#d7875f) is the
+            // nearest 256-cube point (174 reads salmon-pink, not orange).
+            agent_claude: Color::Indexed(173),
             agent_codex: Color::Indexed(141),
             agent_opencode: Color::Indexed(117),
             agent_hermes: Color::Indexed(214),
-            // Aquamarine — the agent palette already holds a mauve (claude),
-            // periwinkle (codex), powder blue (opencode), and gold (hermes);
-            // a second blue would read as OpenCode's.
+            // Aquamarine — the agent palette already holds a terracotta
+            // (claude), periwinkle (codex), powder blue (opencode), and gold
+            // (hermes); a second blue would read as OpenCode's.
             agent_antigravity: Color::Indexed(78),
 
             text_active: Color::Indexed(255),
@@ -274,7 +276,7 @@ mod tests {
     #[test]
     fn agent_color_all() {
         let theme = ColorTheme::default();
-        assert_eq!(theme.agent_color(&AgentType::Claude), Color::Indexed(174));
+        assert_eq!(theme.agent_color(&AgentType::Claude), Color::Indexed(173));
         assert_eq!(theme.agent_color(&AgentType::Codex), Color::Indexed(141));
         assert_eq!(theme.agent_color(&AgentType::OpenCode), Color::Indexed(117));
         assert_eq!(theme.agent_color(&AgentType::Hermes), Color::Indexed(214));

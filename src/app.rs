@@ -178,10 +178,16 @@ pub fn run(
                 // A window/pane switch reloads the shared cursor, which
                 // another window may have moved. Re-anchor this sidebar at
                 // the top so the switch shows every agent instead of
-                // auto-scrolling to the adopted row — except when the
-                // sidebar itself just gained focus, where the context
-                // selection below replaces the blanket reset.
-                if !sidebar_gained_focus {
+                // auto-scrolling to the adopted row — but only while the
+                // sidebar pane is unfocused. Hook events from agents in
+                // this window ride the same SIGUSR1 (notify_sidebars_of_pane),
+                // and while the user is navigating the list the selection
+                // is theirs: resetting on every agent-state signal yanked
+                // the cursor back to the first row mid-navigation. Leaving
+                // the sidebar flips the focus flag, so the next signal
+                // re-anchors as before; arriving re-anchors through the
+                // context selection below.
+                if !state.focus_state.sidebar_focused {
                     state.reset_pane_scroll();
                 }
             }

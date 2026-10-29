@@ -21,8 +21,8 @@ Codex exposes a smaller hook set than Claude Code, so some sidebar features are 
 
 ### Permission badges
 
-- `auto` and `!` — inferred from process arguments
-- `plan` / `edit` are **not** available on Codex
+- `!` — inferred from process arguments
+- `auto` is unbadged (steady state), and `plan` is **not** available on Codex
 
 ### Notifications
 

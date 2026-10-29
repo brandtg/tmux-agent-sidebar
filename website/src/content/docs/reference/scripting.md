@@ -34,7 +34,7 @@ tmux show -t "$pane_id" -pv @pane_agent
 | `@pane_bg_pid`             | PID of the tracked background process when the spawn result reported one (Hermes). The sweep prefers it over the command-string match. |
 | `@pane_subagents`          | Comma-separated subagent labels (Claude `Task`, Hermes `delegate_task`). For Hermes a non-empty list survives the parent's Stop — async children are still running — and the final `subagent_stop` drops the pane back to idle. |
 | `@pane_cwd`                | Working directory reported by the agent (preferred over `pane_current_path`) |
-| `@pane_permission_mode`    | Permission-mode string for the badge (`plan` / `edit` / `auto` / `!` / …) |
+| `@pane_permission_mode`    | Permission-mode string for the pane (`plan` / `acceptEdits` / `auto` / `bypassPermissions` / …); only `plan` and `!` render as badges |
 | `@pane_worktree_name`      | Worktree label when the pane was spawned from the sidebar           |
 | `@pane_worktree_branch`    | Branch that was auto-created for the worktree                       |
 | `@pane_session_id`         | Agent session ID (opaque; useful for correlating logs)              |
