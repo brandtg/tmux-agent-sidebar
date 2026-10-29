@@ -722,7 +722,7 @@ mod tests {
     }
 
     #[test]
-    fn render_pane_lines_shows_permission_badge() {
+    fn render_pane_lines_hides_auto_accept_badges() {
         let theme = ColorTheme::default();
         let pane = pane(PermissionMode::Auto, PaneStatus::Running, "");
         let lines = render_pane_lines_with_ports(
@@ -741,11 +741,12 @@ mod tests {
         );
 
         let status = line_text(&lines[0]);
-        assert!(status.contains(" codex auto"));
+        // Auto-accept is the everyday steady state — unbadged by design.
+        assert!(!status.contains(" codex auto"));
     }
 
     #[test]
-    fn render_pane_lines_shows_defer_badge() {
+    fn render_pane_lines_hides_defer_badge() {
         let theme = ColorTheme::default();
         let pane = pane(PermissionMode::Defer, PaneStatus::Running, "");
         let lines = render_pane_lines_with_ports(
@@ -765,8 +766,8 @@ mod tests {
 
         let status = line_text(&lines[0]);
         assert!(
-            status.contains(" codex defer"),
-            "defer permission mode should render its badge, got: {status}"
+            !status.contains(" codex defer"),
+            "defer is auto-accept family — unbadged, got: {status}"
         );
     }
 
@@ -1814,8 +1815,8 @@ mod tests {
             "subagent count badge must render: {text}"
         );
         assert!(
-            text.contains("auto"),
-            "permission badge must render: {text}"
+            !text.contains(" auto"),
+            "auto-accept mode is unbadged steady state: {text}"
         );
         assert!(
             !text.contains("permission required"),

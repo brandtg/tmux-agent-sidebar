@@ -147,7 +147,7 @@ All options are tmux options set in `~/.tmux.conf`, before the plugin loads (bef
 | `@sidebar_color_idle` | `110` | Selected idle filter icon and idle pane status |
 | `@sidebar_color_error` | `167` | Selected error filter icon and error pane status |
 | `@sidebar_color_filter_inactive` | `245` | Unselected status filter icons and zero counts |
-| `@sidebar_color_agent_claude` | `174` | Claude brand color |
+| `@sidebar_color_agent_claude` | `173` | Claude brand color |
 | `@sidebar_color_agent_codex` | `141` | Codex brand color |
 | `@sidebar_color_agent_opencode` | `117` | OpenCode brand color |
 | `@sidebar_color_agent_hermes` | `214` | Hermes brand color |

@@ -51,12 +51,12 @@ When multiple signals compete on the same pane, the sidebar resolves them in thi
 
 ### Permission badge
 
+Only safety-relevant deviations get a badge; the auto-accept family is the everyday steady state and stays unbadged:
+
 - `plan` — plan mode
-- `edit` — auto-edit
-- `auto` — auto-accept
-- `dontAsk` — skip every permission prompt for the session
-- `defer` — wait for an explicit decision before applying
 - `!` — bypass permissions (dangerous)
+
+The underlying mode is still tracked per pane (`@pane_permission_mode`), so the badge can return without config changes if the badge policy is widened.
 
 ### Session name
 

@@ -156,15 +156,19 @@ impl PermissionMode {
         }
     }
 
+    /// Badge shown after the pane title. Only safety-relevant deviations
+    /// get a badge: bypass (`!`) and plan. The auto-accept family (auto,
+    /// edit, dontAsk, defer) is the everyday steady state for most panes,
+    /// so tagging it on every row reads as noise.
     pub fn badge(&self) -> &str {
         match self {
             Self::Default => "",
             Self::Plan => "plan",
-            Self::AcceptEdits => "edit",
-            Self::Auto => "auto",
-            Self::DontAsk => "dontAsk",
+            Self::AcceptEdits => "",
+            Self::Auto => "",
+            Self::DontAsk => "",
             Self::BypassPermissions => "!",
-            Self::Defer => "defer",
+            Self::Defer => "",
         }
     }
 }
@@ -421,10 +425,11 @@ mod tests {
     fn permission_mode_badge() {
         assert_eq!(PermissionMode::Default.badge(), "");
         assert_eq!(PermissionMode::Plan.badge(), "plan");
-        assert_eq!(PermissionMode::AcceptEdits.badge(), "edit");
-        assert_eq!(PermissionMode::Auto.badge(), "auto");
-        assert_eq!(PermissionMode::DontAsk.badge(), "dontAsk");
+        // The auto-accept family is unbadged steady state.
+        assert_eq!(PermissionMode::AcceptEdits.badge(), "");
+        assert_eq!(PermissionMode::Auto.badge(), "");
+        assert_eq!(PermissionMode::DontAsk.badge(), "");
         assert_eq!(PermissionMode::BypassPermissions.badge(), "!");
-        assert_eq!(PermissionMode::Defer.badge(), "defer");
+        assert_eq!(PermissionMode::Defer.badge(), "");
     }
 }
