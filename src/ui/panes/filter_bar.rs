@@ -98,7 +98,32 @@ pub(super) fn render_secondary_header<'a>(
     } else {
         spans.push(Span::raw("  "));
     }
-    spans.push(Span::raw(" ".repeat(gap)));
+
+    // While `/` is open (or a query is applied), the left side of this
+    // row becomes the search input. The repo button stays right-aligned,
+    // so its column — and click target — does not move.
+    let searching = state.search.is_active() || state.search.has_query();
+    if searching {
+        let cursor = if state.search.is_active() { "█" } else { "" };
+        let cursor_width = display_width(cursor);
+        let budget = gap.saturating_sub(cursor_width);
+        let raw = format!("/{}", state.search.query);
+        let shown = super::tail_fit(&raw, budget);
+        let shown_width = display_width(&shown);
+        let pad = gap.saturating_sub(shown_width + cursor_width);
+        let style = if state.search.is_active() {
+            Style::default().fg(theme.accent)
+        } else {
+            Style::default().fg(theme.text_active)
+        };
+        spans.push(Span::styled(shown, style));
+        if !cursor.is_empty() {
+            spans.push(Span::styled(cursor, Style::default().fg(theme.accent)));
+        }
+        spans.push(Span::raw(" ".repeat(pad)));
+    } else {
+        spans.push(Span::raw(" ".repeat(gap)));
+    }
     spans.push(Span::styled(repo_label, repo_style));
     spans.push(Span::raw(" "));
     spans.push(Span::styled(repo_icon, repo_style));
@@ -560,5 +585,41 @@ mod tests {
                 "clicking the rendered column {col} must select {filter:?}"
             );
         }
+    }
+
+    // ─── search header ────────────────────────────────────────
+
+    #[test]
+    fn snapshot_secondary_header_shows_active_search() {
+        let mut state = AppState::new(String::new());
+        state.search.query = "codex".into();
+        state.search.active = true;
+        let text = line_text(&render_secondary_header(&state, 30).0);
+        insta::assert_snapshot!(text, @"  /codex█                  — ▾");
+    }
+
+    #[test]
+    fn search_header_keeps_repo_button_column() {
+        let mut state = AppState::new(String::new());
+        let (_, _, before) = render_secondary_header(&state, 30);
+        state.search.query = "a-very-long-query-that-will-truncate".into();
+        state.search.active = true;
+        let (_, _, after) = render_secondary_header(&state, 30);
+        assert_eq!(
+            before, after,
+            "the repo button must stay right-aligned while searching"
+        );
+    }
+
+    #[test]
+    fn search_header_fits_narrow_width() {
+        let mut state = AppState::new(String::new());
+        state.search.query = "a-very-long-query".into();
+        state.search.active = true;
+        let text = line_text(&render_secondary_header(&state, 12).0);
+        assert!(
+            display_width(&text) <= 12,
+            "search header overflowed its width: {text:?}"
+        );
     }
 }

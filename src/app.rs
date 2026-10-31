@@ -188,6 +188,11 @@ pub fn run(
                 // re-anchors as before; arriving re-anchors through the
                 // context selection below.
                 if !state.focus_state.sidebar_focused {
+                    // A search is a transient navigation aid scoped to the
+                    // sidebar's focus: leaving the sidebar (a jump, a
+                    // manual pane switch) ends it, so returning shows the
+                    // full list instead of a stale filter.
+                    state.cancel_search();
                     state.reset_pane_scroll();
                 }
             }

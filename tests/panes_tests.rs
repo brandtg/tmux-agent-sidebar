@@ -3,8 +3,8 @@ mod test_helpers;
 
 use test_helpers::*;
 use tmux_agent_sidebar::group::{PaneGitInfo, RepoGroup};
-use tmux_agent_sidebar::state::{Focus, StatusFilter};
-use tmux_agent_sidebar::tmux::{AgentType, PaneStatus, SessionInfo, WindowInfo};
+use tmux_agent_sidebar::state::{AppState, Focus, StatusFilter};
+use tmux_agent_sidebar::tmux::{AgentType, PaneInfo, PaneStatus, SessionInfo, WindowInfo};
 use tmux_agent_sidebar::ui::colors::ColorTheme;
 use tmux_agent_sidebar::ui::icons::StatusIcons;
 
@@ -633,5 +633,64 @@ fn snapshot_compact_mode_spawned_worktree_remove_marker() {
     ⓘ                        — ▾
     project                    +
     ┃ ● fix-api + agent/fix-a… ×
+    ");
+}
+
+// ─── Search ─────────────────────────────────────────────────────────
+
+fn search_pane(id: &str, agent: AgentType, tmux_session: &str, session_name: &str) -> PaneInfo {
+    let mut pane = make_pane(agent, PaneStatus::Idle);
+    pane.pane_id = id.into();
+    pane.tmux_session = tmux_session.into();
+    pane.session_name = session_name.into();
+    pane
+}
+
+fn search_state() -> AppState {
+    let mut state = make_state(vec![]);
+    state.repo_groups = vec![
+        make_repo_group(
+            "backend",
+            vec![
+                search_pane("%1", AgentType::Claude, "work", "claude-api"),
+                search_pane("%2", AgentType::Codex, "work", "codex-ui"),
+            ],
+        ),
+        make_repo_group(
+            "frontend",
+            vec![search_pane("%3", AgentType::Claude, "web", "frontend")],
+        ),
+    ];
+    state.rebuild_row_targets();
+    state
+}
+
+#[test]
+fn snapshot_search_bar_filters_list_but_keeps_group() {
+    let mut state = search_state();
+    state.search.query = "codex".into();
+    state.search.active = true;
+    state.rebuild_row_targets();
+
+    insta::assert_snapshot!(render_to_string(&mut state, 40, 20), @"
+     ≡1  ●0  ◎0  ◐0  ○1  ✕0
+    ⓘ /codex█                            — ▾
+    backend
+      ○ codex-ui
+        Waiting for prompt…
+    ");
+}
+
+#[test]
+fn snapshot_search_no_matches_empty_state() {
+    let mut state = search_state();
+    state.search.query = "zzz".into();
+    state.search.active = false;
+    state.rebuild_row_targets();
+
+    insta::assert_snapshot!(render_to_string(&mut state, 40, 20), @"
+     ≡0  ●0  ◎0  ◐0  ○0  ✕0
+    ⓘ /zzz                               — ▾
+      no matches for zzz
     ");
 }

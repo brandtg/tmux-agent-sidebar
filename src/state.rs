@@ -13,6 +13,7 @@ mod pane_runtime;
 mod popup;
 mod refresh;
 mod scroll;
+mod search;
 mod session;
 mod timers;
 
@@ -28,6 +29,7 @@ pub use popup::{PopupOpResult, PopupState, SpawnField};
 #[cfg(test)]
 pub(crate) use refresh::{TaskProgressDecision, classify_task_progress};
 pub use scroll::{ScrollState, ScrollStates};
+pub use search::SearchState;
 pub use session::SessionNamesState;
 pub use timers::RefreshTimers;
 
@@ -86,6 +88,10 @@ pub struct AppState {
     pub version_notice: Option<crate::version::UpdateNotice>,
     /// Shared state across sidebar instances, persisted to tmux global variables.
     pub global: GlobalState,
+    /// Local text search over the agent list (`/`). Not shared across
+    /// sidebar instances: the query is transient, and broadcasting it on
+    /// every keystroke would refresh every open sidebar.
+    pub search: SearchState,
     /// Maps session_id → session name, refreshed periodically by
     /// `session_poll_loop` (Claude `/rename` labels plus Hermes session
     /// titles).
@@ -144,6 +150,7 @@ impl AppState {
             notices: NoticesState::default(),
             version_notice: None,
             global,
+            search: SearchState::default(),
             sessions: SessionNamesState::default(),
             popup_mode: false,
             window_has_no_other_panes: false,

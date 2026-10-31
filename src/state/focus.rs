@@ -122,6 +122,13 @@ impl AppState {
         };
         let target_pane_id = target.pane_id.clone();
 
+        // A jump ends the search: clear the query so this sidebar returns
+        // to the full list. Jumping to another window already looked
+        // cleared because that window's sidebar is a separate instance
+        // with its own search state; clearing here makes a jump inside
+        // the same window behave the same way.
+        self.cancel_search();
+
         // Update the sidebar immediately so the active marker and
         // repo header highlight move without waiting for the next
         // periodic tmux refresh.

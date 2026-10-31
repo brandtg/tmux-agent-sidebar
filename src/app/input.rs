@@ -96,12 +96,51 @@ pub(super) fn handle_key_event(key: KeyEvent, state: &mut AppState) -> bool {
         return true;
     }
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+
+    // The `/` input line owns the keyboard while open: printable keys edit
+    // the query (including `q`, `?`, and `/`), Up/Down still navigate the
+    // filtered list, Esc clears the query and closes, Enter closes but
+    // keeps the query applied, and Ctrl-u clears the query in place.
+    if state.search.is_active() {
+        match key.code {
+            KeyCode::Esc => state.cancel_search(),
+            KeyCode::Enter => state.finish_search(),
+            KeyCode::Backspace => state.search_pop_char(),
+            // Navigate the filtered list without leaving the input line.
+            // Use the raw selection move (not `pane_nav_up`), which would
+            // hand focus back to the status row at the top of the list.
+            KeyCode::Up => {
+                state.move_pane_selection(-1);
+            }
+            KeyCode::Down => {
+                state.move_pane_selection(1);
+            }
+            KeyCode::Char('n') if ctrl => {
+                state.move_pane_selection(1);
+            }
+            KeyCode::Char('p') if ctrl => {
+                state.move_pane_selection(-1);
+            }
+            KeyCode::Char('u') if ctrl => state.clear_search_query(),
+            KeyCode::Char('w') if ctrl => state.search_pop_word(),
+            KeyCode::Char(c) if !ctrl => state.search_push_char(c),
+            _ => {}
+        }
+        return true;
+    }
+
     match key.code {
         KeyCode::Esc => {
-            if state.focus_state.focus == Focus::Filter {
+            // Esc cancels an applied search first; only when the list is
+            // unfiltered does it fall back to returning focus from the
+            // status row.
+            if state.search.has_query() {
+                state.cancel_search();
+            } else if state.focus_state.focus == Focus::Filter {
                 state.focus_state.focus = Focus::Panes;
             }
         }
+        KeyCode::Char('/') => state.open_search(),
         KeyCode::Char('q') => state.quit_requested = true,
         KeyCode::Char('j') | KeyCode::Down => pane_nav_down(state),
         KeyCode::Char('n') if ctrl => pane_nav_down(state),
@@ -630,5 +669,222 @@ mod tests {
         // and must not write an option.
         handle_key_event(key(KeyCode::Char('f')), &mut state);
         assert_eq!(test_mock::get("%1", PANE_FLAGGED).as_deref(), Some(""));
+    }
+
+    // ─── / (search) ─────────────────────────────────────────────────
+
+    fn search_pane(id: &str, agent: AgentType, tmux_session: &str, session_name: &str) -> PaneInfo {
+        PaneInfo {
+            agent,
+            tmux_session: tmux_session.into(),
+            session_name: session_name.into(),
+            ..test_pane(id)
+        }
+    }
+
+    fn state_with_search_groups() -> AppState {
+        let mut state = AppState::new("%99".into());
+        state.repo_groups = vec![
+            RepoGroup {
+                name: "backend".into(),
+                has_focus: false,
+                panes: vec![
+                    (
+                        search_pane("%1", AgentType::Claude, "work", "claude-api"),
+                        PaneGitInfo::default(),
+                    ),
+                    (
+                        search_pane("%2", AgentType::Codex, "work", "codex"),
+                        PaneGitInfo::default(),
+                    ),
+                ],
+            },
+            RepoGroup {
+                name: "frontend".into(),
+                has_focus: false,
+                panes: vec![(
+                    search_pane("%3", AgentType::Claude, "web", "ui"),
+                    PaneGitInfo::default(),
+                )],
+            },
+        ];
+        state.rebuild_row_targets();
+        state
+    }
+
+    fn target_ids(state: &AppState) -> Vec<String> {
+        state
+            .layout
+            .pane_row_targets
+            .iter()
+            .map(|t| t.pane_id.clone())
+            .collect()
+    }
+
+    #[test]
+    fn slash_opens_search_and_typing_filters_case_insensitively() {
+        let mut state = state_with_search_groups();
+        handle_key_event(key(KeyCode::Char('/')), &mut state);
+        assert!(state.search.is_active());
+
+        for c in "CODEX".chars() {
+            handle_key_event(key(KeyCode::Char(c)), &mut state);
+        }
+        assert_eq!(state.search.query, "CODEX");
+        assert_eq!(target_ids(&state), vec!["%2".to_string()]);
+    }
+
+    #[test]
+    fn q_types_into_search_without_requesting_quit() {
+        let mut state = state_with_search_groups();
+        handle_key_event(key(KeyCode::Char('/')), &mut state);
+        handle_key_event(key(KeyCode::Char('q')), &mut state);
+        assert!(!state.quit_requested, "q must edit the query, not quit");
+        assert_eq!(state.search.query, "q");
+    }
+
+    #[test]
+    fn enter_keeps_query_and_esc_clears_it() {
+        let mut state = state_with_search_groups();
+        handle_key_event(key(KeyCode::Char('/')), &mut state);
+        for c in "codex".chars() {
+            handle_key_event(key(KeyCode::Char(c)), &mut state);
+        }
+        assert_eq!(target_ids(&state), vec!["%2".to_string()]);
+
+        handle_key_event(key(KeyCode::Enter), &mut state);
+        assert!(!state.search.is_active());
+        assert_eq!(state.search.query, "codex");
+        assert_eq!(target_ids(&state), vec!["%2".to_string()]);
+
+        handle_key_event(key(KeyCode::Esc), &mut state);
+        assert!(!state.search.is_active());
+        assert_eq!(state.search.query, "");
+        assert_eq!(target_ids(&state), vec!["%1", "%2", "%3"]);
+    }
+
+    #[test]
+    fn ctrl_u_clears_query_but_keeps_input_open() {
+        let mut state = state_with_search_groups();
+        handle_key_event(key(KeyCode::Char('/')), &mut state);
+        for c in "codex".chars() {
+            handle_key_event(key(KeyCode::Char(c)), &mut state);
+        }
+        handle_key_event(ctrl_key('u'), &mut state);
+        assert!(state.search.is_active());
+        assert_eq!(state.search.query, "");
+        assert_eq!(target_ids(&state), vec!["%1", "%2", "%3"]);
+    }
+
+    #[test]
+    fn backspace_edits_the_query() {
+        let mut state = state_with_search_groups();
+        handle_key_event(key(KeyCode::Char('/')), &mut state);
+        for c in "codexx".chars() {
+            handle_key_event(key(KeyCode::Char(c)), &mut state);
+        }
+        assert!(target_ids(&state).is_empty());
+        handle_key_event(key(KeyCode::Backspace), &mut state);
+        assert_eq!(state.search.query, "codex");
+        assert_eq!(target_ids(&state), vec!["%2".to_string()]);
+    }
+
+    #[test]
+    fn ctrl_w_deletes_the_word_before_the_cursor() {
+        let mut state = state_with_search_groups();
+        handle_key_event(key(KeyCode::Char('/')), &mut state);
+        for c in "backend codex".chars() {
+            handle_key_event(key(KeyCode::Char(c)), &mut state);
+        }
+        assert_eq!(state.search.query, "backend codex");
+
+        handle_key_event(ctrl_key('w'), &mut state);
+        assert_eq!(state.search.query, "backend ");
+        assert_eq!(target_ids(&state), vec!["%1", "%2"]);
+
+        handle_key_event(ctrl_key('w'), &mut state);
+        assert_eq!(state.search.query, "");
+        assert_eq!(target_ids(&state), vec!["%1", "%2", "%3"]);
+    }
+
+    #[test]
+    fn up_down_navigate_results_without_leaving_search() {
+        let mut state = state_with_search_groups();
+        handle_key_event(key(KeyCode::Char('/')), &mut state);
+        for c in "work".chars() {
+            handle_key_event(key(KeyCode::Char(c)), &mut state);
+        }
+        assert_eq!(target_ids(&state), vec!["%1", "%2"]);
+        handle_key_event(key(KeyCode::Down), &mut state);
+        assert_eq!(state.global.selected_pane_row, 1);
+        assert!(state.search.is_active());
+        handle_key_event(key(KeyCode::Up), &mut state);
+        assert_eq!(state.global.selected_pane_row, 0);
+        assert_eq!(state.search.query, "work");
+
+        // The same navigation works through the Ctrl-n / Ctrl-p pair.
+        handle_key_event(ctrl_key('n'), &mut state);
+        assert_eq!(state.global.selected_pane_row, 1);
+        handle_key_event(ctrl_key('p'), &mut state);
+        assert_eq!(state.global.selected_pane_row, 0);
+        assert!(state.search.is_active());
+        assert_eq!(state.search.query, "work");
+    }
+
+    #[test]
+    fn search_preserves_selection_when_the_pane_still_matches() {
+        let mut state = state_with_search_groups();
+        state.global.selected_pane_row = 1; // %2, the codex pane
+        handle_key_event(key(KeyCode::Char('/')), &mut state);
+        for c in "codex".chars() {
+            handle_key_event(key(KeyCode::Char(c)), &mut state);
+        }
+        assert_eq!(target_ids(&state), vec!["%2".to_string()]);
+        assert_eq!(state.global.selected_pane_row, 0);
+        assert_eq!(state.selected_pane().unwrap().pane_id, "%2");
+    }
+
+    #[test]
+    fn search_selects_first_match_when_the_selection_falls_out() {
+        let mut state = state_with_search_groups();
+        state.global.selected_pane_row = 0; // %1, the claude pane
+        handle_key_event(key(KeyCode::Char('/')), &mut state);
+        for c in "codex".chars() {
+            handle_key_event(key(KeyCode::Char(c)), &mut state);
+        }
+        assert_eq!(target_ids(&state), vec!["%2".to_string()]);
+        assert_eq!(state.global.selected_pane_row, 0);
+        assert_eq!(state.selected_pane().unwrap().pane_id, "%2");
+    }
+
+    #[test]
+    fn jumping_to_a_pane_clears_the_search() {
+        let mut state = state_with_search_groups();
+        handle_key_event(key(KeyCode::Char('/')), &mut state);
+        for c in "codex".chars() {
+            handle_key_event(key(KeyCode::Char(c)), &mut state);
+        }
+        assert_eq!(target_ids(&state), vec!["%2".to_string()]);
+
+        // First Enter closes the input but keeps the query applied.
+        handle_key_event(key(KeyCode::Enter), &mut state);
+        assert!(!state.search.is_active());
+        assert_eq!(state.search.query, "codex");
+
+        // Second Enter jumps to the selected pane and ends the search.
+        handle_key_event(key(KeyCode::Enter), &mut state);
+        assert_eq!(state.search.query, "");
+        assert!(!state.search.is_active());
+        assert_eq!(target_ids(&state), vec!["%1", "%2", "%3"]);
+    }
+
+    #[test]
+    fn group_name_match_keeps_all_rows_in_that_group() {
+        let mut state = state_with_search_groups();
+        handle_key_event(key(KeyCode::Char('/')), &mut state);
+        for c in "backend".chars() {
+            handle_key_event(key(KeyCode::Char(c)), &mut state);
+        }
+        assert_eq!(target_ids(&state), vec!["%1", "%2"]);
     }
 }

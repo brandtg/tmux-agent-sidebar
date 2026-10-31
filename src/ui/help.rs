@@ -13,6 +13,7 @@ use crate::ui::text::{display_width, truncate_to_width};
 /// follow the keybindings doc so the two can be diffed by eye.
 const HELP_ROWS: &[(&str, &str)] = &[
     ("j / k", "Move selection"),
+    ("/", "Search agents"),
     ("PgUp / PgDn", "Page the list"),
     ("h / l", "Previous / next status filter"),
     ("Tab", "Cycle status filter"),
@@ -140,6 +141,7 @@ mod tests {
         ┌───────────────────────────────────────────────┐
         │ Help                                          │
         │ j / k        Move selection                   │
+        │ /            Search agents                    │
         │ PgUp / PgDn  Page the list                    │
         │ h / l        Previous / next status filter    │
         │ Tab          Cycle status filter              │
@@ -165,12 +167,12 @@ mod tests {
         ┌──────────────────┐
         │ Help             │
         │ j / k        Mov…│
+        │ /            Sea…│
         │ PgUp / PgDn  Pag…│
         │ h / l        Pre…│
         │ Tab          Cyc…│
         │ Enter / →    Jum…│
         │ n            Spa…│
-        │ x            Rem…│
         └──────────────────┘
         ");
     }

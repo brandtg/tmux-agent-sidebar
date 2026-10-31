@@ -90,15 +90,31 @@ impl AppState {
             self.global.save_repo_filter();
         }
 
+        // Remember which pane the cursor was on before the target list is
+        // rebuilt, so a rebuild that still contains it can keep the cursor
+        // there instead of clamping to an unrelated index.
+        let previous_pane_id = self
+            .layout
+            .pane_row_targets
+            .get(self.global.selected_pane_row)
+            .map(|target| target.pane_id.clone());
+
         self.layout.pane_row_targets.clear();
         for group in &self.repo_groups {
             if !self.global.repo_filter.matches_group(&group.name) {
                 continue;
             }
+            // A group-name hit keeps every row in the group visible; a
+            // miss falls back to each row's own fields. This mirrors the
+            // renderer's rule in `row_collector::collect`.
+            let group_matches_search = self.search_matches_group(group);
             let filtered_panes: Vec<_> = group
                 .panes
                 .iter()
-                .filter(|(pane, _)| self.global.status_filter.matches(pane))
+                .filter(|(pane, git)| {
+                    self.global.status_filter.matches(pane)
+                        && (group_matches_search || self.search_matches_pane(pane, git))
+                })
                 .collect();
 
             // The same window set and per-window status-filter rule as
@@ -117,6 +133,7 @@ impl AppState {
                     .filter(|window| {
                         let runtime = self.pane_state(&window.pane_id);
                         self.global.status_filter.matches_window(window, runtime)
+                            && (group_matches_search || self.search_matches_window(window))
                     })
                     .collect()
             } else {
@@ -137,12 +154,33 @@ impl AppState {
                 self.layout.pane_row_targets.push(target);
             }
         }
-        if self.layout.pane_row_targets.is_empty() {
+
+        let len = self.layout.pane_row_targets.len();
+        if len == 0 {
             // No rows to select — reset the cursor so a later, larger view
             // cannot inherit a stale index and auto-scroll down to it.
             self.global.selected_pane_row = 0;
-        } else if self.global.selected_pane_row >= self.layout.pane_row_targets.len() {
-            self.global.selected_pane_row = self.layout.pane_row_targets.len() - 1;
+            return;
+        }
+        // Keep the cursor on the same pane when it survives the rebuild
+        // (search typing, status changes, refreshes). During an active
+        // search, a cursor whose pane fell out of the result set moves to
+        // the first match instead of clamping to the last row, which is
+        // where the old clamp left it.
+        if let Some(previous) = previous_pane_id
+            && let Some(index) = self
+                .layout
+                .pane_row_targets
+                .iter()
+                .position(|target| target.pane_id == previous)
+        {
+            self.global.selected_pane_row = index;
+            return;
+        }
+        if self.search.has_query() {
+            self.global.selected_pane_row = 0;
+        } else if self.global.selected_pane_row >= len {
+            self.global.selected_pane_row = len - 1;
         }
     }
 

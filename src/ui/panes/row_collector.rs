@@ -29,10 +29,16 @@ pub(super) fn collect(state: &AppState, width: u16) -> CollectedRows {
         if !state.global.repo_filter.matches_group(&group.name) {
             continue;
         }
+        // Same rule as `rebuild_row_targets`: a group-name hit keeps the
+        // whole group; otherwise each row must match on its own fields.
+        let group_matches_search = state.search_matches_group(group);
         let filtered_panes: Vec<_> = group
             .panes
             .iter()
-            .filter(|(pane, _)| filter.matches(pane))
+            .filter(|(pane, git)| {
+                filter.matches(pane)
+                    && (group_matches_search || state.search_matches_pane(pane, git))
+            })
             .collect();
 
         // A group with no matching agent panes is skipped entirely —
@@ -51,6 +57,7 @@ pub(super) fn collect(state: &AppState, width: u16) -> CollectedRows {
                         .filter(|window| {
                             let runtime = state.pane_state(&window.pane_id);
                             filter.matches_window(window, runtime)
+                                && (group_matches_search || state.search_matches_window(window))
                         })
                         .collect()
                 })
@@ -272,6 +279,17 @@ pub(super) fn collect(state: &AppState, width: u16) -> CollectedRows {
                 }
             }
         }
+    }
+
+    // An applied search that matches nothing leaves an empty panel; say so
+    // instead of rendering a blank box. This line is not a selectable row,
+    // so it maps to `None` in `line_to_row`.
+    if collected.lines.is_empty() && state.search.has_query() {
+        collected.lines.push(Line::from(Span::styled(
+            format!("  no matches for {}", state.search.query.trim()),
+            Style::default().fg(theme.text_muted),
+        )));
+        collected.line_to_row.push(None);
     }
 
     collected
