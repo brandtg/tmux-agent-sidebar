@@ -15,6 +15,7 @@ pub mod state;
 pub(crate) mod subprocess;
 pub mod time;
 pub mod tmux;
+pub mod todo;
 pub mod tool_name;
 pub mod ui;
 pub mod version;

@@ -26,6 +26,7 @@ description: Every shortcut in the sidebar, the worktree spawn modal, and the cl
 | `Tab`          | Cycle status filter                                           |
 | `c`            | Toggle compact view (one line per agent)                      |
 | `w`            | Toggle listing non-agent panes (long-running tasks)           |
+| `t`            | Open the TODO panel; focus it when open, close it when focused |
 | `f`            | Flag / unflag the selected agent (orange inbox-pin marker)    |
 | `?`            | Show keyboard reference popup                                 |
 | `Esc`          | Return focus or close the popup                               |
@@ -79,6 +80,29 @@ Opened with `?`; a keyboard reference for the shortcuts above.
 | Key       | Action          |
 | --------- | --------------- |
 | `?` / `Esc` | Close the popup |
+
+## TODO panel
+
+Opened with `t`; hidden by default. Items are plain text, word-wrapped, and
+shared by every sidebar through `~/.local/state/tmux-agent-sidebar/todos.txt`
+(or `$XDG_STATE_HOME` when set). Completed items are hidden by default.
+
+| Key             | Action                                                        |
+| --------------- | ------------------------------------------------------------- |
+| `t`             | Open the panel; focus it when open but unfocused, close it when focused |
+| `j` / `Down`    | Move to the next visible item                                 |
+| `k` / `Up`      | Move to the previous visible item                             |
+| `PageUp` / `PageDown` | Page the item list                                      |
+| `Enter`         | Toggle the selected item's checkbox                           |
+| `e`             | Edit the selected item's text (Enter saves, Esc cancels)      |
+| `x` / `d`       | Delete the selected item                                      |
+| `D`             | Delete all completed items                                    |
+| `a`             | Add a new item; while the add line is open, Enter commits and starts a fresh line, Esc ends entry |
+| `d`             | Delete the selected item                                      |
+| `H`             | Toggle "hide completed" (shared across open sidebars)         |
+| `Esc`           | Return focus to the agent list; the panel stays visible       |
+
+Clicking an item toggles its checkbox; clicking the add line opens the input.
 
 ## Worktree
 

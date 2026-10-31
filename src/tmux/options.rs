@@ -152,6 +152,15 @@ pub const SIDEBAR_GROUP_BY: &str = "@sidebar_group_by";
 /// `off`, default `off`). Read once at startup; the live
 /// [`SIDEBAR_SHOW_WINDOWS`] value is never restored on reopen.
 pub const SIDEBAR_DEFAULT_SHOW_WINDOWS: &str = "@sidebar_default_show_windows";
+/// Live "hide completed TODOs" flag (`1`/`0`, default `1`). Written
+/// whenever a sidebar toggles the setting with `H` so every open sidebar
+/// hides completed items alike. Seeded by
+/// [`SIDEBAR_DEFAULT_TODO_HIDE_COMPLETED`] on a fresh tmux server.
+pub const SIDEBAR_TODO_HIDE_COMPLETED: &str = "@sidebar_todo_hide_completed";
+/// Landing value for [`SIDEBAR_TODO_HIDE_COMPLETED`] (`on` / `off`,
+/// default `on`). Read once at startup; the live value wins once any
+/// sidebar has toggled.
+pub const SIDEBAR_DEFAULT_TODO_HIDE_COMPLETED: &str = "@sidebar_default_todo_hide_completed";
 /// Windows narrower than this many columns open the sidebar as a tmux
 /// popup instead of a split pane (mobile viewports). `0` disables the
 /// popup path entirely. Read by the `toggle` subcommand.

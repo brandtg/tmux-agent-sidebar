@@ -474,6 +474,10 @@ impl AppState {
     /// periodic ps/lsof scan run on worker threads; see `app/workers.rs`.
     pub fn refresh(&mut self) -> bool {
         self.refresh_now();
+        // The TODO list is shared through a file, not tmux: reload when
+        // another sidebar instance changed it (one stat per tick).
+        self.todos
+            .refresh_if_changed(self.global.todo_hide_completed);
         let Some(snapshot) = tmux::query_session_snapshot(&self.tmux_pane) else {
             // A failed `list-panes` call is not evidence that no panes
             // exist. Applying an empty snapshot here would prune every

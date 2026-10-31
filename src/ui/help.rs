@@ -30,6 +30,7 @@ const HELP_ROWS: &[(&str, &str)] = &[
     ("r", "Open repo filter"),
     ("c", "Toggle compact view"),
     ("w", "List non-agent panes"),
+    ("t", "Open / focus / close TODO panel"),
     ("Esc", "Return focus / close popup"),
     ("?", "Toggle this help"),
     ("q", "Quit"),
@@ -147,7 +148,6 @@ mod tests {
         insta::assert_snapshot!(output, @"
 
 
-
         ┌───────────────────────────────────────────────┐
         │ Help                                          │
         │ j / k        Move selection                   │
@@ -168,6 +168,7 @@ mod tests {
         │ r            Open repo filter                 │
         │ c            Toggle compact view              │
         │ w            List non-agent panes             │
+        │ t            Open / focus / close TODO panel  │
         │ Esc          Return focus / close popup       │
         │ ?            Toggle this help                 │
         │ q            Quit                             │

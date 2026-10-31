@@ -3,6 +3,7 @@ mod filter_bar;
 mod popups;
 mod row;
 mod row_collector;
+mod todo;
 
 use ratatui::{
     Frame,
@@ -53,10 +54,14 @@ struct PaneLayout {
     filter_area: Rect,
     secondary_area: Rect,
     list_area: Rect,
+    /// Bottom TODO panel; zero-height while hidden.
+    todo_area: Rect,
 }
 
 impl PaneLayout {
-    fn compute(area: Rect) -> Self {
+    fn compute_with_todo(area: Rect, todo_height: u16) -> Self {
+        // Never let the panel crowd out the two header rows.
+        let todo_height = todo_height.min(area.height.saturating_sub(2));
         let filter_area = Rect {
             x: area.x,
             y: area.y,
@@ -73,12 +78,19 @@ impl PaneLayout {
             x: area.x,
             y: area.y + 2,
             width: area.width,
-            height: area.height.saturating_sub(2),
+            height: area.height.saturating_sub(2).saturating_sub(todo_height),
+        };
+        let todo_area = Rect {
+            x: area.x,
+            y: area.y + area.height.saturating_sub(todo_height),
+            width: area.width,
+            height: todo_height,
         };
         Self {
             filter_area,
             secondary_area,
             list_area,
+            todo_area,
         }
     }
 }
@@ -531,7 +543,9 @@ fn render_flash_banner_into(frame: &mut Frame, state: &mut AppState, area: Rect)
 }
 
 pub fn draw_agents(frame: &mut Frame, state: &mut AppState, area: Rect) {
-    let layout = PaneLayout::compute(area);
+    let todo_height = todo::panel_height(state, area);
+    let layout = PaneLayout::compute_with_todo(area, todo_height);
+    state.layout.todo_area = layout.todo_area;
     render_filter_bar_into(frame, state, layout.filter_area);
     render_secondary_header_into(frame, state, layout.secondary_area);
 
@@ -552,6 +566,8 @@ pub fn draw_agents(frame: &mut Frame, state: &mut AppState, area: Rect) {
     );
     render_pane_rows(frame, lines, scroll_offset, layout.list_area);
 
+    todo::render_todo_panel(frame, state, layout.todo_area);
+
     render_flash_banner_into(frame, state, area);
     popups::render_if_open(frame, state, area);
 }
@@ -568,7 +584,7 @@ mod tests {
             width: 40,
             height: 20,
         };
-        let layout = PaneLayout::compute(area);
+        let layout = PaneLayout::compute_with_todo(area, 0);
         assert_eq!(layout.filter_area.x, 0);
         assert_eq!(layout.filter_area.y, 0);
         assert_eq!(layout.filter_area.width, 40);
@@ -589,7 +605,7 @@ mod tests {
             width: 40,
             height: 1,
         };
-        let layout = PaneLayout::compute(area);
+        let layout = PaneLayout::compute_with_todo(area, 0);
         assert_eq!(layout.filter_area.height, 1);
         assert_eq!(layout.secondary_area.height, 0);
         assert_eq!(layout.list_area.height, 0);
@@ -603,9 +619,41 @@ mod tests {
             width: 40,
             height: 0,
         };
-        let layout = PaneLayout::compute(area);
+        let layout = PaneLayout::compute_with_todo(area, 0);
         assert_eq!(layout.filter_area.height, 0);
         assert_eq!(layout.secondary_area.height, 0);
+        assert_eq!(layout.list_area.height, 0);
+    }
+
+    #[test]
+    fn pane_layout_reserves_todo_panel_at_bottom() {
+        let area = Rect {
+            x: 0,
+            y: 0,
+            width: 40,
+            height: 20,
+        };
+        let layout = PaneLayout::compute_with_todo(area, 6);
+        assert_eq!(layout.list_area.y, 2);
+        assert_eq!(layout.list_area.height, 12);
+        assert_eq!(layout.todo_area.y, 14);
+        assert_eq!(layout.todo_area.height, 6);
+    }
+
+    #[test]
+    fn pane_layout_clamps_todo_panel_to_header_space() {
+        // A panel taller than the pane leaves the two header rows intact
+        // and collapses the list to zero.
+        let area = Rect {
+            x: 0,
+            y: 0,
+            width: 40,
+            height: 5,
+        };
+        let layout = PaneLayout::compute_with_todo(area, 10);
+        assert_eq!(layout.filter_area.height, 1);
+        assert_eq!(layout.secondary_area.height, 1);
+        assert_eq!(layout.todo_area.height, 3);
         assert_eq!(layout.list_area.height, 0);
     }
 
@@ -617,7 +665,7 @@ mod tests {
             width: 30,
             height: 15,
         };
-        let layout = PaneLayout::compute(area);
+        let layout = PaneLayout::compute_with_todo(area, 0);
         assert_eq!(layout.filter_area.x, 5);
         assert_eq!(layout.filter_area.y, 10);
         assert_eq!(layout.secondary_area.x, 5);

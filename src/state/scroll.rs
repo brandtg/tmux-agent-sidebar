@@ -16,6 +16,8 @@ impl ScrollState {
 #[derive(Debug, Clone, Default)]
 pub struct ScrollStates {
     pub panes: ScrollState,
+    /// Line-based scroll offset for the manual TODO panel.
+    pub todos: ScrollState,
 }
 
 impl super::AppState {
@@ -137,6 +139,9 @@ mod tests {
         assert_eq!(states.panes.offset, 0);
         assert_eq!(states.panes.total_lines, 0);
         assert_eq!(states.panes.visible_height, 0);
+        assert_eq!(states.todos.offset, 0);
+        assert_eq!(states.todos.total_lines, 0);
+        assert_eq!(states.todos.visible_height, 0);
     }
 
     #[test]

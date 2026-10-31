@@ -14,11 +14,11 @@ pub(super) fn handle_event(ev: Event, state: &mut AppState) -> bool {
                 true
             }
             MouseEventKind::ScrollDown => {
-                state.handle_mouse_scroll(3);
+                state.handle_mouse_scroll(3, mouse.row);
                 true
             }
             MouseEventKind::ScrollUp => {
-                state.handle_mouse_scroll(-3);
+                state.handle_mouse_scroll(-3, mouse.row);
                 true
             }
             // Motion, drag, and button-release events mutate nothing; only
@@ -96,6 +96,15 @@ pub(super) fn handle_key_event(key: KeyEvent, state: &mut AppState) -> bool {
         return true;
     }
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+
+    // The TODO panel owns its keys while it has focus: j/k navigate items,
+    // Enter toggles the checkbox, e edits, x/d delete, D clears completed,
+    // a adds, H flips hide-completed. Global keys it does not claim (q, c,
+    // w, ?, /) still work. The inline add/edit line, when open, owns
+    // printable keys.
+    if state.focus_state.focus == Focus::Todos {
+        return handle_todo_key(key, state);
+    }
 
     // The `/` input line owns the keyboard while open: printable keys edit
     // the query (including `q`, `?`, and `/`), Up/Down still navigate the
@@ -241,6 +250,9 @@ pub(super) fn handle_key_event(key: KeyEvent, state: &mut AppState) -> bool {
             state.global.toggle_show_windows();
             state.rebuild_row_targets();
         }
+        KeyCode::Char('t') => {
+            state.toggle_todo_panel();
+        }
         KeyCode::Char('?') => {
             state.toggle_help_popup();
         }
@@ -259,6 +271,71 @@ pub(super) fn handle_key_event(key: KeyEvent, state: &mut AppState) -> bool {
     true
 }
 
+/// Keys owned by the manual TODO panel. See [`Focus::Todos`].
+fn handle_todo_key(key: KeyEvent, state: &mut AppState) -> bool {
+    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+
+    if state.todos.editing.is_some() {
+        match key.code {
+            KeyCode::Esc => state.cancel_todo_edit(),
+            KeyCode::Enter => state.commit_todo_edit(),
+            KeyCode::Backspace => state.todo_input_pop_char(),
+            KeyCode::Char('u') if ctrl => state.todo_input_clear(),
+            KeyCode::Char('w') if ctrl => state.todo_input_pop_word(),
+            KeyCode::Char(c) if !ctrl => state.todo_input_push_char(c),
+            _ => {}
+        }
+        return true;
+    }
+
+    if state.todos.adding.is_some() {
+        match key.code {
+            KeyCode::Esc => state.cancel_todo_add(),
+            KeyCode::Enter => state.commit_todo_add(),
+            KeyCode::Backspace => state.todo_input_pop_char(),
+            KeyCode::Char('u') if ctrl => state.todo_input_clear(),
+            KeyCode::Char('w') if ctrl => state.todo_input_pop_word(),
+            KeyCode::Char(c) if !ctrl => state.todo_input_push_char(c),
+            _ => {}
+        }
+        return true;
+    }
+
+    match key.code {
+        KeyCode::Esc => state.todo_escape(),
+        KeyCode::Char('t') => state.toggle_todo_panel(),
+        KeyCode::Char('q') => state.quit_requested = true,
+        KeyCode::Char('j') | KeyCode::Down => {
+            state.move_todo_selection(1);
+        }
+        KeyCode::Char('k') | KeyCode::Up => {
+            state.move_todo_selection(-1);
+        }
+        KeyCode::PageDown => {
+            state.page_todo_selection(1);
+        }
+        KeyCode::PageUp => {
+            state.page_todo_selection(-1);
+        }
+        KeyCode::Enter => state.toggle_todo_selected(),
+        KeyCode::Char('e') => state.begin_todo_edit(),
+        KeyCode::Char('a') => state.begin_todo_add(),
+        KeyCode::Char('x') | KeyCode::Char('d') => state.delete_todo_selected(),
+        KeyCode::Char('D') => state.clear_completed_todos(),
+        KeyCode::Char('H') => state.toggle_todo_hide_completed(),
+        // Global keys stay available while the panel has focus.
+        KeyCode::Char('c') => state.global.toggle_compact(),
+        KeyCode::Char('w') => {
+            state.global.toggle_show_windows();
+            state.rebuild_row_targets();
+        }
+        KeyCode::Char('?') => state.toggle_help_popup(),
+        KeyCode::Char('/') => state.open_search(),
+        _ => {}
+    }
+    true
+}
+
 fn pane_nav_down(state: &mut AppState) {
     match state.focus_state.focus {
         Focus::Filter => {
@@ -269,6 +346,7 @@ fn pane_nav_down(state: &mut AppState) {
                 state.global.queue_cursor_save();
             }
         }
+        Focus::Todos => {}
     }
 }
 
@@ -283,7 +361,7 @@ fn page_scroll(state: &mut AppState, direction: isize) {
                 state.global.queue_cursor_save();
             }
         }
-        Focus::Filter => {}
+        Focus::Filter | Focus::Todos => {}
     }
 }
 
@@ -297,6 +375,7 @@ fn pane_nav_up(state: &mut AppState) {
                 state.focus_state.focus = Focus::Filter;
             }
         }
+        Focus::Todos => {}
     }
 }
 
@@ -793,6 +872,164 @@ mod tests {
         handle_key_event(key(KeyCode::Char('c')), &mut state);
         assert!(!state.global.compact, "popup must swallow the key");
         assert!(state.flash.is_none(), "no toggle feedback expected");
+    }
+
+    // ─── t (TODO panel) ──────────────────────────────────────────────
+
+    #[test]
+    fn t_opens_the_todo_panel_and_moves_focus() {
+        let mut state = state_with_three_panes();
+        handle_key_event(key(KeyCode::Char('t')), &mut state);
+        assert!(state.todos.visible);
+        assert_eq!(state.focus_state.focus, Focus::Todos);
+
+        handle_key_event(key(KeyCode::Char('t')), &mut state);
+        assert!(!state.todos.visible);
+        assert_eq!(state.focus_state.focus, Focus::Panes);
+    }
+
+    #[test]
+    fn t_from_panes_focus_focuses_a_visible_todo_panel() {
+        let mut state = state_with_three_panes();
+        handle_key_event(key(KeyCode::Char('t')), &mut state);
+        assert!(state.todos.visible);
+
+        // Esc hands focus back to the list but leaves the panel open.
+        handle_key_event(key(KeyCode::Esc), &mut state);
+        assert_eq!(state.focus_state.focus, Focus::Panes);
+
+        // `t` now focuses the panel instead of closing it.
+        handle_key_event(key(KeyCode::Char('t')), &mut state);
+        assert!(state.todos.visible);
+        assert_eq!(state.focus_state.focus, Focus::Todos);
+
+        // A second `t` while focused closes it.
+        handle_key_event(key(KeyCode::Char('t')), &mut state);
+        assert!(!state.todos.visible);
+        assert_eq!(state.focus_state.focus, Focus::Panes);
+    }
+
+    #[test]
+    fn todo_panel_owns_j_k_and_enter() {
+        let mut state = state_with_three_panes();
+        state.todos.items = vec![
+            crate::todo::TodoItem {
+                text: "a".into(),
+                done: false,
+            },
+            crate::todo::TodoItem {
+                text: "b".into(),
+                done: false,
+            },
+        ];
+        handle_key_event(key(KeyCode::Char('t')), &mut state);
+        assert_eq!(state.todos.selected, 0);
+
+        handle_key_event(key(KeyCode::Char('j')), &mut state);
+        assert_eq!(state.todos.selected, 1);
+        assert_eq!(
+            state.global.selected_pane_row, 0,
+            "j must not move the agent selection while the panel owns focus"
+        );
+
+        handle_key_event(key(KeyCode::Char('k')), &mut state);
+        assert_eq!(state.todos.selected, 0);
+
+        handle_key_event(key(KeyCode::Enter), &mut state);
+        assert!(state.todos.items[0].done);
+    }
+
+    #[test]
+    fn x_deletes_the_selected_todo() {
+        let mut state = state_with_three_panes();
+        state.todos.items = vec![
+            crate::todo::TodoItem {
+                text: "a".into(),
+                done: false,
+            },
+            crate::todo::TodoItem {
+                text: "b".into(),
+                done: false,
+            },
+        ];
+        handle_key_event(key(KeyCode::Char('t')), &mut state);
+
+        handle_key_event(key(KeyCode::Char('x')), &mut state);
+        assert_eq!(state.todos.items.len(), 1);
+        assert_eq!(state.todos.items[0].text, "b");
+        assert_eq!(state.todos.selected, 0);
+    }
+
+    #[test]
+    fn shift_d_clears_completed_todos() {
+        let mut state = state_with_three_panes();
+        state.todos.items = vec![
+            crate::todo::TodoItem {
+                text: "open".into(),
+                done: false,
+            },
+            crate::todo::TodoItem {
+                text: "done".into(),
+                done: true,
+            },
+        ];
+        handle_key_event(key(KeyCode::Char('t')), &mut state);
+
+        handle_key_event(key(KeyCode::Char('D')), &mut state);
+        assert_eq!(state.todos.items.len(), 1);
+        assert_eq!(state.todos.items[0].text, "open");
+    }
+
+    #[test]
+    fn e_edits_the_selected_todo() {
+        let mut state = state_with_three_panes();
+        state.todos.items = vec![crate::todo::TodoItem {
+            text: "old".into(),
+            done: false,
+        }];
+        handle_key_event(key(KeyCode::Char('t')), &mut state);
+
+        handle_key_event(key(KeyCode::Char('e')), &mut state);
+        assert_eq!(state.todos.editing.as_ref().unwrap().input, "old");
+
+        handle_key_event(ctrl_key('u'), &mut state);
+        for c in "new".chars() {
+            handle_key_event(key(KeyCode::Char(c)), &mut state);
+        }
+        handle_key_event(key(KeyCode::Enter), &mut state);
+
+        assert_eq!(state.todos.items[0].text, "new");
+        assert!(state.todos.editing.is_none());
+        assert_eq!(state.focus_state.focus, Focus::Todos);
+    }
+
+    #[test]
+    fn q_types_into_the_todo_add_line_without_quitting() {
+        let mut state = state_with_three_panes();
+        handle_key_event(key(KeyCode::Char('t')), &mut state);
+        handle_key_event(key(KeyCode::Char('a')), &mut state);
+        handle_key_event(key(KeyCode::Char('q')), &mut state);
+
+        assert!(!state.quit_requested, "q must edit the add line, not quit");
+        assert_eq!(state.todos.adding.as_deref(), Some("q"));
+
+        handle_key_event(key(KeyCode::Enter), &mut state);
+        assert_eq!(state.todos.items.len(), 1);
+        assert_eq!(state.todos.items[0].text, "q");
+    }
+
+    #[test]
+    fn escape_in_todo_panel_returns_focus_but_keeps_it_visible() {
+        let mut state = state_with_three_panes();
+        handle_key_event(key(KeyCode::Char('t')), &mut state);
+        handle_key_event(key(KeyCode::Esc), &mut state);
+
+        assert!(state.todos.visible);
+        assert_eq!(state.focus_state.focus, Focus::Panes);
+
+        // The panel no longer owns navigation.
+        handle_key_event(key(KeyCode::Char('j')), &mut state);
+        assert_eq!(state.global.selected_pane_row, 1);
     }
 
     // ─── f (flag) ────────────────────────────────────────────────────

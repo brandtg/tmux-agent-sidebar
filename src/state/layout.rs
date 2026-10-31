@@ -1,4 +1,4 @@
-use super::{AppState, RepoFilter, StatusFilter};
+use super::{AppState, Focus, RepoFilter, StatusFilter};
 use crate::tmux::{PaneAttention, PaneStatus};
 use crate::ui::text::display_width;
 
@@ -38,6 +38,14 @@ pub struct RepoSpawnTarget {
 pub struct SpawnRemoveTarget {
     pub rect: ratatui::layout::Rect,
     pub pane_id: String,
+}
+
+/// Click target for one rendered TODO item. `rect` spans every wrapped
+/// line of the item, so a click anywhere on it toggles the checkbox.
+#[derive(Debug, Clone)]
+pub struct TodoRowTarget {
+    pub rect: ratatui::layout::Rect,
+    pub index: usize,
 }
 
 /// Screen-positioned hyperlink overlay for OSC 8 terminal hyperlinks.
@@ -81,6 +89,13 @@ pub struct FrameLayout {
     /// OSC 8 hyperlink overlays the main loop writes after each frame so
     /// terminals can recognise PR numbers as clickable links.
     pub hyperlink_overlays: Vec<HyperlinkOverlay>,
+    /// Click regions for rendered TODO items, one per visible item.
+    pub todo_row_targets: Vec<TodoRowTarget>,
+    /// Click region for the inline "add TODO" input line, when open.
+    pub todo_input_rect: Option<ratatui::layout::Rect>,
+    /// The TODO panel's on-screen area (zero-height when hidden). Used to
+    /// route mouse-wheel scrolling to the panel instead of the agent list.
+    pub todo_area: ratatui::layout::Rect,
 }
 
 pub(super) fn point_in_rect(row: u16, col: u16, rect: ratatui::layout::Rect) -> bool {
@@ -355,12 +370,17 @@ impl AppState {
         true
     }
 
-    /// Handle a mouse scroll event against the agent list. `delta` is
-    /// expressed in full-size row lines (one wheel notch = 3 lines = one
-    /// agent row). A compact row is a single line, so in compact mode a
-    /// notch collapses to one line — otherwise each notch skips three
-    /// panes.
-    pub fn handle_mouse_scroll(&mut self, delta: isize) {
+    /// Handle a mouse scroll event. `delta` is expressed in full-size row
+    /// lines (one wheel notch = 3 lines = one agent row). A compact row is
+    /// a single line, so in compact mode a notch collapses to one line —
+    /// otherwise each notch skips three panes. When the pointer sits over
+    /// the TODO panel, the same delta scrolls that panel instead.
+    pub fn handle_mouse_scroll(&mut self, delta: isize, row: u16) {
+        if self.todos.visible && point_in_rect(row, self.layout.todo_area.x, self.layout.todo_area)
+        {
+            self.scrolls.todos.scroll(delta);
+            return;
+        }
         let lines = if self.global.compact {
             delta.signum()
         } else {
@@ -549,6 +569,38 @@ impl AppState {
             .map(|t| t.pane_id.clone())
         {
             self.open_remove_confirm_for_pane(pane_id);
+            return;
+        }
+
+        // The TODO panel sits below the list area, so its screen rows would
+        // otherwise fall through to the pane-row mapping. Claim every click
+        // inside the panel: items toggle, the add line opens the input, and
+        // header/empty space is inert.
+        if self.todos.visible && point_in_rect(row, col, self.layout.todo_area) {
+            if let Some(rect) = self.layout.todo_input_rect
+                && point_in_rect(row, col, rect)
+            {
+                if self.todos.editing.is_none() {
+                    self.begin_todo_add();
+                }
+                return;
+            }
+            // An edit owns the keyboard; clicks elsewhere in the panel
+            // must not toggle a different item underneath it.
+            if self.todos.editing.is_some() {
+                return;
+            }
+            if let Some(index) = self
+                .layout
+                .todo_row_targets
+                .iter()
+                .find(|t| point_in_rect(row, col, t.rect))
+                .map(|t| t.index)
+            {
+                self.todos.selected = index;
+                self.focus_state.focus = Focus::Todos;
+                self.toggle_todo_selected();
+            }
             return;
         }
 
