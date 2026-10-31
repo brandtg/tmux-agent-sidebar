@@ -45,6 +45,7 @@ first row applies as usual.
 | `selected_pane_row` | `@sidebar_cursor` | User input (j/k key); tmux write flushed after a short debounce | Cursor position in agent list; re-anchored to the first row on a window/pane (focus-change) reload, or to the row of the pre-focus context pane when the sidebar itself gains focus |
 | `repo_filter` | `@sidebar_repo_filter` | User input (repo popup) | Repository filter (All or specific repo) |
 | `compact` | `@sidebar_compact` | User input (`c` key) | Compact one-line-per-pane rendering; the live value is shared by all open sidebars, and `@sidebar_default_compact_view` seeds it only before the first toggle |
+| `group_by` | `@sidebar_group_by` | User input (`s` key) | Group panes by repo root or tmux session; the runtime toggle writes the shared value and broadcasts, matching `c` / `w` |
 | sidebar mode | `@sidebar_mode` | `toggle-all` sweep | Server-global `open`/`closed` intent; consulted by the new-window and new-session hooks (falling back to `@sidebar_auto_create` while unset) so toggle-all covers windows and sessions created afterwards |
 
 `status_filter`, `selected_pane_row`, and `repo_filter` each have a corresponding `last_saved_*` marker to prevent sync conflicts — tmux only overwrites the local value when it differs from what this instance last wrote. `compact` is exempt: the live tmux value is adopted unconditionally so sidebars can never diverge on density.
@@ -113,9 +114,11 @@ Per-pane file-based state:
 | `focus_state.prev_focused_pane_id` | Every 1s | Previous focused pane ID (for detecting focus changes) |
 | `now` | Every 1s | Current Unix epoch |
 | `scrolls.panes` | On user input / render | Agent list scroll position |
+| `search` | On user input | Per-sidebar `/` query and whether the input line is open. Not broadcast: the query is transient |
+| `collapsed_groups` | On user input / grouping mode change | Local `HashSet` of group names collapsed to a header-only row (`z` / `Z`); cleared when the shared grouping mode changes |
 | `theme` | Once at startup | Color theme from tmux `@sidebar_color_*` variables |
 | `popup` | On user input / render | `PopupState` enum: `None` / `Repo { selected, area }` / `Notices { area }`. Enforces "at most one popup open" via the type system |
-| `layout` | Every frame (render) | `FrameLayout` sub-struct bundling the ephemeral fields the UI rewrites every frame for click hit-testing: `pane_row_targets`, `line_to_row`, `repo_button_col`, `repo_spawn_targets`, `spawn_remove_targets`, `hyperlink_overlays` |
+| `layout` | Every frame (render) | `FrameLayout` sub-struct bundling the ephemeral fields the UI rewrites every frame for click hit-testing: `pane_row_targets`, `group_starts` (visible group headers and their first row, used by `[` / `]`), `line_to_row`, `repo_button_col`, `repo_spawn_targets`, `spawn_remove_targets`, `hyperlink_overlays` |
 | `notices` | Once at startup / on copy | `NoticesState` sub-struct: `button_col`, `missing_hook_groups`, `claude_plugin_status`, `claude_settings_has_residual_hooks`, `claude_plugin_notice`, `enabled_agents`, `copy_targets`, `copied_at` |
 | `timers` | Refresh cycle / on user input | `RefreshTimers` sub-struct gating periodic work: `last_filter_click` (debounce), `last_port_refresh`, `port_scan_initialized` |
 | `spinner_frame` | Every 200ms (animation) | Spinner animation frame counter |
@@ -295,6 +298,7 @@ struct SessionNamesState {
 /// before the next render.
 struct FrameLayout {
     pane_row_targets: Vec<RowTarget>,
+    group_starts: Vec<GroupStart>,
     line_to_row: Vec<Option<usize>>,
     repo_button_col: Option<u16>,
     repo_spawn_targets: Vec<RepoSpawnTarget>,

@@ -25,9 +25,13 @@ impl CodexAdapter {
     ///   log is Bash-only.
     /// - `PreToolUse` is supported by Codex but not yet wired.
     pub const HOOK_REGISTRATIONS: &'static [HookRegistration] = &[
+        // Match every SessionStart source. Codex currently emits
+        // `startup` and `resume`, but an unlisted source (e.g. `compact`)
+        // would silently drop the event and leave the pane without its
+        // agent metadata until a later hook.
         HookRegistration {
             trigger: "SessionStart",
-            matcher: Some("startup|resume"),
+            matcher: None,
             kind: AgentEventKind::SessionStart,
         },
         HookRegistration {

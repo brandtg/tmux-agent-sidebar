@@ -49,8 +49,16 @@ pub(in crate::cli::hook) fn clear_run_state(pane: &str) {
 }
 
 /// Check if a prompt is a system-injected message (not a real user prompt).
+///
+/// Match the known injected tags instead of the old `<task-` prefix: a
+/// user literally typing `<task-list>` (or any other `<task-…>` fragment)
+/// must keep their prompt. These are the tags the agent runtime injects
+/// around task bookkeeping and reminders.
 pub(in crate::cli::hook) fn is_system_message(s: &str) -> bool {
-    s.contains("<task-notification>") || s.contains("<system-reminder>") || s.contains("<task-")
+    s.contains("<task-notification>")
+        || s.contains("<system-reminder>")
+        || s.contains("<task-id>")
+        || s.contains("<task-status>")
 }
 
 pub(in crate::cli::hook) fn clear_all_meta(pane: &str) {
@@ -177,8 +185,16 @@ mod tests {
     }
 
     #[test]
-    fn system_message_task_prefix() {
+    fn system_message_known_task_tags() {
         assert!(is_system_message("<task-id>abc</task-id>"));
+        assert!(is_system_message("<task-status>running</task-status>"));
+    }
+
+    #[test]
+    fn system_message_keeps_user_task_list_prompt() {
+        // The old `<task-` prefix check silently ate a real prompt that
+        // happened to mention a task-list tag.
+        assert!(!is_system_message("please update the <task-list> section"));
     }
 
     #[test]

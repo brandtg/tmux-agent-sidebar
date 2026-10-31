@@ -6,8 +6,9 @@ use crate::tmux;
 use super::filter::{RepoFilter, StatusFilter};
 
 /// How the agents panel buckets panes into groups. Set via the
-/// `@sidebar_group_by` tmux global; a config-time choice read on every
-/// sync, with no runtime toggle.
+/// `@sidebar_group_by` tmux global; configurable in tmux.conf and
+/// toggleable at runtime with `s`, which writes the shared option and
+/// broadcasts the change like `c` / `w`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum GroupBy {
     /// Bucket panes by resolved git repo root (the historical default).
@@ -26,6 +27,20 @@ impl GroupBy {
         match s.trim().to_ascii_lowercase().as_str() {
             "session" => Self::Session,
             _ => Self::Repo,
+        }
+    }
+
+    pub fn as_label(self) -> &'static str {
+        match self {
+            Self::Repo => "repo",
+            Self::Session => "session",
+        }
+    }
+
+    pub fn toggled(self) -> Self {
+        match self {
+            Self::Repo => Self::Session,
+            Self::Session => Self::Repo,
         }
     }
 }
@@ -220,6 +235,30 @@ impl GlobalState {
             "-g",
             tmux::SIDEBAR_SHOW_WINDOWS,
             if self.show_windows { "1" } else { "0" },
+        ])
+        .is_some()
+    }
+
+    /// Flip the grouping mode (repo ↔ tmux session) and broadcast the
+    /// new value to every open sidebar via `@sidebar_group_by`, matching
+    /// the `c` / `w` toggle pattern. The caller re-groups from a fresh
+    /// snapshot so the list changes immediately.
+    pub fn toggle_group_by(&mut self) {
+        self.group_by = self.group_by.toggled();
+        if self.save_group_by() {
+            self.broadcast_change();
+        }
+    }
+
+    /// Save the grouping mode to tmux. Returns `true` when tmux accepted
+    /// the write; on failure the next sync reverts this sidebar to the
+    /// shared value.
+    pub fn save_group_by(&mut self) -> bool {
+        tmux::run_tmux(&[
+            "set",
+            "-g",
+            tmux::SIDEBAR_GROUP_BY,
+            self.group_by.as_label(),
         ])
         .is_some()
     }

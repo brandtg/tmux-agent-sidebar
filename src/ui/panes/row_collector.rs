@@ -29,10 +29,16 @@ pub(super) fn collect(state: &AppState, width: u16) -> CollectedRows {
         if !state.global.repo_filter.matches_group(&group.name) {
             continue;
         }
+        // Same rule as `rebuild_row_targets`: a group-name hit keeps the
+        // whole group; otherwise each row must match on its own fields.
+        let group_matches_search = state.search_matches_group(group);
         let filtered_panes: Vec<_> = group
             .panes
             .iter()
-            .filter(|(pane, _)| filter.matches(pane))
+            .filter(|(pane, git)| {
+                filter.matches(pane)
+                    && (group_matches_search || state.search_matches_pane(pane, git))
+            })
             .collect();
 
         // A group with no matching agent panes is skipped entirely —
@@ -51,6 +57,7 @@ pub(super) fn collect(state: &AppState, width: u16) -> CollectedRows {
                         .filter(|window| {
                             let runtime = state.pane_state(&window.pane_id);
                             filter.matches_window(window, runtime)
+                                && (group_matches_search || state.search_matches_window(window))
                         })
                         .collect()
                 })
@@ -61,6 +68,7 @@ pub(super) fn collect(state: &AppState, width: u16) -> CollectedRows {
         if filtered_panes.is_empty() && matched_windows.is_empty() {
             continue;
         }
+        let collapsed = state.is_group_collapsed(&group.name);
 
         if !first_group {
             // Separate repo groups, but do not add a leading blank before
@@ -100,7 +108,14 @@ pub(super) fn collect(state: &AppState, width: u16) -> CollectedRows {
         // get a plain title. Session groups are not a spawn target (a
         // session is not a repo to spawn into), so they always render a
         // plain title.
-        let title = &group.name;
+        // A collapsed group keeps its header (so the user can see what is
+        // hidden and expand it) but renders no rows. The `▸` prefix is the
+        // only visual cue; expanded headers stay unadorned.
+        let title = if collapsed {
+            format!("▸ {}", group.name)
+        } else {
+            group.name.clone()
+        };
         let title_color = if group_has_focused_pane {
             theme.accent
         } else {
@@ -121,7 +136,7 @@ pub(super) fn collect(state: &AppState, width: u16) -> CollectedRows {
             // the right edge by `click_targets::materialize`) stayed live.
             let button_width = SPAWN_BUTTON.len();
             let title_budget = width.saturating_sub(button_width);
-            let title = truncate_to_width(title, title_budget);
+            let title = truncate_to_width(&title, title_budget);
             let title_w = display_width(&title);
             let pad_width = width.saturating_sub(title_w).saturating_sub(button_width);
             collected
@@ -145,6 +160,10 @@ pub(super) fn collect(state: &AppState, width: u16) -> CollectedRows {
         };
         collected.lines.push(Line::from(spans));
         collected.line_to_row.push(None);
+
+        if collapsed {
+            continue;
+        }
 
         // Agents and non-agent rows interleave in session → window →
         // pane order (see `group::ordered_group_rows`), so each window's
@@ -272,6 +291,17 @@ pub(super) fn collect(state: &AppState, width: u16) -> CollectedRows {
                 }
             }
         }
+    }
+
+    // An applied search that matches nothing leaves an empty panel; say so
+    // instead of rendering a blank box. This line is not a selectable row,
+    // so it maps to `None` in `line_to_row`.
+    if collected.lines.is_empty() && state.search.has_query() {
+        collected.lines.push(Line::from(Span::styled(
+            format!("  no matches for {}", state.search.query.trim()),
+            Style::default().fg(theme.text_muted),
+        )));
+        collected.line_to_row.push(None);
     }
 
     collected
@@ -509,6 +539,44 @@ mod tests {
                 Some(4)
             ],
             "line_to_row must match the interleaved render order"
+        );
+    }
+
+    #[test]
+    fn collect_collapsed_group_renders_header_only() {
+        let mut state = AppState::new("%0".into());
+        state.repo_groups = vec![
+            RepoGroup {
+                name: "backend".into(),
+                has_focus: false,
+                panes: vec![(make_pane("%1", PaneStatus::Idle), PaneGitInfo::default())],
+            },
+            RepoGroup {
+                name: "frontend".into(),
+                has_focus: false,
+                panes: vec![(make_pane("%2", PaneStatus::Idle), PaneGitInfo::default())],
+            },
+        ];
+        state.collapsed_groups.insert("backend".into());
+        state.rebuild_row_targets();
+
+        let collected = collect(&state, 40);
+        let text = collected
+            .lines
+            .iter()
+            .map(line_text)
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        assert!(
+            text.contains("▸ backend"),
+            "collapsed header missing:\n{text}"
+        );
+        assert!(text.contains("frontend"), "expanded group missing:\n{text}");
+        assert_eq!(
+            collected.line_to_row,
+            vec![None, None, None, Some(0), Some(0)],
+            "only the expanded group's agent row is selectable"
         );
     }
 

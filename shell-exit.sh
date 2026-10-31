@@ -18,6 +18,13 @@
 #
 # Outside tmux, or in fish and other shells, the script does nothing.
 
+# Sourced outside tmux (or from a shell with no pane context), do not
+# install hooks: the DEBUG trap would spawn a failing tmux write per
+# command. `return` covers sourcing; `exit` covers direct execution.
+if [ -z "${TMUX:-}" ] || [ -z "${TMUX_PANE:-}" ]; then
+  return 0 2>/dev/null || exit 0
+fi
+
 _interp() {
   # Writes one pane option. `$1` = option name, `$2` = value.
   tmux set-option -p -t "${TMUX_PANE:-}" -- "$1" "$2" 2>/dev/null
@@ -38,22 +45,34 @@ cmd_basename() {
 # bash ---------------------------------------------------------------
 if [ -n "${BASH_VERSION:-}" ]; then
 
+  # The DEBUG trap fires for every simple command (each pipeline stage,
+  # each command in an `&&` chain, and every command inside a loop or
+  # script). Writing the pane option there spawned one tmux process per
+  # command. Instead, remember the last simple command in a shell
+  # variable and flush it once from precmd, so a whole command line costs
+  # one write. `_tas_in_precmd` keeps the trap from recording the writes
+  # and helper calls that precmd itself runs.
+  _tas_pending_cmd=""
+  _tas_in_precmd="0"
+  _tas_exit=""
+
   _tas_precmd() {
-    _interp "@pane_last_exit" "$?"
+    _tas_exit=$?
+    _tas_in_precmd="1"
+    if [ -n "$_tas_pending_cmd" ]; then
+      _interp "@pane_last_cmd" "$(cmd_basename "$_tas_pending_cmd")"
+      _tas_pending_cmd=""
+    fi
+    _interp "@pane_last_exit" "$_tas_exit"
+    _tas_in_precmd="0"
   }
 
-  # Record the command basename. The DEBUG trap fires for every command
-  # the shell runs — including the tmux write inside it — so the guard
-  # flag keeps the recursion at one write per user command.
-  _tas_active=""
   _tas_debug() {
-    [ "$_tas_active" = "1" ] && return 0
+    [ "$_tas_in_precmd" = "1" ] && return 0
     case "$BASH_COMMAND" in
       _tas_*|trap*|"") return 0 ;;
     esac
-    _tas_active="1"
-    _interp "@pane_last_cmd" "$(cmd_basename "$BASH_COMMAND")"
-    _tas_active=""
+    _tas_pending_cmd="$BASH_COMMAND"
   }
   trap '_tas_debug' DEBUG
 

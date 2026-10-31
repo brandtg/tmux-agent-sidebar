@@ -1,5 +1,5 @@
 use super::{AppState, RepoFilter, StatusFilter};
-use crate::tmux::PaneStatus;
+use crate::tmux::{PaneAttention, PaneStatus};
 use crate::ui::text::display_width;
 
 #[derive(Debug, Clone)]
@@ -9,6 +9,16 @@ pub struct RowTarget {
     /// pane. `pane_id` is the window's active pane either way. Used by
     /// activation to jump without summoning a sidebar into the window.
     pub is_window: bool,
+}
+
+/// One visible group header in the rendered list: the group's name and
+/// the index of its first selectable row in `pane_row_targets`. Used by
+/// `[` / `]` group jumps and by collapse (a collapsed group has no rows,
+/// so it is not recorded here).
+#[derive(Debug, Clone)]
+pub struct GroupStart {
+    pub name: String,
+    pub row_start: usize,
 }
 
 /// Click target for the `+` button rendered at the right edge of each
@@ -51,6 +61,10 @@ pub struct FrameLayout {
     /// Filtered pane list, in the order the UI rendered them. Index
     /// matches `GlobalState::selected_pane_row`.
     pub pane_row_targets: Vec<RowTarget>,
+    /// Visible group headers in render order, with the first selectable
+    /// row index of each. Collapsed groups contribute no rows and are
+    /// therefore absent. Used by `[` / `]` and collapse.
+    pub group_starts: Vec<GroupStart>,
     /// Maps each rendered text line in the agents panel back to a row in
     /// `pane_row_targets`. `None` for header/blank lines that should not
     /// route clicks to a pane.
@@ -90,15 +104,38 @@ impl AppState {
             self.global.save_repo_filter();
         }
 
+        // Remember which pane the cursor was on before the target list is
+        // rebuilt, so a rebuild that still contains it can keep the cursor
+        // there instead of clamping to an unrelated index.
+        let previous_pane_id = self
+            .layout
+            .pane_row_targets
+            .get(self.global.selected_pane_row)
+            .map(|target| target.pane_id.clone());
+
         self.layout.pane_row_targets.clear();
+        self.layout.group_starts.clear();
         for group in &self.repo_groups {
             if !self.global.repo_filter.matches_group(&group.name) {
                 continue;
             }
+            // Collapsed groups render their header but no rows. They are
+            // not selectable and contribute nothing to the target list or
+            // the header counts.
+            if self.is_group_collapsed(&group.name) {
+                continue;
+            }
+            // A group-name hit keeps every row in the group visible; a
+            // miss falls back to each row's own fields. This mirrors the
+            // renderer's rule in `row_collector::collect`.
+            let group_matches_search = self.search_matches_group(group);
             let filtered_panes: Vec<_> = group
                 .panes
                 .iter()
-                .filter(|(pane, _)| self.global.status_filter.matches(pane))
+                .filter(|(pane, git)| {
+                    self.global.status_filter.matches(pane)
+                        && (group_matches_search || self.search_matches_pane(pane, git))
+                })
                 .collect();
 
             // The same window set and per-window status-filter rule as
@@ -117,13 +154,22 @@ impl AppState {
                     .filter(|window| {
                         let runtime = self.pane_state(&window.pane_id);
                         self.global.status_filter.matches_window(window, runtime)
+                            && (group_matches_search || self.search_matches_window(window))
                     })
                     .collect()
             } else {
                 Vec::new()
             };
 
-            for row in crate::group::ordered_group_rows(&filtered_panes, &matched_windows) {
+            let rows = crate::group::ordered_group_rows(&filtered_panes, &matched_windows);
+            if rows.is_empty() {
+                continue;
+            }
+            self.layout.group_starts.push(GroupStart {
+                name: group.name.clone(),
+                row_start: self.layout.pane_row_targets.len(),
+            });
+            for row in rows {
                 let target = match row {
                     crate::group::GroupRow::Agent((pane, _)) => RowTarget {
                         pane_id: pane.pane_id.clone(),
@@ -137,13 +183,176 @@ impl AppState {
                 self.layout.pane_row_targets.push(target);
             }
         }
-        if self.layout.pane_row_targets.is_empty() {
+
+        let len = self.layout.pane_row_targets.len();
+        if len == 0 {
             // No rows to select — reset the cursor so a later, larger view
             // cannot inherit a stale index and auto-scroll down to it.
             self.global.selected_pane_row = 0;
-        } else if self.global.selected_pane_row >= self.layout.pane_row_targets.len() {
-            self.global.selected_pane_row = self.layout.pane_row_targets.len() - 1;
+            return;
         }
+        // Keep the cursor on the same pane when it survives the rebuild
+        // (search typing, status changes, refreshes). During an active
+        // search, a cursor whose pane fell out of the result set moves to
+        // the first match instead of clamping to the last row, which is
+        // where the old clamp left it.
+        if let Some(previous) = previous_pane_id
+            && let Some(index) = self
+                .layout
+                .pane_row_targets
+                .iter()
+                .position(|target| target.pane_id == previous)
+        {
+            self.global.selected_pane_row = index;
+            return;
+        }
+        if self.search.has_query() {
+            self.global.selected_pane_row = 0;
+        } else if self.global.selected_pane_row >= len {
+            self.global.selected_pane_row = len - 1;
+        }
+    }
+
+    pub fn is_group_collapsed(&self, name: &str) -> bool {
+        self.collapsed_groups.contains(name)
+    }
+
+    /// Index into `layout.group_starts` of the group containing the
+    /// current selection, or `None` when the list is empty.
+    fn current_group_index(&self) -> Option<usize> {
+        self.layout
+            .group_starts
+            .iter()
+            .rposition(|group| group.row_start <= self.global.selected_pane_row)
+    }
+
+    /// Name of the group containing the current selection.
+    pub fn selected_group_name(&self) -> Option<String> {
+        let index = self.current_group_index()?;
+        self.layout
+            .group_starts
+            .get(index)
+            .map(|group| group.name.clone())
+    }
+
+    /// Select the first row. Returns whether the selection moved.
+    pub fn select_first_row(&mut self) -> bool {
+        if self.layout.pane_row_targets.is_empty() || self.global.selected_pane_row == 0 {
+            return false;
+        }
+        self.global.selected_pane_row = 0;
+        true
+    }
+
+    /// Select the last row. Returns whether the selection moved.
+    pub fn select_last_row(&mut self) -> bool {
+        let Some(last) = self.layout.pane_row_targets.len().checked_sub(1) else {
+            return false;
+        };
+        if self.global.selected_pane_row == last {
+            return false;
+        }
+        self.global.selected_pane_row = last;
+        true
+    }
+
+    /// Jump to the first row of the next visible group. No wrap: the last
+    /// group is the end of the list.
+    pub fn jump_to_next_group(&mut self) -> bool {
+        let Some(current) = self.current_group_index() else {
+            return false;
+        };
+        let Some(next) = self.layout.group_starts.get(current + 1) else {
+            return false;
+        };
+        if self.global.selected_pane_row == next.row_start {
+            return false;
+        }
+        self.global.selected_pane_row = next.row_start;
+        true
+    }
+
+    /// Jump to the first row of the previous visible group. No wrap.
+    pub fn jump_to_previous_group(&mut self) -> bool {
+        let Some(current) = self.current_group_index() else {
+            return false;
+        };
+        let Some(previous) = current
+            .checked_sub(1)
+            .and_then(|i| self.layout.group_starts.get(i))
+        else {
+            return false;
+        };
+        if self.global.selected_pane_row == previous.row_start {
+            return false;
+        }
+        self.global.selected_pane_row = previous.row_start;
+        true
+    }
+
+    /// Cycle to the next row carrying an attention flag, wrapping around
+    /// the list. Returns false when no other row needs attention.
+    pub fn jump_to_next_attention(&mut self) -> bool {
+        let len = self.layout.pane_row_targets.len();
+        if len == 0 {
+            return false;
+        }
+        let current = self.global.selected_pane_row.min(len - 1);
+        for offset in 1..len {
+            let index = (current + offset) % len;
+            if self.row_attention(index) != PaneAttention::None {
+                self.global.selected_pane_row = index;
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Attention flag behind a rendered row. Window rows keep their flag
+    /// on `OtherWindow`, agent rows on `PaneInfo`.
+    fn row_attention(&self, index: usize) -> PaneAttention {
+        let Some(target) = self.layout.pane_row_targets.get(index) else {
+            return PaneAttention::None;
+        };
+        if target.is_window {
+            self.other_windows
+                .values()
+                .flat_map(|windows| windows.iter())
+                .find(|window| window.pane_id == target.pane_id)
+                .map(|window| window.attention)
+                .unwrap_or(PaneAttention::None)
+        } else {
+            self.pane_by_id(&target.pane_id)
+                .map(|pane| pane.attention)
+                .unwrap_or(PaneAttention::None)
+        }
+    }
+
+    /// Expand every collapsed group. Collapsed groups have no selectable
+    /// rows, so this is the recovery path when the group the user wants is
+    /// hidden behind its header.
+    pub fn expand_all_groups(&mut self) -> bool {
+        if self.collapsed_groups.is_empty() {
+            return false;
+        }
+        self.collapsed_groups.clear();
+        self.rebuild_row_targets();
+        true
+    }
+
+    /// Collapse or expand the group containing the current selection.
+    /// After collapsing, the old selection pane is gone, so the rebuild
+    /// keeps the cursor at the same index — which is now the first row of
+    /// the next group (or the last row when the collapsed group was last).
+    pub fn toggle_selected_group_collapse(&mut self) -> bool {
+        let Some(name) = self.selected_group_name() else {
+            return false;
+        };
+        if !self.collapsed_groups.remove(&name) {
+            self.collapsed_groups.insert(name);
+        }
+        self.rebuild_row_targets();
+        true
     }
 
     /// Handle a mouse scroll event against the agent list. `delta` is

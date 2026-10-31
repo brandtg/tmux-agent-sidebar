@@ -198,10 +198,16 @@ impl AppState {
     pub fn status_counts(&self) -> (usize, usize, usize, usize, usize, usize) {
         let (mut running, mut background, mut waiting, mut idle, mut error) = (0, 0, 0, 0, 0);
         for group in &self.repo_groups {
-            if !self.global.repo_filter.matches_group(&group.name) {
+            if !self.global.repo_filter.matches_group(&group.name)
+                || self.is_group_collapsed(&group.name)
+            {
                 continue;
             }
-            for (pane, _) in &group.panes {
+            let group_matches_search = self.search_matches_group(group);
+            for (pane, git) in &group.panes {
+                if !group_matches_search && !self.search_matches_pane(pane, git) {
+                    continue;
+                }
                 if pane.status == crate::tmux::PaneStatus::Running
                     || pane.attention != crate::tmux::PaneAttention::None
                 {
@@ -224,7 +230,9 @@ impl AppState {
         // Counted per pane, not as a bucket sum: an attention-flagged
         // pane lands in both `running` and its status bucket above.
         for group in &self.repo_groups {
-            if !self.global.repo_filter.matches_group(&group.name) {
+            if !self.global.repo_filter.matches_group(&group.name)
+                || self.is_group_collapsed(&group.name)
+            {
                 continue;
             }
             if !self.global.show_windows {
@@ -234,7 +242,11 @@ impl AppState {
             let Some(windows) = self.other_windows.get(key.as_str()) else {
                 continue;
             };
+            let group_matches_search = self.search_matches_group(group);
             for window in windows {
+                if !group_matches_search && !self.search_matches_window(window) {
+                    continue;
+                }
                 let runtime = self.pane_state(&window.pane_id);
                 if crate::state::StatusFilter::Running.matches_window(window, runtime) {
                     running += 1;
@@ -259,8 +271,11 @@ impl AppState {
         }
         self.repo_groups
             .iter()
-            .filter(|g| self.global.repo_filter.matches_group(&g.name))
+            .filter(|g| {
+                self.global.repo_filter.matches_group(&g.name) && !self.is_group_collapsed(&g.name)
+            })
             .map(|g| {
+                let group_matches_search = self.search_matches_group(g);
                 let key = crate::group::group_window_key(self.global.group_by, g);
                 let runtime = &self.pane_states;
                 self.other_windows
@@ -269,8 +284,9 @@ impl AppState {
                         windows
                             .iter()
                             .filter(|w| {
-                                crate::state::StatusFilter::All
-                                    .matches_window(w, runtime.get(&w.pane_id))
+                                (group_matches_search || self.search_matches_window(w))
+                                    && crate::state::StatusFilter::All
+                                        .matches_window(w, runtime.get(&w.pane_id))
                             })
                             .count()
                     })
@@ -279,12 +295,22 @@ impl AppState {
             .sum()
     }
 
-    /// Total agent panes under the active repo filter.
+    /// Total agent panes under the active repo and search filters.
     fn pane_count(&self) -> usize {
         self.repo_groups
             .iter()
-            .filter(|g| self.global.repo_filter.matches_group(&g.name))
-            .map(|g| g.panes.len())
+            .filter(|g| {
+                self.global.repo_filter.matches_group(&g.name) && !self.is_group_collapsed(&g.name)
+            })
+            .map(|g| {
+                let group_matches_search = self.search_matches_group(g);
+                g.panes
+                    .iter()
+                    .filter(|(pane, git)| {
+                        group_matches_search || self.search_matches_pane(pane, git)
+                    })
+                    .count()
+            })
             .sum()
     }
 
@@ -538,6 +564,63 @@ mod tests {
         state.global.repo_filter = RepoFilter::Repo("app".into());
         let (all, r, b, w, i, e) = state.status_counts();
         assert_eq!((all, r, b, w, i, e), (3, 1, 1, 0, 1, 0));
+    }
+
+    #[test]
+    fn status_counts_follow_search_query() {
+        let mut state = AppState::new("%99".into());
+        let mut claude = test_pane("%1", PaneStatus::Running);
+        claude.tmux_session = "work".into();
+        claude.session_name = "claude-api".into();
+        let mut codex = test_pane("%2", PaneStatus::Idle);
+        codex.tmux_session = "work".into();
+        codex.session_name = "codex-ui".into();
+        state.repo_groups = vec![RepoGroup {
+            name: "app".into(),
+            has_focus: true,
+            panes: vec![
+                (claude, PaneGitInfo::default()),
+                (codex, PaneGitInfo::default()),
+            ],
+        }];
+
+        assert_eq!(state.status_counts(), (2, 1, 0, 0, 1, 0));
+
+        // A row-level hit narrows every count to the visible rows.
+        state.search.query = "codex".into();
+        assert_eq!(state.status_counts(), (1, 0, 0, 0, 1, 0));
+
+        // A group-name hit keeps the whole group, so the counts stay whole.
+        state.search.query = "app".into();
+        assert_eq!(state.status_counts(), (2, 1, 0, 0, 1, 0));
+    }
+
+    #[test]
+    fn status_counts_exclude_collapsed_groups() {
+        let mut state = AppState::new("%99".into());
+        state.repo_groups = vec![
+            RepoGroup {
+                name: "backend".into(),
+                has_focus: false,
+                panes: vec![
+                    (test_pane("%1", PaneStatus::Running), PaneGitInfo::default()),
+                    (test_pane("%2", PaneStatus::Idle), PaneGitInfo::default()),
+                ],
+            },
+            RepoGroup {
+                name: "frontend".into(),
+                has_focus: false,
+                panes: vec![(test_pane("%3", PaneStatus::Waiting), PaneGitInfo::default())],
+            },
+        ];
+        assert_eq!(state.status_counts(), (3, 1, 0, 1, 1, 0));
+
+        state.collapsed_groups.insert("backend".into());
+        assert_eq!(
+            state.status_counts(),
+            (1, 0, 0, 1, 0, 0),
+            "collapsed rows must not be counted in the header"
+        );
     }
 
     #[test]

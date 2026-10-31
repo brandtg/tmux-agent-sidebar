@@ -254,7 +254,10 @@ pub fn get_option(name: &str) -> Option<String> {
 /// same normalization so round-tripping through storage doesn't
 /// silently break equality.
 pub fn sanitize_option_value(s: &str) -> String {
-    s.replace(['\n', '|'], " ")
+    // `\r` rides along with `\n` on CRLF payloads; leaving it in place
+    // makes `str::lines()` strip it from a rewritten log, so the value no
+    // longer round-trips.
+    s.replace(['\n', '\r', '|'], " ")
 }
 
 /// Fetch all global tmux options in a single subprocess call.
@@ -263,13 +266,49 @@ pub fn get_all_global_options() -> std::collections::HashMap<String, String> {
     let mut map = std::collections::HashMap::new();
     if let Some(output) = run_tmux(&["show", "-g"]) {
         for line in output.lines() {
-            // Format: "option-name value" or "@user_option value"
-            if let Some((key, value)) = line.split_once(' ') {
-                map.insert(key.to_string(), value.trim_matches('"').to_string());
+            if let Some((key, value)) = parse_global_option_line(line) {
+                map.insert(key, value);
             }
         }
     }
     map
+}
+
+/// Parse one `tmux show -g` line into `(option, value)`.
+///
+/// tmux quotes string values and escapes embedded quotes/backslashes:
+/// `@repo "\"quoted\" value"`. The old `trim_matches('"')` stripped only
+/// the outer quotes and left `\"` in place, so a repo path containing a
+/// double quote did not round-trip and could reset the repo filter.
+fn parse_global_option_line(line: &str) -> Option<(String, String)> {
+    let (key, raw_value) = line.split_once(' ')?;
+    Some((key.to_string(), unquote_tmux_value(raw_value.trim_start())))
+}
+
+fn unquote_tmux_value(raw: &str) -> String {
+    let raw = raw.trim();
+    if raw.len() < 2 || !raw.starts_with('"') || !raw.ends_with('"') {
+        return raw.to_string();
+    }
+    let inner = &raw[1..raw.len() - 1];
+    let mut value = String::with_capacity(inner.len());
+    let mut chars = inner.chars();
+    while let Some(c) = chars.next() {
+        if c != '\\' {
+            value.push(c);
+            continue;
+        }
+        match chars.next() {
+            Some('"') => value.push('"'),
+            Some('\\') => value.push('\\'),
+            Some(other) => {
+                value.push('\\');
+                value.push(other);
+            }
+            None => value.push('\\'),
+        }
+    }
+    value
 }
 
 pub fn set_pane_option(pane: &str, key: &str, value: &str) {
@@ -473,9 +512,35 @@ mod tests {
     }
 
     #[test]
-    fn sanitize_option_value_replaces_newlines_and_pipes() {
+    fn sanitize_option_value_replaces_newlines_carriage_returns_and_pipes() {
         assert_eq!(sanitize_option_value("a\nb|c"), "a b c");
+        assert_eq!(sanitize_option_value("a\r\nb|c"), "a  b c");
         assert_eq!(sanitize_option_value("clean"), "clean");
+    }
+
+    #[test]
+    fn parse_global_option_line_unquotes_escaped_values() {
+        assert_eq!(
+            parse_global_option_line("@repo \"\\\"quoted\\\" value\""),
+            Some(("@repo".into(), "\"quoted\" value".into()))
+        );
+        assert_eq!(
+            parse_global_option_line("@path \"a\\\\b\""),
+            Some(("@path".into(), "a\\b".into()))
+        );
+        assert_eq!(
+            parse_global_option_line("@sidebar_width 15%"),
+            Some(("@sidebar_width".into(), "15%".into()))
+        );
+        assert_eq!(parse_global_option_line("no-value"), None);
+    }
+
+    #[test]
+    fn quoted_global_option_round_trips_through_parser() {
+        // The exact shape tmux emits for a value containing a double quote.
+        let parsed =
+            parse_global_option_line("@sidebar_repo_filter \"\\\"weird\\\" repo\"").unwrap();
+        assert_eq!(parsed.1, "\"weird\" repo");
     }
 
     #[test]
