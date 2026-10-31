@@ -161,6 +161,22 @@ pub const SIDEBAR_TODO_HIDE_COMPLETED: &str = "@sidebar_todo_hide_completed";
 /// default `on`). Read once at startup; the live value wins once any
 /// sidebar has toggled.
 pub const SIDEBAR_DEFAULT_TODO_HIDE_COMPLETED: &str = "@sidebar_default_todo_hide_completed";
+/// Live "TODO panel open" flag (`1`/`0`, default `0`). Written whenever a
+/// sidebar opens or closes the manual TODO panel so every open sidebar
+/// shows or hides it alike — the panel is one shared list, so its
+/// visibility follows the user across sessions. Seeded by
+/// [`SIDEBAR_DEFAULT_TODO_VISIBLE`] on a fresh tmux server. Only
+/// consulted while [`SIDEBAR_TODO_SCOPE`] is `global`.
+pub const SIDEBAR_TODO_VISIBLE: &str = "@sidebar_todo_visible";
+/// Landing value for [`SIDEBAR_TODO_VISIBLE`] (`on` / `off`, default
+/// `off`). Read once at startup; the live value wins once any sidebar
+/// has toggled the panel.
+pub const SIDEBAR_DEFAULT_TODO_VISIBLE: &str = "@sidebar_default_todo_visible";
+/// Scope of the manual TODO panel (`global` / `local`, default `global`).
+/// `global` shares the panel's open/closed state across every sidebar
+/// instance via [`SIDEBAR_TODO_VISIBLE`]; `local` keeps it per instance
+/// (the item list itself is always shared through the backing file).
+pub const SIDEBAR_TODO_SCOPE: &str = "@sidebar_todo_scope";
 /// Windows narrower than this many columns open the sidebar as a tmux
 /// popup instead of a split pane (mobile viewports). `0` disables the
 /// popup path entirely. Read by the `toggle` subcommand.

@@ -20,7 +20,7 @@ mod todo;
 
 pub use filter::{RepoFilter, StatusFilter};
 pub use focus::{Focus, FocusState};
-pub use global::{GlobalState, GroupBy};
+pub use global::{GlobalState, GroupBy, TodoScope};
 pub use layout::{
     FrameLayout, GroupStart, HyperlinkOverlay, RepoSpawnTarget, RowTarget, SpawnRemoveTarget,
     TodoRowTarget,
@@ -102,7 +102,8 @@ pub struct AppState {
     /// not a shared setting.
     pub collapsed_groups: std::collections::HashSet<String>,
     /// Manual TODO list panel: shared item list (backed by a file) plus
-    /// per-instance visibility, selection, and add-line buffer.
+    /// selection and add-line buffer. Panel visibility follows the shared
+    /// `@sidebar_todo_visible` flag by default.
     pub todos: TodoState,
     /// Maps session_id → session name, refreshed periodically by
     /// `session_poll_loop` (Claude `/rename` labels plus Hermes session

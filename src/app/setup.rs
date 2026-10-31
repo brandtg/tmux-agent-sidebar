@@ -26,6 +26,10 @@ pub(super) fn init_state(tmux_pane: String) -> AppState {
     // same file; `None` (no usable $HOME / $XDG_STATE_HOME) keeps it in
     // memory for this process.
     state.todos.attach(crate::paths::state_dir());
+    // The panel's open/closed state is shared by default (`global` scope),
+    // so a sidebar opened after the user opened the TODO panel in another
+    // session lands with the panel already visible.
+    state.sync_todo_visibility();
     // Populate session names synchronously before the refresh so
     // `/rename`-assigned labels show up on the very first frame —
     // `refresh` applies the map to every pane at the end of each pass.
