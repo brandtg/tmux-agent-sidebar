@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 use std::time::SystemTime;
 
-use super::{AppState, Focus};
+use super::{AppState, Focus, TodoScope};
 use crate::todo::TodoItem;
 
 /// In-progress text edit for one item, opened with `e`.
@@ -14,16 +14,20 @@ pub struct TodoEdit {
 /// Manual TODO list state for one sidebar instance.
 ///
 /// The item list itself is shared across instances through the file
-/// backing `dir`; `visible`, `selected`, and the add-line buffer are
-/// per-instance. `dir` is `None` in unit-test builds (and when no state
-/// directory is available), which keeps every mutation in memory so the
-/// tests never touch the user's real list.
+/// backing `dir`; `visible` follows the shared panel state when the
+/// scope is global (the default), and `selected` plus the add-line
+/// buffer stay per-instance. `dir` is `None` in unit-test builds (and
+/// when no state directory is available), which keeps every mutation in
+/// memory so the tests never touch the user's real list.
 #[derive(Debug, Clone, Default)]
 pub struct TodoState {
     pub items: Vec<TodoItem>,
     /// Selected item index into `items` (not into the visible subset).
     pub selected: usize,
-    /// Panel visibility. Never persisted: every sidebar starts hidden.
+    /// Panel visibility. Mirrors the shared `@sidebar_todo_visible` value
+    /// when the panel scope is global (the default), so opening the panel
+    /// in one tmux session shows it in every other one; with a local
+    /// scope every sidebar starts hidden and owns its own state.
     pub visible: bool,
     /// `Some(input)` while the inline add line owns the keyboard.
     pub adding: Option<String>,
@@ -298,13 +302,13 @@ impl AppState {
     ///    focus the TODO list without closing it.
     pub fn toggle_todo_panel(&mut self) {
         if !self.todos.visible {
-            self.todos.visible = true;
+            self.set_todo_visible(true);
             self.todos.adding = None;
             self.todos.editing = None;
             self.focus_state.focus = Focus::Todos;
             self.todos.clamp_selection(self.global.todo_hide_completed);
         } else if self.focus_state.focus == Focus::Todos {
-            self.todos.visible = false;
+            self.set_todo_visible(false);
             self.todos.adding = None;
             self.todos.editing = None;
             self.focus_state.focus = Focus::Panes;
@@ -312,6 +316,36 @@ impl AppState {
             self.focus_state.focus = Focus::Todos;
             self.todos.clamp_selection(self.global.todo_hide_completed);
         }
+    }
+
+    /// Open or close the TODO panel, writing the shared visibility flag
+    /// when the panel scope is global so every other sidebar follows.
+    fn set_todo_visible(&mut self, visible: bool) {
+        self.todos.visible = visible;
+        if self.global.todo_scope == TodoScope::Global {
+            self.global.set_todo_visible(visible);
+        }
+    }
+
+    /// Adopt a panel-visibility change made by another sidebar (or the
+    /// landing default at startup) when the scope is global. Closing the
+    /// panel from elsewhere must also release a local focus/edit that
+    /// pointed into it.
+    pub fn sync_todo_visibility(&mut self) {
+        if self.global.todo_scope != TodoScope::Global
+            || self.todos.visible == self.global.todo_visible
+        {
+            return;
+        }
+        self.todos.visible = self.global.todo_visible;
+        if !self.todos.visible {
+            self.todos.adding = None;
+            self.todos.editing = None;
+            if self.focus_state.focus == Focus::Todos {
+                self.focus_state.focus = Focus::Panes;
+            }
+        }
+        self.todos.clamp_selection(self.global.todo_hide_completed);
     }
 
     /// Esc inside the panel: cancel the edit line, then the add line,
@@ -354,7 +388,7 @@ impl AppState {
 
     /// Open the inline add line, focusing the panel first.
     pub fn begin_todo_add(&mut self) {
-        self.todos.visible = true;
+        self.set_todo_visible(true);
         self.focus_state.focus = Focus::Todos;
         self.todos.editing = None;
         self.todos.adding = Some(String::new());
@@ -482,8 +516,69 @@ mod tests {
     fn panel_starts_hidden() {
         let state = AppState::new("%99".into());
         assert!(!state.todos.visible);
+        assert!(!state.global.todo_visible);
         assert!(state.todos.items.is_empty());
         assert!(state.todos.dir.is_none());
+    }
+
+    #[test]
+    fn opening_the_panel_shares_visibility_by_default() {
+        let mut state = AppState::new("%99".into());
+        state.toggle_todo_panel();
+        assert!(state.todos.visible);
+        assert!(
+            state.global.todo_visible,
+            "the default global scope publishes the open state"
+        );
+
+        state.toggle_todo_panel();
+        assert!(!state.todos.visible);
+        assert!(!state.global.todo_visible);
+    }
+
+    #[test]
+    fn local_scope_keeps_visibility_per_instance() {
+        let mut state = AppState::new("%99".into());
+        state.global.todo_scope = TodoScope::Local;
+
+        state.toggle_todo_panel();
+        assert!(state.todos.visible);
+        assert!(
+            !state.global.todo_visible,
+            "a local panel must not touch the shared flag"
+        );
+    }
+
+    #[test]
+    fn sync_adopts_a_shared_open_and_releases_focus_on_close() {
+        let mut state = AppState::new("%99".into());
+
+        state.global.todo_visible = true;
+        state.sync_todo_visibility();
+        assert!(state.todos.visible);
+        assert_eq!(
+            state.focus_state.focus,
+            Focus::Panes,
+            "another sidebar opening the panel must not steal focus"
+        );
+
+        state.focus_state.focus = Focus::Todos;
+        state.todos.adding = Some("draft".into());
+        state.global.todo_visible = false;
+        state.sync_todo_visibility();
+        assert!(!state.todos.visible);
+        assert_eq!(state.focus_state.focus, Focus::Panes);
+        assert!(state.todos.adding.is_none());
+    }
+
+    #[test]
+    fn local_scope_ignores_the_shared_visibility_flag() {
+        let mut state = AppState::new("%99".into());
+        state.global.todo_scope = TodoScope::Local;
+        state.global.todo_visible = true;
+
+        state.sync_todo_visibility();
+        assert!(!state.todos.visible);
     }
 
     #[test]

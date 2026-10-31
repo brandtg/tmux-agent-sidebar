@@ -87,6 +87,11 @@ Opened with `t`; hidden by default. Items are plain text, word-wrapped, and
 shared by every sidebar through `~/.local/state/tmux-agent-sidebar/todos.txt`
 (or `$XDG_STATE_HOME` when set). Completed items are hidden by default.
 
+The panel's open/closed state is shared across every sidebar by default: open
+it in one tmux session and it opens in the others, so the same list stays in
+view as you jump between sessions. Set `@sidebar_todo_scope local` to keep the
+panel per sidebar instead; the item list stays shared either way.
+
 | Key             | Action                                                        |
 | --------------- | ------------------------------------------------------------- |
 | `t`             | Open the panel; focus it when open but unfocused, close it when focused |

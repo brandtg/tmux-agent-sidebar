@@ -184,7 +184,10 @@ pub fn run(
                 }
                 state.rebuild_row_targets();
                 // The hide-completed setting may have changed in another
-                // sidebar; keep the TODO selection on a visible item.
+                // sidebar; keep the TODO selection on a visible item. The
+                // panel's shared visibility may have changed too (another
+                // sidebar opened or closed it), so adopt that first.
+                state.sync_todo_visibility();
                 state
                     .todos
                     .clamp_selection(state.global.todo_hide_completed);

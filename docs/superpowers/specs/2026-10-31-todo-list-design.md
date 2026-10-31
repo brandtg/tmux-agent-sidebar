@@ -12,6 +12,16 @@
 > items still exist, the panel says "no open todos — H shows completed"
 > instead of the generic add hint, so the user knows completed items are
 > still there.
+>
+> **Update (follow-up):** the panel's open/closed state is now shared
+> across every sidebar by default, not per instance. It rides the
+> `@sidebar_todo_visible` tmux global (seeded by
+> `@sidebar_default_todo_visible`, default `off`), so opening the panel
+> in one tmux session shows it in every other one and a sidebar opened
+> later lands with it already visible. `@sidebar_todo_scope local` keeps
+> the old per-instance behavior; the item list stays shared through the
+> file in both modes. Closing the panel from another sidebar also
+> releases a local focus/edit that pointed into it.
 
 ## Goal
 
@@ -42,8 +52,11 @@ is visible from every other one.
 - **Storage:** one plain-text file shared by every sidebar instance,
   under `~/.local/state/tmux-agent-sidebar/` (honoring
   `$XDG_STATE_HOME`). Same path on Linux and macOS.
-- **Visibility is not persisted:** every sidebar starts with the panel
-  hidden.
+- **Visibility:** shared across sidebars by default via
+  `@sidebar_todo_visible`, so opening the panel in one session shows it
+  in the others. `@sidebar_todo_scope local` opts back into per-instance
+  visibility. A newly opened sidebar starts hidden unless the shared
+  value is on (or `@sidebar_default_todo_visible` is `on`).
 
 ## Out of scope
 
@@ -186,7 +199,9 @@ pub struct TodoState {
     pub items: Vec<TodoItem>,
     /// Selected item index into `items` (not into the visible subset).
     pub selected: usize,
-    /// Panel visibility. Never persisted; every sidebar starts hidden.
+    /// Panel visibility. Mirrors the shared `@sidebar_todo_visible`
+    /// value when the scope is global (the default); per instance with
+    /// `@sidebar_todo_scope local`.
     pub visible: bool,
     /// `Some(input)` while the inline "add" line is open.
     pub adding: Option<String>,

@@ -27,7 +27,7 @@
 - **Desktop notifications** 
   — native alerts when an agent finishes, needs permission, or errors out
 - **Manual TODOs**
-  — a per-user checklist pinned to the bottom of the sidebar (`t`), shared across every open sidebar and saved between restarts
+  — a per-user checklist pinned to the bottom of the sidebar (`t`), shared across every open sidebar and saved between restarts. Its open/closed state is shared across sessions too, so the list follows you as you jump between them
 
 OpenCode uses a small local plugin bridge instead of per-event hook config. The plugin lives at `.opencode/plugins/tmux-agent-sidebar.js` and can be symlinked as a single file into `~/.config/opencode/plugins/` so it coexists with any existing plugins.
 
@@ -120,6 +120,8 @@ All options are tmux options set in `~/.tmux.conf`, before the plugin loads (bef
 | `@sidebar_default_compact_view` | `off` | Whether a newly opened sidebar starts in compact mode (one line per agent). Toggle live with `c`; not restored on reopen |
 | `@sidebar_default_show_windows` | `off` | Whether a newly opened sidebar starts with plain (non-agent) windows listed. Toggle live with `w`; not restored on reopen |
 | `@sidebar_default_todo_hide_completed` | `on` | Whether a newly opened sidebar starts with completed TODO items hidden. Toggle live with `H` in the TODO panel (`t`) |
+| `@sidebar_default_todo_visible` | `off` | Whether a newly opened sidebar starts with the TODO panel open. Toggle live with `t`; the shared value wins once any sidebar has toggled |
+| `@sidebar_todo_scope` | `global` | Whether the TODO panel's open/closed state is shared across every sidebar (`global`) or kept per sidebar (`local`). The item list is always shared |
 | `@sidebar_auto_create` | `on` | Auto-create the sidebar on new windows and sessions (`off` disables). Only consulted while no toggle-all sweep has recorded a mode |
 | `@sidebar_auto_create_delay` | `0` | Seconds to defer auto-create after a window/session opens (fractional allowed), so declaratively-built windows (e.g. tmuxinator) finish first |
 | `@sidebar_popup_max_width` | `100` | Windows narrower than this open the sidebar as a tmux popup instead of a split pane — for phones and small SSH viewports. `0` always uses a split pane |

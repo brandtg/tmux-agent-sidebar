@@ -45,6 +45,38 @@ impl GroupBy {
     }
 }
 
+/// How the manual TODO panel's open/closed state is scoped. Set via
+/// `@sidebar_todo_scope`; the item list itself is always shared through
+/// the backing file, so this only governs the panel.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum TodoScope {
+    /// One panel state for every sidebar instance: opening or closing it
+    /// in one session does the same everywhere (the default).
+    #[default]
+    Global,
+    /// Each sidebar owns its panel visibility, as before the shared
+    /// default: every instance starts hidden and `t` only affects it.
+    Local,
+}
+
+impl TodoScope {
+    /// Parse a tmux-option label into a [`TodoScope`]. Unknown values
+    /// fall back to the shared default.
+    pub fn from_label(s: &str) -> Self {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "local" | "session" | "window" | "per-session" => Self::Local,
+            _ => Self::Global,
+        }
+    }
+
+    pub fn as_label(self) -> &'static str {
+        match self {
+            Self::Global => "global",
+            Self::Local => "local",
+        }
+    }
+}
+
 /// State shared across all sidebar instances via tmux global variables.
 /// Synced from tmux at startup, on pane focus change (SIGUSR1), and
 /// whenever another sidebar broadcasts a shared-option change.
@@ -69,6 +101,14 @@ pub struct GlobalState {
     /// sidebars via `@sidebar_todo_hide_completed` and seeded by
     /// `@sidebar_default_todo_hide_completed` (default on).
     pub todo_hide_completed: bool,
+    /// Whether the manual TODO panel is open. Shared across open sidebars
+    /// via `@sidebar_todo_visible` when [`Self::todo_scope`] is
+    /// [`TodoScope::Global`] (the default), so a list opened in one tmux
+    /// session is visible from every other one. Seeded by
+    /// `@sidebar_default_todo_visible` (default off).
+    pub todo_visible: bool,
+    /// Scope of the TODO panel's open/closed state (`@sidebar_todo_scope`).
+    pub todo_scope: TodoScope,
     /// Grouping mode for the agents panel: repo roots (default) or tmux
     /// session names. Read from `@sidebar_group_by` on every sync — set
     /// it in tmux.conf; there is no runtime toggle.
@@ -101,6 +141,8 @@ impl GlobalState {
             compact: false,
             show_windows: false,
             todo_hide_completed: true,
+            todo_visible: false,
+            todo_scope: TodoScope::default(),
             group_by: GroupBy::default(),
             owner_pane,
             last_saved_filter: StatusFilter::All,
@@ -291,6 +333,33 @@ impl GlobalState {
         .is_some()
     }
 
+    /// Persist the TODO panel's shared open state and broadcast it to
+    /// every other sidebar. No-op while the scope is [`TodoScope::Local`]
+    /// (the panel is per-instance then) and when the value is unchanged.
+    pub fn set_todo_visible(&mut self, visible: bool) {
+        if self.todo_scope != TodoScope::Global || self.todo_visible == visible {
+            return;
+        }
+        self.todo_visible = visible;
+        if self.save_todo_visible() {
+            self.broadcast_change();
+        }
+    }
+
+    /// Save the shared TODO panel visibility to tmux. Returns `true` when
+    /// tmux accepted the write (and the caller should broadcast). On a
+    /// failed write the next sync reverts this sidebar to the shared
+    /// value, matching the other shared toggles.
+    pub fn save_todo_visible(&mut self) -> bool {
+        tmux::run_tmux(&[
+            "set",
+            "-g",
+            tmux::SIDEBAR_TODO_VISIBLE,
+            if self.todo_visible { "1" } else { "0" },
+        ])
+        .is_some()
+    }
+
     /// Load all global state from tmux variables.
     /// Called at startup and on SIGUSR1 (pane focus change).
     pub fn load_from_tmux(&mut self) {
@@ -336,6 +405,16 @@ impl GlobalState {
             .unwrap_or(true)
     }
 
+    /// Parse `@sidebar_default_todo_visible` into the landing panel
+    /// visibility for a newly opened sidebar. Same accepted values as
+    /// [`Self::default_compact_view_from_options`], but unset means
+    /// `false`: the panel starts hidden until a sidebar opens it.
+    pub fn default_todo_visible_from_options(opts: &HashMap<String, String>) -> bool {
+        opts.get(tmux::SIDEBAR_DEFAULT_TODO_VISIBLE)
+            .map(|s| matches!(s.trim().to_ascii_lowercase().as_str(), "on" | "true" | "1"))
+            .unwrap_or(false)
+    }
+
     /// Land on the configured default view instead of the last-used
     /// filter/compact values.
     ///
@@ -360,6 +439,9 @@ impl GlobalState {
         }
         if !opts.contains_key(tmux::SIDEBAR_TODO_HIDE_COMPLETED) {
             self.todo_hide_completed = Self::default_todo_hide_completed_from_options(opts);
+        }
+        if self.todo_scope == TodoScope::Global && !opts.contains_key(tmux::SIDEBAR_TODO_VISIBLE) {
+            self.todo_visible = Self::default_todo_visible_from_options(opts);
         }
     }
 
@@ -408,8 +490,82 @@ impl GlobalState {
         if let Some(hide_completed_str) = opts.get(tmux::SIDEBAR_TODO_HIDE_COMPLETED) {
             self.todo_hide_completed = hide_completed_str.trim() == "1";
         }
+        if let Some(scope_str) = opts.get(tmux::SIDEBAR_TODO_SCOPE) {
+            self.todo_scope = TodoScope::from_label(scope_str);
+        }
+        if let Some(visible_str) = opts.get(tmux::SIDEBAR_TODO_VISIBLE) {
+            self.todo_visible = visible_str.trim() == "1";
+        }
         if let Some(group_by_str) = opts.get(tmux::SIDEBAR_GROUP_BY) {
             self.group_by = GroupBy::from_label(group_by_str);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashMap;
+
+    #[test]
+    fn todo_scope_labels_round_trip() {
+        assert_eq!(TodoScope::from_label("global"), TodoScope::Global);
+        assert_eq!(TodoScope::from_label(" LOCAL "), TodoScope::Local);
+        assert_eq!(
+            TodoScope::from_label("nonsense"),
+            TodoScope::Global,
+            "unknown labels fall back to the shared default"
+        );
+        assert_eq!(TodoScope::Global.as_label(), "global");
+        assert_eq!(TodoScope::Local.as_label(), "local");
+    }
+
+    #[test]
+    fn apply_all_reads_shared_todo_visibility() {
+        let mut state = GlobalState::default();
+        let mut opts = HashMap::new();
+        opts.insert(tmux::SIDEBAR_TODO_SCOPE.to_string(), "local".into());
+        opts.insert(tmux::SIDEBAR_TODO_VISIBLE.to_string(), "1".into());
+
+        state.apply_all(&opts);
+
+        assert_eq!(state.todo_scope, TodoScope::Local);
+        assert!(state.todo_visible);
+    }
+
+    #[test]
+    fn default_todo_visibility_is_off_unless_configured() {
+        assert!(!GlobalState::default_todo_visible_from_options(
+            &HashMap::new()
+        ));
+
+        let mut opts = HashMap::new();
+        opts.insert(tmux::SIDEBAR_DEFAULT_TODO_VISIBLE.to_string(), "on".into());
+        assert!(GlobalState::default_todo_visible_from_options(&opts));
+    }
+
+    #[test]
+    fn apply_default_view_seeds_shared_visibility() {
+        let mut state = GlobalState::default();
+        let mut opts = HashMap::new();
+        opts.insert(tmux::SIDEBAR_DEFAULT_TODO_VISIBLE.to_string(), "on".into());
+
+        state.apply_default_view(&opts);
+
+        assert!(state.todo_visible);
+    }
+
+    #[test]
+    fn local_scope_ignores_the_landing_visibility_default() {
+        let mut state = GlobalState {
+            todo_scope: TodoScope::Local,
+            ..GlobalState::default()
+        };
+        let mut opts = HashMap::new();
+        opts.insert(tmux::SIDEBAR_DEFAULT_TODO_VISIBLE.to_string(), "on".into());
+
+        state.apply_default_view(&opts);
+
+        assert!(!state.todo_visible);
     }
 }
