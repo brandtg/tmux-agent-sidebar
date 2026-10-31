@@ -309,7 +309,11 @@ fn handle_todo_key(key: KeyEvent, state: &mut AppState) -> bool {
             state.move_todo_selection(1);
         }
         KeyCode::Char('k') | KeyCode::Up => {
-            state.move_todo_selection(-1);
+            if !state.move_todo_selection(-1) && state.focus_panes_from_todos() {
+                // Off the top of the TODO list and onto the last agent,
+                // as one continuous list.
+                state.global.queue_cursor_save();
+            }
         }
         KeyCode::PageDown => {
             state.page_todo_selection(1);
@@ -343,6 +347,10 @@ fn pane_nav_down(state: &mut AppState) {
         }
         Focus::Panes => {
             if state.move_pane_selection(1) {
+                state.global.queue_cursor_save();
+            } else if state.focus_todo_from_panes() {
+                // Off the bottom of the agent list and into the visible
+                // TODO panel, as one continuous list.
                 state.global.queue_cursor_save();
             }
         }
@@ -518,6 +526,99 @@ mod tests {
         state.global.selected_pane_row = 1;
         handle_key_event(key(KeyCode::Char('p')), &mut state);
         assert_eq!(state.global.selected_pane_row, 1);
+    }
+
+    // ─── agent list ↔ TODO list continuous navigation ───────────────
+
+    fn todo_items(texts: &[&str]) -> Vec<crate::todo::TodoItem> {
+        texts
+            .iter()
+            .map(|text| crate::todo::TodoItem {
+                text: (*text).into(),
+                done: false,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn j_at_last_agent_walks_into_the_visible_todo_panel() {
+        let mut state = state_with_three_panes();
+        state.global.selected_pane_row = 2;
+        state.todos.visible = true;
+        state.todos.items = todo_items(&["a", "b"]);
+
+        handle_key_event(key(KeyCode::Char('j')), &mut state);
+
+        assert_eq!(state.focus_state.focus, Focus::Todos);
+        assert_eq!(state.todos.selected, 0, "lands on the first todo");
+        assert_eq!(state.global.selected_pane_row, 2);
+    }
+
+    #[test]
+    fn j_at_last_agent_does_not_open_a_hidden_todo_panel() {
+        let mut state = state_with_three_panes();
+        state.global.selected_pane_row = 2;
+
+        handle_key_event(key(KeyCode::Char('j')), &mut state);
+
+        assert_eq!(state.focus_state.focus, Focus::Panes);
+        assert!(!state.todos.visible, "the walk must not open the panel");
+        assert_eq!(state.global.selected_pane_row, 2);
+    }
+
+    #[test]
+    fn k_at_top_todo_walks_to_the_last_agent() {
+        let mut state = state_with_three_panes();
+        state.global.selected_pane_row = 0; // stale position from earlier
+        state.todos.visible = true;
+        state.todos.items = todo_items(&["a", "b"]);
+        state.todos.selected = 0;
+        state.focus_state.focus = Focus::Todos;
+
+        handle_key_event(key(KeyCode::Char('k')), &mut state);
+
+        assert_eq!(state.focus_state.focus, Focus::Panes);
+        assert_eq!(state.global.selected_pane_row, 2, "lands on the last agent");
+    }
+
+    #[test]
+    fn k_on_a_middle_todo_still_moves_between_todos() {
+        let mut state = state_with_three_panes();
+        state.todos.visible = true;
+        state.todos.items = todo_items(&["a", "b"]);
+        state.todos.selected = 1;
+        state.focus_state.focus = Focus::Todos;
+
+        handle_key_event(key(KeyCode::Char('k')), &mut state);
+
+        assert_eq!(state.focus_state.focus, Focus::Todos);
+        assert_eq!(state.todos.selected, 0);
+        assert_eq!(state.global.selected_pane_row, 0, "pane row untouched");
+    }
+
+    #[test]
+    fn agent_todo_walk_round_trip() {
+        // Down through the whole agent list into the todos, back up
+        // through the todos into the agents, ending where it began.
+        let mut state = state_with_three_panes();
+        state.todos.visible = true;
+        state.todos.items = todo_items(&["a", "b"]);
+
+        for _ in 0..4 {
+            handle_key_event(key(KeyCode::Char('j')), &mut state);
+        }
+        assert_eq!(state.focus_state.focus, Focus::Todos);
+        assert_eq!(state.todos.selected, 1);
+
+        for _ in 0..5 {
+            handle_key_event(key(KeyCode::Char('k')), &mut state);
+        }
+        assert_eq!(state.focus_state.focus, Focus::Filter, "all the way up");
+        for _ in 0..5 {
+            handle_key_event(key(KeyCode::Char('j')), &mut state);
+        }
+        assert_eq!(state.focus_state.focus, Focus::Todos);
+        assert_eq!(state.todos.selected, 1);
     }
 
     #[test]
