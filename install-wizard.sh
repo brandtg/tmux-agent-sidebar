@@ -54,8 +54,13 @@ function detect_platform() {
 
 function stop_running_instances() {
     # Kill any running instances so the next launch picks up the new binary.
-    # Match the full binary path to avoid touching unrelated processes.
-    pkill -f "$BINARY" 2>/dev/null || true
+    # `-f` takes an ERE, so escape regex metacharacters in the install path
+    # (`.`, `+`, `(`, ...) before matching; `-x` then requires the whole
+    # argv to equal that literal path, leaving editors or `tail -f` on the
+    # binary alone.
+    local pattern
+    pattern="$(printf '%s' "$BINARY" | sed 's/[][\\.^$*+?(){}|]/\\&/g')"
+    pkill -xf "$pattern" 2>/dev/null || true
 }
 
 function post_install_fixups() {

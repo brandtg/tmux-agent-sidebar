@@ -893,8 +893,8 @@ fn default_compact_view_is_case_insensitive() {
 }
 
 // ─── group-by tests ─────────────────────────────────────────────────
-// A config-time choice set in tmux.conf (`@sidebar_group_by`): read on
-// every sync, unknown values fall back to repo, no runtime toggle.
+// Set in tmux.conf (`@sidebar_group_by`) or toggled at runtime with `s`;
+// read on every sync, unknown values fall back to repo.
 
 #[test]
 fn group_by_defaults_to_repo() {
@@ -917,6 +917,19 @@ fn group_by_unknown_value_falls_back_to_repo() {
     let mut g = make_global();
     g.apply_all(&make_opts(&[(tmux::SIDEBAR_GROUP_BY, "banana")]));
     assert_eq!(g.group_by, GroupBy::Repo);
+}
+
+#[test]
+fn group_by_labels_round_trip_and_toggle() {
+    assert_eq!(GroupBy::Repo.as_label(), "repo");
+    assert_eq!(GroupBy::Session.as_label(), "session");
+    assert_eq!(GroupBy::from_label(GroupBy::Repo.as_label()), GroupBy::Repo);
+    assert_eq!(
+        GroupBy::from_label(GroupBy::Session.as_label()),
+        GroupBy::Session
+    );
+    assert_eq!(GroupBy::Repo.toggled(), GroupBy::Session);
+    assert_eq!(GroupBy::Session.toggled(), GroupBy::Repo);
 }
 
 // ─── show-windows tests ─────────────────────────────────────────────

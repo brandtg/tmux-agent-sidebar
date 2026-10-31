@@ -20,7 +20,9 @@ mod timers;
 pub use filter::{RepoFilter, StatusFilter};
 pub use focus::{Focus, FocusState};
 pub use global::{GlobalState, GroupBy};
-pub use layout::{FrameLayout, HyperlinkOverlay, RepoSpawnTarget, RowTarget, SpawnRemoveTarget};
+pub use layout::{
+    FrameLayout, GroupStart, HyperlinkOverlay, RepoSpawnTarget, RowTarget, SpawnRemoveTarget,
+};
 pub(crate) use notices::debug_forced_display;
 pub(crate) use notices::parse_enabled_agents;
 pub use notices::{ClaudePluginNotice, NoticesCopyTarget, NoticesMissingHookGroup, NoticesState};
@@ -92,6 +94,10 @@ pub struct AppState {
     /// sidebar instances: the query is transient, and broadcasting it on
     /// every keystroke would refresh every open sidebar.
     pub search: SearchState,
+    /// Group names collapsed to a header-only row (`z`). Local to this
+    /// sidebar instance, like search: collapse is a transient view choice,
+    /// not a shared setting.
+    pub collapsed_groups: std::collections::HashSet<String>,
     /// Maps session_id → session name, refreshed periodically by
     /// `session_poll_loop` (Claude `/rename` labels plus Hermes session
     /// titles).
@@ -151,6 +157,7 @@ impl AppState {
             version_notice: None,
             global,
             search: SearchState::default(),
+            collapsed_groups: std::collections::HashSet::new(),
             sessions: SessionNamesState::default(),
             popup_mode: false,
             window_has_no_other_panes: false,

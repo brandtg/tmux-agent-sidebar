@@ -204,7 +204,9 @@ pub struct HookRegistration {
     /// `"PostToolUse"`).
     pub trigger: &'static str,
     /// Optional matcher value. `None` means "register with an empty matcher"
-    /// (catches all). `Some("startup|resume")` etc. captures a specific filter.
+    /// (catches all). `Some("startup")` captures a specific filter; Codex's
+    /// `SessionStart` deliberately uses `None` so unlisted sources such as
+    /// `compact` are not dropped.
     pub matcher: Option<&'static str>,
     /// Internal event this registration produces.
     pub kind: AgentEventKind,

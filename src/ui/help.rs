@@ -14,6 +14,12 @@ use crate::ui::text::{display_width, truncate_to_width};
 const HELP_ROWS: &[(&str, &str)] = &[
     ("j / k", "Move selection"),
     ("/", "Search agents"),
+    ("a", "Jump to next attention row"),
+    ("g / G", "Jump to top / bottom"),
+    ("[ / ]", "Previous / next group"),
+    ("z", "Collapse / expand group"),
+    ("Z", "Expand all groups"),
+    ("s", "Repo / session grouping"),
     ("PgUp / PgDn", "Page the list"),
     ("h / l", "Previous / next status filter"),
     ("Tab", "Cycle status filter"),
@@ -135,13 +141,23 @@ mod tests {
 
     #[test]
     fn help_popup_renders_centered_key_reference() {
-        let output = render_help_text(60, 20);
+        // Tall enough for every row: the narrow-area test below covers the
+        // clamped case.
+        let output = render_help_text(60, 30);
         insta::assert_snapshot!(output, @"
+
+
 
         ┌───────────────────────────────────────────────┐
         │ Help                                          │
         │ j / k        Move selection                   │
         │ /            Search agents                    │
+        │ a            Jump to next attention row       │
+        │ g / G        Jump to top / bottom             │
+        │ [ / ]        Previous / next group            │
+        │ z            Collapse / expand group          │
+        │ Z            Expand all groups                │
+        │ s            Repo / session grouping          │
         │ PgUp / PgDn  Page the list                    │
         │ h / l        Previous / next status filter    │
         │ Tab          Cycle status filter              │
@@ -168,11 +184,11 @@ mod tests {
         │ Help             │
         │ j / k        Mov…│
         │ /            Sea…│
-        │ PgUp / PgDn  Pag…│
-        │ h / l        Pre…│
-        │ Tab          Cyc…│
-        │ Enter / →    Jum…│
-        │ n            Spa…│
+        │ a            Jum…│
+        │ g / G        Jum…│
+        │ [ / ]        Pre…│
+        │ z            Col…│
+        │ Z            Exp…│
         └──────────────────┘
         ");
     }

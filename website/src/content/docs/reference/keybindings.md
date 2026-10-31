@@ -12,6 +12,12 @@ description: Every shortcut in the sidebar, the worktree spawn modal, and the cl
 | `j` / `Down`   | Move selection down                                           |
 | `k` / `Up`     | Move selection up                                             |
 | `/`            | Search agents by session title, tmux session, or branch       |
+| `a`            | Jump to the next row that needs attention                     |
+| `g` / `G`      | Jump to the top / bottom of the list                          |
+| `[` / `]`      | Jump to the previous / next group header                      |
+| `z`            | Collapse / expand the selected group                          |
+| `Z`            | Expand every collapsed group                                  |
+| `s`            | Toggle repo / tmux-session grouping                           |
 | `PageUp` / `PageDown` | Page the agent list by a viewport                      |
 | `h` / `Left`   | Previous status filter                                        |
 | `l` / `Right`  | Next status filter; jump to the selected pane |

@@ -21,6 +21,10 @@ use super::context::pane_writes_allowed;
 /// so lost lines corrupt the task counters.
 pub(super) fn write_activity_entry(pane: &str, tool_name: &str, label: &str) {
     let log_path = crate::activity::log_file_path(pane);
+    // Both fields are agent-controlled. The record is `ts|tool|label`, so
+    // a newline or pipe in either one would split the record or forge a
+    // fake TaskCreate/TaskUpdate line that the task parser consumes.
+    let tool_name = sanitize_tmux_value(tool_name);
     let label = sanitize_tmux_value(label);
     let timestamp = now_epoch_secs().to_string();
     let line = format!("{}|{}|{}\n", timestamp, tool_name, label);
@@ -323,6 +327,27 @@ mod tests {
         let label = lines[0].splitn(3, '|').nth(2).unwrap();
         assert!(!label.contains('|'));
         assert!(!label.contains('\n'));
+        fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn write_activity_entry_sanitizes_tool_name() {
+        let pane_id = "%CLI_SANITIZE_TOOL_TEST";
+        let path = crate::activity::log_file_path(pane_id);
+        let _ = fs::remove_file(&path);
+
+        // A malicious/odd tool name must not split the `ts|tool|label`
+        // record or forge an extra TaskCreate entry.
+        write_activity_entry(pane_id, "TaskCreate|injected\nline", "ok");
+
+        let content = fs::read_to_string(&path).unwrap();
+        let lines: Vec<&str> = content.lines().collect();
+        assert_eq!(lines.len(), 1, "tool_name must not create extra lines");
+        let mut fields = lines[0].split('|');
+        assert!(fields.next().unwrap().parse::<u64>().is_ok());
+        assert_eq!(fields.next().unwrap(), "TaskCreate injected line");
+        assert_eq!(fields.next().unwrap(), "ok");
+        assert_eq!(fields.next(), None, "record must have exactly 3 fields");
         fs::remove_file(&path).ok();
     }
 

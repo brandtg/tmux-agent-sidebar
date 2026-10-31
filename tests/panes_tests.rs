@@ -682,6 +682,22 @@ fn snapshot_search_bar_filters_list_but_keeps_group() {
 }
 
 #[test]
+fn snapshot_collapsed_group_renders_header_only() {
+    let mut state = search_state();
+    state.collapsed_groups.insert("backend".into());
+    state.rebuild_row_targets();
+
+    insta::assert_snapshot!(render_to_string(&mut state, 40, 20), @"
+     ≡1  ●0  ◎0  ◐0  ○1  ✕0
+    ⓘ                                    — ▾
+    ▸ backend
+    frontend
+      ○ frontend
+        Waiting for prompt…
+    ");
+}
+
+#[test]
 fn snapshot_search_no_matches_empty_state() {
     let mut state = search_state();
     state.search.query = "zzz".into();

@@ -146,6 +146,50 @@ pub(super) fn handle_key_event(key: KeyEvent, state: &mut AppState) -> bool {
         KeyCode::Char('n') if ctrl => pane_nav_down(state),
         KeyCode::Char('k') | KeyCode::Up => pane_nav_up(state),
         KeyCode::Char('p') if ctrl => pane_nav_up(state),
+        KeyCode::Char('g') => {
+            if state.focus_state.focus == Focus::Panes && state.select_first_row() {
+                state.global.queue_cursor_save();
+            }
+        }
+        KeyCode::Char('G') => {
+            if state.focus_state.focus == Focus::Panes && state.select_last_row() {
+                state.global.queue_cursor_save();
+            }
+        }
+        KeyCode::Char('a') => {
+            if state.focus_state.focus == Focus::Panes && state.jump_to_next_attention() {
+                state.global.queue_cursor_save();
+            }
+        }
+        KeyCode::Char(']') => {
+            if state.focus_state.focus == Focus::Panes && state.jump_to_next_group() {
+                state.global.queue_cursor_save();
+            }
+        }
+        KeyCode::Char('[') => {
+            if state.focus_state.focus == Focus::Panes && state.jump_to_previous_group() {
+                state.global.queue_cursor_save();
+            }
+        }
+        KeyCode::Char('z') => {
+            if state.focus_state.focus == Focus::Panes && state.toggle_selected_group_collapse() {
+                state.global.queue_cursor_save();
+            }
+        }
+        KeyCode::Char('Z') => {
+            if state.focus_state.focus == Focus::Panes && state.expand_all_groups() {
+                state.global.queue_cursor_save();
+            }
+        }
+        // Grouping is a shared view setting, like `c` / `w`: write the
+        // tmux global and let every open sidebar reload it. Re-query the
+        // snapshot here so this sidebar regroups immediately instead of
+        // waiting for the next tick.
+        KeyCode::Char('s') => {
+            state.global.toggle_group_by();
+            state.collapsed_groups.clear();
+            state.refresh();
+        }
         KeyCode::PageDown => page_scroll(state, 1),
         KeyCode::PageUp => page_scroll(state, -1),
         KeyCode::Char('h') | KeyCode::Left => {
@@ -429,6 +473,164 @@ mod tests {
         handle_key_event(key(KeyCode::PageUp), &mut state);
 
         assert_eq!(state.global.selected_pane_row, 0);
+    }
+
+    // ─── group / attention navigation ──────────────────────────────
+
+    fn set_pane_attention(state: &mut AppState, pane_id: &str, attention: PaneAttention) {
+        for group in &mut state.repo_groups {
+            for (pane, _) in &mut group.panes {
+                if pane.pane_id == pane_id {
+                    pane.attention = attention;
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn g_and_shift_g_jump_to_the_list_edges() {
+        let mut state = state_with_three_panes();
+        state.global.selected_pane_row = 1;
+
+        handle_key_event(key(KeyCode::Char('g')), &mut state);
+        assert_eq!(state.global.selected_pane_row, 0);
+
+        handle_key_event(key(KeyCode::Char('G')), &mut state);
+        assert_eq!(state.global.selected_pane_row, 2);
+    }
+
+    #[test]
+    fn brackets_jump_between_group_starts() {
+        let mut state = state_with_search_groups();
+        assert_eq!(
+            state
+                .layout
+                .group_starts
+                .iter()
+                .map(|g| (g.name.as_str(), g.row_start))
+                .collect::<Vec<_>>(),
+            vec![("backend", 0), ("frontend", 2)]
+        );
+
+        handle_key_event(key(KeyCode::Char(']')), &mut state);
+        assert_eq!(state.global.selected_pane_row, 2);
+        // Already on the last group: no wrap.
+        handle_key_event(key(KeyCode::Char(']')), &mut state);
+        assert_eq!(state.global.selected_pane_row, 2);
+
+        handle_key_event(key(KeyCode::Char('[')), &mut state);
+        assert_eq!(state.global.selected_pane_row, 0);
+        handle_key_event(key(KeyCode::Char('[')), &mut state);
+        assert_eq!(state.global.selected_pane_row, 0);
+    }
+
+    #[test]
+    fn a_cycles_to_the_next_attention_row() {
+        let mut state = state_with_search_groups();
+        set_pane_attention(&mut state, "%1", PaneAttention::Done);
+        set_pane_attention(&mut state, "%3", PaneAttention::Notification);
+
+        // Starting on %1 (attention), the next flagged row is %3.
+        handle_key_event(key(KeyCode::Char('a')), &mut state);
+        assert_eq!(state.global.selected_pane_row, 2);
+
+        // Wrap back to %1.
+        handle_key_event(key(KeyCode::Char('a')), &mut state);
+        assert_eq!(state.global.selected_pane_row, 0);
+    }
+
+    #[test]
+    fn a_includes_window_rows_with_attention() {
+        let mut state = AppState::new("%99".into());
+        let mut agent = search_pane("%1", AgentType::Claude, "work", "claude-api");
+        agent.path = "/tmp/backend".into();
+        state.repo_groups = vec![RepoGroup {
+            name: "backend".into(),
+            has_focus: false,
+            panes: vec![(agent, PaneGitInfo::default())],
+        }];
+        state.global.show_windows = true;
+        state.other_windows.insert(
+            "/tmp/backend".into(),
+            vec![crate::group::OtherWindow {
+                window_id: "@5".into(),
+                window_index: 0,
+                window_name: "tests".into(),
+                window_active: false,
+                session_name: "work".into(),
+                session_attached: true,
+                attention: PaneAttention::Notification,
+                pane_id: "%9".into(),
+                pane_active: true,
+                pane_pid: None,
+                command: "cargo".into(),
+                command_args: None,
+                path: "/tmp/backend".into(),
+                git_info: PaneGitInfo::default(),
+                status: crate::tmux::classify_window_status("cargo"),
+                pane_title: String::new(),
+                flagged: false,
+            }],
+        );
+        state.rebuild_row_targets();
+        assert_eq!(target_ids(&state), vec!["%1", "%9"]);
+
+        handle_key_event(key(KeyCode::Char('a')), &mut state);
+        assert_eq!(state.global.selected_pane_row, 1);
+    }
+
+    #[test]
+    fn a_is_a_no_op_when_nothing_needs_attention() {
+        let mut state = state_with_search_groups();
+        handle_key_event(key(KeyCode::Char('a')), &mut state);
+        assert_eq!(state.global.selected_pane_row, 0);
+    }
+
+    #[test]
+    fn z_collapses_the_selected_group_and_shift_z_expands_all() {
+        let mut state = state_with_search_groups();
+        assert_eq!(target_ids(&state), vec!["%1", "%2", "%3"]);
+
+        handle_key_event(key(KeyCode::Char('z')), &mut state);
+        assert_eq!(target_ids(&state), vec!["%3"]);
+        assert!(state.is_group_collapsed("backend"));
+        assert_eq!(
+            state
+                .layout
+                .group_starts
+                .iter()
+                .map(|g| (g.name.as_str(), g.row_start))
+                .collect::<Vec<_>>(),
+            vec![("frontend", 0)]
+        );
+
+        handle_key_event(key(KeyCode::Char('Z')), &mut state);
+        assert_eq!(target_ids(&state), vec!["%1", "%2", "%3"]);
+        assert!(!state.is_group_collapsed("backend"));
+    }
+
+    #[test]
+    fn collapsing_the_last_group_clamps_selection_to_a_visible_row() {
+        let mut state = state_with_search_groups();
+        state.global.selected_pane_row = 2; // %3, the only frontend row
+
+        handle_key_event(key(KeyCode::Char('z')), &mut state);
+
+        assert_eq!(target_ids(&state), vec!["%1", "%2"]);
+        assert_eq!(state.global.selected_pane_row, 1);
+        assert_eq!(state.selected_pane().unwrap().pane_id, "%2");
+    }
+
+    #[test]
+    fn s_toggles_grouping_mode() {
+        let mut state = state_with_search_groups();
+        assert_eq!(state.global.group_by, crate::state::GroupBy::Repo);
+
+        handle_key_event(key(KeyCode::Char('s')), &mut state);
+        assert_eq!(state.global.group_by, crate::state::GroupBy::Session);
+
+        handle_key_event(key(KeyCode::Char('s')), &mut state);
+        assert_eq!(state.global.group_by, crate::state::GroupBy::Repo);
     }
 
     #[test]

@@ -173,7 +173,15 @@ pub fn run(
             // (unfocused) session never registers a visible→hidden
             // transition for the second branch to catch.
             if sigusr1 || (is_window_active && window_inactive_count >= 2) {
+                let previous_group_by = state.global.group_by;
                 state.global.load_from_tmux();
+                // Group names are mode-specific (repo names vs session
+                // names). A collapse set from the previous mode would
+                // otherwise hide an unrelated group that happens to share
+                // a name, so start the new mode fully expanded.
+                if state.global.group_by != previous_group_by {
+                    state.collapsed_groups.clear();
+                }
                 state.rebuild_row_targets();
                 // A window/pane switch reloads the shared cursor, which
                 // another window may have moved. Re-anchor this sidebar at

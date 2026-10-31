@@ -198,7 +198,9 @@ impl AppState {
     pub fn status_counts(&self) -> (usize, usize, usize, usize, usize, usize) {
         let (mut running, mut background, mut waiting, mut idle, mut error) = (0, 0, 0, 0, 0);
         for group in &self.repo_groups {
-            if !self.global.repo_filter.matches_group(&group.name) {
+            if !self.global.repo_filter.matches_group(&group.name)
+                || self.is_group_collapsed(&group.name)
+            {
                 continue;
             }
             let group_matches_search = self.search_matches_group(group);
@@ -228,7 +230,9 @@ impl AppState {
         // Counted per pane, not as a bucket sum: an attention-flagged
         // pane lands in both `running` and its status bucket above.
         for group in &self.repo_groups {
-            if !self.global.repo_filter.matches_group(&group.name) {
+            if !self.global.repo_filter.matches_group(&group.name)
+                || self.is_group_collapsed(&group.name)
+            {
                 continue;
             }
             if !self.global.show_windows {
@@ -267,7 +271,9 @@ impl AppState {
         }
         self.repo_groups
             .iter()
-            .filter(|g| self.global.repo_filter.matches_group(&g.name))
+            .filter(|g| {
+                self.global.repo_filter.matches_group(&g.name) && !self.is_group_collapsed(&g.name)
+            })
             .map(|g| {
                 let group_matches_search = self.search_matches_group(g);
                 let key = crate::group::group_window_key(self.global.group_by, g);
@@ -293,7 +299,9 @@ impl AppState {
     fn pane_count(&self) -> usize {
         self.repo_groups
             .iter()
-            .filter(|g| self.global.repo_filter.matches_group(&g.name))
+            .filter(|g| {
+                self.global.repo_filter.matches_group(&g.name) && !self.is_group_collapsed(&g.name)
+            })
             .map(|g| {
                 let group_matches_search = self.search_matches_group(g);
                 g.panes
@@ -585,6 +593,34 @@ mod tests {
         // A group-name hit keeps the whole group, so the counts stay whole.
         state.search.query = "app".into();
         assert_eq!(state.status_counts(), (2, 1, 0, 0, 1, 0));
+    }
+
+    #[test]
+    fn status_counts_exclude_collapsed_groups() {
+        let mut state = AppState::new("%99".into());
+        state.repo_groups = vec![
+            RepoGroup {
+                name: "backend".into(),
+                has_focus: false,
+                panes: vec![
+                    (test_pane("%1", PaneStatus::Running), PaneGitInfo::default()),
+                    (test_pane("%2", PaneStatus::Idle), PaneGitInfo::default()),
+                ],
+            },
+            RepoGroup {
+                name: "frontend".into(),
+                has_focus: false,
+                panes: vec![(test_pane("%3", PaneStatus::Waiting), PaneGitInfo::default())],
+            },
+        ];
+        assert_eq!(state.status_counts(), (3, 1, 0, 1, 1, 0));
+
+        state.collapsed_groups.insert("backend".into());
+        assert_eq!(
+            state.status_counts(),
+            (1, 0, 0, 1, 0, 0),
+            "collapsed rows must not be counted in the header"
+        );
     }
 
     #[test]

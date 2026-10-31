@@ -39,6 +39,15 @@ applied, `Esc` clears it, `Ctrl-u` clears the text without closing the input,
 and `Ctrl-w` deletes the word before the cursor. Jumping to a pane clears the
 query, so leaving the sidebar always returns the list to its unfiltered state.
 
+### Navigation and grouping
+
+`a` cycles to the next row that needs attention, `g` / `G` jump to the top and
+bottom, and `[` / `]` jump between group headers. `z` collapses the selected
+group to a single header line (its counts drop out of the filter bar) and `Z`
+expands every collapsed group. `s` toggles grouping between repository and tmux
+session; the choice is written to `@sidebar_group_by` and shared by every open
+sidebar.
+
 ## Row elements
 
 ### Status icon

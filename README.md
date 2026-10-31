@@ -114,7 +114,7 @@ All options are tmux options set in `~/.tmux.conf`, before the plugin loads (bef
 | `@sidebar_width` | `15%` | Width in columns or as a percentage of window width |
 | `@sidebar_position` | `left` | Sidebar placement: `left` or `right` |
 | `@sidebar_default_view` | `all` | Status filter a newly opened sidebar lands on: `all`, `running`, `background`, `waiting`, `idle`, or `error` |
-| `@sidebar_group_by` | `repo` | How the agents panel groups panes: `repo` (git repo root) or `session` (tmux session name; with `w` enabled, an agent-forward session manager). Set before the sidebar opens |
+| `@sidebar_group_by` | `repo` | How the agents panel groups panes: `repo` (git repo root) or `session` (tmux session name; with `w` enabled, an agent-forward session manager). Set the default here, or toggle it at runtime with `s` |
 | `@sidebar_default_compact_view` | `off` | Whether a newly opened sidebar starts in compact mode (one line per agent). Toggle live with `c`; not restored on reopen |
 | `@sidebar_default_show_windows` | `off` | Whether a newly opened sidebar starts with plain (non-agent) windows listed. Toggle live with `w`; not restored on reopen |
 | `@sidebar_auto_create` | `on` | Auto-create the sidebar on new windows and sessions (`off` disables). Only consulted while no toggle-all sweep has recorded a mode |
