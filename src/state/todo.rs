@@ -366,6 +366,40 @@ impl AppState {
             .move_selection(delta, self.global.todo_hide_completed)
     }
 
+    /// Continue a downward walk from the agent list into the TODO panel:
+    /// focus the panel landing on the first visible item. Only works when
+    /// the panel is already visible and has items to show — a hidden
+    /// panel stays hidden (the walk simply stops at the end of the list).
+    pub fn focus_todo_from_panes(&mut self) -> bool {
+        if !self.todos.visible {
+            return false;
+        }
+        let Some(&first) = self
+            .todos
+            .visible_indices(self.global.todo_hide_completed)
+            .first()
+        else {
+            return false;
+        };
+        self.todos.selected = first;
+        self.todos.adding = None;
+        self.todos.editing = None;
+        self.focus_state.focus = Focus::Todos;
+        true
+    }
+
+    /// Continue an upward walk from the top of the TODO list into the
+    /// agent list: focus the list landing on the last agent row. No-op
+    /// when the list has no rows.
+    pub fn focus_panes_from_todos(&mut self) -> bool {
+        let Some(last) = self.layout.pane_row_targets.len().checked_sub(1) else {
+            return false;
+        };
+        self.global.selected_pane_row = last;
+        self.focus_state.focus = Focus::Panes;
+        true
+    }
+
     pub fn page_todo_selection(&mut self, direction: isize) -> bool {
         let page = self.scrolls.todos.visible_height.max(1) as isize;
         self.todos
