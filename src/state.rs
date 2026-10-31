@@ -16,12 +16,14 @@ mod scroll;
 mod search;
 mod session;
 mod timers;
+mod todo;
 
 pub use filter::{RepoFilter, StatusFilter};
 pub use focus::{Focus, FocusState};
 pub use global::{GlobalState, GroupBy};
 pub use layout::{
     FrameLayout, GroupStart, HyperlinkOverlay, RepoSpawnTarget, RowTarget, SpawnRemoveTarget,
+    TodoRowTarget,
 };
 pub(crate) use notices::debug_forced_display;
 pub(crate) use notices::parse_enabled_agents;
@@ -34,6 +36,7 @@ pub use scroll::{ScrollState, ScrollStates};
 pub use search::SearchState;
 pub use session::SessionNamesState;
 pub use timers::RefreshTimers;
+pub use todo::TodoState;
 
 pub struct AppState {
     pub now: u64,
@@ -98,6 +101,9 @@ pub struct AppState {
     /// sidebar instance, like search: collapse is a transient view choice,
     /// not a shared setting.
     pub collapsed_groups: std::collections::HashSet<String>,
+    /// Manual TODO list panel: shared item list (backed by a file) plus
+    /// per-instance visibility, selection, and add-line buffer.
+    pub todos: TodoState,
     /// Maps session_id → session name, refreshed periodically by
     /// `session_poll_loop` (Claude `/rename` labels plus Hermes session
     /// titles).
@@ -158,6 +164,7 @@ impl AppState {
             global,
             search: SearchState::default(),
             collapsed_groups: std::collections::HashSet::new(),
+            todos: TodoState::default(),
             sessions: SessionNamesState::default(),
             popup_mode: false,
             window_has_no_other_panes: false,
@@ -878,7 +885,7 @@ mod tests {
             total_lines: 40,
             visible_height: 20,
         };
-        state.handle_mouse_scroll(3);
+        state.handle_mouse_scroll(3, 0);
         assert_eq!(state.scrolls.panes.offset, 3);
     }
 
@@ -893,7 +900,7 @@ mod tests {
         };
         // A compact row is one line, so a 3-line notch must collapse to a
         // single line — otherwise the wheel skips three panes at a time.
-        state.handle_mouse_scroll(3);
+        state.handle_mouse_scroll(3, 0);
         assert_eq!(state.scrolls.panes.offset, 1);
     }
 
@@ -906,7 +913,7 @@ mod tests {
             total_lines: 40,
             visible_height: 20,
         };
-        state.handle_mouse_scroll(-3);
+        state.handle_mouse_scroll(-3, 0);
         assert_eq!(state.scrolls.panes.offset, 4);
     }
 
@@ -918,8 +925,30 @@ mod tests {
             total_lines: 40,
             visible_height: 20,
         };
-        state.handle_mouse_scroll(-3);
+        state.handle_mouse_scroll(-3, 0);
         assert_eq!(state.scrolls.panes.offset, 2);
+    }
+
+    #[test]
+    fn mouse_scroll_over_todo_panel_scrolls_todos_not_panes() {
+        let mut state = AppState::new("%99".into());
+        state.todos.visible = true;
+        state.layout.todo_area = ratatui::layout::Rect::new(0, 30, 40, 8);
+        state.scrolls.todos = ScrollState {
+            offset: 0,
+            total_lines: 40,
+            visible_height: 8,
+        };
+        state.scrolls.panes = ScrollState {
+            offset: 2,
+            total_lines: 40,
+            visible_height: 20,
+        };
+
+        state.handle_mouse_scroll(3, 32);
+
+        assert_eq!(state.scrolls.todos.offset, 3);
+        assert_eq!(state.scrolls.panes.offset, 2, "agent list untouched");
     }
 
     // ─── move_pane_selection edge cases ─────────────────────────────

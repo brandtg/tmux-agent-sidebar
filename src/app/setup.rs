@@ -22,6 +22,10 @@ pub(super) fn init_state(tmux_pane: String) -> AppState {
     // A new sidebar lands on `@sidebar_default_view` rather than the last
     // filter some other window persisted; see GlobalState::apply_default_view.
     state.global.apply_default_view_from_tmux();
+    // Load the shared manual TODO list. Every sidebar instance reads the
+    // same file; `None` (no usable $HOME / $XDG_STATE_HOME) keeps it in
+    // memory for this process.
+    state.todos.attach(crate::paths::state_dir());
     // Populate session names synchronously before the refresh so
     // `/rename`-assigned labels show up on the very first frame —
     // `refresh` applies the map to every pane at the end of each pass.

@@ -30,6 +30,28 @@ pub(crate) fn runtime_dir() -> PathBuf {
     }
 }
 
+/// Directory for durable user state (the manual TODO list), as opposed
+/// to [`runtime_dir`], which holds ephemeral hook/TUI scratch files.
+///
+/// `$XDG_STATE_HOME` when set, otherwise `~/.local/state` — the same
+/// layout on Linux and macOS (macOS has no native XDG state directory,
+/// and tmux tooling conventionally uses `~/.local/state`). Returns
+/// `None` when neither variable is usable, in which case callers fall
+/// back to in-memory-only state.
+pub(crate) fn state_dir() -> Option<PathBuf> {
+    let base = match std::env::var_os("XDG_STATE_HOME") {
+        Some(dir) if !dir.is_empty() => PathBuf::from(dir),
+        _ => {
+            let home = std::env::var_os("HOME")?;
+            if home.is_empty() {
+                return None;
+            }
+            PathBuf::from(home).join(".local").join("state")
+        }
+    };
+    Some(base.join("tmux-agent-sidebar"))
+}
+
 const NOFOLLOW: i32 = libc::O_NOFOLLOW;
 
 /// Read-only open of an existing file, refusing to follow a symlink

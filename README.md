@@ -26,6 +26,8 @@
   — spawn a fresh worktree + agent from the sidebar and tear it down — window, worktree, and branch — in one keystroke
 - **Desktop notifications** 
   — native alerts when an agent finishes, needs permission, or errors out
+- **Manual TODOs**
+  — a per-user checklist pinned to the bottom of the sidebar (`t`), shared across every open sidebar and saved between restarts
 
 OpenCode uses a small local plugin bridge instead of per-event hook config. The plugin lives at `.opencode/plugins/tmux-agent-sidebar.js` and can be symlinked as a single file into `~/.config/opencode/plugins/` so it coexists with any existing plugins.
 
@@ -117,6 +119,7 @@ All options are tmux options set in `~/.tmux.conf`, before the plugin loads (bef
 | `@sidebar_group_by` | `repo` | How the agents panel groups panes: `repo` (git repo root) or `session` (tmux session name; with `w` enabled, an agent-forward session manager). Set the default here, or toggle it at runtime with `s` |
 | `@sidebar_default_compact_view` | `off` | Whether a newly opened sidebar starts in compact mode (one line per agent). Toggle live with `c`; not restored on reopen |
 | `@sidebar_default_show_windows` | `off` | Whether a newly opened sidebar starts with plain (non-agent) windows listed. Toggle live with `w`; not restored on reopen |
+| `@sidebar_default_todo_hide_completed` | `on` | Whether a newly opened sidebar starts with completed TODO items hidden. Toggle live with `H` in the TODO panel (`t`) |
 | `@sidebar_auto_create` | `on` | Auto-create the sidebar on new windows and sessions (`off` disables). Only consulted while no toggle-all sweep has recorded a mode |
 | `@sidebar_auto_create_delay` | `0` | Seconds to defer auto-create after a window/session opens (fractional allowed), so declaratively-built windows (e.g. tmuxinator) finish first |
 | `@sidebar_popup_max_width` | `100` | Windows narrower than this open the sidebar as a tmux popup instead of a split pane — for phones and small SSH viewports. `0` always uses a split pane |

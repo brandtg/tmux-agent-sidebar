@@ -7,6 +7,8 @@ pub enum Focus {
     Filter,
     #[default]
     Panes,
+    /// The manual TODO panel owns the keyboard.
+    Todos,
 }
 
 #[derive(Debug, Clone)]

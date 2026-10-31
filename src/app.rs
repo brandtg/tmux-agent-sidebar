@@ -183,6 +183,11 @@ pub fn run(
                     state.collapsed_groups.clear();
                 }
                 state.rebuild_row_targets();
+                // The hide-completed setting may have changed in another
+                // sidebar; keep the TODO selection on a visible item.
+                state
+                    .todos
+                    .clamp_selection(state.global.todo_hide_completed);
                 // A window/pane switch reloads the shared cursor, which
                 // another window may have moved. Re-anchor this sidebar at
                 // the top so the switch shows every agent instead of

@@ -64,6 +64,11 @@ pub struct GlobalState {
     /// `@sidebar_default_show_windows` only seeds the mode when no live
     /// value exists yet.
     pub show_windows: bool,
+    /// Hide completed TODO items in the manual TODO panel. Toggleable at
+    /// runtime with `H` while the panel has focus; shared across open
+    /// sidebars via `@sidebar_todo_hide_completed` and seeded by
+    /// `@sidebar_default_todo_hide_completed` (default on).
+    pub todo_hide_completed: bool,
     /// Grouping mode for the agents panel: repo roots (default) or tmux
     /// session names. Read from `@sidebar_group_by` on every sync — set
     /// it in tmux.conf; there is no runtime toggle.
@@ -95,6 +100,7 @@ impl GlobalState {
             repo_filter: RepoFilter::All,
             compact: false,
             show_windows: false,
+            todo_hide_completed: true,
             group_by: GroupBy::default(),
             owner_pane,
             last_saved_filter: StatusFilter::All,
@@ -263,6 +269,28 @@ impl GlobalState {
         .is_some()
     }
 
+    /// Flip the "hide completed TODOs" setting and broadcast the new
+    /// value to every open sidebar via `@sidebar_todo_hide_completed`.
+    pub fn toggle_todo_hide_completed(&mut self) {
+        self.todo_hide_completed = !self.todo_hide_completed;
+        if self.save_todo_hide_completed() {
+            self.broadcast_change();
+        }
+    }
+
+    /// Save the "hide completed TODOs" flag to tmux. Returns `true` when
+    /// tmux accepted the write (and the caller should broadcast). On a
+    /// failed write the next sync reverts this sidebar to the shared value.
+    pub fn save_todo_hide_completed(&mut self) -> bool {
+        tmux::run_tmux(&[
+            "set",
+            "-g",
+            tmux::SIDEBAR_TODO_HIDE_COMPLETED,
+            if self.todo_hide_completed { "1" } else { "0" },
+        ])
+        .is_some()
+    }
+
     /// Load all global state from tmux variables.
     /// Called at startup and on SIGUSR1 (pane focus change).
     pub fn load_from_tmux(&mut self) {
@@ -298,6 +326,16 @@ impl GlobalState {
             .unwrap_or(false)
     }
 
+    /// Parse `@sidebar_default_todo_hide_completed` into the landing
+    /// "hide completed TODOs" mode for a newly opened sidebar. Same
+    /// accepted values as [`Self::default_compact_view_from_options`],
+    /// but unset means `true`: the default is to hide finished items.
+    pub fn default_todo_hide_completed_from_options(opts: &HashMap<String, String>) -> bool {
+        opts.get(tmux::SIDEBAR_DEFAULT_TODO_HIDE_COMPLETED)
+            .map(|s| matches!(s.trim().to_ascii_lowercase().as_str(), "on" | "true" | "1"))
+            .unwrap_or(true)
+    }
+
     /// Land on the configured default view instead of the last-used
     /// filter/compact values.
     ///
@@ -319,6 +357,9 @@ impl GlobalState {
         }
         if !opts.contains_key(tmux::SIDEBAR_SHOW_WINDOWS) {
             self.show_windows = Self::default_show_windows_from_options(opts);
+        }
+        if !opts.contains_key(tmux::SIDEBAR_TODO_HIDE_COMPLETED) {
+            self.todo_hide_completed = Self::default_todo_hide_completed_from_options(opts);
         }
     }
 
@@ -363,6 +404,9 @@ impl GlobalState {
         }
         if let Some(show_windows_str) = opts.get(tmux::SIDEBAR_SHOW_WINDOWS) {
             self.show_windows = show_windows_str.trim() == "1";
+        }
+        if let Some(hide_completed_str) = opts.get(tmux::SIDEBAR_TODO_HIDE_COMPLETED) {
+            self.todo_hide_completed = hide_completed_str.trim() == "1";
         }
         if let Some(group_by_str) = opts.get(tmux::SIDEBAR_GROUP_BY) {
             self.group_by = GroupBy::from_label(group_by_str);
