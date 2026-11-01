@@ -1,11 +1,9 @@
 name: Deploy website
 
+# GitHub Pages is not enabled on this repo yet — the site is disabled for
+# now. Run manually via workflow_dispatch once Pages is turned on; the push
+# trigger stays off so website edits don't fail CI.
 on:
-  push:
-    branches: [main]
-    paths:
-      - "website/**"
-      - ".github/workflows/deploy-website.yml"
   workflow_dispatch:
 
 permissions:

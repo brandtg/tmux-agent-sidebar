@@ -3,7 +3,7 @@ import { defineConfig } from 'astro/config';
 import starlight from '@astrojs/starlight';
 import sitemap from '@astrojs/sitemap';
 
-const SITE = 'https://hiroppy.github.io';
+const SITE = 'https://brandtg.github.io';
 const BASE = '/tmux-agent-sidebar';
 const OG_IMAGE = `${SITE}${BASE}/og-image.png`;
 const DESCRIPTION =
@@ -26,19 +26,12 @@ export default defineConfig({
         {
           icon: 'github',
           label: 'GitHub',
-          href: 'https://github.com/hiroppy/tmux-agent-sidebar',
-        },
-        {
-          // Starlight's icon enum has no `x` — `twitter` renders the
-          // bird glyph, which is the conventional stand-in for X.
-          icon: 'twitter',
-          label: 'X',
-          href: 'https://x.com/about_hiroppy',
+          href: 'https://github.com/brandtg/tmux-agent-sidebar',
         },
       ],
       editLink: {
         baseUrl:
-          'https://github.com/hiroppy/tmux-agent-sidebar/edit/main/website/',
+          'https://github.com/brandtg/tmux-agent-sidebar/edit/main/website/',
       },
       customCss: ['./src/styles/custom.css'],
       components: {
@@ -61,7 +54,6 @@ export default defineConfig({
         { tag: 'meta', attrs: { property: 'og:image:width', content: '1200' } },
         { tag: 'meta', attrs: { property: 'og:image:height', content: '630' } },
         { tag: 'meta', attrs: { name: 'twitter:image', content: OG_IMAGE } },
-        { tag: 'meta', attrs: { name: 'twitter:creator', content: '@about_hiroppy' } },
         // Dark UI hint so address bars and PWA chrome match the theme.
         { tag: 'meta', attrs: { name: 'theme-color', content: '#0b1220' } },
         // Structured data: position this as a developer tool so Google
@@ -78,14 +70,14 @@ export default defineConfig({
             description: DESCRIPTION,
             url: `${SITE}${BASE}/`,
             image: OG_IMAGE,
-            codeRepository: 'https://github.com/hiroppy/tmux-agent-sidebar',
+            codeRepository: 'https://github.com/brandtg/tmux-agent-sidebar',
             programmingLanguage: 'Rust',
-            license: 'https://github.com/hiroppy/tmux-agent-sidebar/blob/main/LICENSE',
+            license: 'https://github.com/brandtg/tmux-agent-sidebar/blob/main/LICENSE',
             offers: { '@type': 'Offer', price: '0', priceCurrency: 'USD' },
             author: {
               '@type': 'Person',
-              name: 'Yuta Hiroto',
-              url: 'https://hiroppy.me',
+              name: 'Greg Brandt',
+              url: 'https://github.com/brandtg',
             },
           }),
         },
@@ -97,6 +89,7 @@ export default defineConfig({
           label: 'Getting Started',
           items: [
             { slug: 'getting-started/installation' },
+            { slug: 'getting-started/fork' },
             { slug: 'getting-started/claude-code' },
             { slug: 'getting-started/codex' },
             { slug: 'getting-started/opencode' },
