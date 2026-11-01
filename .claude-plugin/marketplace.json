@@ -7,7 +7,7 @@
     {
       "name": "tmux-agent-sidebar",
       "source": "./",
-      "description": "Monitor Claude Code agents across tmux panes in a real-time sidebar TUI"
+      "description": "Monitor Claude Code agents across tmux panes in a real-time sidebar TUI. Originally by Yuta Hiroto."
     }
   ]
 }
