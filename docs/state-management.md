@@ -46,6 +46,7 @@ first row applies as usual.
 | `repo_filter` | `@sidebar_repo_filter` | User input (repo popup) | Repository filter (All or specific repo) |
 | `compact` | `@sidebar_compact` | User input (`c` key) | Compact one-line-per-pane rendering; the live value is shared by all open sidebars, and `@sidebar_default_compact_view` seeds it only before the first toggle |
 | `group_by` | `@sidebar_group_by` | User input (`s` key) | Group panes by repo root or tmux session; the runtime toggle writes the shared value and broadcasts, matching `c` / `w` |
+| `preview_lines` | `@sidebar_preview_lines` | tmux.conf (read on every sync) | Line cap for the agent message preview (the prompt / response body wrapped under the status row); clamped to 1–10, default 2. Config-time only — there is no runtime toggle |
 | sidebar mode | `@sidebar_mode` | `toggle-all` sweep | Server-global `open`/`closed` intent; consulted by the new-window and new-session hooks (falling back to `@sidebar_auto_create` while unset) so toggle-all covers windows and sessions created afterwards |
 
 `status_filter`, `selected_pane_row`, and `repo_filter` each have a corresponding `last_saved_*` marker to prevent sync conflicts — tmux only overwrites the local value when it differs from what this instance last wrote. `compact` is exempt: the live tmux value is adopted unconditionally so sidebars can never diverge on density.

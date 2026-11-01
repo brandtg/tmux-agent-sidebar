@@ -120,7 +120,11 @@ pub(super) fn background_hint_row(ctx: &RowCtx, cmd: &str) -> Line<'static> {
     )
 }
 
-pub(super) fn prompt_rows(pane: &crate::tmux::PaneInfo, ctx: &RowCtx) -> Vec<Line<'static>> {
+pub(super) fn prompt_rows(
+    pane: &crate::tmux::PaneInfo,
+    ctx: &RowCtx,
+    preview_lines: usize,
+) -> Vec<Line<'static>> {
     let theme = ctx.theme;
     let is_response = pane.prompt_is_response;
     // Detail text stays in the muted gray on every agent — including the
@@ -130,9 +134,9 @@ pub(super) fn prompt_rows(pane: &crate::tmux::PaneInfo, ctx: &RowCtx) -> Vec<Lin
     let prompt_color = theme.text_inactive;
     let wrap_width = ctx.inner_width.saturating_sub(2);
     let wrapped = if is_response {
-        wrap_text_char(&pane.prompt, wrap_width, 3)
+        wrap_text_char(&pane.prompt, wrap_width, preview_lines)
     } else {
-        wrap_text(&pane.prompt, wrap_width, 3)
+        wrap_text(&pane.prompt, wrap_width, preview_lines)
     };
 
     let mut out = Vec::with_capacity(wrapped.len());

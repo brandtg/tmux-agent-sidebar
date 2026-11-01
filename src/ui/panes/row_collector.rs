@@ -213,6 +213,7 @@ pub(super) fn collect(state: &AppState, width: u16) -> CollectedRows {
                             theme,
                             state.spinner_frame,
                             state.now,
+                            state.global.preview_lines,
                         )
                     };
                     let pane_line_count = pane_lines.len();

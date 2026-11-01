@@ -320,8 +320,7 @@ fn snapshot_agent_with_japanese_prompt_ui() {
     project
     ┃ ● claude
         こ れ っ て 今 1時 間 経 っ て い
-        る け ど 、 起 動 し て 確 認 し て
-        も 問 題 な い ？
+        る け ど 、 起 動 し て 確 認 し …
     ");
 }
 
