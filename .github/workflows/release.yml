@@ -71,11 +71,11 @@ jobs:
         id: changelog
         run: |
           PREV_TAG=$(git tag --sort=-v:refname | sed -n '2p')
-          if [ -z "$PREV_TAG" ]; then
-            CHANGELOG=$(git log --pretty=format:"- %s (%h)" ${{ github.ref_name }})
-          else
-            CHANGELOG=$(git log --pretty=format:"- %s (%h)" "${PREV_TAG}..${{ github.ref_name }}")
-          fi
+          # No prior tag → first release. This repo carries upstream's full
+          # history, so anchor the changelog at the fork point instead of
+          # listing every upstream commit too.
+          : "${PREV_TAG:=fb11818}"
+          CHANGELOG=$(git log --pretty=format:"- %s (%h)" "${PREV_TAG}..${{ github.ref_name }}")
           {
             echo "body<<EOF"
             echo "## What's Changed"

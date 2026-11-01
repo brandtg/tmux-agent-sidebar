@@ -13,7 +13,7 @@ Inside Claude Code:
 
 ```text
 /plugin marketplace add ~/.tmux/plugins/tmux-agent-sidebar
-/plugin install tmux-agent-sidebar@hiroppy
+/plugin install tmux-agent-sidebar@brandtg
 ```
 
 The `/plugin install` step wires up the Claude Code hooks.

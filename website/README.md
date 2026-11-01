@@ -1,6 +1,6 @@
 # tmux-agent-sidebar website
 
-Documentation site for [tmux-agent-sidebar](https://github.com/hiroppy/tmux-agent-sidebar), built with [Astro Starlight](https://starlight.astro.build/).
+Documentation site for [tmux-agent-sidebar](https://github.com/brandtg/tmux-agent-sidebar), built with [Astro Starlight](https://starlight.astro.build/).
 
 ## Local development
 

@@ -14,7 +14,7 @@ description: Install tmux-agent-sidebar via TPM or manually.
 Add the plugin to your `tmux.conf`:
 
 ```bash
-set -g @plugin 'hiroppy/tmux-agent-sidebar'
+set -g @plugin 'brandtg/tmux-agent-sidebar'
 ```
 
 Reload `tmux.conf`, then press `prefix + I` to install:
@@ -32,7 +32,7 @@ To update later, press `prefix + U` in TPM's plugin list and select `tmux-agent-
 1. Clone the repository:
 
    ```sh
-   git clone https://github.com/hiroppy/tmux-agent-sidebar.git \
+   git clone https://github.com/brandtg/tmux-agent-sidebar.git \
      ~/.tmux/plugins/tmux-agent-sidebar
    ```
 
@@ -46,7 +46,7 @@ To update later, press `prefix + U` in TPM's plugin list and select `tmux-agent-
 
    ```sh
    # macOS (Apple Silicon)
-   curl -fSL https://github.com/hiroppy/tmux-agent-sidebar/releases/latest/download/tmux-agent-sidebar-darwin-aarch64 \
+   curl -fSL https://github.com/brandtg/tmux-agent-sidebar/releases/latest/download/tmux-agent-sidebar-darwin-aarch64 \
      -o ~/.tmux/plugins/tmux-agent-sidebar/bin/tmux-agent-sidebar
    chmod +x ~/.tmux/plugins/tmux-agent-sidebar/bin/tmux-agent-sidebar
    ```

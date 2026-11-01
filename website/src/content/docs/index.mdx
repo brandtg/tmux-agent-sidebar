@@ -13,7 +13,7 @@ hero:
       icon: right-arrow
       variant: primary
     - text: View on GitHub
-      link: https://github.com/hiroppy/tmux-agent-sidebar
+      link: https://github.com/brandtg/tmux-agent-sidebar
       icon: external
       variant: minimal
 ---
@@ -24,8 +24,9 @@ import { Card, CardGrid } from '@astrojs/starlight/components';
 
 <CardGrid>
   <Card title="One sidebar, every pane" icon="list-format">
-    Tracks Claude Code, Codex, and OpenCode panes across every tmux session and window at
-    once, so context switching stops meaning window switching.
+    Tracks Claude Code, Codex, OpenCode, Hermes, and Antigravity panes across
+    every tmux session and window at once, so context switching stops meaning
+    window switching.
   </Card>
   <Card title="Live status, prompts, responses" icon="comment-alt">
     Prompts, tool calls, response previews, background shell state, wait reasons,
@@ -46,7 +47,7 @@ import { Card, CardGrid } from '@astrojs/starlight/components';
 Using [TPM](https://github.com/tmux-plugins/tpm):
 
 ```bash
-set -g @plugin 'hiroppy/tmux-agent-sidebar'
+set -g @plugin 'brandtg/tmux-agent-sidebar'
 ```
 
 Reload with `tmux source ~/.tmux.conf`, press `prefix + I` to install, and the
@@ -54,5 +55,10 @@ install wizard downloads a pre-built binary or builds from source.
 
 Next, wire up your agent hooks — [Claude Code](/tmux-agent-sidebar/getting-started/claude-code/)
 installs as a plugin, [Codex](/tmux-agent-sidebar/getting-started/codex/) is a
-one-paste setup inside its own pane, and [OpenCode](/tmux-agent-sidebar/getting-started/opencode/)
-uses the bundled plugin bridge.
+one-paste setup inside its own pane, [OpenCode](/tmux-agent-sidebar/getting-started/opencode/)
+uses the bundled plugin bridge, and [Hermes](/tmux-agent-sidebar/getting-started/hermes/)
+and [Antigravity](/tmux-agent-sidebar/getting-started/antigravity/) merge a generated hook
+block into their configs.
+
+This is a fork of [hiroppy/tmux-agent-sidebar](https://github.com/hiroppy/tmux-agent-sidebar) —
+see [about this fork](/tmux-agent-sidebar/getting-started/fork/) for what's different and why.
