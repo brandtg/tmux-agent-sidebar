@@ -114,6 +114,7 @@ All options are tmux options set in `~/.tmux.conf`, before the plugin loads (bef
 | `@sidebar_key` | `e` | Prefix keybinding to toggle the sidebar in the current window |
 | `@sidebar_key_all` | `E` | Prefix keybinding to toggle the sidebar in all windows |
 | `@sidebar_width` | `15%` | Width in columns or as a percentage of window width |
+| `@sidebar_width_max` | unset | Upper bound on the resolved width, in columns — caps a percentage width on very wide screens, including resizes while the sidebar is open. Unset or `0` means no cap |
 | `@sidebar_position` | `left` | Sidebar placement: `left` or `right` |
 | `@sidebar_default_view` | `all` | Status filter a newly opened sidebar lands on: `all`, `running`, `background`, `waiting`, `idle`, or `error` |
 | `@sidebar_group_by` | `repo` | How the agents panel groups panes: `repo` (git repo root) or `session` (tmux session name; with `w` enabled, an agent-forward session manager). Set the default here, or toggle it at runtime with `s` |
