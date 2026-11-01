@@ -503,14 +503,6 @@ pub(crate) fn cmd_maintain_width(args: &[String]) -> i32 {
         return 0;
     };
 
-    // `@sidebar_auto_hide` gates everything. Unset/empty means on (the
-    // conf seeds it, but hand-rolled configs may not); anything but an
-    // explicit `on` switches the feature off.
-    let auto_hide = tmux::display_message(window_id, &format!("#{{{}}}", tmux::SIDEBAR_AUTO_HIDE));
-    if !auto_hide_enabled(&auto_hide) {
-        return 0;
-    }
-
     let current_width: u32 = tmux::display_message(window_id, "#{window_width}")
         .parse()
         .unwrap_or(0);
@@ -537,10 +529,17 @@ pub(crate) fn cmd_maintain_width(args: &[String]) -> i32 {
     // layout, which re-fires this hook, and the recording turns that
     // second run into a no-op (last == current, no crossing). It also
     // keeps the last-seen width tracking the latest observation in every
-    // case, hidden sidebar or not.
+    // case, hidden sidebar or not — and gives the resize re-clamp below
+    // its before/after signal even when auto-hide is off.
     record_last_window_width(window_id, current_width);
 
-    if should_auto_hide(last_width, current_width, threshold, sidebar_pane.is_some()) {
+    // `@sidebar_auto_hide` gates the hide path only. Unset/empty means on
+    // (the conf seeds it, but hand-rolled configs may not); anything but
+    // an explicit `on` switches the feature off.
+    let auto_hide = tmux::display_message(window_id, &format!("#{{{}}}", tmux::SIDEBAR_AUTO_HIDE));
+    if auto_hide_enabled(&auto_hide)
+        && should_auto_hide(last_width, current_width, threshold, sidebar_pane.is_some())
+    {
         // Narrow viewport detected: hide this window's sidebar so the
         // real panes keep the whole viewport. The close replays the
         // saved pre-sidebar layout; the user brings the sidebar back
@@ -550,6 +549,18 @@ pub(crate) fn cmd_maintain_width(args: &[String]) -> i32 {
             &sidebar_pane.expect("checked by should_auto_hide"),
             window_id,
         );
+        return 0;
+    }
+
+    // A window that gained columns while a sidebar was open: tmux grows
+    // existing panes to distribute the new space, so a percentage sidebar
+    // keeps eating columns on a bigger screen. Re-pin an oversize sidebar
+    // to the resolved target (percentage, capped by
+    // `@sidebar_width_max`) — but only on an actual window-width change
+    // and only when a max is configured, so pane-level layout churn and
+    // configs without a cap behave exactly as before.
+    if let Some(sidebar_pane) = &sidebar_pane {
+        reclamp_sidebar_width(window_id, sidebar_pane, current_width, last_width);
     }
 
     0
@@ -619,15 +630,32 @@ fn record_last_window_width(window_id: &str, width: u32) {
     );
 }
 
+/// Apply [`SIDEBAR_WIDTH_MAX`] to an already-resolved cell count. An
+/// unset, `0`, or unparseable setting means no cap — a typo degrades to
+/// today's uncapped behavior instead of zeroing the sidebar.
+fn clamp_width_max(cells: u32, max_setting: &str) -> u32 {
+    let max = width_max_from_setting(max_setting);
+    if max > 0 { cells.min(max) } else { cells }
+}
+
 /// Resolve `@sidebar_width` into absolute cells for `window_id`,
-/// converting a percentage against the window's current width. Falls
-/// back to the raw setting (or 30 cells when unset) when the window
-/// width cannot be queried.
+/// converting a percentage against the window's current width, then
+/// clamping to `@sidebar_width_max` when one is configured. Falls back
+/// to the raw setting (or 30 cells when unset) when the window width
+/// cannot be queried — an unresolvable percentage passes through
+/// unclamped.
 fn sidebar_width_cells(window_id: &str) -> String {
     let setting = tmux::display_message(window_id, &format!("#{{{}}}", tmux::SIDEBAR_WIDTH));
     let setting = if setting.is_empty() { "30" } else { &setting };
+    let max_setting =
+        tmux::display_message(window_id, &format!("#{{{}}}", tmux::SIDEBAR_WIDTH_MAX));
     if !setting.ends_with('%') {
-        return setting.to_string();
+        return match setting.trim().parse::<u32>() {
+            Ok(cells) => clamp_width_max(cells, &max_setting).to_string(),
+            // Not a cell count (garbage, or a unit tmux itself accepts) —
+            // hand it to `split-window -l` verbatim, as before.
+            Err(_) => setting.to_string(),
+        };
     }
     let window_width: u32 = tmux::display_message(window_id, "#{window_width}")
         .parse()
@@ -636,7 +664,51 @@ fn sidebar_width_cells(window_id: &str) -> String {
     if window_width == 0 || pct == 0 {
         return setting.to_string();
     }
-    (window_width * pct / 100).max(1).to_string()
+    clamp_width_max((window_width * pct / 100).max(1), &max_setting).to_string()
+}
+
+/// Shrink an oversize split-pane sidebar back to the resolved
+/// `@sidebar_width` after the window changed size. tmux distributes
+/// window growth across existing panes, so a percentage sidebar keeps
+/// widening with the screen even after creation — this re-pin is what
+/// makes `@sidebar_width_max` hold on an already-open sidebar.
+///
+/// Gated on an actual window-width change (the before/after pair from
+/// [`record_last_window_width`]) so ordinary `window-layout-changed`
+/// firings — a new pane, zoom, a manual pane resize — never touch pane
+/// geometry, and on a positive `@sidebar_width_max` so configs without
+/// the option keep today's behavior. The resize itself changes pane
+/// widths only, so the hook's re-fire sees last == current and the
+/// sweep stays idempotent. Never grows a sidebar that ended up narrower
+/// than the target: reclaiming columns from the real panes on a shrunken
+/// window is exactly what the max exists to avoid.
+fn reclamp_sidebar_width(
+    window_id: &str,
+    sidebar_pane: &str,
+    current_width: u32,
+    last_width: Option<u32>,
+) {
+    if last_width == Some(current_width) {
+        // No window resize since the last observation — nothing to
+        // correct, and the tmux queries below stay unspent.
+        return;
+    }
+    let max_setting =
+        tmux::display_message(window_id, &format!("#{{{}}}", tmux::SIDEBAR_WIDTH_MAX));
+    if width_max_from_setting(&max_setting) == 0 {
+        return;
+    }
+    let target = sidebar_width_cells(window_id);
+    let Ok(target_cells) = target.parse::<u32>() else {
+        return;
+    };
+    let sidebar_width: u32 = tmux::display_message(sidebar_pane, "#{pane_width}")
+        .parse()
+        .unwrap_or(0);
+    if sidebar_width == 0 || sidebar_width <= target_cells {
+        return;
+    }
+    let _ = tmux::run_tmux(&["resize-pane", "-t", sidebar_pane, "-x", &target]);
 }
 
 /// Given `pane_window_role_format()` output, pick the sidebar panes to
@@ -779,6 +851,15 @@ pub(crate) fn popup_max_width_from_setting(setting: &str) -> u32 {
         .trim()
         .parse::<u32>()
         .unwrap_or(DEFAULT_POPUP_MAX_WIDTH)
+}
+
+/// Parse the raw `@sidebar_width_max` option value. Returns the cap in
+/// columns, or `0` when unset, empty, `0`, or invalid — no cap. Unlike
+/// the popup threshold there is no default: an absent option must leave
+/// the width untouched, and a typo degrades to the uncapped behavior
+/// rather than zeroing the sidebar.
+fn width_max_from_setting(setting: &str) -> u32 {
+    setting.trim().parse::<u32>().unwrap_or(0)
 }
 
 /// Decide between the popup and split-pane sidebar for a window.
@@ -1430,6 +1511,35 @@ mod tests {
     fn auto_hide_requires_a_sidebar_pane() {
         // A crossing on a sidebar-less window only records the width.
         assert!(!should_auto_hide(Some(120), 80, 100, false));
+    }
+
+    // ─── @sidebar_width_max ──────────────────────────────────────────
+
+    #[test]
+    fn width_max_parses_positive_columns_only() {
+        assert_eq!(width_max_from_setting("60"), 60);
+        assert_eq!(width_max_from_setting(" 80 "), 80);
+        // Unset, 0, and garbage all mean "no cap" — never a zero-width
+        // sidebar.
+        assert_eq!(width_max_from_setting(""), 0);
+        assert_eq!(width_max_from_setting("0"), 0);
+        assert_eq!(width_max_from_setting("wide"), 0);
+        assert_eq!(width_max_from_setting("-5"), 0);
+    }
+
+    #[test]
+    fn width_max_caps_the_resolved_cell_count() {
+        assert_eq!(clamp_width_max(80, "60"), 60);
+        assert_eq!(clamp_width_max(40, "60"), 40);
+        assert_eq!(clamp_width_max(40, ""), 40);
+        assert_eq!(clamp_width_max(40, "0"), 40);
+        assert_eq!(clamp_width_max(40, "bogus"), 40);
+    }
+
+    #[test]
+    fn width_max_below_one_column_clamps_to_the_cap() {
+        // A cap of 1 is honored literally: the user asked for a sliver.
+        assert_eq!(clamp_width_max(80, "1"), 1);
     }
 
     #[test]

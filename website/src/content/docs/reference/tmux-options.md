@@ -12,6 +12,7 @@ Most options must be set **before** loading the plugin in your `tmux.conf`. Colo
 | `@sidebar_key`                   | `e`     | Prefix-triggered keybinding to toggle the sidebar in the current window                 |
 | `@sidebar_key_all`               | `E`     | Prefix-triggered keybinding to toggle the sidebar in all windows                        |
 | `@sidebar_width`                 | `15%`   | Width in columns or as a percentage                                                     |
+| `@sidebar_width_max`             | unset   | Upper bound on the resolved width, in columns — caps a percentage width on very wide screens, including window resizes while the sidebar is open. Unset or `0` means no cap |
 | `@sidebar_position`              | `left`  | Sidebar placement (`left` or `right`)                                                   |
 | `@sidebar_default_view`          | `all`   | Status filter view the sidebar lands on when it opens (`all`, `running`, `background`, `waiting`, `idle`, `error`). Filter changes still sync across open sidebars but are not restored on reopen |
 | `@sidebar_group_by`              | `repo`  | How the agents panel groups panes: `repo` buckets them by git repo root, `session` by tmux session name. With `w` (other windows) enabled, `session` turns the panel into an agent-forward session manager — sessions without agents list their plain windows too. Set the default here, or toggle it at runtime with `s` (shared across open sidebars) |
@@ -110,7 +111,7 @@ palette at once:
 
 | Value   | Icons                                                                                          |
 | ------- | ---------------------------------------------------------------------------------------------- |
-| `nerd`  | Nerd Fonts glyphs (`nf-fa-bars`, `nf-fa-circle`, `nf-fa-circle-o-notch`, `nf-fa-adjust`, `nf-fa-circle-o`, `nf-fa-times`, `nf-fa-circle-thin`) — fitted to the cell by the patched font, so they don't overflow |
+| `nerd`  | Nerd Fonts glyphs (`nf-fa-bars`, `nf-fa-circle`, `nf-fa-bullseye`, `nf-fa-adjust`, `nf-fa-circle-o`, `nf-fa-times`, `nf-fa-circle-thin`) — fitted to the cell by the patched font, so they don't overflow |
 | `ascii` | Plain ASCII (`=` `*` `+` `~` `-` `x` `.`) — renders identically in every font                   |
 
 Per-icon options below always win over the preset.

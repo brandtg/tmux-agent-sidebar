@@ -121,6 +121,15 @@ pub const PANE_LAST_EXIT: &str = "@pane_last_exit";
 
 pub const SIDEBAR_PID: &str = "@sidebar_pid";
 pub const SIDEBAR_WIDTH: &str = "@sidebar_width";
+/// Upper bound on the resolved [`SIDEBAR_WIDTH`], in columns. Percentage
+/// widths keep growing with the window (tmux also grows an existing
+/// sidebar pane when the window gains columns), so on a very wide screen
+/// a 20% sidebar would eat more columns than it needs. When set to a
+/// positive integer, the resolved width is clamped to it — at split
+/// creation and again by the `maintain-width` hook whenever the window
+/// is resized while a sidebar is open. Unset, `0`, or invalid means no
+/// cap. Parsed by `cli::toggle::sidebar_width_cells`.
+pub const SIDEBAR_WIDTH_MAX: &str = "@sidebar_width_max";
 pub const SIDEBAR_POSITION: &str = "@sidebar_position";
 pub const SIDEBAR_FILTER: &str = "@sidebar_filter";
 /// Status filter view a newly opened sidebar lands on (`all` / `running` /

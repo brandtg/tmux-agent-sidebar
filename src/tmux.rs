@@ -35,8 +35,8 @@ pub use options::{
     SIDEBAR_NOTIFICATIONS, SIDEBAR_NOTIFICATIONS_EVENTS, SIDEBAR_PID, SIDEBAR_POPUP_MAX_WIDTH,
     SIDEBAR_POSITION, SIDEBAR_PREVIEW_LINES, SIDEBAR_REPO_FILTER, SIDEBAR_SAVED_LAYOUT,
     SIDEBAR_SHOW_WINDOWS, SIDEBAR_TODO_HIDE_COMPLETED, SIDEBAR_TODO_SCOPE, SIDEBAR_TODO_VISIBLE,
-    SIDEBAR_WIDTH, append_pane_option, get_all_global_options, get_option, get_pane_option_value,
-    sanitize_option_value, set_pane_option, unset_pane_option,
+    SIDEBAR_WIDTH, SIDEBAR_WIDTH_MAX, append_pane_option, get_all_global_options, get_option,
+    get_pane_option_value, sanitize_option_value, set_pane_option, unset_pane_option,
 };
 pub(crate) use panes::pick_active_pane;
 pub use panes::{find_active_pane, focused_pane_path, get_pane_path, query_active_window_panes};

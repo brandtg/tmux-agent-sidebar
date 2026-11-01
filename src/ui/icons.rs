@@ -34,7 +34,9 @@ impl StatusIcons {
             "nerd" => Some(Self {
                 all: "\u{f0c9}".into(),
                 running: "\u{f111}".into(),
-                background: "\u{f1ce}".into(),
+                // FA bullseye (f140), not the notched spinner (f1ce): it
+                // matches the default ◎ shape while staying single-cell.
+                background: "\u{f140}".into(),
                 waiting: "\u{f042}".into(),
                 idle: "\u{f10c}".into(),
                 error: "\u{f00d}".into(),
@@ -144,7 +146,7 @@ mod tests {
         let icons = StatusIcons::from_options(&opts);
         assert_eq!(icons.all_icon(), "\u{f0c9}");
         assert_eq!(icons.status_icon(&PaneStatus::Running), "\u{f111}");
-        assert_eq!(icons.status_icon(&PaneStatus::Background), "\u{f1ce}");
+        assert_eq!(icons.status_icon(&PaneStatus::Background), "\u{f140}");
         assert_eq!(icons.status_icon(&PaneStatus::Waiting), "\u{f042}");
         assert_eq!(icons.status_icon(&PaneStatus::Idle), "\u{f10c}");
         assert_eq!(icons.status_icon(&PaneStatus::Error), "\u{f00d}");
