@@ -209,6 +209,11 @@ pub const SIDEBAR_NOTIFICATIONS_EVENTS: &str = "@sidebar_notifications_events";
 /// means "no restriction". Parsed by `state::notices::parse_enabled_agents`.
 pub const SIDEBAR_AGENTS: &str = "@sidebar_agents";
 
+/// Maximum number of lines the agent message preview (prompt / response
+/// body) wraps to. Configurable in tmux.conf; parsed by
+/// `state::GlobalState::apply_all` on every sync, clamped to 1..=10.
+pub const SIDEBAR_PREVIEW_LINES: &str = "@sidebar_preview_lines";
+
 pub const SIDEBAR_COLOR_ACCENT: &str = "@sidebar_color_accent";
 /// Sidebar mode written by `toggle-all` (globally, `open` / `closed`).
 /// New windows consult it at creation time (via the auto-create hook and

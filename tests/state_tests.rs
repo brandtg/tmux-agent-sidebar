@@ -932,6 +932,62 @@ fn group_by_labels_round_trip_and_toggle() {
     assert_eq!(GroupBy::Session.toggled(), GroupBy::Repo);
 }
 
+// ─── preview-lines tests ────────────────────────────────────────────
+// Set in tmux.conf (`@sidebar_preview_lines`) only — no runtime toggle;
+// read on every sync like group_by, clamped to 1..=10.
+
+#[test]
+fn preview_lines_defaults_to_two() {
+    let g = make_global();
+    assert_eq!(g.preview_lines, 2);
+}
+
+#[test]
+fn preview_lines_parses_from_tmux_option() {
+    let mut g = make_global();
+    g.apply_all(&make_opts(&[(tmux::SIDEBAR_PREVIEW_LINES, "3")]));
+    assert_eq!(g.preview_lines, 3, "3 restores the older taller preview");
+
+    g.apply_all(&make_opts(&[(tmux::SIDEBAR_PREVIEW_LINES, " 5 ")]));
+    assert_eq!(g.preview_lines, 5);
+}
+
+#[test]
+fn preview_lines_clamps_out_of_range_values() {
+    let mut g = make_global();
+
+    g.apply_all(&make_opts(&[(tmux::SIDEBAR_PREVIEW_LINES, "0")]));
+    assert_eq!(g.preview_lines, 1, "0 would hide the preview entirely");
+
+    g.apply_all(&make_opts(&[(tmux::SIDEBAR_PREVIEW_LINES, "1000")]));
+    assert_eq!(
+        g.preview_lines, 10,
+        "an unbounded cap could flood the panel"
+    );
+}
+
+#[test]
+fn preview_lines_unparseable_value_keeps_current() {
+    let mut g = make_global();
+    g.apply_all(&make_opts(&[(tmux::SIDEBAR_PREVIEW_LINES, "many")]));
+    assert_eq!(g.preview_lines, 2);
+
+    g.apply_all(&make_opts(&[(tmux::SIDEBAR_PREVIEW_LINES, "4")]));
+    g.apply_all(&make_opts(&[(tmux::SIDEBAR_PREVIEW_LINES, "banana")]));
+    assert_eq!(g.preview_lines, 4, "garbage must not reset a valid cap");
+}
+
+#[test]
+fn preview_lines_absent_option_keeps_current() {
+    let mut g = make_global();
+    g.apply_all(&make_opts(&[(tmux::SIDEBAR_PREVIEW_LINES, "3")]));
+    g.apply_all(&make_opts(&[(tmux::SIDEBAR_GROUP_BY, "session")]));
+    assert_eq!(
+        g.preview_lines, 3,
+        "a sync without the option must not reset it"
+    );
+}
+
 // ─── show-windows tests ─────────────────────────────────────────────
 // Mirrors the compact-mode contract: `w` toggles a shared live value in
 // `@sidebar_show_windows`; `@sidebar_default_show_windows` only seeds the

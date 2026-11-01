@@ -38,6 +38,7 @@ pub(super) fn render_pane_lines_with_ports(
     theme: &ColorTheme,
     spinner_frame: usize,
     now: u64,
+    preview_lines: usize,
 ) -> Vec<Line<'static>> {
     let bg = if selected {
         Some(theme.selection_bg)
@@ -100,7 +101,7 @@ pub(super) fn render_pane_lines_with_ports(
         out.push(background_hint_row(ctx, cmd));
     }
     if !pane.prompt.is_empty() {
-        out.extend(prompt_rows(pane, ctx));
+        out.extend(prompt_rows(pane, ctx, preview_lines));
     } else if matches!(pane.status, PaneStatus::Idle) {
         out.push(idle_hint_row(ctx));
     }
@@ -738,6 +739,7 @@ mod tests {
             &theme,
             0,
             0,
+            2,
         );
 
         let status = line_text(&lines[0]);
@@ -762,6 +764,7 @@ mod tests {
             &theme,
             0,
             0,
+            2,
         );
 
         let status = line_text(&lines[0]);
@@ -789,6 +792,7 @@ mod tests {
             &theme,
             0,
             0,
+            2,
         );
 
         let status = line_text(&lines[0]);
@@ -827,6 +831,7 @@ mod tests {
             &theme,
             0,
             66,
+            2,
         );
 
         let status = line_text(&lines[0]);
@@ -873,6 +878,7 @@ mod tests {
             &theme,
             0,
             0,
+            2,
         );
 
         assert!(lines.len() >= 2);
@@ -905,6 +911,7 @@ mod tests {
             &theme,
             0,
             0,
+            2,
         );
 
         assert!(lines.len() >= 2);
@@ -938,6 +945,7 @@ mod tests {
             &theme,
             0,
             1_000_000,
+            2,
         );
 
         let status = line_text(&lines[0]);
@@ -984,6 +992,7 @@ mod tests {
             &theme,
             0,
             0,
+            2,
         );
 
         assert_eq!(lines.len(), 2);
@@ -1013,6 +1022,7 @@ mod tests {
             &theme,
             0,
             0,
+            2,
         );
 
         let hint = lines.iter().map(line_text).collect::<Vec<_>>().join("\n");
@@ -1040,6 +1050,7 @@ mod tests {
             &theme,
             0,
             0,
+            2,
         );
 
         let joined = lines.iter().map(line_text).collect::<Vec<_>>().join("\n");
@@ -1067,6 +1078,7 @@ mod tests {
             &theme,
             0,
             0,
+            2,
         );
 
         assert_eq!(lines.len(), 2);
@@ -1097,6 +1109,7 @@ mod tests {
             &theme,
             0,
             0,
+            2,
         );
 
         let hint = line_text(&lines[1]);
@@ -1130,6 +1143,7 @@ mod tests {
             &theme,
             0,
             0,
+            2,
         );
 
         assert!(lines.len() >= 2);
@@ -1156,6 +1170,7 @@ mod tests {
             &theme,
             0,
             0,
+            2,
         );
 
         assert!(lines.len() >= 3);
@@ -1182,6 +1197,7 @@ mod tests {
             &theme,
             0,
             0,
+            2,
         );
 
         assert!(lines.len() >= 5);
@@ -1212,6 +1228,7 @@ mod tests {
             &theme,
             0,
             0,
+            2,
         );
 
         assert!(lines.len() >= 3);
@@ -1243,6 +1260,7 @@ mod tests {
             &theme,
             0,
             0,
+            2,
         );
 
         assert!(lines.len() >= 2);
@@ -1273,6 +1291,7 @@ mod tests {
             &theme,
             0,
             0,
+            2,
         );
 
         assert!(lines.len() >= 2);
@@ -1300,6 +1319,7 @@ mod tests {
             &theme,
             0,
             0,
+            2,
         );
 
         assert!(lines.len() >= 2);
@@ -1333,6 +1353,7 @@ mod tests {
             &theme,
             0,
             0,
+            2,
         );
 
         assert!(lines.len() >= 2);
@@ -1360,6 +1381,7 @@ mod tests {
             &theme,
             0,
             0,
+            2,
         );
 
         assert_eq!(lines.len(), 2);
@@ -1644,6 +1666,7 @@ mod tests {
             &theme,
             0,
             0,
+            2,
         );
 
         // Every inner (non-marker) span on the status line must carry the selection bg.
@@ -1676,6 +1699,7 @@ mod tests {
             &theme,
             0,
             0,
+            2,
         );
 
         assert!(
@@ -1705,6 +1729,7 @@ mod tests {
             &theme,
             0,
             0,
+            2,
         );
 
         // The status row (line 0) must start with the SELECTION_MARKER in the
@@ -1748,7 +1773,7 @@ mod tests {
             "aaaa bbbb cccc dddd eeee",
         );
         p.prompt_is_response = false;
-        let lines = prompt_rows(&p, &ctx);
+        let lines = prompt_rows(&p, &ctx, 2);
         assert!(
             lines.len() >= 2,
             "expected prompt to wrap across multiple lines"
@@ -1761,6 +1786,34 @@ mod tests {
                 "each wrapped line should carry the left padding, got: {text}"
             );
         }
+    }
+
+    #[test]
+    fn prompt_rows_caps_preview_at_configured_line_count() {
+        // `@sidebar_preview_lines` (default 2, down from the historical 3):
+        // a long message wraps to the configured cap with the tail
+        // ellipsized, and a user setting of 3 restores the taller preview.
+        let theme = ColorTheme::default();
+        let ctx = test_ctx(&theme, 20, false);
+        let p = pane(
+            PermissionMode::Default,
+            PaneStatus::Running,
+            "aaaa bbbb cccc dddd eeee ffff gggg",
+        );
+
+        let capped = prompt_rows(&p, &ctx, 2);
+        assert_eq!(capped.len(), 2, "default cap keeps the preview to 2 lines");
+        assert!(
+            line_text(capped.last().unwrap()).contains('…'),
+            "the capped preview must ellipsize the tail"
+        );
+
+        let taller = prompt_rows(&p, &ctx, 3);
+        assert_eq!(taller.len(), 3, "a higher setting restores the third line");
+        assert!(
+            !line_text(taller.last().unwrap()).contains('…'),
+            "when everything fits the last line carries no ellipsis"
+        );
     }
 
     fn compact_row_text(pane: &PaneInfo, git: &PaneGitInfo, width: usize) -> String {
@@ -3013,6 +3066,7 @@ mod tests {
             &theme,
             0,
             0,
+            2,
         );
 
         fn marker<'a>(line: &'a Line<'a>) -> &'a Span<'a> {
@@ -3044,6 +3098,7 @@ mod tests {
             &theme,
             0,
             0,
+            2,
         );
         let marker = &lines[0].spans[0];
         assert_eq!(marker.content, SELECTION_MARKER);
@@ -3072,6 +3127,7 @@ mod tests {
             &theme,
             0,
             0,
+            2,
         );
         let marker = &lines[0].spans[0];
         assert_eq!(marker.style.fg, Some(theme.flag));
@@ -3101,6 +3157,7 @@ mod tests {
             &theme,
             0,
             0,
+            2,
         );
         let marker = &lines[0].spans[0];
         assert_eq!(marker.content, " ");
@@ -3120,6 +3177,7 @@ mod tests {
             &theme,
             0,
             0,
+            2,
         );
         let marker = &lines[0].spans[0];
         assert_eq!(marker.content, SELECTION_MARKER);

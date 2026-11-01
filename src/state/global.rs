@@ -5,6 +5,18 @@ use crate::tmux;
 
 use super::filter::{RepoFilter, StatusFilter};
 
+/// Default agent message preview line cap (used until tmux.conf says
+/// otherwise). Two lines keep the panel compact; `@sidebar_preview_lines`
+/// restores the older three-line preview.
+pub const DEFAULT_PREVIEW_LINES: usize = 2;
+/// Upper bound for `@sidebar_preview_lines`. Generous enough for a
+/// "show me the whole message" config, tight enough that a typo like
+/// `1000` cannot push every other row out of the panel.
+pub const MAX_PREVIEW_LINES: usize = 10;
+/// Lower bound for `@sidebar_preview_lines`: 0 would render no preview
+/// at all, which no config ever wants.
+pub const MIN_PREVIEW_LINES: usize = 1;
+
 /// How the agents panel buckets panes into groups. Set via the
 /// `@sidebar_group_by` tmux global; configurable in tmux.conf and
 /// toggleable at runtime with `s`, which writes the shared option and
@@ -113,6 +125,12 @@ pub struct GlobalState {
     /// session names. Read from `@sidebar_group_by` on every sync — set
     /// it in tmux.conf; there is no runtime toggle.
     pub group_by: GroupBy,
+    /// Line cap for the agent message preview (the prompt / response
+    /// body under the status row). Read from `@sidebar_preview_lines` on
+    /// every sync — set it in tmux.conf; there is no runtime toggle.
+    /// Clamped to [`MIN_PREVIEW_LINES`]..=[`MAX_PREVIEW_LINES`] so a
+    /// fat-fingered config cannot erase the preview or flood the panel.
+    pub preview_lines: usize,
     /// Pane id of the sidebar instance owning this state. Used to skip
     /// self-signaling when broadcasting shared-option changes.
     owner_pane: String,
@@ -144,6 +162,7 @@ impl GlobalState {
             todo_visible: false,
             todo_scope: TodoScope::default(),
             group_by: GroupBy::default(),
+            preview_lines: DEFAULT_PREVIEW_LINES,
             owner_pane,
             last_saved_filter: StatusFilter::All,
             last_saved_cursor: 0,
@@ -499,7 +518,20 @@ impl GlobalState {
         if let Some(group_by_str) = opts.get(tmux::SIDEBAR_GROUP_BY) {
             self.group_by = GroupBy::from_label(group_by_str);
         }
+        if let Some(preview_str) = opts.get(tmux::SIDEBAR_PREVIEW_LINES)
+            && let Some(n) = parse_preview_lines(preview_str)
+        {
+            self.preview_lines = n;
+        }
     }
+}
+
+/// Parse `@sidebar_preview_lines`. Accepts a plain integer and clamps it
+/// to [`MIN_PREVIEW_LINES`]..=[`MAX_PREVIEW_LINES`]; `None` for unset or
+/// unparseable values, which keeps the current/default cap.
+fn parse_preview_lines(s: &str) -> Option<usize> {
+    let n = s.trim().parse::<usize>().ok()?;
+    Some(n.clamp(MIN_PREVIEW_LINES, MAX_PREVIEW_LINES))
 }
 
 #[cfg(test)]
@@ -518,6 +550,48 @@ mod tests {
         );
         assert_eq!(TodoScope::Global.as_label(), "global");
         assert_eq!(TodoScope::Local.as_label(), "local");
+    }
+
+    #[test]
+    fn preview_lines_default_is_two() {
+        assert_eq!(GlobalState::default().preview_lines, 2);
+        assert_eq!(GlobalState::new(String::new()).preview_lines, 2);
+    }
+
+    #[test]
+    fn apply_all_reads_preview_lines() {
+        let mut state = GlobalState::default();
+        let mut opts = HashMap::new();
+        opts.insert(tmux::SIDEBAR_PREVIEW_LINES.to_string(), "3".into());
+
+        state.apply_all(&opts);
+
+        assert_eq!(state.preview_lines, 3);
+    }
+
+    #[test]
+    fn preview_lines_clamps_to_sane_bounds() {
+        let mut state = GlobalState::default();
+        let mut opts = HashMap::new();
+        opts.insert(tmux::SIDEBAR_PREVIEW_LINES.to_string(), "0".into());
+        state.apply_all(&opts);
+        assert_eq!(state.preview_lines, MIN_PREVIEW_LINES);
+
+        let mut opts = HashMap::new();
+        opts.insert(tmux::SIDEBAR_PREVIEW_LINES.to_string(), "1000".into());
+        state.apply_all(&opts);
+        assert_eq!(state.preview_lines, MAX_PREVIEW_LINES);
+    }
+
+    #[test]
+    fn preview_lines_ignores_unparseable_values() {
+        let mut state = GlobalState::default();
+        let mut opts = HashMap::new();
+        opts.insert(tmux::SIDEBAR_PREVIEW_LINES.to_string(), "many".into());
+
+        state.apply_all(&opts);
+
+        assert_eq!(state.preview_lines, DEFAULT_PREVIEW_LINES);
     }
 
     #[test]
