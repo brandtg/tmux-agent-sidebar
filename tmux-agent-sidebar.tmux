@@ -65,7 +65,7 @@ if AGY_HOOKS_JSON=$("$SIDEBAR_BINARY" setup antigravity 2>/dev/null) && [[ -n "$
     mkdir -p "$AGY_RUNTIME_PLUGIN"
     printf '%s\n' "$AGY_HOOKS_JSON" > "$AGY_RUNTIME_PLUGIN/hooks.json"
     cat > "$AGY_RUNTIME_PLUGIN/plugin.json" <<'AGY_MANIFEST'
-{ "name": "tmux-agent-sidebar", "description": "tmux-agent-sidebar lifecycle hooks for the Antigravity CLI" }
+{ "name": "tmux-agent-sidebar", "description": "tmux-agent-sidebar lifecycle hooks for the Antigravity CLI. Originally by Yuta Hiroto." }
 AGY_MANIFEST
     ensure_dir "$AGY_PLUGINS_DIR"
     ln -sfn "$AGY_RUNTIME_PLUGIN" "$AGY_PLUGIN_LINK"
