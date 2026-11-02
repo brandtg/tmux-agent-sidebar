@@ -27,4 +27,10 @@ pub const SPINNER_PULSE: &[u8] = &[82, 78, 114, 150, 186, 150, 114, 78];
 /// glyph fades between near-black and the running green on the 200ms
 /// spinner tick until the user focuses the pane.
 pub const DONE_PULSE: &[u8] = &[22, 28, 34, 114, 34, 28];
+/// Breathing magenta cycle for working process diamonds. Same pulse
+/// personality and luminance range as [`SPINNER_PULSE`] (whose darkest
+/// frame is still a bright green) — the ladder stays in the hot-to-pale
+/// pinks and never drops toward dark orchid, which read as a flicker
+/// rather than a breathe.
+pub const PROCESS_PULSE: &[u8] = &[213, 207, 212, 218, 219, 218, 212, 207];
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
