@@ -330,6 +330,19 @@ pub(crate) fn schedule_restore_after_pane_exit(pane_id: &str) {
 /// layout string only ever contains tmux's own layout grammar
 /// (digits, `x`, `,`, `[`, `]`, `{`, `}`, checksum hex), so single-quote
 /// wrapping is safe.
+///
+/// The size guard's format is written `##{...}` because tmux expands
+/// formats in a `run-shell` command against the job's target pane
+/// before executing it: an unescaped `#{window_width}` would be baked
+/// in as a literal at job-creation time — measured against whatever
+/// pane is "current" then, often not this window — leaving the guard
+/// comparing a stale value that never matches, so every close skips
+/// the restore and tmux paints `'...' returned 1` across the status
+/// line. `##` survives that expansion and defers the expansion to the
+/// inner `display-message -t <window>`, which measures the window at
+/// fire time. The trailing `|| true` keeps an intentionally skipped
+/// restore (stale snapshot, or `select-layout` rejecting a drifted
+/// cell count) from surfacing as that same error.
 fn scheduled_restore_command(window_id: &str, layout: &str) -> String {
     let restore = format!(
         "tmux select-layout -t {window_id} '{layout}' && tmux set -wu -t {window_id} -- {}",
@@ -342,11 +355,11 @@ fn scheduled_restore_command(window_id: &str, layout: &str) -> String {
     // contract as the inline path's failed `select-layout`.
     match layout_dimensions(layout) {
         Some((width, height)) => format!(
-            "sleep 0.3 && [ \"$(tmux display-message -t {window_id} -p '#{{window_width}}x#{{window_height}}')\" = \"{width}x{height}\" ] && {restore}"
+            "sleep 0.3 && [ \"$(tmux display-message -t {window_id} -p '##{{window_width}}x##{{window_height}}')\" = \"{width}x{height}\" ] && {restore} || true"
         ),
         // Unparseable layout: keep the historical unconditional restore.
         // `select-layout` still rejects it if the cell count drifted.
-        None => format!("sleep 0.3 && {restore}"),
+        None => format!("sleep 0.3 && {restore} || true"),
     }
 }
 
@@ -1194,12 +1207,20 @@ mod tests {
 
     #[test]
     fn scheduled_restore_command_targets_window_and_quotes_layout() {
+        // The inner format must be `##`-escaped: tmux expands formats in
+        // a `run-shell` command before executing it, so a bare
+        // `#{window_width}` would collapse to a stale literal (of
+        // whatever pane was current at job creation) and the guard would
+        // never match — surfacing as `'...' returned 1` on every close.
+        // `##` reaches the inner `display-message` intact so the window
+        // is measured at fire time. `|| true` keeps an intentionally
+        // skipped restore from reporting a nonzero exit the same way.
         let command = scheduled_restore_command("@5", "b2c4,237x58,0,0[237x58,0,0,0]");
         assert_eq!(
             command,
-            "sleep 0.3 && [ \"$(tmux display-message -t @5 -p '#{window_width}x#{window_height}')\" = \"237x58\" ] \
+            "sleep 0.3 && [ \"$(tmux display-message -t @5 -p '##{window_width}x##{window_height}')\" = \"237x58\" ] \
              && tmux select-layout -t @5 'b2c4,237x58,0,0[237x58,0,0,0]' \
-             && tmux set -wu -t @5 -- @sidebar_saved_layout"
+             && tmux set -wu -t @5 -- @sidebar_saved_layout || true"
         );
     }
 
@@ -1207,12 +1228,14 @@ mod tests {
     fn scheduled_restore_command_without_dimensions_restores_unconditionally() {
         // A layout that defies tmux's own serialization grammar has no
         // size to guard with; the historical behavior (restore, and let
-        // `select-layout` reject a drifted cell count) applies.
+        // `select-layout` reject a drifted cell count) applies. The
+        // trailing `|| true` silences that rejection for the same reason
+        // as above: the snapshot is kept, nothing for the user to act on.
         let command = scheduled_restore_command("@5", "not-a-layout");
         assert_eq!(
             command,
             "sleep 0.3 && tmux select-layout -t @5 'not-a-layout' \
-             && tmux set -wu -t @5 -- @sidebar_saved_layout"
+             && tmux set -wu -t @5 -- @sidebar_saved_layout || true"
         );
     }
 
