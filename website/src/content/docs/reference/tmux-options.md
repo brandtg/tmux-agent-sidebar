@@ -83,6 +83,7 @@ Most options must be set **before** loading the plugin in your `tmux.conf`. Colo
 
 | Option                          | Default           | What it paints        |
 | ------------------------------- | ----------------- | --------------------- |
+| `@sidebar_color_process`        | `207`&nbsp;(hot pink) | Process diamonds — busy rows and the pulse peak on working tasks |
 | `@sidebar_color_task_progress`  | `223`&nbsp;(pale yellow) | Task progress summary |
 | `@sidebar_color_subagent`       | `73`&nbsp;(soft teal)  | Sub-agent tree        |
 

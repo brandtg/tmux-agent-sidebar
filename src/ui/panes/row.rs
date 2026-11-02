@@ -308,8 +308,9 @@ fn port_text_lowest_first(ports: Option<&[u16]>, budget: usize) -> Option<String
 /// Lines for a non-agent window row.
 ///
 /// Line 1 (both densities) uses the same gutter as agent rows. A diamond
-/// glyph (`◇`/`◆`) replaces the agent circle so the two kinds of row are
-/// distinguishable at a glance while color still conveys status.
+/// glyph (`◇`/`◆`) replaces the agent circle, painted in the process
+/// magenta family so a stack of open processes reads apart from the
+/// agent greens while color still conveys status.
 ///
 /// Rendering uses two-tone styling: the binary name is highlighted in
 /// [`theme.text_active`], followed by its cleaned arguments in
@@ -345,7 +346,9 @@ pub(super) fn window_row(
     expanded: bool,
     group_by: crate::state::GroupBy,
     width: usize,
-    icons: &StatusIcons,
+    // Intentionally unused since the diamond family stopped borrowing the
+    // agent spinner pulse — kept so the call sites stay uniform.
+    _icons: &StatusIcons,
     theme: &ColorTheme,
     spinner_frame: usize,
 ) -> Vec<Line<'static>> {
@@ -382,15 +385,14 @@ pub(super) fn window_row(
         active,
     };
 
-    // Diamond family: hollow = idle, filled = busy, filled+pulse = task.
-    // Distinct from the agent circle while still driven by `icon_color`.
+    // Diamond family: hollow = idle, solid magenta = busy, solid pulsing
+    // magenta = task. The process pink keeps a column of open processes
+    // reading apart from the agent greens, while the pulse still marks
+    // "doing work" — just in the process family, not the agent's.
     let (icon, icon_color): (&str, ratatui::style::Color) = match window.status {
         WindowStatus::Idle => ("\u{25C7}", theme.status_idle),
-        WindowStatus::Busy => ("\u{25C6}", theme.status_running),
-        WindowStatus::Task => {
-            let (_, pulse) = running_icon_for(&PaneStatus::Running, spinner_frame, icons);
-            ("\u{25C6}", pulse.unwrap_or(theme.status_running))
-        }
+        WindowStatus::Busy => ("\u{25C6}", theme.process),
+        WindowStatus::Task => ("\u{25C6}", theme.process_pulse_color(spinner_frame)),
     };
 
     // A finished tracked task outranks the plain status glyph.
@@ -2067,6 +2069,55 @@ mod tests {
         // Displays the pane's own foreground program, not the window name.
         assert!(!text.contains("web"), "window name must not appear: {text}");
         assert!(text.contains(":3000"), "port missing: {text}");
+    }
+
+    #[test]
+    fn window_row_task_diamond_pulses_process_magenta() {
+        let theme = ColorTheme::default();
+        let w = window("web", "node", crate::tmux::WindowStatus::Task);
+        // Task rows breathe the magenta PROCESS_PULSE, not the agents'
+        // green spinner pulse — pulsing still means "doing work", but
+        // the hue separates processes from agents.
+        let lines = window_row(
+            &w,
+            None,
+            None,
+            false,
+            false,
+            false,
+            false,
+            GroupBy::Repo,
+            40,
+            &StatusIcons::default(),
+            &theme,
+            4,
+        );
+        let icon_span = &lines[0].spans[2];
+        assert_eq!(icon_span.content.as_ref(), "\u{25C6}");
+        assert_eq!(icon_span.style.fg, Some(theme.process_pulse_color(4)));
+    }
+
+    #[test]
+    fn window_row_busy_diamond_is_solid_process_magenta() {
+        let theme = ColorTheme::default();
+        let w = window("nvim", "nvim", crate::tmux::WindowStatus::Busy);
+        let lines = window_row(
+            &w,
+            None,
+            None,
+            false,
+            false,
+            false,
+            false,
+            GroupBy::Repo,
+            40,
+            &StatusIcons::default(),
+            &theme,
+            0,
+        );
+        let icon_span = &lines[0].spans[2];
+        assert_eq!(icon_span.content.as_ref(), "\u{25C6}");
+        assert_eq!(icon_span.style.fg, Some(theme.process));
     }
 
     #[test]

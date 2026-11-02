@@ -41,6 +41,12 @@ pub struct ColorTheme {
     pub badge_auto: Color,
     pub badge_plan: Color,
     pub task_progress: Color,
+    /// Base color for non-agent (process) window rows — the diamond
+    /// glyph on busy rows and the peak of the PROCESS_PULSE breathe on
+    /// task rows. Hot pink: the only hue family the palette doesn't
+    /// already claim, so a stack of open processes reads apart from the
+    /// agent greens and never trips the error/warning temperature.
+    pub process: Color,
     pub subagent: Color,
     pub commit_hash: Color,
     pub diff_added: Color,
@@ -90,6 +96,11 @@ impl Default for ColorTheme {
             badge_auto: Color::Indexed(221),
             badge_plan: Color::Indexed(117),
             task_progress: Color::Indexed(223),
+            // Hot pink — the diamond family for processes. The one hue
+            // family the palette leaves unclaimed: nothing else renders
+            // pink, and unlike orange it carries no warning subtext
+            // (error 167, waiting 221, flag 208 all live nearby).
+            process: Color::Indexed(207),
             subagent: Color::Indexed(73),
             commit_hash: Color::Indexed(221),
             diff_added: Color::Indexed(114),
@@ -147,6 +158,7 @@ impl ColorTheme {
         theme.selection_bg = read(tmux::SIDEBAR_COLOR_SELECTION, theme.selection_bg);
         theme.branch = read(tmux::SIDEBAR_COLOR_BRANCH, theme.branch);
         theme.task_progress = read(tmux::SIDEBAR_COLOR_TASK_PROGRESS, theme.task_progress);
+        theme.process = read(tmux::SIDEBAR_COLOR_PROCESS, theme.process);
         theme.subagent = read(tmux::SIDEBAR_COLOR_SUBAGENT, theme.subagent);
         theme.commit_hash = read(tmux::SIDEBAR_COLOR_COMMIT_HASH, theme.commit_hash);
         theme.diff_added = read(tmux::SIDEBAR_COLOR_DIFF_ADDED, theme.diff_added);
@@ -187,6 +199,15 @@ impl ColorTheme {
                 Some(Color::Indexed(idx))
             }
         }
+    }
+
+    /// Magenta breathe for working process diamonds — the process
+    /// counterpart to the agents' green [`SPINNER_PULSE`], so a pulsing
+    /// diamond reads "process doing work" in a hue nothing else uses.
+    /// The cycle repeats once past the end of the table.
+    pub fn process_pulse_color(&self, spinner_frame: usize) -> Color {
+        let idx = crate::PROCESS_PULSE[spinner_frame % crate::PROCESS_PULSE.len()];
+        Color::Indexed(idx)
     }
 
     pub fn agent_color(&self, agent: &AgentType) -> Color {
@@ -252,6 +273,24 @@ mod tests {
             theme.attention_color(PaneAttention::Done, 6).unwrap(),
             first
         );
+    }
+
+    #[test]
+    fn process_pulse_color_breathes_magenta() {
+        let theme = ColorTheme::default();
+        assert_eq!(theme.process, Color::Indexed(207), "base is hot pink");
+        let first = theme.process_pulse_color(0);
+        let floor = theme.process_pulse_color(1);
+        let peak = theme.process_pulse_color(4);
+        assert_eq!(first, Color::Indexed(213), "pulse starts as light orchid");
+        assert_eq!(
+            floor,
+            Color::Indexed(207),
+            "floor is hot pink, not dark orchid"
+        );
+        assert_eq!(peak, Color::Indexed(219), "pulse peaks at pale pink");
+        // The cycle repeats once past the end of the table.
+        assert_eq!(theme.process_pulse_color(8), first);
     }
 
     #[test]
