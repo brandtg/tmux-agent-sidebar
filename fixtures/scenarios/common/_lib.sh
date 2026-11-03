@@ -3,7 +3,8 @@
 # Provides:
 #   setup <session-name>  — prepare tmux server, create session, init vars
 #   cleanup               — kill the isolated tmux server, clean tmp files
-#   build_layout          — create the 4-pane hero layout with metadata
+#   build_layout          — create the agent layout with metadata
+#                           (4 panes; HERMES=1 adds a 5th for the hero)
 #   paint_stream <pane> <stream-file> [agent]
 #                         — cat a .stream file into a pane, keeping a fake
 #                           agent process alive afterwards
@@ -16,8 +17,16 @@
 #   capture_single        — call `capture --frame-out $OUT/<name>.html`
 #
 # Per-scenario env vars (optional, set before build_layout):
-#   FOCUS=PANE_WAITING|PANE_BACKGROUND|PANE_ERROR|MAIN_PANE
+#   FOCUS=PANE_WAITING|PANE_HERMES|PANE_BACKGROUND|PANE_ERROR|MAIN_PANE
 #         which agent pane is the "focused" one. Default MAIN_PANE.
+#   HERMES=1        — add a fifth agent pane (hermes, running) to the
+#                     extras window, between the waiting and background
+#                     panes. Only the hero uses it.
+#   SCENARIO_CWD    — directory the agent panes live in. Defaults to the
+#                     project root; override when capturing from a
+#                     worktree so git-derived labels (the main pane's
+#                     branch, the repo header's ahead/behind) read the
+#                     main checkout instead of the worktree branch.
 #   CROP_ROWS=N:M  — vertical crop applied to capture_single output.
 #   CROP_COLS=N:M  — horizontal crop applied to capture_single output.
 #
@@ -63,14 +72,23 @@ setup() {
     TMUX_DIR="$(mktemp -d /tmp/tas.XXXXXX)"
     export TMUX_TMPDIR="$TMUX_DIR"
 
+    # Redirect the sidebar's XDG dirs into the throwaway directory so
+    # seeded activity logs (XDG_RUNTIME_DIR) and TODO lists
+    # (XDG_STATE_HOME) never touch the developer's real state. The tmux
+    # server — and every pane it spawns, including the sidebar —
+    # inherits these, and `activity_dir()` below follows along.
+    export XDG_RUNTIME_DIR="$TMUX_DIR/run"
+    export XDG_STATE_HOME="$TMUX_DIR/state"
+    mkdir -p "$XDG_RUNTIME_DIR" "$XDG_STATE_HOME"
+
     # Clean slate for activity logs that any prior run may have left.
     rm -f "$(activity_dir)"/tmux-agent-activity_*.log
 
     # The sidebar's port-scan pass clears @pane_* on any pane whose
-    # process tree does not contain a real `claude` or `codex`
-    # executable. To keep our seeded metadata alive, we symlink the
-    # real /bin/sleep under names `claude` and `codex` and run those
-    # in each agent pane.
+    # process tree does not contain a real agent executable. To keep our
+    # seeded metadata alive, we symlink the real /bin/sleep under agent
+    # names and run those in each agent pane (the kernel derives `comm`
+    # from the exec'd path, so the symlink name is what `ps` reports).
     #
     # Symlinks (not copies) because macOS System Integrity Protection
     # SIGKILLs plain copies of system binaries — the ad-hoc linker
@@ -80,6 +98,7 @@ setup() {
     ln -sf /bin/sleep "$FAKE_BIN_DIR/claude"
     ln -sf /bin/sleep "$FAKE_BIN_DIR/codex"
     ln -sf /bin/sleep "$FAKE_BIN_DIR/opencode"
+    ln -sf /bin/sleep "$FAKE_BIN_DIR/hermes"
     export FAKE_BIN_DIR
 }
 
@@ -105,12 +124,18 @@ cleanup() {
 #
 # Exports:
 #   WINDOW, SIDEBAR_PANE, MAIN_PANE, MAIN_LOG,
-#   PANE_WAITING, PANE_BACKGROUND, PANE_ERROR,
-#   FOCUSED_PANE, FOCUSED_LOG
+#   PANE_WAITING, PANE_HERMES (HERMES=1), PANE_BACKGROUND,
+#   PANE_ERROR, HERMES_LOG (HERMES=1), FOCUSED_PANE, FOCUSED_LOG
 build_layout() {
+    # Panes live in SCENARIO_CWD (default: the project root) so
+    # git-derived labels — the main pane's branch, the repo header's
+    # ahead/behind — read the intended checkout. Captures from a
+    # worktree point this at the main checkout; see the header comment.
+    local run_dir="${SCENARIO_CWD:-$ROOT}"
+
     # Canvas 140×46 — width ≈ 1220 px, height ≈ 815 px. Fits a 1280×900
     # viewport with room for the mac-window shadow.
-    tmux -f "$TMUX_CONF" new-session -d -s "$SESSION" -x 140 -y 46 -c "$ROOT"
+    tmux -f "$TMUX_CONF" new-session -d -s "$SESSION" -x 140 -y 46 -c "$run_dir"
 
     # Reset persisted state so every run renders predictably.
     tmux set-option -g @sidebar_filter all
@@ -126,14 +151,14 @@ build_layout() {
     # `split-window -P -F #{pane_id}` returns the new pane's id directly,
     # saving a second list-panes round-trip.
     export MAIN_PANE
-    MAIN_PANE=$(tmux split-window -h -t "$SIDEBAR_PANE" -p 67 -c "$ROOT" -P -F '#{pane_id}')
+    MAIN_PANE=$(tmux split-window -h -t "$SIDEBAR_PANE" -p 67 -c "$run_dir" -P -F '#{pane_id}')
 
     # Main pane: Claude on the project's own checkout, investigating a
     # CI flake. Non-worktree branch at the top of the list — we omit
-    # `branch=` so the sidebar derives the branch from `$ROOT` via git
-    # (setting @pane_worktree_branch forces is_worktree=true, which
-    # would render the row as `+ main`). Hero capture must be run from
-    # a main checkout for the branch label to read "main".
+    # `branch=` so the sidebar derives the branch from the pane cwd via
+    # git (setting @pane_worktree_branch forces is_worktree=true, which
+    # would render the row as `+ main`). Hero capture must therefore
+    # point SCENARIO_CWD at a main checkout for the label to read "main".
     _seed_pane "$MAIN_PANE" \
         agent=claude status=running \
         prompt="investigate the nightly CI flake in the fixtures runner" \
@@ -144,14 +169,23 @@ build_layout() {
     export MAIN_LOG="$(activity_dir)/tmux-agent-activity${MAIN_PANE/\%/_}.log"
     : > "$MAIN_LOG" && chmod 600 "$MAIN_LOG"
 
-    # Off-screen window hosting the 3 other agents. Idle panes are
+    # Off-screen window hosting the other agents. Idle panes are
     # intentionally omitted — in real use, an agent going idle means
     # its session ended and clear_dead_agent_metadata removes it from
     # the list. Keeping one in the hero would be misleading.
+    #
+    # Row order follows window→pane index, so the split order below
+    # fixes the sidebar order: waiting codex, [hermes], background
+    # opencode, error claude. Each split targets the window's active
+    # pane (the newest), stacking the right column: left | top / mid /
+    # bottom. HERMES=1 (hero redesign) adds the mid slice.
     local extra_win
-    extra_win=$(tmux new-window -d -t "$SESSION" -n extras -c "$ROOT" -P -F '#{window_id}')
-    tmux split-window -h -t "$extra_win" -c "$ROOT"
-    tmux split-window -v -t "$extra_win" -c "$ROOT"
+    extra_win=$(tmux new-window -d -t "$SESSION" -n extras -c "$run_dir" -P -F '#{window_id}')
+    tmux split-window -h -t "$extra_win" -c "$run_dir"
+    tmux split-window -v -t "$extra_win" -c "$run_dir"
+    if [[ "${HERMES:-0}" == "1" ]]; then
+        tmux split-window -v -t "$extra_win" -c "$run_dir"
+    fi
 
     # Portable alternative to `mapfile -t` (bash 3.2 on macOS lacks it).
     extras=()
@@ -169,16 +203,40 @@ build_layout() {
         started_s=45
     run_fake_agent "$PANE_WAITING" codex
 
+    if [[ "${HERMES:-0}" == "1" ]]; then
+        # Hermes — the fork's headline addition, mid-work on its typed
+        # client migration. The row's activity line rides the
+        # wait-reason slot (it renders on any status; orange on a
+        # running pane), which is what a post_tool_call hook leaves
+        # behind in real use.
+        export PANE_HERMES="${extras[1]}"
+        _seed_pane "$PANE_HERMES" \
+            agent=hermes status=running \
+            branch=feat/typed-client \
+            prompt="port the remaining REST handlers to the typed client" \
+            wait_reason="Edit (src/api/routes.ts, +40 −12)" \
+            started_s=137
+        run_fake_agent "$PANE_HERMES" hermes
+
+        export HERMES_LOG="$(activity_dir)/tmux-agent-activity${PANE_HERMES/\%/_}.log"
+        : > "$HERMES_LOG" && chmod 600 "$HERMES_LOG"
+
+        export PANE_BACKGROUND="${extras[2]}"
+        export PANE_ERROR="${extras[3]}"
+    else
+        export PANE_BACKGROUND="${extras[1]}"
+        export PANE_ERROR="${extras[2]}"
+    fi
+
     # Background — OpenCode has a long-running dev server (12 m 45 s)
     # listening on :3456. Shows the `◎` icon, the port label next to
     # the branch, and the surfaced bg command in the row body.
-    export PANE_BACKGROUND="${extras[1]}"
     _seed_pane "$PANE_BACKGROUND" \
         agent=opencode status=background \
         branch=refactor/api-layer \
         prompt="boot the dev server while I review the router split" \
         bg_cmd="npm run dev" \
-        started_s=765
+        started_s=764
     run_fake_agent "$PANE_BACKGROUND" opencode 3456 "npm run dev"
 
     # Error pane — cause surfaced via @pane_wait_reason (matches the hook
@@ -186,7 +244,6 @@ build_layout() {
     # rejected before the agent could bind anything. _seed_pane skips
     # @pane_started_at on error so the elapsed counter stays empty; the
     # failure reason matters, not how old the error is.
-    export PANE_ERROR="${extras[2]}"
     _seed_pane "$PANE_ERROR" \
         agent=claude status=error \
         branch=feat/dashboard-charts \
@@ -203,6 +260,7 @@ build_layout() {
         SIDEBAR_PANE)    focus_pane="$SIDEBAR_PANE" ;;
         MAIN_PANE)       focus_pane="$MAIN_PANE" ;;
         PANE_WAITING)    focus_pane="$PANE_WAITING" ;;
+        PANE_HERMES)     focus_pane="$PANE_HERMES" ;;
         PANE_BACKGROUND) focus_pane="$PANE_BACKGROUND" ;;
         PANE_ERROR)      focus_pane="$PANE_ERROR" ;;
         *) echo "build_layout: unknown FOCUS=${FOCUS}" >&2; return 1 ;;
@@ -280,11 +338,15 @@ _seed_pane() {
 # shell's command prompt — more reliable than `send-keys "exec …"`
 # when the default shell hasn't reached its prompt yet. Escape
 # sequences in the stream use literal `\e`; an awk pass converts them
-# to real ESC bytes before `cat` emits them.
+# to real ESC bytes before `cat` emits them. Output carries no
+# trailing newline, so a stream sized to the pane height fills the
+# last row exactly instead of scrolling the top line off (a `print`
+# would append ORS and push a full-height stream up by one).
 paint_stream() {
     local pane="$1" stream="$2" agent="${3:-claude}"
     local painted="$TMUX_DIR/$(basename "$stream").painted"
-    awk '{ gsub(/\\e/, "\033"); print }' < "$stream" > "$painted"
+    awk '{ gsub(/\\e/, "\033"); if (NR > 1) printf "\n"; printf "%s", $0 }' \
+        < "$stream" > "$painted"
     tmux respawn-pane -k -t "$pane" \
         "sh -c 'cat \"$painted\"; exec \"$FAKE_BIN_DIR/$agent\" 999999'"
 }

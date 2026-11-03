@@ -1,18 +1,46 @@
-\e[38;5;117m> reshape the auth flow around typed sessions\e[0m
+\e[38;5;117m> investigate the nightly CI flake in the fixtures runner\e[0m
+
+\e[38;5;181m⏺ Task\e[0m — reproduce the flake locally (in_progress)
+  \e[38;5;244m⎿  Running the fixtures runner 40× with shuffled seeds\e[0m
 
 \e[38;5;181m⏺ Agent\e[0m — Explore #a1b2c3de
-  \e[38;5;244m⎿  Mapping auth module boundaries\e[0m
+  \e[38;5;244m⎿  Mapping fixtures runner startup order\e[0m
+  \e[38;5;244m⎿  Seed is drawn from wall-clock in runner/seed.rs:71\e[0m
+  \e[38;5;244m⎿  Threads read it after the shuffle is seeded\e[0m
+
+\e[38;5;114m⏺ Bash\e[0m (cargo test -p fixtures -- --test-threads=4)
+  \e[38;5;244m⎿  failures:\e[0m
+     \e[38;5;244mfixtures::seed::seed_is_stable_across_threads\e[0m
+  \e[38;5;244m⎿  39 passed · 1 failed\e[0m
+
+\e[38;5;110m⏺ Read\e[0m (fixtures/runner/seed.rs, 210 lines)
 
 \e[38;5;181m⏺ Agent\e[0m — Plan #d4e5f6ab
-  \e[38;5;244m⎿  Drafting refactor sequence (4 commits)\e[0m
+  \e[38;5;244m⎿  Drafting the fix sequence (2 commits)\e[0m
+  \e[38;5;244m⎿  Keep the run ID plumbed through, no globals\e[0m
 
-\e[38;5;181m⏺ Agent\e[0m — Bash #deadbeef
-  \e[38;5;244m⎿  running cargo test auth\e[0m
+\e[38;5;181m⏺ Think\e[0m
+  \e[38;5;244m⎿  Threads race the same generator; deriving the seed\e[0m
+  \e[38;5;244m⎿  from the run ID makes the shuffle deterministic\e[0m
+  \e[38;5;244m⎿  without pinning global state.\e[0m
 
-\e[38;5;110m⏺ Read\e[0m (src/handlers/auth.rs, 245 lines)
-\e[38;5;180m⏺ Edit\e[0m (src/handlers/auth.rs, +12 −4)
-\e[38;5;114m⏺ Bash\e[0m (cargo test auth) \e[38;5;244m⎿  17 passed\e[0m
+\e[38;5;180m⏺ Edit\e[0m (fixtures/runner/seed.rs, +9 −3)
+  \e[38;5;244m⎿  Derive the seed from the run ID, not wall-clock\e[0m
 
-Next: propagate the typed session into the middleware layer
-and confirm the login → refresh → logout trio still works
-end-to-end.
+\e[38;5;114m⏺ Bash\e[0m (cargo test -p fixtures)
+  \e[38;5;244m⎿  40 passed\e[0m
+
+\e[38;5;114m⏺ Bash\e[0m (git -C fixtures diff --stat)
+  \e[38;5;244m⎿  fixtures/runner/seed.rs | 12 ++++++++----\e[0m
+
+\e[38;5;181m⏺ TaskUpdate\e[0m — #3 add a regression test for thread ordering
+
+\e[38;5;114m⏺ Bash\e[0m (for i in $(seq 1 40); do ./target/debug/fixtures …)
+  \e[38;5;244m⎿  40/40 clean · 0 flakes\e[0m
+
+\e[38;5;114m⏺ Bash\e[0m (cargo test -p fixtures -- --test-threads=8)
+  \e[38;5;244m⎿  40 passed\e[0m
+
+Next: run the runner 200× overnight to confirm zero flakes,
+then backport the seed fix to v1.2 and re-run the nightly
+twice before cutting v1.3.
