@@ -1,5 +1,8 @@
 #!/usr/bin/env bash
-# Hero: one-shot single-frame capture of the 4-pane ideal-day layout.
+# Hero: one-shot single-frame capture of the v1.3 release-prep scene —
+# five agents on one repo (claude/codex/hermes/opencode/error), the
+# manual TODO panel open, and the focused Claude transcript filling the
+# right pane to the bottom row.
 #
 # Usage:  scenario.sh <output-dir> [extra capture args...]
 
@@ -11,9 +14,11 @@ EXTRA_ARGS=("$@")
 
 source "$(cd "$(dirname "$0")/../common" && pwd)/_lib.sh"
 
-# Focus the Codex Waiting pane for visual variety (attention
-# indicator + "permission_required" wait reason).
-export FOCUS=PANE_WAITING
+# Focus the Claude pane so the right side is a full transcript (the
+# star row: task progress + subagent tree, mirrored by the stream).
+export FOCUS=MAIN_PANE
+# Fifth pane: hermes — the fork's headline addition.
+export HERMES=1
 
 setup "hero"
 trap cleanup EXIT
@@ -24,28 +29,41 @@ build_layout
 paint_stream "$MAIN_PANE" \
     "$ROOT/fixtures/scenarios/hero/main-pane.stream"
 
-# Seed the focused (Codex Waiting) pane's activity log — the fix/
-# login-redirect investigation right before it hit the permission
-# prompt. Task progress renders from the TaskCreate/TaskUpdate lines.
-cat >> "$FOCUSED_LOG" <<'ACTIVITY'
-14:02|TaskCreate|#1 reproduce the deep-link regression
-14:02|TaskCreate|#2 preserve window.location.search through the redirect
-14:02|TaskCreate|#3 add a failing test for the deep-link flow
-14:02|TaskCreate|#4 update the migration doc for v13 router
-14:03|Read|packages/web/src/login.tsx
-14:03|Read|packages/web/src/router.ts
-14:03|Grep|deep-link
-14:03|TaskUpdate|completed #1
-14:03|Read|packages/web/tests/login.test.tsx
-14:03|TaskUpdate|in_progress #3
-14:04|Edit|packages/web/src/login.tsx
-14:04|Bash|npm test -- login
-14:04|TaskUpdate|completed #3
-14:04|Read|packages/web/src/auth/session.ts
-14:04|TaskUpdate|in_progress #2
-14:05|Edit|packages/web/src/login.tsx
-14:05|Bash|npm run build
+# Claude's activity log — the row's task progress renders from the
+# TaskCreate/TaskUpdate lines: 2 of 4 done, the third underway.
+cat >> "$MAIN_LOG" <<'ACTIVITY'
+10:12|TaskCreate|#1 reproduce the flake locally
+10:12|TaskCreate|#2 derive the seed from the run ID
+10:12|TaskCreate|#3 add a regression test for thread ordering
+10:12|TaskCreate|#4 backport the seed fix to v1.2
+10:31|TaskUpdate|completed #1
+10:47|TaskUpdate|completed #2
+11:03|TaskUpdate|in_progress #3
 ACTIVITY
+
+# Hermes' activity log — the post_tool_call entry behind the row's
+# `Edit (src/api/routes.ts, +40 −12)` activity line.
+cat >> "$HERMES_LOG" <<'ACTIVITY'
+11:21|Edit|src/api/routes.ts (+40 −12)
+ACTIVITY
+
+# The manual TODO list — "your checklist tracking their work" is the
+# frame's narrative trick. Two of five are done; the default
+# hide-completed keeps them out of the panel, so the header reads
+# `todos · 3/5 · hide done` and tells that story without strikethrough
+# rows.
+mkdir -p "$XDG_STATE_HOME/tmux-agent-sidebar"
+cat > "$XDG_STATE_HOME/tmux-agent-sidebar/todos.txt" <<'TODOS'
+[✓] reproduce the nightly flake locally
+[✓] derive the seed from the run ID
+[ ] verify the seed fix on v1.2
+[ ] review hermes' typed-client migration
+[ ] cut the v1.3 release notes
+TODOS
+
+# Open the TODO panel (what pressing `t` in the sidebar does). The
+# sidebar reads shared bool options as "1"/"0", not tmux's on/off.
+tmux set-option -g @sidebar_todo_visible 1
 
 start_sidebar
 

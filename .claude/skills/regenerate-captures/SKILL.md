@@ -19,7 +19,8 @@ If your change does **not** affect the visible output (pure logic refactor, test
 
 ```
 fixtures/scenarios/<name>/scenario.sh
-  → sources common/_lib.sh (build_layout seeds 4 panes: MAIN, WAITING, BACKGROUND, ERROR)
+  → sources common/_lib.sh (build_layout seeds 4 panes: MAIN, WAITING, BACKGROUND, ERROR;
+    the hero sets HERMES=1 for a fifth — Hermes, running — between WAITING and BACKGROUND)
   → launches real sidebar binary (`target/release/tmux-agent-sidebar`)
   → `capture` subcommand writes <name>.html into a tmp dir
     → scripts/render-frames.mjs (Playwright) converts .html → .png
@@ -32,7 +33,7 @@ For `hero`, an additional `scripts/hero-compose.mjs` pass produces `og-image.png
 
 | Scenario | Output PNG | Crop |
 |---|---|---|
-| `hero` | `hero.png` (+ `og-image.png`) | full 140×46 canvas |
+| `hero` | `hero.png` (+ `og-image.png`) | full 140×46 canvas; v1.3 release-prep scene — 5 agents (HERMES=1), TODO panel open, Claude transcript filling the right pane |
 | `agent-pane-focus` | `agent-pane-focus.png` | rows 0..26, cols 0..46 (agent list) |
 | `activity-focus` | `activity-focus.png` | rows 26..46, cols 0..46 (Activity tab) |
 | `git-focus` | `git-focus.png` | rows 26..46, cols 0..46 (Git tab) |
@@ -46,7 +47,7 @@ All scenarios share `build_layout` in `_lib.sh`, so a change to the seeded pane 
 
 - Must be on the project root.
 - `cargo`, `node`, `tmux` on PATH.
-- **`hero` must be run from a `main` checkout** — `build_layout` derives the MAIN pane's branch label from `$ROOT` via git. Running `hero` from a feature branch makes the top row read that branch name instead of `main`.
+- **Capturing from a worktree:** pass `SCENARIO_CWD=/path/to/main-checkout` — the agent panes' git-derived labels (the MAIN pane's branch, the repo header's ahead/behind) read that directory. Run without it from a `main` checkout; running `hero` from a feature branch checkout makes the top row read that branch name instead of `main`.
 
 ### 2. Edit the Scenario Source
 
