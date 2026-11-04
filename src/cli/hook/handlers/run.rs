@@ -87,9 +87,26 @@ pub(in crate::cli::hook) fn on_tool_start(pane: &str, ctx: &AgentContext<'_>) ->
     if ctx.agent == crate::tmux::HERMES_AGENT {
         return 0;
     }
+    let current_status = tmux::get_pane_option_value(pane, tmux::PANE_STATUS);
     // Mid-turn tool calls arrive with the pane already `running` — the
     // common case must stay a read-only probe, not a tmux write storm.
-    if tmux::get_pane_option_value(pane, tmux::PANE_STATUS) == "running" {
+    if current_status == "running" {
+        return 0;
+    }
+    // A Claude `PreToolUse` landing on a post-turn state is a dangling
+    // call from the CLI's own background machinery, not a resume: the
+    // away-summary/recap generator fires one seconds after `Stop` for a
+    // call that never executes (no `PostToolUse`, no transcript row).
+    // Promoting it glued a finished session solid green because no `Stop`
+    // ever follows a background call (observed live 2026-11-04: a
+    // PreToolUse 1s after Stop on a done branch-review pane). A real turn
+    // always re-opens with `UserPromptSubmit`, which owns the
+    // idle/background promotion. `waiting`/`error` stay promotable — they
+    // are mid-turn states (stranded permission denial, auto-retry), and
+    // an empty status is an unclaimed pane.
+    if ctx.agent == crate::tmux::CLAUDE_AGENT
+        && (current_status == "idle" || current_status == "background")
+    {
         return 0;
     }
     set_agent_meta(pane, ctx);
@@ -503,6 +520,61 @@ mod tests {
             tmux::test_mock::get(pane, tmux::PANE_STARTED_AT).as_deref(),
             Some("1700000000"),
             "a running pane must keep its run clock"
+        );
+    }
+
+    #[test]
+    fn on_tool_start_does_not_promote_post_turn_idle_pane() {
+        // Regression: Claude's post-turn background machinery (the
+        // away-summary/recap generator) fires a PreToolUse seconds after
+        // the turn's Stop, for a call that never executes. Promoting the
+        // idle pane glued a finished branch-review session solid green
+        // (2026-11-04) because no Stop ever follows a background call. A
+        // real turn re-opens with UserPromptSubmit, which owns promotion.
+        let _guard = tmux::test_mock::install();
+        let pane = "%TOOL_START_DANGLING_IDLE";
+        tmux::test_mock::set(pane, tmux::PANE_STATUS, "idle");
+        let ctx = AgentContext {
+            agent: "claude",
+            cwd: "/repo",
+            permission_mode: "auto",
+            worktree: &None,
+            session_id: &None,
+        };
+        let exit = on_tool_start(pane, &ctx);
+        assert_eq!(exit, 0);
+        assert_eq!(
+            tmux::test_mock::get(pane, tmux::PANE_STATUS).as_deref(),
+            Some("idle"),
+            "a dangling post-turn PreToolUse must not show the pane as working"
+        );
+        assert!(
+            !tmux::test_mock::contains(pane, tmux::PANE_STARTED_AT),
+            "no run clock without a real turn opener"
+        );
+    }
+
+    #[test]
+    fn on_tool_start_does_not_promote_post_turn_background_pane() {
+        // Same dangling-call stance when a background shell outlived the
+        // turn: the pane stays `background` until the next real turn opens.
+        let _guard = tmux::test_mock::install();
+        let pane = "%TOOL_START_DANGLING_BG";
+        tmux::test_mock::set(pane, tmux::PANE_STATUS, "background");
+        tmux::test_mock::set(pane, tmux::PANE_BG_CMD, "npm run dev");
+        let ctx = AgentContext {
+            agent: "claude",
+            cwd: "/repo",
+            permission_mode: "auto",
+            worktree: &None,
+            session_id: &None,
+        };
+        let exit = on_tool_start(pane, &ctx);
+        assert_eq!(exit, 0);
+        assert_eq!(
+            tmux::test_mock::get(pane, tmux::PANE_STATUS).as_deref(),
+            Some("background"),
+            "a dangling post-turn PreToolUse must not override background"
         );
     }
 

@@ -137,7 +137,8 @@ pub(super) fn handle_activity_log(
     // `__task_reset__`) lands while a prompt is open and would stomp the
     // flag; the worker itself clears the state once the prompt disappears.
     // Claude has no prompt pending at PostToolUse time — its `PostToolUse`
-    // IS the resume signal — so it stays unguarded.
+    // IS the resume signal — so it stays unguarded by the pending-action
+    // gate (the post-turn dangling guard below is a different concern).
     let pending_action = (agent_name == crate::tmux::OPENCODE_AGENT
         || agent_name == crate::tmux::ANTIGRAVITY_AGENT)
         && current_status == "waiting"
@@ -164,7 +165,17 @@ pub(super) fn handle_activity_log(
     // when two same-directory sessions raced for bindings) blue forever.
     let agy_internal_churn =
         agent_name == crate::tmux::ANTIGRAVITY_AGENT && tool_name.starts_with("__");
+    // Claude's post-turn background machinery (away-summary generator and
+    // friends) can emit a `PostToolUse` after the turn's `Stop` — a real
+    // turn always re-opens with `UserPromptSubmit` first, which owns the
+    // idle/background promotion. Promoting here would glue the pane green
+    // with no `Stop` ever coming (same stance as the Hermes fork gate and
+    // the `on_tool_start` dangling-call guard). Waiting/error/empty still
+    // promote: they are mid-turn or unclaimed states.
+    let claude_post_turn = agent_name == crate::tmux::CLAUDE_AGENT
+        && (current_status == "idle" || current_status == "background");
     if agent_name != crate::tmux::HERMES_AGENT
+        && !claude_post_turn
         && !agy_internal_churn
         && current_status != "running"
         && !pending_action
@@ -580,9 +591,13 @@ mod tests {
     }
 
     #[test]
-    fn handle_activity_log_preserves_bg_cmd_when_background_resumes_running() {
+    fn handle_activity_log_preserves_bg_cmd_on_post_turn_tool_event() {
         // Regression: a tool-use burst must not clear @pane_bg_cmd, or
         // the next Stop would land in `idle` instead of `background`.
+        // The status itself stays `background`: since the turn's Stop
+        // already ran, this completion is Claude post-turn churn (the
+        // real next turn re-opens with UserPromptSubmit) — only the
+        // bg-command bookkeeping matters here.
         let _guard = tmux::test_mock::install();
         let pane_id = "%CLI_BG_PRESERVE";
         let path = crate::activity::log_file_path(pane_id);
@@ -600,12 +615,47 @@ mod tests {
 
         assert_eq!(
             tmux::test_mock::get(pane_id, tmux::PANE_STATUS).as_deref(),
-            Some("running")
+            Some("background"),
+            "post-turn tool completions must not override background"
         );
         assert_eq!(
             tmux::test_mock::get(pane_id, tmux::PANE_BG_CMD).as_deref(),
             Some("npm run dev")
         );
+        fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn handle_activity_log_claude_post_turn_tool_does_not_promote_idle() {
+        // Claude's post-turn background machinery can emit a PostToolUse
+        // after the turn's Stop. The feed entry still lands, but the pane
+        // must not glow green with no Stop coming: a real turn re-opens
+        // with UserPromptSubmit, which owns the promotion.
+        let _guard = tmux::test_mock::install();
+        let pane_id = "%CLAUDE_POST_TURN";
+        let path = crate::activity::log_file_path(pane_id);
+        let _ = fs::remove_file(&path);
+        tmux::test_mock::set(pane_id, tmux::PANE_STATUS, "idle");
+
+        handle_activity_log(
+            pane_id,
+            "claude",
+            "Bash",
+            &json!({"command": "recap"}),
+            &Value::Null,
+        );
+
+        assert_eq!(
+            tmux::test_mock::get(pane_id, tmux::PANE_STATUS).as_deref(),
+            Some("idle"),
+            "post-turn tool completions must not show the pane as working"
+        );
+        assert!(
+            !tmux::test_mock::contains(pane_id, tmux::PANE_STARTED_AT),
+            "no run clock without a real turn opener"
+        );
+        // The entry itself must still land.
+        assert!(fs::read_to_string(&path).unwrap().contains("|Bash|recap"));
         fs::remove_file(&path).ok();
     }
 
