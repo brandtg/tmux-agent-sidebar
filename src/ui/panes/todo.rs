@@ -17,6 +17,37 @@ const MAX_PANEL_HEIGHT: u16 = 10;
 const POPUP_MAX_PANEL_HEIGHT: u16 = 6;
 /// Columns used by the `[ ]` / `[✓]` marker plus one separating space.
 const CHECKBOX_WIDTH: usize = 4;
+/// Private-use marker spliced into the edit buffer at the cursor before
+/// wrapping, swapped for the visible block glyph afterwards so a `█`
+/// typed into the todo text can never be mistaken for the cursor.
+const CURSOR_MARK: char = '\u{E000}';
+
+/// Wrap the live edit buffer like any other item text, returning each
+/// display line plus the char position of the cursor on its line
+/// (`None` when the cursor falls elsewhere). The cursor occupies one
+/// extra display column between the chars it sits between, so a line
+/// that was exactly full gains a continuation line for the glyph.
+fn wrap_with_cursor(input: &str, cursor: usize, width: usize) -> Vec<(String, Option<usize>)> {
+    let mut marked = String::with_capacity(input.len() + 4);
+    let cursor = cursor.min(input.chars().count());
+    for (i, ch) in input.chars().enumerate() {
+        if i == cursor {
+            marked.push(CURSOR_MARK);
+        }
+        marked.push(ch);
+    }
+    if cursor >= input.chars().count() {
+        marked.push(CURSOR_MARK);
+    }
+    wrap_flow(&marked, width, width)
+        .into_iter()
+        .map(|line| {
+            let position = line.chars().position(|c| c == CURSOR_MARK);
+            let line = line.chars().filter(|&c| c != CURSOR_MARK).collect();
+            (line, position)
+        })
+        .collect()
+}
 
 /// Rows the panel needs, clamped to its cap and to the space left after
 /// the two header rows and at least one agent row.
@@ -38,12 +69,21 @@ pub(super) fn panel_height(state: &AppState, area: Rect) -> u16 {
         rows += 1; // empty-state hint
     } else {
         for &index in &visible {
-            rows += wrap_flow(&state.todos.items[index].text, text_width, text_width)
-                .len()
-                .max(1);
+            let text_rows = match state
+                .todos
+                .editing
+                .as_ref()
+                .filter(|edit| edit.index == index)
+            {
+                // The live buffer carries one extra cursor column, which
+                // can spill onto its own line.
+                Some(edit) => wrap_with_cursor(&edit.input, edit.cursor, text_width).len(),
+                None => wrap_flow(&state.todos.items[index].text, text_width, text_width).len(),
+            };
+            rows += text_rows.max(1);
         }
     }
-    if state.todos.adding.is_some() || state.todos.editing.is_some() {
+    if state.todos.adding.is_some() {
         rows += 1;
     }
 
@@ -152,14 +192,32 @@ pub(super) fn render_todo_panel(frame: &mut Frame, state: &mut AppState, area: R
             checkbox_style
         };
 
-        let wrapped = wrap_flow(&item.text, text_width, text_width);
+        // The item being edited renders its live buffer in place of its
+        // stored text, with the cursor spliced at the insert position.
+        let edit = state
+            .todos
+            .editing
+            .as_ref()
+            .filter(|edit| edit.index == index);
+        let wrapped: Vec<(String, Option<usize>)> = match edit {
+            Some(edit) => wrap_with_cursor(&edit.input, edit.cursor, text_width),
+            None => wrap_flow(&item.text, text_width, text_width)
+                .into_iter()
+                .map(|line| (line, None))
+                .collect(),
+        };
         let wrapped = if wrapped.is_empty() {
-            vec![String::new()]
+            vec![(String::new(), None)]
         } else {
             wrapped
         };
+        let cursor_style = if is_selected {
+            accent.bg(theme.selection_bg)
+        } else {
+            accent
+        };
         let first_line = lines.len();
-        for (i, chunk) in wrapped.iter().enumerate() {
+        for (i, (chunk, cursor)) in wrapped.iter().enumerate() {
             let prefix = if i == 0 {
                 format!("{checkbox} ")
             } else {
@@ -167,11 +225,23 @@ pub(super) fn render_todo_panel(frame: &mut Frame, state: &mut AppState, area: R
             };
             let prefix = truncate_to_width(&prefix, width);
             let prefix_width = display_width(&prefix);
-            let mut spans = vec![
-                Span::styled(prefix, checkbox_row_style),
-                Span::styled(chunk.clone(), row_style),
-            ];
-            let used = prefix_width + display_width(chunk);
+            let mut spans = vec![Span::styled(prefix, checkbox_row_style)];
+            match cursor {
+                Some(position) => {
+                    // Split the chunk around the cursor so the glyph can
+                    // carry its own accent style.
+                    let position = *position;
+                    let before: String = chunk.chars().take(position).collect();
+                    let after: String = chunk.chars().skip(position).collect();
+                    spans.push(Span::styled(before, row_style));
+                    spans.push(Span::styled("█", cursor_style));
+                    if !after.is_empty() {
+                        spans.push(Span::styled(after, row_style));
+                    }
+                }
+                None => spans.push(Span::styled(chunk.clone(), row_style)),
+            }
+            let used = prefix_width + display_width(chunk) + usize::from(cursor.is_some());
             if is_selected && used < width {
                 spans.push(Span::styled(
                     " ".repeat(width - used),
@@ -183,16 +253,10 @@ pub(super) fn render_todo_panel(frame: &mut Frame, state: &mut AppState, area: R
         ranges.push((index, first_line, lines.len() - 1));
     }
 
-    // Inline add/edit line.
+    // Inline add line. New items are appended here; edits happen in
+    // place on the item's own rows.
     let mut input_line: Option<usize> = None;
-    if let Some(edit) = &state.todos.editing {
-        input_line = Some(lines.len());
-        lines.push(Line::from(vec![
-            Span::styled("✎ ", accent),
-            Span::styled(tail_fit(&edit.input, width.saturating_sub(2)), text_style),
-            Span::styled("█", accent),
-        ]));
-    } else if let Some(input) = &state.todos.adding {
+    if let Some(input) = &state.todos.adding {
         input_line = Some(lines.len());
         lines.push(Line::from(vec![
             Span::styled("+ ", accent),
@@ -214,7 +278,7 @@ pub(super) fn render_todo_panel(frame: &mut Frame, state: &mut AppState, area: R
             state.scrolls.todos.offset = (end + 1).saturating_sub(visible_height);
         }
     }
-    // Keep the add/edit line visible while typing.
+    // Keep the add line visible while typing.
     if input_line.is_some() && lines.len() > state.scrolls.todos.offset + visible_height {
         state.scrolls.todos.offset = lines.len() - visible_height;
     }
@@ -371,18 +435,80 @@ mod tests {
     }
 
     #[test]
-    fn edit_line_shows_the_prefilled_text() {
+    fn edit_renders_in_place_with_a_trailing_cursor() {
         let mut state = todo_state();
         state.todos.selected = 0;
         state.begin_todo_edit();
         let output = render_panel(&mut state, 40, 8);
         insta::assert_snapshot!(output, @"
         ─ todos · 2/3 · hide done───────────────
-        [ ] Buy milk
+        [ ] Buy milk█
         [ ] Read the tmux changelog and try the
             new paste behaviour
-        ✎ Buy milk█
         ");
+    }
+
+    #[test]
+    fn edit_cursor_moves_with_the_buffer() {
+        let mut state = todo_state();
+        state.todos.selected = 0;
+        state.begin_todo_edit();
+        // Left twice, then insert: the glyph lands mid-word.
+        state.todo_edit_cursor_move(-2);
+        state.todo_input_push_char('X');
+        let output = render_panel(&mut state, 40, 8);
+        insta::assert_snapshot!(output, @"
+        ─ todos · 2/3 · hide done───────────────
+        [ ] Buy miX█lk
+        [ ] Read the tmux changelog and try the
+            new paste behaviour
+        ");
+    }
+
+    #[test]
+    fn editing_wraps_long_text_in_place() {
+        let mut state = todo_state();
+        state.todos.selected = 2;
+        state.begin_todo_edit();
+        state.todo_edit_cursor_home();
+        let output = render_panel(&mut state, 24, 10);
+        insta::assert_snapshot!(output, @"
+        ─ todos · 2/3───────────
+        [ ] Buy milk
+        [ ] █Read the tmux
+            changelog and try
+            the new paste
+            behaviour
+        ");
+    }
+
+    #[test]
+    fn editing_an_emptied_item_keeps_the_cursor_visible() {
+        let mut state = todo_state();
+        state.todos.selected = 0;
+        state.begin_todo_edit();
+        state.todo_input_clear();
+        let output = render_panel(&mut state, 40, 8);
+        insta::assert_snapshot!(output, @"
+        ─ todos · 2/3 · hide done───────────────
+        [ ] █
+        [ ] Read the tmux changelog and try the
+            new paste behaviour
+        ");
+    }
+
+    #[test]
+    fn panel_height_counts_the_extra_cursor_line() {
+        let mut state = todo_state();
+        state.todos.items = vec![TodoItem {
+            text: "abcd".into(),
+            done: false,
+        }];
+        state.todos.selected = 0;
+        // 8 columns − 4 checkbox = 4 text columns: "abcd" is exactly full,
+        // so the cursor glyph spills onto its own row.
+        state.begin_todo_edit();
+        assert_eq!(panel_height(&state, Rect::new(0, 0, 8, 20)), 3);
     }
 
     #[test]

@@ -98,10 +98,10 @@ pub(super) fn handle_key_event(key: KeyEvent, state: &mut AppState) -> bool {
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
 
     // The TODO panel owns its keys while it has focus: j/k navigate items,
-    // Enter toggles the checkbox, e edits, x/d delete, D clears completed,
-    // a adds, H flips hide-completed. Global keys it does not claim (q, c,
-    // w, ?, /) still work. The inline add/edit line, when open, owns
-    // printable keys.
+    // Enter toggles the checkbox, e edits in place, x/d delete, D clears
+    // completed, a adds, H flips hide-completed. Global keys it does not
+    // claim (q, c, w, ?, /) still work. The add line, when open, owns
+    // printable keys; an open edit owns them on the item's own rows.
     if state.focus_state.focus == Focus::Todos {
         return handle_todo_key(key, state);
     }
@@ -280,6 +280,11 @@ fn handle_todo_key(key: KeyEvent, state: &mut AppState) -> bool {
             KeyCode::Esc => state.cancel_todo_edit(),
             KeyCode::Enter => state.commit_todo_edit(),
             KeyCode::Backspace => state.todo_input_pop_char(),
+            KeyCode::Delete => state.todo_input_delete_char(),
+            KeyCode::Left => state.todo_edit_cursor_move(-1),
+            KeyCode::Right => state.todo_edit_cursor_move(1),
+            KeyCode::Home | KeyCode::Char('a') if ctrl => state.todo_edit_cursor_home(),
+            KeyCode::End | KeyCode::Char('e') if ctrl => state.todo_edit_cursor_end(),
             KeyCode::Char('u') if ctrl => state.todo_input_clear(),
             KeyCode::Char('w') if ctrl => state.todo_input_pop_word(),
             KeyCode::Char(c) if !ctrl => state.todo_input_push_char(c),
