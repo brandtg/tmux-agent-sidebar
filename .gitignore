@@ -3,11 +3,16 @@
 .claude/*.lock
 .hermes
 *.pending-snap
+# Test tooling artifacts: insta pending snapshots (inline snapshots land
+# as .<source-file>.pending-snap next to the source; stored snapshots as
+# *.snap.new next to the .snap), plus tmux test-server logs.
+*.pending-snap
+*.snap.new
+tmux-client-*.log
+tmux-server-*.log
 .worktrees
 /bin
 /target
 dist
 node_modules
 tmp
-tmux-client-*.log
-tmux-server-*.log

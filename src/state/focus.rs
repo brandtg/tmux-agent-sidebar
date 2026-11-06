@@ -22,6 +22,15 @@ pub struct FocusState {
     pub window_active: bool,
     pub focus: Focus,
     pub focused_pane_id: Option<String>,
+    /// Agent pane standing in for the user's cursor while it sits on a
+    /// non-agent pane whose row is not rendered: the first agent sharing
+    /// the cursor's window. Recomputed on every snapshot by
+    /// [`AppState::resolve_proxy_focus`]; a deliberate jump clears it so
+    /// the optimistic `focused_pane_id` rules until fresh data lands.
+    /// The render layer applies it only while the `w` toggle keeps
+    /// window rows hidden — with them visible, the window row carries
+    /// the active marker itself.
+    pub proxy_focused_pane_id: Option<String>,
     pub prev_focused_pane_id: Option<String>,
 }
 
@@ -32,6 +41,7 @@ impl FocusState {
             window_active: false,
             focus: Focus::Panes,
             focused_pane_id: None,
+            proxy_focused_pane_id: None,
             prev_focused_pane_id: None,
         }
     }
@@ -75,6 +85,50 @@ impl AppState {
         if let Some((id, _)) = tmux::pick_active_pane(&self.tmux_pane, panes) {
             self.focus_state.focused_pane_id = Some(id);
         }
+    }
+
+    /// Resolve the proxy focus: when the cursor sits on a non-agent pane
+    /// and the window rows that would carry its active marker are hidden,
+    /// no agent row can light up and the user loses the "where am I" cue
+    /// — so the first agent sharing the cursor's window stands in for it.
+    ///
+    /// Resolved once per snapshot (`apply_session_snapshot`) rather than
+    /// per frame: a deliberate jump optimistically sets `focused_pane_id`
+    /// and clears this proxy, so the marker names the jumped-to pane for
+    /// the tick in flight even though the snapshot still shows the old
+    /// cursor. Toggling `w` needs no re-resolution — the render layer
+    /// decides applicability from the live toggle state.
+    pub(crate) fn resolve_proxy_focus(&mut self) {
+        self.focus_state.proxy_focused_pane_id = self.compute_proxy_focus();
+    }
+
+    /// The cursor scan reads only data already in the last snapshot: the
+    /// active non-agent pane is the `other_windows` entry with
+    /// `session_attached && window_active && pane_active` — the same
+    /// predicate the window-row marker (`row_collector`) and
+    /// `mark_active_window_panes_seen` use. Sidebar panes never enter
+    /// `other_windows` (they are skipped at collection), so sitting on
+    /// the sidebar itself yields no proxy and the preserved
+    /// `focused_pane_id` keeps ruling.
+    fn compute_proxy_focus(&self) -> Option<String> {
+        // Multiple attached clients can mark several panes active at
+        // once; `other_windows` is an IndexMap in tmux line order, so
+        // first-wins stays deterministic across frames.
+        let cursor = self
+            .other_windows
+            .values()
+            .flatten()
+            .find(|w| w.session_attached && w.window_active && w.pane_active)?;
+        // Group iteration order matches the render order's stable sort
+        // (`ordered_group_rows`: session → window → pane), so the first
+        // match is the cursor window's first pane in tmux order.
+        self.repo_groups
+            .iter()
+            .flat_map(|group| group.panes.iter())
+            .find(|(pane, _)| {
+                pane.tmux_session == cursor.session_name && pane.window_index == cursor.window_index
+            })
+            .map(|(pane, _)| pane.pane_id.clone())
     }
 
     /// Move agent selection. Returns true if moved, false if at boundary.
@@ -133,8 +187,12 @@ impl AppState {
 
         // Update the sidebar immediately so the active marker and
         // repo header highlight move without waiting for the next
-        // periodic tmux refresh.
+        // periodic tmux refresh. The proxy stands down for the tick in
+        // flight: the last snapshot still shows the previous cursor, so
+        // an unresolved proxy would keep pointing at the window just
+        // left instead of the pane being activated.
         self.focus_state.focused_pane_id = Some(target_pane_id.clone());
+        self.focus_state.proxy_focused_pane_id = None;
         tmux::select_pane(&target_pane_id);
 
         // The jump may land on a window that has no sidebar of its own —
@@ -428,5 +486,114 @@ mod tests {
         // list). The toggle must neither panic nor write an option.
         state.toggle_selected_flag();
         assert_eq!(test_mock::get("%1", PANE_FLAGGED).as_deref(), Some(""));
+    }
+
+    // ─── proxy focus (w-off cursor parked on a hidden non-agent pane) ─
+
+    /// An on-screen non-agent cursor: the predicate `compute_proxy_focus`
+    /// scans for (`session_attached && window_active && pane_active`).
+    fn cursor_in(session: &str, window_index: i64, pane_id: &str) -> crate::group::OtherWindow {
+        let mut cursor = test_window_row(pane_id);
+        cursor.session_name = session.into();
+        cursor.window_index = window_index;
+        cursor.session_attached = true;
+        cursor.window_active = true;
+        cursor.pane_active = true;
+        cursor
+    }
+
+    fn agent_in(id: &str, session: &str, window_index: i64) -> PaneInfo {
+        let mut pane = test_pane(id);
+        pane.tmux_session = session.into();
+        pane.window_index = window_index;
+        pane
+    }
+
+    #[test]
+    fn proxy_focus_names_first_agent_of_cursor_window() {
+        let mut state = AppState::new("%99".into());
+        state.global.show_windows = false;
+        state.repo_groups = vec![RepoGroup {
+            name: "repo".into(),
+            has_focus: false,
+            panes: vec![
+                (agent_in("%1", "main", 0), PaneGitInfo::default()),
+                (agent_in("%2", "main", 0), PaneGitInfo::default()),
+            ],
+        }];
+        state
+            .other_windows
+            .insert("repo".into(), vec![cursor_in("main", 0, "%10")]);
+
+        state.resolve_proxy_focus();
+        assert_eq!(
+            state.focus_state.proxy_focused_pane_id.as_deref(),
+            Some("%1"),
+            "the window's first pane in tmux order stands in for the hidden cursor"
+        );
+    }
+
+    #[test]
+    fn proxy_focus_ignores_windows_without_agents() {
+        let mut state = AppState::new("%99".into());
+        state.global.show_windows = false;
+        // The agent lives in window 1; the cursor sits in window 2,
+        // which has no agent panes to stand in.
+        state.repo_groups = vec![RepoGroup {
+            name: "repo".into(),
+            has_focus: false,
+            panes: vec![(agent_in("%1", "main", 1), PaneGitInfo::default())],
+        }];
+        state
+            .other_windows
+            .insert("repo".into(), vec![cursor_in("main", 0, "%10")]);
+
+        state.resolve_proxy_focus();
+        assert!(state.focus_state.proxy_focused_pane_id.is_none());
+    }
+
+    #[test]
+    fn proxy_focus_needs_an_on_screen_cursor() {
+        let mut state = AppState::new("%99".into());
+        state.global.show_windows = false;
+        state.repo_groups = vec![RepoGroup {
+            name: "repo".into(),
+            has_focus: false,
+            panes: vec![(agent_in("%1", "main", 0), PaneGitInfo::default())],
+        }];
+        // A background window (no attached client) is nobody's cursor.
+        let mut cursor = cursor_in("main", 0, "%10");
+        cursor.window_active = false;
+        state.other_windows.insert("repo".into(), vec![cursor]);
+
+        state.resolve_proxy_focus();
+        assert!(state.focus_state.proxy_focused_pane_id.is_none());
+    }
+
+    #[test]
+    fn proxy_focus_prefers_cursor_window_over_stale_focus() {
+        // The cursor sits with %2 in window 1; %1 is the stale preserved
+        // focus from the window the user left. The proxy must name %2 —
+        // the render side lets it outrank `focused_pane_id`.
+        let mut state = AppState::new("%99".into());
+        state.global.show_windows = false;
+        state.focus_state.focused_pane_id = Some("%1".into());
+        state.repo_groups = vec![RepoGroup {
+            name: "repo".into(),
+            has_focus: false,
+            panes: vec![
+                (agent_in("%1", "main", 0), PaneGitInfo::default()),
+                (agent_in("%2", "main", 1), PaneGitInfo::default()),
+            ],
+        }];
+        state
+            .other_windows
+            .insert("repo".into(), vec![cursor_in("main", 1, "%10")]);
+
+        state.resolve_proxy_focus();
+        assert_eq!(
+            state.focus_state.proxy_focused_pane_id.as_deref(),
+            Some("%2")
+        );
     }
 }

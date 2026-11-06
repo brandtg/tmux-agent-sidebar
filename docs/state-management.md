@@ -110,6 +110,7 @@ Per-pane file-based state:
 |-------|-----------------|-------------|
 | `repo_groups` | Every 1s | Panes grouped by git repo root (built directly from `tmux::query_sessions()` output, not stored separately as a session list). The path fed into repo resolution is the launch anchor `@pane_launch_cwd` when set, falling back to the live cwd — so mid-session `cd`s into other checkouts don't regroup the pane |
 | `focus_state.focused_pane_id` | Every 1s, plus immediately on user-initiated pane jumps | Currently focused agent pane |
+| `focus_state.proxy_focused_pane_id` | Every 1s, cleared immediately on user-initiated pane jumps | Agent pane standing in for the cursor while it sits on a non-agent pane whose row is hidden: the first agent sharing the cursor's window. Applied by the render layer only while the `w` toggle keeps window rows hidden |
 | `focus_state.sidebar_focused` | Every 1s | Whether sidebar pane itself has focus |
 | `focus_state.focus` | On user input | UI focus: `Filter` / `Panes`; input also triggers an immediate redraw so focus changes appear without waiting for the next poll tick |
 | `focus_state.prev_focused_pane_id` | Every 1s | Previous focused pane ID (for detecting focus changes) |
@@ -139,6 +140,7 @@ Per-pane file-based state:
 ├─────────────────────────────────────────────────────────────┤
 │  Every 1s (refresh cycle)                                   │
 │  repo_groups, focus_state.focused_pane_id,                  │
+│  focus_state.proxy_focused_pane_id,                         │
 │  layout.pane_row_targets,                                   │
 │  pane_states.map[..].task_progress                          │
 ├─────────────────────────────────────────────────────────────┤
@@ -280,6 +282,7 @@ struct FocusState {
     sidebar_focused: bool,
     focus: Focus,
     focused_pane_id: Option<String>,
+    proxy_focused_pane_id: Option<String>,
     prev_focused_pane_id: Option<String>,
 }
 
@@ -340,3 +343,4 @@ struct NoticesState {
 6. Pane runtime state is pruned when the pane disappears — prevents stale per-pane ports and task progress from surviving after the agent is gone
 7. At most one popup is open at a time — enforced structurally by the `PopupState` enum, not by parallel boolean flags
 8. Hook-based cleanup wins when available; pid-based cleanup is a slower fallback that removes panes when the agent process is gone but the hook did not fire
+9. `proxy_focused_pane_id` is resolved per snapshot and cleared by deliberate jumps; the render layer applies it only while the `w` toggle hides window rows, so a stale cache can never double-light an agent next to its window row

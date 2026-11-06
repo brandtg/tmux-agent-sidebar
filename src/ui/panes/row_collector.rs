@@ -22,6 +22,19 @@ pub(super) fn collect(state: &AppState, width: u16) -> CollectedRows {
 
     let mut collected = CollectedRows::default();
     let filter = state.global.status_filter;
+    // The pane the active bar names. `focused_pane_id` rules as before;
+    // while the cursor hides on a non-agent pane and `w` keeps the
+    // window rows hidden, the window's first agent stands in for it
+    // (see `resolve_proxy_focus`) so the "where am I" cue survives. With
+    // `w` on, the window row carries its own marker instead. The proxy
+    // outranks a preserved stale focus — it is derived from the same
+    // snapshot that knows where the cursor actually is.
+    let proxy_focus = if state.global.show_windows {
+        None
+    } else {
+        state.focus_state.proxy_focused_pane_id.clone()
+    };
+    let effective_focus = proxy_focus.or_else(|| state.focus_state.focused_pane_id.clone());
     let mut first_group = true;
     let mut row_index: usize = 0;
 
@@ -88,19 +101,14 @@ pub(super) fn collect(state: &AppState, width: u16) -> CollectedRows {
         // only the owning session's bucket can match. Repo mode keeps
         // the agent-only rule: its bucket key is a git-resolved repo
         // root, not a session the user sits in.
-        let group_has_focused_pane =
-            state
-                .focus_state
-                .focused_pane_id
-                .as_ref()
-                .is_some_and(|fid| {
-                    group.panes.iter().any(|(p, _)| p.pane_id == *fid)
-                        || (state.global.group_by == crate::state::GroupBy::Session
-                            && state
-                                .other_windows
-                                .get(&group.name)
-                                .is_some_and(|windows| windows.iter().any(|w| &w.pane_id == fid)))
-                });
+        let group_has_focused_pane = effective_focus.as_ref().is_some_and(|fid| {
+            group.panes.iter().any(|(p, _)| p.pane_id == *fid)
+                || (state.global.group_by == crate::state::GroupBy::Session
+                    && state
+                        .other_windows
+                        .get(&group.name)
+                        .is_some_and(|windows| windows.iter().any(|w| &w.pane_id == fid)))
+        });
 
         // Plain group header at column 0. In repo mode a `[+]` spawn
         // button rides right-aligned on the same row, rendered only when
@@ -178,8 +186,7 @@ pub(super) fn collect(state: &AppState, width: u16) -> CollectedRows {
                         && state.focus_state.focus == Focus::Panes
                         && row_index == state.global.selected_pane_row;
 
-                    let is_active =
-                        state.focus_state.focused_pane_id.as_ref() == Some(&pane.pane_id);
+                    let is_active = effective_focus.as_ref() == Some(&pane.pane_id);
 
                     let pane_state = state.pane_state(&pane.pane_id);
                     let ports = pane_state.map(|s| s.ports.as_slice());
@@ -686,6 +693,66 @@ mod tests {
         };
         assert_eq!(title_fg("main"), Some(state.theme.accent));
         assert_eq!(title_fg("other"), Some(state.theme.text_active));
+    }
+
+    #[test]
+    fn collect_proxy_focus_lights_cursor_window_agent_and_header() {
+        // w off, cursor on a process pane sharing window 0 with two
+        // agents: the first agent carries the active bar and the group
+        // header accents; the second agent stays dark. The cursor pane id
+        // (what `find_focused_pane_from` would resolve when the process
+        // pane shares the sidebar's window) matches no agent row, so the
+        // proxy is what lights the bar.
+        let mut state = AppState::new("%0".into());
+        state.global.show_windows = false;
+        let a1 = make_window_pane("%1", PaneStatus::Idle, "main", 0);
+        let mut a2 = make_window_pane("%2", PaneStatus::Idle, "main", 0);
+        a2.agent = AgentType::Codex;
+        state.repo_groups = vec![RepoGroup {
+            name: "repo".into(),
+            has_focus: false,
+            panes: vec![(a1, PaneGitInfo::default()), (a2, PaneGitInfo::default())],
+        }];
+        let mut cursor = other_window("%10", "nvim", "nvim");
+        cursor.window_active = true;
+        state.other_windows.insert("/tmp/repo".into(), vec![cursor]);
+        state.focus_state.focused_pane_id = Some("%10".into());
+        state.resolve_proxy_focus();
+
+        let collected = collect(&state, 40);
+        let lines: Vec<String> = collected.lines.iter().map(line_text).collect();
+        let claude = lines
+            .iter()
+            .find(|l| l.contains("claude"))
+            .expect("claude row");
+        assert!(
+            claude.starts_with('\u{2503}'),
+            "proxy must light the window's first agent:\n{claude:?}"
+        );
+        let codex = lines
+            .iter()
+            .find(|l| l.contains("codex"))
+            .expect("codex row");
+        assert!(
+            codex.starts_with("  "),
+            "the second agent stays dark:\n{codex:?}"
+        );
+
+        let title_fg = collected
+            .lines
+            .iter()
+            .find(|l| line_text(l) == "repo")
+            .expect("title line")
+            .spans
+            .first()
+            .expect("title span")
+            .style
+            .fg;
+        assert_eq!(
+            title_fg,
+            Some(state.theme.accent),
+            "the group holding the proxy accents its header"
+        );
     }
 
     #[test]
