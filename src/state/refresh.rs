@@ -134,6 +134,7 @@ impl AppState {
         self.rebuild_row_targets();
         self.find_focused_pane_from(&sidebar_window_panes);
         self.mark_active_window_panes_seen();
+        self.resolve_proxy_focus();
         self.window_has_no_other_panes =
             !self.popup_mode && window_has_only_own_pane(&sidebar_window_panes, &self.tmux_pane);
     }

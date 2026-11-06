@@ -2,9 +2,11 @@
 mod test_helpers;
 
 use test_helpers::*;
-use tmux_agent_sidebar::state::RepoFilter;
+use tmux_agent_sidebar::group::OtherWindow;
+use tmux_agent_sidebar::state::{AppState, RepoFilter};
 use tmux_agent_sidebar::tmux::{
-    AgentType, PaneAttention, PaneInfo, PaneStatus, SessionInfo, WindowInfo, WorktreeMetadata,
+    AgentType, PaneAttention, PaneInfo, PaneStatus, SessionInfo, WindowInfo, WindowStatus,
+    WorktreeMetadata,
 };
 
 // ─── UI Snapshot Tests ─────────────────────────────────────────────
@@ -554,5 +556,106 @@ fn snapshot_auto_rename_window_title_ui() {
     project
     ┃ ○ claude
         Waiting for prompt…
+    ");
+}
+
+// ─── proxy active bar (w-off cursor parked on a hidden process pane) ───
+
+/// An on-screen non-agent pane in session "main", window 0 — the cursor
+/// `compute_proxy_focus` resolves from `other_windows`.
+fn process_cursor(pane_id: &str, command: &str) -> OtherWindow {
+    OtherWindow {
+        window_id: "@5".into(),
+        window_index: 0,
+        window_name: "editor".into(),
+        window_active: true,
+        session_name: "main".into(),
+        session_attached: true,
+        attention: PaneAttention::None,
+        pane_id: pane_id.into(),
+        pane_active: true,
+        pane_pid: None,
+        command: command.into(),
+        command_args: None,
+        path: "/home/user/project".into(),
+        git_info: tmux_agent_sidebar::group::PaneGitInfo::default(),
+        status: WindowStatus::Busy,
+        pane_title: String::new(),
+        flagged: false,
+    }
+}
+
+/// Proxy focus test bed: two agents sharing window 0 with an nvim pane.
+/// Returns the state with the cursor on the nvim pane id and the proxy
+/// resolved to the window's first agent (what `resolve_proxy_focus`
+/// computes per snapshot from these groups + buckets).
+fn two_agents_plus_cursor_state(show_windows: bool) -> AppState {
+    let mut claude = make_pane(AgentType::Claude, PaneStatus::Idle);
+    claude.tmux_session = "main".into();
+    claude.window_index = 0;
+    let mut codex = make_pane(AgentType::Codex, PaneStatus::Idle);
+    codex.pane_id = "%2".into();
+    codex.tmux_session = "main".into();
+    codex.window_index = 0;
+
+    let mut state = make_state(vec![SessionInfo {
+        session_name: "main".into(),
+        windows: vec![WindowInfo {
+            window_id: "@1".into(),
+            window_name: "project".into(),
+            window_active: true,
+            auto_rename: false,
+            panes: vec![],
+        }],
+    }]);
+    state.global.show_windows = show_windows;
+    state.repo_groups = vec![make_repo_group("project", vec![claude, codex])];
+    // The cursor sits on the nvim pane sharing the agents' window: its
+    // id matches no agent row, so the proxy is what lights the bar.
+    state.focus_state.focused_pane_id = Some("%10".into());
+    state.focus_state.proxy_focused_pane_id = Some("%1".into());
+    state.other_windows.insert(
+        "/home/user/project".into(),
+        vec![process_cursor("%10", "nvim")],
+    );
+    state.rebuild_row_targets();
+    state
+}
+
+#[test]
+fn snapshot_proxy_active_bar_lights_cursor_window_agent() {
+    // w off: the nvim window row is hidden, so the window's first agent
+    // carries the active bar in its place; the second agent stays dark.
+    let mut state = two_agents_plus_cursor_state(false);
+
+    let output = render_to_string(&mut state, 28, 25);
+    insta::assert_snapshot!(output, @"
+     ≡2  ●0  ◎0  ◐0  ○2  ✕0
+    ⓘ                        — ▾
+    project
+    ┃ ○ claude
+        Waiting for prompt…
+      ○ codex
+        Waiting for prompt…
+    ");
+}
+
+#[test]
+fn snapshot_window_row_keeps_marker_when_windows_visible() {
+    // w on: the nvim window row renders its own active marker; no agent
+    // row may light up (the proxy stands down when window rows show).
+    let mut state = two_agents_plus_cursor_state(true);
+
+    let output = render_to_string(&mut state, 28, 25);
+    insta::assert_snapshot!(output, @"
+     ≡3  ●0  ◎0  ◐0  ○3  ✕0
+    ⓘ                        — ▾
+    project
+      ○ claude
+        Waiting for prompt…
+      ○ codex
+        Waiting for prompt…
+    ┃ ◆ nvim
+        main · 0:editor
     ");
 }
