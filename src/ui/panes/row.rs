@@ -333,7 +333,7 @@ fn port_text_lowest_first(ports: Option<&[u16]>, budget: usize) -> Option<String
 /// `finished` carries the completed foreground task tracked runtime-side.
 /// A finished task overrides the plain status: exit 0 (or an unknown
 /// exit, no shell integration) draws a hollow diamond in the
-/// flashing-green done-attention color until the user focuses the pane;
+/// flashing-magenta process pulse until the user focuses the pane;
 /// a non-zero exit draws a solid red diamond plus an `exit N` note.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn window_row(
@@ -386,9 +386,11 @@ pub(super) fn window_row(
     };
 
     // Diamond family: hollow = idle, solid magenta = busy, solid pulsing
-    // magenta = task. The process pink keeps a column of open processes
-    // reading apart from the agent greens, while the pulse still marks
-    // "doing work" — just in the process family, not the agent's.
+    // magenta = task, hollow pulsing magenta = finished. The process pink
+    // keeps a column of open processes reading apart from the agent
+    // greens, while the pulse still marks "doing work" — just in the
+    // process family, not the agent's. A finished task flashes in that
+    // same family: the done pulse would paint it agent-green.
     let (icon, icon_color): (&str, ratatui::style::Color) = match window.status {
         WindowStatus::Idle => ("\u{25C7}", theme.status_idle),
         WindowStatus::Busy => ("\u{25C6}", theme.process),
@@ -399,12 +401,7 @@ pub(super) fn window_row(
     let mut exit_note: Option<String> = None;
     let (icon, icon_color) = match finished {
         Some(finished) => match finished.exit_code {
-            None | Some(0) => {
-                let flash = theme
-                    .attention_color(crate::tmux::PaneAttention::Done, spinner_frame)
-                    .unwrap_or(theme.status_idle);
-                ("\u{25C7}", flash)
-            }
+            None | Some(0) => ("\u{25C7}", theme.process_pulse_color(spinner_frame)),
             Some(code) => {
                 exit_note = Some(format!("exit {code}"));
                 ("\u{25C6}", theme.status_error)
@@ -2270,11 +2267,11 @@ mod tests {
     }
 
     #[test]
-    fn window_row_finished_success_flashes_hollow_green_diamond() {
+    fn window_row_finished_success_flashes_hollow_magenta_diamond() {
         let theme = ColorTheme::default();
         // A tracked task that finished with exit 0 (or an unknown exit)
-        // renders a hollow diamond in the done-attention pulse color —
-        // the same "look here" treatment agent rows get.
+        // renders a hollow diamond in the magenta process pulse — the
+        // process family color, not the agents' green done pulse.
         let w = window("tests", "cargo", crate::tmux::WindowStatus::Idle);
         let finished = crate::state::WindowFinished {
             command: "cargo".into(),
@@ -2303,11 +2300,8 @@ mod tests {
         assert_eq!(icon_span.content.as_ref(), "\u{25C7}");
         assert_eq!(
             icon_span.style.fg,
-            Some(
-                theme
-                    .attention_color(crate::tmux::PaneAttention::Done, 0)
-                    .unwrap()
-            )
+            Some(theme.process_pulse_color(0)),
+            "finished success must flash the magenta process pulse"
         );
     }
 
