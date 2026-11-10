@@ -664,11 +664,17 @@ fn window_context_row(
 /// card's context line spells out). An empty window name degrades to
 /// the bare index, the way `window_context_text` skips empty segments.
 /// Not a selectable row: the caller maps it to `None` in `line_to_row`.
+/// `focused` takes the header to a lightened tint of the accent
+/// ([`ColorTheme::window_header_focus_color`]) — brighter than the
+/// resting gray and clearly off the session title's saturated
+/// highlight, so the selected group reads as a two-step breadcrumb
+/// instead of twins.
 pub(super) fn window_header_row(
     window_index: i64,
     window_name: &str,
     width: usize,
     theme: &ColorTheme,
+    focused: bool,
 ) -> Line<'static> {
     const HEADER_INDENT: &str = " ";
     let budget = width.saturating_sub(display_width(HEADER_INDENT));
@@ -681,10 +687,15 @@ pub(super) fn window_header_row(
     let content = format!("{HEADER_INDENT}{text}");
     Line::from(Span::styled(
         content,
-        // One step dimmer than the group header's text_active and one
-        // brighter than the detail rows' text_inactive: a structural
-        // line that should be scannable but never compete with rows.
-        Style::default().fg(theme.text_muted),
+        // The resting shade is a clear step under the session title's
+        // text_active (255 → 249): closer to it and the two hierarchy
+        // levels read as one color. Focus swaps in the accent tint —
+        // see `focused`.
+        Style::default().fg(if focused {
+            theme.window_header_focus_color()
+        } else {
+            theme.window_header
+        }),
     ))
 }
 

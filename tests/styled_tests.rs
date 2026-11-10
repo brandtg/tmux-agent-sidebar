@@ -184,6 +184,7 @@ fn test_theme_default_matches_shell_colors() {
     assert_eq!(theme.agent_codex, Color::Indexed(141));
     assert_eq!(theme.text_active, Color::Indexed(255));
     assert_eq!(theme.text_muted, Color::Indexed(252));
+    assert_eq!(theme.window_header, Color::Indexed(249));
     assert_eq!(theme.session_header, Color::Indexed(39));
     assert_eq!(theme.wait_reason, Color::Indexed(221));
 }

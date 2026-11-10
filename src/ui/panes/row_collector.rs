@@ -35,6 +35,27 @@ pub(super) fn collect(state: &AppState, width: u16) -> CollectedRows {
         state.focus_state.proxy_focused_pane_id.clone()
     };
     let effective_focus = proxy_focus.or_else(|| state.focus_state.focused_pane_id.clone());
+    // The focused pane's window, for lighting the session-mode window
+    // header the way the group title lights for the whole session.
+    // Agents and process panes live in separate collections
+    // (`repo_groups` vs `other_windows`), so both are probed; pane ids
+    // are unique tmux-wide, so at most one matches.
+    let focused_window_key = effective_focus.as_ref().and_then(|fid| {
+        state
+            .repo_groups
+            .iter()
+            .flat_map(|group| group.panes.iter())
+            .find(|(p, _)| p.pane_id == *fid)
+            .map(|(p, _)| (p.tmux_session.clone(), p.window_index))
+            .or_else(|| {
+                state
+                    .other_windows
+                    .values()
+                    .flatten()
+                    .find(|w| w.pane_id == *fid)
+                    .map(|w| (w.session_name.clone(), w.window_index))
+            })
+    });
     let mut first_group = true;
     let mut row_index: usize = 0;
 
@@ -181,7 +202,10 @@ pub(super) fn collect(state: &AppState, width: u16) -> CollectedRows {
         // header line — unless the session-mode window level is on
         // (`@sidebar_session_windows`): then a muted `index:name` line
         // renders above each window's rows, turning the group into a
-        // `Session > Window > agent|process` hierarchy. Header lines map
+        // `Session > Window > agent|process` hierarchy — and the header
+        // takes the accent while one of the window's panes holds the
+        // terminal, the child level of the session title's highlight.
+        // Header lines map
         // to `None` in `line_to_row` like the group header, and are
         // emitted lazily per distinct window key so a window whose rows
         // are all filtered out (search, status filter) leaves no empty
@@ -194,11 +218,16 @@ pub(super) fn collect(state: &AppState, width: u16) -> CollectedRows {
                 let key = row.window_key();
                 if current_window != Some(key) {
                     current_window = Some(key);
+                    let window_focused =
+                        focused_window_key.as_ref().is_some_and(|(session, index)| {
+                            session.as_str() == key.0 && *index == key.1
+                        });
                     collected.lines.push(row::window_header_row(
                         key.1,
                         row.window_name(),
                         width,
                         theme,
+                        window_focused,
                     ));
                     collected.line_to_row.push(None);
                 }
@@ -853,6 +882,52 @@ mod tests {
                 Some(2), // agent in window 1
             ],
             "headers are non-rows; row targets keep the interleaved order"
+        );
+    }
+
+    #[test]
+    fn collect_session_mode_window_header_lights_for_focused_window() {
+        // A focused agent lights its own window's `index:name` header in
+        // the accent — the child level of the session title's highlight —
+        // while sibling windows keep the dim ladder shade.
+        let mut state = AppState::new("%0".into());
+        state.global.group_by = GroupBy::Session;
+        state.global.session_windows = true;
+        state.global.show_windows = true;
+        let mut agent1 = make_window_pane("%1", PaneStatus::Idle, "main", 0);
+        agent1.window_name = "api".into();
+        let mut agent2 = make_window_pane("%2", PaneStatus::Idle, "main", 1);
+        agent2.window_name = "web".into();
+        state.repo_groups = vec![RepoGroup {
+            name: "main".into(),
+            has_focus: false,
+            panes: vec![
+                (agent1, PaneGitInfo::default()),
+                (agent2, PaneGitInfo::default()),
+            ],
+        }];
+        state.focus_state.focused_pane_id = Some("%2".into());
+
+        let collected = collect(&state, 40);
+        let header_fg = |idx: usize| {
+            collected.lines[idx]
+                .spans
+                .first()
+                .expect("header span")
+                .style
+                .fg
+        };
+        // Lines: 0 session title, 1 window 0 header, 4 window 1 header.
+        assert_eq!(header_fg(1), Some(state.theme.window_header));
+        assert_eq!(
+            header_fg(4),
+            Some(state.theme.window_header_focus_color()),
+            "the focused window's header takes the dimmed accent"
+        );
+        assert_ne!(
+            header_fg(4),
+            Some(state.theme.accent),
+            "the focused window header must not render in the session title's full accent"
         );
     }
 
