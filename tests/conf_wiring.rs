@@ -90,3 +90,16 @@ fn sidebar_auto_hide_is_seeded_to_on() {
         "agent-sidebar.conf must seed @sidebar_auto_hide on"
     );
 }
+
+#[test]
+fn sidebar_session_windows_is_seeded_to_off() {
+    // The session-mode window level defaults to off; seeding it keeps the
+    // default visible via `tmux show -g @sidebar_session_windows` (and
+    // `apply_all` treats unset as off regardless).
+    assert!(
+        CONF.contains(
+            "if -F '#{==:#{@sidebar_session_windows},}' 'set -g @sidebar_session_windows off'"
+        ),
+        "agent-sidebar.conf must seed @sidebar_session_windows off"
+    );
+}

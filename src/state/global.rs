@@ -125,6 +125,12 @@ pub struct GlobalState {
     /// session names. Read from `@sidebar_group_by` on every sync — set
     /// it in tmux.conf; there is no runtime toggle.
     pub group_by: GroupBy,
+    /// Session-mode window level (`@sidebar_session_windows`). When on
+    /// and grouped by session, each window's rows render under a muted
+    /// `index:name` header — the `Session > Window > agent|process`
+    /// hierarchy. Set it in tmux.conf; like `group_by` it is read on
+    /// every sync and has no runtime toggle.
+    pub session_windows: bool,
     /// Line cap for the agent message preview (the prompt / response
     /// body under the status row). Read from `@sidebar_preview_lines` on
     /// every sync — set it in tmux.conf; there is no runtime toggle.
@@ -162,6 +168,7 @@ impl GlobalState {
             todo_visible: false,
             todo_scope: TodoScope::default(),
             group_by: GroupBy::default(),
+            session_windows: false,
             preview_lines: DEFAULT_PREVIEW_LINES,
             owner_pane,
             last_saved_filter: StatusFilter::All,
@@ -518,6 +525,15 @@ impl GlobalState {
         if let Some(group_by_str) = opts.get(tmux::SIDEBAR_GROUP_BY) {
             self.group_by = GroupBy::from_label(group_by_str);
         }
+        if let Some(session_windows_str) = opts.get(tmux::SIDEBAR_SESSION_WINDOWS) {
+            // Same accepted labels as the landing defaults (`on`/`true`/
+            // `1`, case-insensitive); unset means off, so the seeding
+            // `if -F` in agent-sidebar.conf is the only writer of `off`.
+            self.session_windows = matches!(
+                session_windows_str.trim().to_ascii_lowercase().as_str(),
+                "on" | "true" | "1"
+            );
+        }
         if let Some(preview_str) = opts.get(tmux::SIDEBAR_PREVIEW_LINES)
             && let Some(n) = parse_preview_lines(preview_str)
         {
@@ -605,6 +621,29 @@ mod tests {
 
         assert_eq!(state.todo_scope, TodoScope::Local);
         assert!(state.todo_visible);
+    }
+
+    #[test]
+    fn apply_all_reads_session_window_level() {
+        // The session-mode window level is a config option like
+        // `group_by`: read on every sync, no runtime toggle. Unset
+        // keeps the default off; `on`/`true`/`1` enable it.
+        let mut state = GlobalState::default();
+        let mut opts = HashMap::new();
+        opts.insert(tmux::SIDEBAR_SESSION_WINDOWS.to_string(), "on".into());
+        state.apply_all(&opts);
+        assert!(state.session_windows);
+
+        let mut state = GlobalState::default();
+        let opts = HashMap::new();
+        state.apply_all(&opts);
+        assert!(!state.session_windows, "unset falls back to off");
+
+        let mut state = GlobalState::default();
+        let mut opts = HashMap::new();
+        opts.insert(tmux::SIDEBAR_SESSION_WINDOWS.to_string(), "off".into());
+        state.apply_all(&opts);
+        assert!(!state.session_windows);
     }
 
     #[test]

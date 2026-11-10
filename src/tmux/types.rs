@@ -73,6 +73,12 @@ pub struct PaneInfo {
     /// `(tmux_session, window_index)` identifies the window — the same
     /// key `OtherWindow` rows order by.
     pub window_index: i64,
+    /// Name of the pane's window (`#{window_name}`). Labels the
+    /// session-mode window level: with `@sidebar_session_windows` on,
+    /// each window's rows (its agents and its non-agent panes) render
+    /// under a muted `index:name` header line — see
+    /// `GroupRow::window_key` and `row::window_header_row`.
+    pub window_name: String,
     /// `true` when the window this pane lives in was created by the
     /// sidebar's spawn flow (via the `@agent-sidebar-spawned` window
     /// option). Used by the row renderer to show a clickable red `×`

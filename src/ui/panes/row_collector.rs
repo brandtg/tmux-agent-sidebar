@@ -178,8 +178,31 @@ pub(super) fn collect(state: &AppState, width: u16) -> CollectedRows {
         // processes sit next to its agent instead of pooling below the
         // whole group. Window rows use a diamond status glyph
         // (see `row::window_row`), so they read as distinct without a
-        // header line.
+        // header line — unless the session-mode window level is on
+        // (`@sidebar_session_windows`): then a muted `index:name` line
+        // renders above each window's rows, turning the group into a
+        // `Session > Window > agent|process` hierarchy. Header lines map
+        // to `None` in `line_to_row` like the group header, and are
+        // emitted lazily per distinct window key so a window whose rows
+        // are all filtered out (search, status filter) leaves no empty
+        // header behind.
+        let window_headers =
+            state.global.group_by == crate::state::GroupBy::Session && state.global.session_windows;
+        let mut current_window: Option<(&str, i64)> = None;
         for row in crate::group::ordered_group_rows(&filtered_panes, &matched_windows) {
+            if window_headers {
+                let key = row.window_key();
+                if current_window != Some(key) {
+                    current_window = Some(key);
+                    collected.lines.push(row::window_header_row(
+                        key.1,
+                        row.window_name(),
+                        width,
+                        theme,
+                    ));
+                    collected.line_to_row.push(None);
+                }
+            }
             match row {
                 crate::group::GroupRow::Agent((pane, git_info)) => {
                     let is_selected = state.focus_state.sidebar_focused
@@ -346,6 +369,7 @@ mod tests {
             session_name: String::new(),
             tmux_session: String::new(),
             window_index: 0,
+            window_name: String::new(),
             sidebar_spawned: false,
             bg_shell_cmd: None,
             bg_shell_pid: None,
@@ -773,6 +797,132 @@ mod tests {
         assert!(
             collected.lines.is_empty(),
             "w off keeps agent-less sessions out of the list"
+        );
+    }
+
+    #[test]
+    fn collect_session_mode_window_headers_nest_rows_under_their_window() {
+        // @sidebar_session_windows on: each window's rows render under a
+        // muted `index:name` header — the Session > Window >
+        // agent|process level. Header lines are non-rows (`None` in
+        // `line_to_row`), so selection still lands on agents/processes
+        // only, in the same interleaved order as without the headers.
+        let mut state = AppState::new("%0".into());
+        state.global.group_by = GroupBy::Session;
+        state.global.session_windows = true;
+        state.global.show_windows = true;
+        let mut agent1 = make_window_pane("%1", PaneStatus::Idle, "main", 0);
+        agent1.window_name = "api".into();
+        let mut agent2 = make_window_pane("%2", PaneStatus::Idle, "main", 1);
+        agent2.window_name = "web".into();
+        state.repo_groups = vec![RepoGroup {
+            name: "main".into(),
+            has_focus: false,
+            panes: vec![
+                (agent1, PaneGitInfo::default()),
+                (agent2, PaneGitInfo::default()),
+            ],
+        }];
+        state.other_windows.insert(
+            "main".into(),
+            vec![other_window_in("%10", "api", "node", "main", 0)],
+        );
+
+        let collected = collect(&state, 40);
+        let lines: Vec<String> = collected.lines.iter().map(line_text).collect();
+
+        // Session title, then per window: header, the window's agent
+        // (status + idle hint), and its process card (both lines).
+        assert_eq!(lines[0], "main");
+        assert_eq!(lines[1], " 0:api");
+        assert_eq!(
+            lines[6], " 1:web",
+            "window 1's header precedes its rows:\n{lines:?}"
+        );
+        assert_eq!(
+            collected.line_to_row,
+            vec![
+                None, // session header
+                None, // window 0 header
+                Some(0),
+                Some(0), // agent in window 0
+                Some(1),
+                Some(1), // process card in window 0
+                None,    // window 1 header
+                Some(2),
+                Some(2), // agent in window 1
+            ],
+            "headers are non-rows; row targets keep the interleaved order"
+        );
+    }
+
+    #[test]
+    fn collect_session_mode_stays_flat_without_the_window_level() {
+        // Default (off): no window header lines — the group renders the
+        // same flat interleaved list as before the option existed.
+        let mut state = AppState::new("%0".into());
+        state.global.group_by = GroupBy::Session;
+        state.global.show_windows = true;
+        let mut agent1 = make_window_pane("%1", PaneStatus::Idle, "main", 0);
+        agent1.window_name = "api".into();
+        let mut agent2 = make_window_pane("%2", PaneStatus::Idle, "main", 1);
+        agent2.window_name = "web".into();
+        state.repo_groups = vec![RepoGroup {
+            name: "main".into(),
+            has_focus: false,
+            panes: vec![
+                (agent1, PaneGitInfo::default()),
+                (agent2, PaneGitInfo::default()),
+            ],
+        }];
+        state.other_windows.insert(
+            "main".into(),
+            vec![other_window_in("%10", "api", "node", "main", 0)],
+        );
+
+        let collected = collect(&state, 40);
+        assert_eq!(
+            collected.line_to_row,
+            vec![None, Some(0), Some(0), Some(1), Some(1), Some(2), Some(2)],
+            "flag off renders no window headers"
+        );
+    }
+
+    #[test]
+    fn collect_session_mode_window_headers_skip_fully_filtered_windows() {
+        // The header emits lazily per window key, so a window whose only
+        // row fails the status filter leaves no (empty) header behind.
+        let mut state = AppState::new("%0".into());
+        state.global.group_by = GroupBy::Session;
+        state.global.session_windows = true;
+        let mut visible = make_window_pane("%1", PaneStatus::Idle, "main", 0);
+        visible.window_name = "api".into();
+        let mut filtered = make_window_pane("%2", PaneStatus::Running, "main", 1);
+        filtered.window_name = "web".into();
+        state.global.status_filter = StatusFilter::Idle;
+        state.repo_groups = vec![RepoGroup {
+            name: "main".into(),
+            has_focus: false,
+            panes: vec![
+                (visible, PaneGitInfo::default()),
+                (filtered, PaneGitInfo::default()),
+            ],
+        }];
+
+        let collected = collect(&state, 40);
+        let text = collected
+            .lines
+            .iter()
+            .map(line_text)
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            text.contains("0:api"),
+            "visible window keeps its header:\n{text}"
+        );
+        assert!(
+            !text.contains("1:web"),
+            "a window with no visible rows must not render a header:\n{text}"
         );
     }
 

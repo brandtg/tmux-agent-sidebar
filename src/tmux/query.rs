@@ -408,6 +408,7 @@ fn build_session_hierarchy(
         // pane suffix alone from the test wrapper.
         pane.tmux_session = session_name.to_string();
         pane.window_index = parts[session_line_field::WINDOW_INDEX].parse().unwrap_or(0);
+        pane.window_name = parts[session_line_field::WINDOW_NAME].clone();
         if pane.agent == AgentType::Codex
             && let Some(pid) = pane.pane_pid
         {
@@ -612,6 +613,7 @@ fn parse_pane_fields_with_processes(
         // (suffix-only lines) working.
         tmux_session: String::new(),
         window_index: 0,
+        window_name: String::new(),
         sidebar_spawned: parts[pane_line_field::SIDEBAR_SPAWNED] == "1",
         bg_shell_cmd: {
             let raw = &parts[pane_line_field::BG_CMD];
@@ -1029,6 +1031,7 @@ mod tests {
             session_name: String::new(),
             tmux_session: String::new(),
             window_index: 0,
+            window_name: String::new(),
             sidebar_spawned: false,
             bg_shell_cmd: None,
             bg_shell_pid: None,
@@ -2065,6 +2068,7 @@ mod tests {
                     session_name: String::new(),
                     tmux_session: String::new(),
                     window_index: 0,
+                    window_name: String::new(),
                     sidebar_spawned: false,
                     bg_shell_cmd: None,
                     bg_shell_pid: None,

@@ -157,6 +157,13 @@ pub const SIDEBAR_SHOW_WINDOWS: &str = "@sidebar_show_windows";
 /// the panel into an agent-forward session manager. Read on every global
 /// sync; unlike the toggle modes it has no runtime keybinding.
 pub const SIDEBAR_GROUP_BY: &str = "@sidebar_group_by";
+/// Session-mode window level (`on` / `off`, default `off`). When on and
+/// the panel is grouped by session, each window's rows render under a
+/// muted `index:name` header line — the `Session > Window >
+/// agent|process` hierarchy (agents first, then the window's non-agent
+/// panes; see `row_collector::collect`). Set in tmux.conf; read on every
+/// global sync like [`SIDEBAR_GROUP_BY`], with no runtime toggle.
+pub const SIDEBAR_SESSION_WINDOWS: &str = "@sidebar_session_windows";
 /// "Show other windows" mode a newly opened sidebar lands on (`on` /
 /// `off`, default `off`). Read once at startup; the live
 /// [`SIDEBAR_SHOW_WINDOWS`] value is never restored on reopen.
