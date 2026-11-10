@@ -260,6 +260,9 @@ pub const SIDEBAR_COLOR_TEXT_ACTIVE: &str = "@sidebar_color_text_active";
 pub const SIDEBAR_COLOR_FLAG: &str = "@sidebar_color_flag";
 pub const SIDEBAR_COLOR_TEXT_MUTED: &str = "@sidebar_color_text_muted";
 pub const SIDEBAR_COLOR_TEXT_INACTIVE: &str = "@sidebar_color_text_inactive";
+/// Session-mode window-level header (`@sidebar_session_windows`) — the
+/// `index:name` line rendered under each session title.
+pub const SIDEBAR_COLOR_WINDOW_HEADER: &str = "@sidebar_color_window_header";
 pub const SIDEBAR_COLOR_SESSION: &str = "@sidebar_color_session";
 pub const SIDEBAR_COLOR_PORT: &str = "@sidebar_color_port";
 pub const SIDEBAR_COLOR_WAIT_REASON: &str = "@sidebar_color_wait_reason";

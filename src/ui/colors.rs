@@ -32,6 +32,17 @@ pub struct ColorTheme {
     pub text_active: Color,
     pub text_muted: Color,
     pub text_inactive: Color,
+    /// Session-mode window-level header (`@sidebar_session_windows`): the
+    /// `index:name` line under a session title. `Indexed(249)` keeps a
+    /// clear step below the session title's `text_active` (255) — the
+    /// gray ramp between 255 and the detail rows' 244 has no room for a
+    /// third distinct level, so the header shares its lightness with the
+    /// detail text and lets indent and the `index:` prefix carry the
+    /// structure. While a pane of the window holds the terminal the
+    /// header takes [`ColorTheme::window_header_focus_color`] instead —
+    /// a lightened tint of the accent — so the lit breadcrumb still
+    /// reads parent → child.
+    pub window_header: Color,
     pub session_header: Color,
     pub port: Color,
     pub wait_reason: Color,
@@ -87,6 +98,7 @@ impl Default for ColorTheme {
             text_active: Color::Indexed(255),
             text_muted: Color::Indexed(252),
             text_inactive: Color::Indexed(244),
+            window_header: Color::Indexed(249),
             session_header: Color::Indexed(39),
             port: Color::Indexed(246),
             wait_reason: Color::Indexed(221),
@@ -152,6 +164,7 @@ impl ColorTheme {
         theme.text_active = read(tmux::SIDEBAR_COLOR_TEXT_ACTIVE, theme.text_active);
         theme.text_muted = read(tmux::SIDEBAR_COLOR_TEXT_MUTED, theme.text_muted);
         theme.text_inactive = read(tmux::SIDEBAR_COLOR_TEXT_INACTIVE, theme.text_inactive);
+        theme.window_header = read(tmux::SIDEBAR_COLOR_WINDOW_HEADER, theme.window_header);
         theme.session_header = read(tmux::SIDEBAR_COLOR_SESSION, theme.session_header);
         theme.port = read(tmux::SIDEBAR_COLOR_PORT, theme.port);
         theme.wait_reason = read(tmux::SIDEBAR_COLOR_WAIT_REASON, theme.wait_reason);
@@ -173,6 +186,15 @@ impl ColorTheme {
         theme.response_arrow = read(tmux::SIDEBAR_COLOR_RESPONSE_ARROW, theme.response_arrow);
 
         theme
+    }
+
+    /// Focus color for the session-mode window header: the accent
+    /// lightened to a 50% white tint. A brighter, softer shade of the
+    /// session title's highlight hue — clearly above the resting gray
+    /// and clearly off the title's full saturation, so the selected
+    /// group reads as a two-step breadcrumb instead of twins.
+    pub fn window_header_focus_color(&self) -> Color {
+        tint_color(self.accent, 0.5)
     }
 
     pub fn status_color(&self, status: &PaneStatus) -> Color {
@@ -220,6 +242,57 @@ impl ColorTheme {
             AgentType::Unknown => self.status_unknown,
         }
     }
+}
+
+/// The xterm 256-color cube's green-level values; channel `i` of cube
+/// color `n` is `CUBE_LEVELS[i]`.
+const CUBE_LEVELS: [u8; 6] = [0, 95, 135, 175, 215, 255];
+
+/// Blend a color toward white by `factor` (0.0-1.0) — a lighter tint
+/// of the same hue. Indexed cube and grayscale entries (16-255)
+/// quantize back to the nearest 6×6×6 cube index so the result stays a
+/// 256-color index (the palette's idiom, and what the styled test
+/// snapshots annotate). RGB colors scale per channel and stay RGB.
+/// System colors 0-15 are terminal-defined, so they pass through
+/// unchanged rather than guessing at a palette.
+pub fn tint_color(color: Color, factor: f32) -> Color {
+    let tint = |c: u8| (f32::from(c) * (1.0 - factor) + 255.0 * factor).round() as u8;
+    let (r, g, b) = match color {
+        Color::Rgb(r, g, b) => return Color::Rgb(tint(r), tint(g), tint(b)),
+        Color::Indexed(n) if n >= 16 => indexed_to_rgb(n),
+        _ => return color,
+    };
+    Color::Indexed(rgb_to_index(tint(r), tint(g), tint(b)))
+}
+
+fn indexed_to_rgb(n: u8) -> (u8, u8, u8) {
+    if n >= 232 {
+        let gray = 8 + (n - 232) * 10;
+        (gray, gray, gray)
+    } else {
+        let d = n - 16;
+        (
+            CUBE_LEVELS[(d / 36) as usize],
+            CUBE_LEVELS[((d % 36) / 6) as usize],
+            CUBE_LEVELS[(d % 6) as usize],
+        )
+    }
+}
+
+fn rgb_to_index(r: u8, g: u8, b: u8) -> u8 {
+    let nearest = |c: u8| -> u8 {
+        let mut best = 0u8;
+        let mut best_dist = i16::MAX;
+        for (i, level) in CUBE_LEVELS.iter().enumerate() {
+            let dist = (i16::from(*level) - i16::from(c)).abs();
+            if dist < best_dist {
+                best_dist = dist;
+                best = i as u8;
+            }
+        }
+        best
+    };
+    16 + 36 * nearest(r) + 6 * nearest(g) + nearest(b)
 }
 
 fn parse_tmux_color(value: &str) -> Option<Color> {
@@ -291,6 +364,31 @@ mod tests {
         assert_eq!(peak, Color::Indexed(219), "pulse peaks at pale pink");
         // The cycle repeats once past the end of the table.
         assert_eq!(theme.process_pulse_color(8), first);
+    }
+
+    #[test]
+    fn tint_color_lightens_indexed_through_the_cube() {
+        // The pale-sky-blue accent (153) at the window-header focus
+        // tint: (175,215,255) blended halfway to white, quantized back
+        // to the cube.
+        assert_eq!(tint_color(Color::Indexed(153), 0.5), Color::Indexed(189));
+        // Near-white input rounds up into the brightest cube corner.
+        assert_eq!(tint_color(Color::Indexed(255), 0.5), Color::Indexed(231));
+    }
+
+    #[test]
+    fn tint_color_blends_rgb_per_channel() {
+        // A soft-blue custom accent at the focus tint.
+        assert_eq!(
+            tint_color(Color::Rgb(126, 156, 216), 0.5),
+            Color::Rgb(191, 206, 236)
+        );
+    }
+
+    #[test]
+    fn tint_color_passes_system_colors_through() {
+        // 0-15 are terminal-defined; tinting would guess at a palette.
+        assert_eq!(tint_color(Color::Indexed(4), 0.5), Color::Indexed(4));
     }
 
     #[test]

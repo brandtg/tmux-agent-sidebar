@@ -36,6 +36,7 @@ fn test_all_color_theme_defaults() {
     assert_eq!(theme.text_active, Color::Indexed(255));
     assert_eq!(theme.text_muted, Color::Indexed(252));
     assert_eq!(theme.text_inactive, Color::Indexed(244));
+    assert_eq!(theme.window_header, Color::Indexed(249));
 
     // Header/UI element colors
     assert_eq!(theme.session_header, Color::Indexed(39));
@@ -595,18 +596,20 @@ fn test_session_mode_window_level_headers() {
     state.rebuild_row_targets();
 
     // Styled snapshot locks in the `Session > Window > agent|process`
-    // hierarchy: muted `index:name` header lines (text_muted, fg:252)
-    // between the session title and each window's rows. The focused
-    // agent's active bar (┃, accent) and the session header accent are
-    // unchanged by the extra level.
+    // hierarchy: `index:name` header lines under each session title at
+    // the resting shade (window_header, fg:249 — a clear step under the
+    // session title's white), with the focused window's header in the
+    // lightened accent tint (fg:189 = accent 153 tinted 50% toward
+    // white) against the session title's full accent. The focused
+    // agent's active bar (┃, accent) is unchanged by the extra level.
     insta::assert_snapshot!(render_to_styled_string(&mut state, 28, 30), @"
      ≡[fg:111]2[fg:255]  ●[fg:245]0[fg:245]  ◎[fg:245]0[fg:245]  ◐[fg:245]0[fg:245]  ○[fg:245]2[fg:255]  ✕[fg:245]0[fg:245]
     ⓘ[fg:221]                        —[fg:252] ▾[fg:252]
     m[fg:153]a[fg:153]i[fg:153]n[fg:153]
-     [fg:252]0[fg:252]:[fg:252]a[fg:252]p[fg:252]i[fg:252]
+     [fg:189]0[fg:189]:[fg:189]a[fg:189]p[fg:189]i[fg:189]
     ┃[fg:153,bg:239] [bg:239]○[fg:110,bg:239] [fg:173,bg:239]c[fg:173,bg:239]l[fg:173,bg:239]a[fg:173,bg:239]u[fg:173,bg:239]d[fg:173,bg:239]e[fg:173,bg:239] [bg:239] [bg:239] [bg:239] [bg:239] [bg:239] [bg:239] [bg:239] [bg:239] [bg:239] [bg:239] [bg:239] [bg:239] [bg:239] [bg:239] [bg:239] [bg:239] [bg:239] [bg:239]
        [fg:255] [fg:255]W[fg:255]a[fg:255]i[fg:255]t[fg:255]i[fg:255]n[fg:255]g[fg:255] [fg:255]f[fg:255]o[fg:255]r[fg:255] [fg:255]p[fg:255]r[fg:255]o[fg:255]m[fg:255]p[fg:255]t[fg:255]…[fg:255]
-     [fg:252]1[fg:252]:[fg:252]w[fg:252]e[fg:252]b[fg:252]
+     [fg:249]1[fg:249]:[fg:249]w[fg:249]e[fg:249]b[fg:249]
       ○[fg:110] [fg:141]c[fg:141]o[fg:141]d[fg:141]e[fg:141]x[fg:141]
        [fg:244] [fg:244]W[fg:244]a[fg:244]i[fg:244]t[fg:244]i[fg:244]n[fg:244]g[fg:244] [fg:244]f[fg:244]o[fg:244]r[fg:244] [fg:244]p[fg:244]r[fg:244]o[fg:244]m[fg:244]p[fg:244]t[fg:244]…[fg:244]
     ");
