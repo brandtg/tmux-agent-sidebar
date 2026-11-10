@@ -204,9 +204,9 @@ impl AppState {
     /// Per-tick tracking of non-agent foreground tasks. While a
     /// Task-classified command runs, its basename is remembered; when the
     /// pane drops back to a shell while the task is armed, the task is
-    /// confirmed finished, so the row can flash for attention — green for
-    /// exit 0 (or an unknown exit), red for a non-zero code. Two guards
-    /// keep the flash high-signal:
+    /// confirmed finished, so the row can flash for attention — magenta
+    /// (the process pulse) for exit 0 (or an unknown exit), red for a
+    /// non-zero code. Two guards keep the flash high-signal:
     ///
     /// - [`TASK_MIN_RUN_SECS`]: quick commands complete while the user
     ///   is still looking at the pane and end silently;
