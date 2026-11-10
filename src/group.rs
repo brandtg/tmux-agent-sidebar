@@ -334,6 +334,30 @@ pub enum GroupRow<'a> {
     Window(&'a OtherWindow),
 }
 
+impl<'a> GroupRow<'a> {
+    /// `(tmux_session, window_index)` of the row's window — the same
+    /// key [`ordered_group_rows`] sorts by, so consecutive rows sharing
+    /// it belong to one window. The session-mode window header
+    /// (`@sidebar_session_windows`) is emitted wherever this key
+    /// changes. Takes `self` (Copy) so the returned name borrows the
+    /// row's referent, not the `GroupRow` temporary.
+    pub fn window_key(self) -> (&'a str, i64) {
+        match self {
+            GroupRow::Agent((pane, _)) => (pane.tmux_session.as_str(), pane.window_index),
+            GroupRow::Window(w) => (w.session_name.as_str(), w.window_index),
+        }
+    }
+
+    /// The row's window name (`#{window_name}`), for the session-mode
+    /// window header line.
+    pub fn window_name(self) -> &'a str {
+        match self {
+            GroupRow::Agent((pane, _)) => pane.window_name.as_str(),
+            GroupRow::Window(w) => w.window_name.as_str(),
+        }
+    }
+}
+
 /// Interleave a group's agent panes and non-agent window rows in
 /// session → window → pane order, so each window's processes sit next
 /// to its agent instead of pooling below the whole group.
@@ -724,6 +748,7 @@ mod tests {
             session_name: String::new(),
             tmux_session: String::new(),
             window_index: 0,
+            window_name: String::new(),
             sidebar_spawned: false,
             bg_shell_cmd: None,
             bg_shell_pid: None,
@@ -1549,6 +1574,25 @@ mod tests {
 
         let rows = ordered_group_rows(&pane_refs, &window_refs);
         assert_eq!(row_ids(&rows), vec!["%1", "%2", "%10"]);
+    }
+
+    #[test]
+    fn group_row_window_key_and_name_agree_across_both_row_kinds() {
+        // The session-mode window header is emitted wherever
+        // `window_key` changes, so an agent row and the `OtherWindow`
+        // rows of the same window must report the same key — and the
+        // header must be able to take the window name from either kind.
+        let mut panes = vec![agent_pane("%1", "main", 3)];
+        panes[0].0.window_name = "api".into();
+        let windows = vec![other_window("%10", "main", 3)];
+        let pane_refs: Vec<_> = panes.iter().collect();
+        let window_refs: Vec<_> = windows.iter().collect();
+
+        let rows = ordered_group_rows(&pane_refs, &window_refs);
+        let keys: Vec<(&str, i64)> = rows.iter().map(|row| row.window_key()).collect();
+        assert_eq!(keys, vec![("main", 3), ("main", 3)]);
+        assert_eq!(rows[0].window_name(), "api", "agent rows read PaneInfo");
+        assert_eq!(rows[1].window_name(), "win", "window rows read OtherWindow");
     }
 
     #[test]

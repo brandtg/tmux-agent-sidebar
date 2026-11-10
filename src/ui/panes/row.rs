@@ -654,6 +654,40 @@ fn window_context_row(
     ))
 }
 
+/// The session-mode window level header: one muted `index:name` line
+/// above each window's rows when `@sidebar_session_windows` is on and
+/// the panel is grouped by session — the `Session > Window >
+/// agent|process` hierarchy. Indented one column under the session
+/// title: the detail rows hang at [`CONTEXT_INDENT`], so a two-column
+/// header read as row-internal detail instead of a hierarchy level.
+/// `index:name` is tmux's own window selector (the shape the repo-mode
+/// card's context line spells out). An empty window name degrades to
+/// the bare index, the way `window_context_text` skips empty segments.
+/// Not a selectable row: the caller maps it to `None` in `line_to_row`.
+pub(super) fn window_header_row(
+    window_index: i64,
+    window_name: &str,
+    width: usize,
+    theme: &ColorTheme,
+) -> Line<'static> {
+    const HEADER_INDENT: &str = " ";
+    let budget = width.saturating_sub(display_width(HEADER_INDENT));
+    let name = if window_name.is_empty() {
+        window_index.to_string()
+    } else {
+        format!("{window_index}:{window_name}")
+    };
+    let text = truncate_to_width(&name, budget);
+    let content = format!("{HEADER_INDENT}{text}");
+    Line::from(Span::styled(
+        content,
+        // One step dimmer than the group header's text_active and one
+        // brighter than the detail rows' text_inactive: a structural
+        // line that should be scannable but never compete with rows.
+        Style::default().fg(theme.text_muted),
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -695,6 +729,7 @@ mod tests {
             session_name: String::new(),
             tmux_session: String::new(),
             window_index: 0,
+            window_name: String::new(),
             sidebar_spawned: false,
             bg_shell_cmd: None,
             bg_shell_pid: None,

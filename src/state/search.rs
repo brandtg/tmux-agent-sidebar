@@ -169,6 +169,7 @@ mod tests {
             session_name: session_name.into(),
             tmux_session: tmux_session.into(),
             window_index: 0,
+            window_name: String::new(),
             sidebar_spawned: false,
             bg_shell_cmd: None,
             bg_shell_pid: None,
