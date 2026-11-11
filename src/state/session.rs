@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 /// Session-name map scanned by a background thread so the TUI thread never
 /// blocks on `~/.claude/sessions/*.json` reads or the Hermes session-store
@@ -12,4 +12,7 @@ use std::collections::HashMap;
 #[derive(Debug, Clone, Default)]
 pub struct SessionNamesState {
     pub names: HashMap<String, String>,
+    /// Session ids whose name the agent derived itself (see
+    /// `session::ScannedNames`).
+    pub derived: HashSet<String>,
 }

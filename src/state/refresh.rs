@@ -541,15 +541,21 @@ impl AppState {
     /// the tmux parse filled in; it outranks the map, so it is left
     /// untouched.
     fn refresh_session_names(&mut self) {
+        let worktree_titles = self.global.worktree_titles;
         for group in &mut self.repo_groups {
             for (pane, _) in &mut group.panes {
                 if !pane.session_name.is_empty() {
                     continue;
                 }
-                if let Some(sid) = &pane.session_id
-                    && let Some(name) = self.sessions.names.get(sid)
-                {
+                let name = pane
+                    .session_id
+                    .as_ref()
+                    .filter(|sid| !(worktree_titles && self.sessions.derived.contains(*sid)))
+                    .and_then(|sid| self.sessions.names.get(sid));
+                if let Some(name) = name {
                     pane.session_name.clone_from(name);
+                } else if worktree_titles && !pane.worktree.name.is_empty() {
+                    pane.session_name.clone_from(&pane.worktree.name);
                 } else {
                     pane.session_name.clear();
                 }
@@ -1542,6 +1548,50 @@ mod tests {
         let mut p = test_pane(id);
         p.session_id = Some(session_id.to_string());
         p
+    }
+
+    #[test]
+    fn refresh_session_names_worktree_titles_replace_derived_names() {
+        let mut in_worktree = pane_with_session("%1", "sess-a");
+        in_worktree.worktree.name = "cb-feature".into();
+        let renamed = {
+            let mut p = pane_with_session("%2", "sess-b");
+            p.worktree.name = "cb-other".into();
+            p
+        };
+        let outside = pane_with_session("%3", "sess-c");
+        let mut state = state_with_panes(vec![in_worktree, renamed, outside]);
+        for (sid, name) in [
+            ("sess-a", "repo-b6"),
+            ("sess-b", "my-name"),
+            ("sess-c", "repo-f8"),
+        ] {
+            state.sessions.names.insert(sid.into(), name.into());
+        }
+        state.sessions.derived.insert("sess-a".into());
+        state.sessions.derived.insert("sess-c".into());
+
+        let titles = |state: &AppState| -> Vec<String> {
+            state.repo_groups[0]
+                .panes
+                .iter()
+                .map(|(p, _)| p.session_name.clone())
+                .collect()
+        };
+
+        state.refresh_session_names();
+        assert_eq!(
+            titles(&state),
+            ["repo-b6", "my-name", "repo-f8"],
+            "off: unchanged"
+        );
+
+        for (pane, _) in &mut state.repo_groups[0].panes {
+            pane.session_name.clear();
+        }
+        state.global.worktree_titles = true;
+        state.refresh_session_names();
+        assert_eq!(titles(&state), ["cb-feature", "my-name", ""]);
     }
 
     fn state_with_panes(panes: Vec<PaneInfo>) -> AppState {

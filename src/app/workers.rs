@@ -45,7 +45,7 @@ const PERMISSION_PROMPT_PATTERNS: [&str; 9] = [
 /// Channels and shared flags produced by [`spawn`] that the main event loop
 /// drains every tick.
 pub(super) struct Workers {
-    pub session_rx: Receiver<HashMap<String, String>>,
+    pub session_rx: Receiver<session::ScannedNames>,
     pub version_rx: Receiver<UpdateNotice>,
     /// Requests the git-info resolver worker: the distinct pane working
     /// directories of the current snapshot. Results arrive on `git_info_rx`.
@@ -65,7 +65,7 @@ pub(super) struct Workers {
 /// Spawn the background threads (session-name polling, version notice
 /// fetch, git-info resolution, port scanning) that feed the event loop.
 pub(super) fn spawn(_state: &crate::state::AppState) -> Workers {
-    let (session_tx, session_rx) = mpsc::channel::<HashMap<String, String>>();
+    let (session_tx, session_rx) = mpsc::channel::<session::ScannedNames>();
     let (version_tx, version_rx) = mpsc::channel::<UpdateNotice>();
     let (git_info_tx, git_info_req_rx) = mpsc::channel::<Vec<String>>();
     let (git_info_res_tx, git_info_rx) = mpsc::channel::<HashMap<String, PaneGitInfo>>();
@@ -312,7 +312,7 @@ fn clear_waiting(pane_id: &str) {
 /// 10 seconds — Claude `/rename` labels from `~/.claude/sessions/*.json` and
 /// Hermes session titles from `~/.hermes/state.db` — so the main TUI thread
 /// never performs blocking filesystem/subprocess I/O to refresh labels.
-pub(super) fn session_poll_loop(tx: &mpsc::Sender<HashMap<String, String>>) {
+pub(super) fn session_poll_loop(tx: &mpsc::Sender<session::ScannedNames>) {
     loop {
         std::thread::sleep(Duration::from_secs(10));
         let names = session::scan_session_names();

@@ -164,6 +164,11 @@ pub const SIDEBAR_GROUP_BY: &str = "@sidebar_group_by";
 /// panes; see `row_collector::collect`). Set in tmux.conf; read on every
 /// global sync like [`SIDEBAR_GROUP_BY`], with no runtime toggle.
 pub const SIDEBAR_SESSION_WINDOWS: &str = "@sidebar_session_windows";
+/// Title agent rows by their worktree (`on` / `off`, default `off`): a
+/// session without a user-given name shows the linked worktree it is
+/// working in instead of the agent's auto-derived name. Read on every
+/// global sync like [`SIDEBAR_SESSION_WINDOWS`].
+pub const SIDEBAR_WORKTREE_TITLES: &str = "@sidebar_worktree_titles";
 /// "Show other windows" mode a newly opened sidebar lands on (`on` /
 /// `off`, default `off`). Read once at startup; the live
 /// [`SIDEBAR_SHOW_WINDOWS`] value is never restored on reopen.

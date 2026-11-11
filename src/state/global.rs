@@ -131,6 +131,10 @@ pub struct GlobalState {
     /// hierarchy. Set it in tmux.conf; like `group_by` it is read on
     /// every sync and has no runtime toggle.
     pub session_windows: bool,
+    /// Worktree row titles (`@sidebar_worktree_titles`): an agent row
+    /// without a user-given session name is titled by its linked worktree.
+    /// Read on every sync; no runtime toggle.
+    pub worktree_titles: bool,
     /// Line cap for the agent message preview (the prompt / response
     /// body under the status row). Read from `@sidebar_preview_lines` on
     /// every sync — set it in tmux.conf; there is no runtime toggle.
@@ -169,6 +173,7 @@ impl GlobalState {
             todo_scope: TodoScope::default(),
             group_by: GroupBy::default(),
             session_windows: false,
+            worktree_titles: false,
             preview_lines: DEFAULT_PREVIEW_LINES,
             owner_pane,
             last_saved_filter: StatusFilter::All,
@@ -531,6 +536,12 @@ impl GlobalState {
             // `if -F` in agent-sidebar.conf is the only writer of `off`.
             self.session_windows = matches!(
                 session_windows_str.trim().to_ascii_lowercase().as_str(),
+                "on" | "true" | "1"
+            );
+        }
+        if let Some(worktree_titles_str) = opts.get(tmux::SIDEBAR_WORKTREE_TITLES) {
+            self.worktree_titles = matches!(
+                worktree_titles_str.trim().to_ascii_lowercase().as_str(),
                 "on" | "true" | "1"
             );
         }

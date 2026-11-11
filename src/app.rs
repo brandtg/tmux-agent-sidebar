@@ -231,8 +231,9 @@ pub fn run(
             last_refresh = std::time::Instant::now();
         }
 
-        if let Ok(names) = session_rx.try_recv() {
-            state.sessions.names = names;
+        if let Ok(scanned) = session_rx.try_recv() {
+            state.sessions.names = scanned.names;
+            state.sessions.derived = scanned.derived;
             needs_redraw = true;
         }
 

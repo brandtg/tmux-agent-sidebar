@@ -58,6 +58,24 @@ pub fn wait_reason_label(reason: &str) -> String {
     }
 }
 
+/// Git info for an agent row's branch line. When the row title already
+/// is the worktree name (see `@sidebar_worktree_titles`), the branch line
+/// drops it and shows just the branch.
+pub fn row_git_info<'a>(
+    pane: &crate::tmux::PaneInfo,
+    git_info: &'a crate::group::PaneGitInfo,
+) -> std::borrow::Cow<'a, crate::group::PaneGitInfo> {
+    if !pane.session_name.is_empty()
+        && git_info.worktree_name.as_deref() == Some(pane.session_name.as_str())
+    {
+        let mut trimmed = git_info.clone();
+        trimmed.worktree_name = None;
+        std::borrow::Cow::Owned(trimmed)
+    } else {
+        std::borrow::Cow::Borrowed(git_info)
+    }
+}
+
 pub fn branch_label(git_info: &crate::group::PaneGitInfo) -> String {
     match &git_info.branch {
         Some(branch) => {

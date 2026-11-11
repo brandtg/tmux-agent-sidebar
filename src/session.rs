@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::process::Command;
 use std::time::Duration;
@@ -24,8 +24,16 @@ const HERMES_TITLE_LIMIT: usize = 2000;
 /// `~/.local/share/opencode/opencode.db`) — and those are the same ids the
 /// agents put in their hook payloads, so the map keys match
 /// `@pane_session_id` on the pane.
-pub fn scan_session_names() -> HashMap<String, String> {
-    let mut map = scan_claude_session_names();
+/// Session names from every agent's store, plus the ids whose name the
+/// agent derived itself rather than the user setting one.
+#[derive(Debug, Clone, Default)]
+pub struct ScannedNames {
+    pub names: HashMap<String, String>,
+    pub derived: HashSet<String>,
+}
+
+pub fn scan_session_names() -> ScannedNames {
+    let (mut map, derived) = scan_claude_session_names();
     for (session_id, name) in scan_hermes_session_titles() {
         map.insert(session_id, name);
     }
@@ -35,7 +43,10 @@ pub fn scan_session_names() -> HashMap<String, String> {
     for (session_id, name) in scan_opencode_session_titles() {
         map.insert(session_id, name);
     }
-    map
+    ScannedNames {
+        names: map,
+        derived,
+    }
 }
 
 /// Return the path to Claude Code's sessions directory.
@@ -45,24 +56,28 @@ fn sessions_dir() -> Option<PathBuf> {
     if dir.is_dir() { Some(dir) } else { None }
 }
 
-fn scan_claude_session_names() -> HashMap<String, String> {
+fn scan_claude_session_names() -> (HashMap<String, String>, HashSet<String>) {
     let mut map = HashMap::new();
+    let mut derived = HashSet::new();
     let Some(dir) = sessions_dir() else {
-        return map;
+        return (map, derived);
     };
     let Ok(entries) = std::fs::read_dir(&dir) else {
-        return map;
+        return (map, derived);
     };
     for entry in entries.flatten() {
         let path = entry.path();
         if path.extension().and_then(|e| e.to_str()) != Some("json") {
             continue;
         }
-        if let Some((session_id, name)) = parse_session_file(&path) {
+        if let Some((session_id, name, is_derived)) = parse_session_file(&path) {
+            if is_derived {
+                derived.insert(session_id.clone());
+            }
             map.insert(session_id, name);
         }
     }
-    map
+    (map, derived)
 }
 
 /// Return the path to Hermes' session store, when present.
@@ -255,7 +270,8 @@ fn scan_opencode_session_titles() -> HashMap<String, String> {
 }
 
 /// Parse a single session JSON file, returning `(sessionId, name)` if both exist.
-fn parse_session_file(path: &std::path::Path) -> Option<(String, String)> {
+/// `(session id, name, whether Claude derived the name itself)`.
+fn parse_session_file(path: &std::path::Path) -> Option<(String, String, bool)> {
     let content = std::fs::read_to_string(path).ok()?;
     let val: serde_json::Value = serde_json::from_str(&content).ok()?;
     let session_id = val.get("sessionId")?.as_str()?.trim();
@@ -263,7 +279,8 @@ fn parse_session_file(path: &std::path::Path) -> Option<(String, String)> {
     if session_id.is_empty() || name.is_empty() {
         return None;
     }
-    Some((session_id.to_string(), name.to_string()))
+    let derived = val.get("nameSource").and_then(|v| v.as_str()) == Some("derived");
+    Some((session_id.to_string(), name.to_string(), derived))
 }
 
 #[cfg(test)]
@@ -323,7 +340,24 @@ mod tests {
         .unwrap();
 
         let result = parse_session_file(&path);
-        assert_eq!(result, Some(("abc-def".into(), "my-session".into())));
+        assert_eq!(result, Some(("abc-def".into(), "my-session".into(), false)));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn parse_session_file_flags_derived_name() {
+        let dir = std::env::temp_dir().join("session_test_derived_name");
+        let _ = fs::create_dir_all(&dir);
+        let path = dir.join("12345.json");
+        fs::write(
+            &path,
+            r#"{"pid":12345,"sessionId":"abc-def","name":"repo-b6","nameSource":"derived"}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            parse_session_file(&path),
+            Some(("abc-def".into(), "repo-b6".into(), true))
+        );
         let _ = fs::remove_dir_all(&dir);
     }
 
