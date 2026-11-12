@@ -321,12 +321,8 @@ pub(super) fn collect(state: &AppState, width: u16) -> CollectedRows {
                     let is_active =
                         window.session_attached && window.window_active && window.pane_active;
                     let finished = runtime.and_then(|s| s.window_finished.clone());
-                    // Window rows carry the same density flag as agent
-                    // rows: expanded renders the two-line card whose
-                    // second line names the *other* grouping dimension
-                    // plus the window name (see `row::window_row`), so
-                    // `group_by` rides along to pick which dimension is
-                    // "other". Every returned line maps to this row so
+                    // Window rows are a single status line in both
+                    // densities. Every returned line maps to this row so
                     // the whole card is clickable.
                     let lines = row::window_row(
                         window,
@@ -335,8 +331,6 @@ pub(super) fn collect(state: &AppState, width: u16) -> CollectedRows {
                         is_selected,
                         is_active,
                         window.flagged,
-                        !state.global.compact,
-                        state.global.group_by,
                         width,
                         &state.icons,
                         theme,
@@ -496,12 +490,11 @@ mod tests {
         assert!(text.contains("cargo"), "window row missing:\n{text}");
         assert!(text.contains('\u{25C6}'), "window glyph missing:\n{text}");
         // Layout: repo header, agent status, agent idle hint, then the
-        // two-line window card (both lines map to row index 1). No
-        // sub-header line.
+        // window card (maps to row index 1). No sub-header line.
         assert_eq!(
             collected.line_to_row,
-            vec![None, Some(0), Some(0), Some(1), Some(1)],
-            "the window card must be selectable as row 1 on both lines"
+            vec![None, Some(0), Some(0), Some(1)],
+            "the window card must be selectable as row 1"
         );
     }
 
@@ -581,9 +574,8 @@ mod tests {
             "rows must interleave by window:\n{text}"
         );
 
-        // Selection targets follow the same order: window-0 card (both
-        // lines) sits between the two agents, window-1's card after
-        // agent2. Expanded window cards occupy two lines each.
+        // Selection targets follow the same order: window-0 cards sit
+        // between the two agents, window-1's card after agent2.
         assert_eq!(
             collected.line_to_row,
             vec![
@@ -591,12 +583,9 @@ mod tests {
                 Some(0),
                 Some(0),
                 Some(1),
-                Some(1),
-                Some(2),
                 Some(2),
                 Some(3),
                 Some(3),
-                Some(4),
                 Some(4)
             ],
             "line_to_row must match the interleaved render order"
@@ -861,11 +850,11 @@ mod tests {
         let lines: Vec<String> = collected.lines.iter().map(line_text).collect();
 
         // Session title, then per window: header, the window's agent
-        // (status + idle hint), and its process card (both lines).
+        // (status + idle hint), and its process card.
         assert_eq!(lines[0], "main");
         assert_eq!(lines[1], " 0:api");
         assert_eq!(
-            lines[6], " 1:web",
+            lines[5], " 1:web",
             "window 1's header precedes its rows:\n{lines:?}"
         );
         assert_eq!(
@@ -875,7 +864,6 @@ mod tests {
                 None, // window 0 header
                 Some(0),
                 Some(0), // agent in window 0
-                Some(1),
                 Some(1), // process card in window 0
                 None,    // window 1 header
                 Some(2),
@@ -958,7 +946,7 @@ mod tests {
         let collected = collect(&state, 40);
         assert_eq!(
             collected.line_to_row,
-            vec![None, Some(0), Some(0), Some(1), Some(1), Some(2), Some(2)],
+            vec![None, Some(0), Some(0), Some(1), Some(2), Some(2)],
             "flag off renders no window headers"
         );
     }

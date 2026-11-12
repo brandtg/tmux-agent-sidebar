@@ -70,8 +70,7 @@ pub struct OtherWindow {
     pub git_info: PaneGitInfo,
     pub status: WindowStatus,
     /// Remote-published terminal title (`#{pane_title}`), empty when
-    /// none. Rendered as the expanded ssh card's line 2 when it carries
-    /// real remote content (see `window_context_text`).
+    /// none. Matched against the sidebar search query.
     pub pane_title: String,
     /// User "inbox pin" (`@sidebar_flagged`), rendered as the orange
     /// gutter marker on the window row.
