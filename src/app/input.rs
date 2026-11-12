@@ -44,6 +44,12 @@ pub(super) fn handle_key_event(key: KeyEvent, state: &mut AppState) -> bool {
     if state.is_help_open() {
         match key.code {
             KeyCode::Esc | KeyCode::Char('?') => state.close_help_popup(),
+            // The overlay is a full-sidebar modal: it scrolls like any
+            // narrow column of text.
+            KeyCode::Char('j') | KeyCode::Down => state.scroll_help(1),
+            KeyCode::Char('k') | KeyCode::Up => state.scroll_help(-1),
+            KeyCode::PageDown => state.scroll_help_page(1),
+            KeyCode::PageUp => state.scroll_help_page(-1),
             _ => {}
         }
         return true;
@@ -97,11 +103,32 @@ pub(super) fn handle_key_event(key: KeyEvent, state: &mut AppState) -> bool {
     }
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
 
+    // Undo window: while the last delete / clear-completed is still
+    // fresh, a plain `u` (Google's ⌘Z, terminal-flavored) restores it
+    // from any focus that is not a text input. The TODO add/edit line
+    // and the search line type `u` / `z` into their buffers instead
+    // (they own the keyboard while open), and the popups above own
+    // theirs. Outside the window the arm is inert — `u` is not bound
+    // anywhere else, so this is a transient claim, not a global
+    // rebinding.
+    let undo_key = (key.code == KeyCode::Char('u') && key.modifiers == KeyModifiers::NONE)
+        || (key.code == KeyCode::Char('z') && ctrl);
+    if undo_key {
+        let input_open = state.todos.adding.is_some()
+            || state.todos.editing.is_some()
+            || state.search.is_active();
+        if !input_open && state.undo_todo_last() {
+            return true;
+        }
+    }
+
     // The TODO panel owns its keys while it has focus: j/k navigate items,
-    // Enter toggles the checkbox, e edits in place, x/d delete, D clears
-    // completed, a adds, H flips hide-completed. Global keys it does not
-    // claim (q, c, w, ?, /) still work. The add line, when open, owns
-    // printable keys; an open edit owns them on the item's own rows.
+    // Ctrl-↑/↓ (and Ctrl-j/Ctrl-k) reorder the selected item within the
+    // open block, Enter edits the selected task, Space toggles its
+    // checkbox, a adds, x/d delete, D clears completed, H flips
+    // hide-completed. Global keys it does not claim (q, c, w, ?, /) still
+    // work. The add line, when open, owns printable keys; an open edit
+    // owns them on the item's own rows.
     if state.focus_state.focus == Focus::Todos {
         return handle_todo_key(key, state);
     }
@@ -180,7 +207,9 @@ pub(super) fn handle_key_event(key: KeyEvent, state: &mut AppState) -> bool {
                 state.global.queue_cursor_save();
             }
         }
-        KeyCode::Char('z') => {
+        // Ctrl-z is the undo alias above; a fall-through here (no
+        // pending undo) must not collapse a group.
+        KeyCode::Char('z') if !ctrl => {
             if state.focus_state.focus == Focus::Panes && state.toggle_selected_group_collapse() {
                 state.global.queue_cursor_save();
             }
@@ -272,13 +301,18 @@ pub(super) fn handle_key_event(key: KeyEvent, state: &mut AppState) -> bool {
 }
 
 /// Keys owned by the manual TODO panel. See [`Focus::Todos`].
+///
+/// The flow follows Google Tasks: Enter edits the selected task, Enter
+/// again (or in the add line) saves and moves on to the next task, Space
+/// completes, Esc backs out without creating anything.
 fn handle_todo_key(key: KeyEvent, state: &mut AppState) -> bool {
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
 
     if state.todos.editing.is_some() {
         match key.code {
             KeyCode::Esc => state.cancel_todo_edit(),
-            KeyCode::Enter => state.commit_todo_edit(),
+            // The editor's newline: save and land on a fresh task.
+            KeyCode::Enter => state.commit_todo_edit_and_next(),
             KeyCode::Backspace => state.todo_input_pop_char(),
             KeyCode::Delete => state.todo_input_delete_char(),
             KeyCode::Left => state.todo_edit_cursor_move(-1),
@@ -296,6 +330,8 @@ fn handle_todo_key(key: KeyEvent, state: &mut AppState) -> bool {
     if state.todos.adding.is_some() {
         match key.code {
             KeyCode::Esc => state.cancel_todo_add(),
+            // Commits the task and keeps a fresh line open; an empty
+            // buffer ends the streak instead (see `commit_todo_add`).
             KeyCode::Enter => state.commit_todo_add(),
             KeyCode::Backspace => state.todo_input_pop_char(),
             KeyCode::Char('u') if ctrl => state.todo_input_clear(),
@@ -310,6 +346,23 @@ fn handle_todo_key(key: KeyEvent, state: &mut AppState) -> bool {
         KeyCode::Esc => state.todo_escape(),
         KeyCode::Char('t') => state.toggle_todo_panel(),
         KeyCode::Char('q') => state.quit_requested = true,
+        // Google's Return: edit the selected task; with nothing selected
+        // it starts a new one. Space is the complete toggle.
+        KeyCode::Enter => state.todo_enter(),
+        KeyCode::Char(' ') => state.toggle_todo_selected(),
+        // Reorder the selected item within the open block. Google maps
+        // this to Ctrl-↑/↓; the vim-ish Ctrl-j/Ctrl-k do the same.
+        //
+        // Ctrl-j is byte 0x0A, which only means Ctrl-j because the TUI
+        // runs in raw mode: crossterm maps cooked-mode 0x0A to Enter but
+        // raw-mode 0x0A to Char('j') + CONTROL (Enter itself is 0x0D), so
+        // reorder can never collide with the Enter edit above.
+        KeyCode::Up | KeyCode::Char('k') if ctrl => {
+            state.move_todo_selected(-1);
+        }
+        KeyCode::Down | KeyCode::Char('j') if ctrl => {
+            state.move_todo_selected(1);
+        }
         KeyCode::Char('j') | KeyCode::Down => {
             state.move_todo_selection(1);
         }
@@ -326,7 +379,6 @@ fn handle_todo_key(key: KeyEvent, state: &mut AppState) -> bool {
         KeyCode::PageUp => {
             state.page_todo_selection(-1);
         }
-        KeyCode::Enter => state.toggle_todo_selected(),
         KeyCode::Char('e') => state.begin_todo_edit(),
         KeyCode::Char('a') => state.begin_todo_add(),
         KeyCode::Char('x') | KeyCode::Char('d') => state.delete_todo_selected(),
@@ -543,6 +595,10 @@ mod tests {
                 done: false,
             })
             .collect()
+    }
+
+    fn todo_texts(state: &AppState) -> Vec<&str> {
+        state.todos.items.iter().map(|i| i.text.as_str()).collect()
     }
 
     #[test]
@@ -925,19 +981,44 @@ mod tests {
     #[test]
     fn help_popup_owns_keyboard_until_dismissed() {
         // While open the popup swallows every key; only Esc (or another
-        // `?`) closes it. `j` must not move the selection underneath.
+        // `?`) closes it. `j` scrolls the overlay, not the list beneath.
         let mut state = state_with_three_panes();
         state.toggle_help_popup();
 
         handle_key_event(key(KeyCode::Char('j')), &mut state);
         assert!(state.is_help_open());
         assert_eq!(state.global.selected_pane_row, 0);
+        assert_eq!(state.help_scroll(), 0, "nothing to scroll before a render");
 
         handle_key_event(key(KeyCode::Char('q')), &mut state);
         assert!(!state.quit_requested, "q must not quit through the popup");
 
         handle_key_event(key(KeyCode::Esc), &mut state);
         assert!(!state.is_help_open());
+    }
+
+    #[test]
+    fn help_scroll_keys_reach_the_overlay_state() {
+        let mut state = state_with_three_panes();
+        state.toggle_help_popup();
+        // Simulate the renderer's write-back for a clipped overlay.
+        state.set_help_metrics(30, 10);
+
+        handle_key_event(key(KeyCode::Char('j')), &mut state);
+        handle_key_event(key(KeyCode::Down), &mut state);
+        assert_eq!(state.help_scroll(), 2);
+
+        handle_key_event(key(KeyCode::Char('k')), &mut state);
+        assert_eq!(state.help_scroll(), 1);
+
+        handle_key_event(key(KeyCode::PageDown), &mut state);
+        assert_eq!(state.help_scroll(), 9, "pages by viewport - 2");
+
+        handle_key_event(key(KeyCode::PageUp), &mut state);
+        assert_eq!(state.help_scroll(), 1, "one page back down from the cap");
+
+        handle_key_event(key(KeyCode::Up), &mut state);
+        assert_eq!(state.help_scroll(), 0, "clamped at the top");
     }
 
     #[test]
@@ -1015,8 +1096,11 @@ mod tests {
         assert_eq!(state.focus_state.focus, Focus::Panes);
     }
 
-    #[test]
-    fn todo_panel_owns_j_k_and_enter() {
+    fn ctrl_code(code: KeyCode) -> KeyEvent {
+        KeyEvent::new(code, KeyModifiers::CONTROL)
+    }
+
+    fn todo_fixture() -> AppState {
         let mut state = state_with_three_panes();
         state.todos.items = vec![
             crate::todo::TodoItem {
@@ -1028,6 +1112,12 @@ mod tests {
                 done: false,
             },
         ];
+        state
+    }
+
+    #[test]
+    fn todo_panel_owns_j_k_and_selection_stays_off_the_agent_list() {
+        let mut state = todo_fixture();
         handle_key_event(key(KeyCode::Char('t')), &mut state);
         assert_eq!(state.todos.selected, 0);
 
@@ -1040,9 +1130,79 @@ mod tests {
 
         handle_key_event(key(KeyCode::Char('k')), &mut state);
         assert_eq!(state.todos.selected, 0);
+    }
+
+    #[test]
+    fn enter_edits_the_selected_todo() {
+        let mut state = todo_fixture();
+        handle_key_event(key(KeyCode::Char('t')), &mut state);
 
         handle_key_event(key(KeyCode::Enter), &mut state);
+
+        assert_eq!(
+            state.todos.editing.as_ref().unwrap().index,
+            0,
+            "Enter opens the selected task for editing, Google Tasks style"
+        );
+        assert!(!state.todos.items[0].done);
+    }
+
+    #[test]
+    fn enter_on_an_empty_list_starts_a_new_task() {
+        let mut state = state_with_three_panes();
+        handle_key_event(key(KeyCode::Char('t')), &mut state);
+
+        handle_key_event(key(KeyCode::Enter), &mut state);
+
+        assert_eq!(
+            state.todos.adding.as_deref(),
+            Some(""),
+            "nothing to edit, so Enter creates a task instead"
+        );
+    }
+
+    #[test]
+    fn enter_while_editing_saves_and_starts_the_next_task() {
+        let mut state = todo_fixture();
+        handle_key_event(key(KeyCode::Char('t')), &mut state);
+        handle_key_event(key(KeyCode::Enter), &mut state); // edit item 0
+        handle_key_event(key(KeyCode::Backspace), &mut state);
+        handle_key_event(key(KeyCode::Char('z')), &mut state); // types into the buffer
+
+        handle_key_event(key(KeyCode::Enter), &mut state);
+
+        assert_eq!(state.todos.items[0].text, "z", "the edit saved");
+        assert!(state.todos.editing.is_none());
+        assert_eq!(
+            state.todos.adding.as_deref(),
+            Some(""),
+            "the newline lands on a fresh task"
+        );
+    }
+
+    #[test]
+    fn space_toggles_the_selected_todo() {
+        let mut state = todo_fixture();
+        state.global.todo_hide_completed = false;
+        handle_key_event(key(KeyCode::Char('t')), &mut state);
+
+        handle_key_event(key(KeyCode::Char(' ')), &mut state);
         assert!(state.todos.items[0].done);
+
+        handle_key_event(key(KeyCode::Char(' ')), &mut state);
+        assert!(!state.todos.items[0].done);
+    }
+
+    #[test]
+    fn ctrl_z_restores_a_deleted_todo_like_u() {
+        let mut state = todo_fixture();
+        handle_key_event(key(KeyCode::Char('t')), &mut state);
+        handle_key_event(key(KeyCode::Char('d')), &mut state);
+        assert_eq!(state.todos.items.len(), 1);
+
+        handle_key_event(ctrl_key('z'), &mut state);
+
+        assert_eq!(state.todos.items.len(), 2, "Ctrl-z restores the delete");
     }
 
     #[test]
@@ -1136,6 +1296,300 @@ mod tests {
         // The panel no longer owns navigation.
         handle_key_event(key(KeyCode::Char('j')), &mut state);
         assert_eq!(state.global.selected_pane_row, 1);
+    }
+
+    #[test]
+    fn ctrl_arrow_keys_reorder_like_ctrl_j_and_ctrl_k() {
+        let mut state = todo_fixture();
+        handle_key_event(key(KeyCode::Char('t')), &mut state);
+
+        handle_key_event(ctrl_code(KeyCode::Down), &mut state);
+        assert_eq!(
+            state
+                .todos
+                .items
+                .iter()
+                .map(|i| i.text.as_str())
+                .collect::<Vec<_>>(),
+            vec!["b", "a"],
+            "Ctrl-Down moves the task down"
+        );
+
+        handle_key_event(ctrl_code(KeyCode::Up), &mut state);
+        assert_eq!(
+            state
+                .todos
+                .items
+                .iter()
+                .map(|i| i.text.as_str())
+                .collect::<Vec<_>>(),
+            vec!["a", "b"],
+            "Ctrl-Up moves it back"
+        );
+    }
+
+    #[test]
+    fn ctrl_j_and_ctrl_k_reorder_the_selected_todo() {
+        let mut state = state_with_three_panes();
+        state.todos.items = todo_items(&["a", "b", "c"]);
+        handle_key_event(key(KeyCode::Char('t')), &mut state);
+        assert_eq!(state.todos.selected, 0);
+
+        handle_key_event(ctrl_key('j'), &mut state);
+        assert_eq!(todo_texts(&state), vec!["b", "a", "c"]);
+        assert_eq!(state.todos.selected, 1, "selection follows the moved item");
+        assert_eq!(
+            state.global.selected_pane_row, 0,
+            "the agent selection stays put"
+        );
+
+        handle_key_event(ctrl_key('k'), &mut state);
+        assert_eq!(todo_texts(&state), vec!["a", "b", "c"]);
+        assert_eq!(state.todos.selected, 0);
+    }
+
+    #[test]
+    fn ctrl_k_at_the_top_of_the_open_block_is_a_no_op() {
+        let mut state = state_with_three_panes();
+        state.todos.items = todo_items(&["a", "b"]);
+        handle_key_event(key(KeyCode::Char('t')), &mut state);
+
+        handle_key_event(ctrl_key('k'), &mut state);
+
+        assert_eq!(todo_texts(&state), vec!["a", "b"]);
+        assert_eq!(state.todos.selected, 0);
+        assert_eq!(
+            state.focus_state.focus,
+            Focus::Todos,
+            "reorder must not walk out of the panel"
+        );
+    }
+
+    #[test]
+    fn ctrl_j_never_reorders_the_completed_block() {
+        let mut state = state_with_three_panes();
+        state.todos.items = vec![
+            crate::todo::TodoItem {
+                text: "a".into(),
+                done: false,
+            },
+            crate::todo::TodoItem {
+                text: "b".into(),
+                done: true,
+            },
+            crate::todo::TodoItem {
+                text: "c".into(),
+                done: false,
+            },
+            crate::todo::TodoItem {
+                text: "d".into(),
+                done: true,
+            },
+        ];
+        state.global.todo_hide_completed = false;
+        handle_key_event(key(KeyCode::Char('t')), &mut state);
+
+        handle_key_event(ctrl_key('j'), &mut state);
+        assert_eq!(todo_texts(&state), vec!["c", "b", "a", "d"]);
+        assert_eq!(
+            state.todos.selected, 2,
+            "a moved to c's slot; the done block stayed put"
+        );
+        assert!(state.todos.items[1].done && state.todos.items[3].done);
+
+        // a is now the last open item: the boundary no-ops instead of
+        // pushing it into the done block.
+        handle_key_event(ctrl_key('j'), &mut state);
+        assert_eq!(todo_texts(&state), vec!["c", "b", "a", "d"]);
+        assert_eq!(state.todos.selected, 2);
+    }
+
+    #[test]
+    fn ctrl_j_with_an_empty_todo_list_is_a_no_op() {
+        let mut state = state_with_three_panes();
+        handle_key_event(key(KeyCode::Char('t')), &mut state);
+
+        handle_key_event(ctrl_key('j'), &mut state);
+
+        assert!(state.todos.items.is_empty());
+        assert_eq!(state.focus_state.focus, Focus::Todos);
+    }
+
+    #[test]
+    fn ctrl_j_while_the_add_line_is_open_does_not_reorder() {
+        let mut state = state_with_three_panes();
+        state.todos.items = todo_items(&["a", "b"]);
+        handle_key_event(key(KeyCode::Char('t')), &mut state);
+        handle_key_event(key(KeyCode::Char('a')), &mut state);
+
+        handle_key_event(ctrl_key('j'), &mut state);
+
+        assert_eq!(todo_texts(&state), vec!["a", "b"], "items untouched");
+        assert_eq!(
+            state.todos.adding.as_deref(),
+            Some(""),
+            "the add line stays open and owns the keyboard"
+        );
+        assert_eq!(state.focus_state.focus, Focus::Todos);
+    }
+
+    // ─── u (undo delete / clear-completed) ───────────────────────────
+
+    #[test]
+    fn u_restores_a_deleted_todo_within_the_window() {
+        let mut state = state_with_three_panes();
+        state.todos.items = todo_items(&["a", "b", "c"]);
+        handle_key_event(key(KeyCode::Char('t')), &mut state);
+        handle_key_event(key(KeyCode::Char('j')), &mut state); // select b
+        handle_key_event(key(KeyCode::Char('x')), &mut state);
+
+        assert_eq!(todo_texts(&state), vec!["a", "c"]);
+        assert!(state.todos.undo.is_some(), "the delete stashes the item");
+        assert!(
+            state.flash.is_none(),
+            "no banner — the list is the feedback"
+        );
+
+        handle_key_event(key(KeyCode::Char('u')), &mut state);
+
+        assert_eq!(
+            todo_texts(&state),
+            vec!["a", "b", "c"],
+            "the stash is restored in place"
+        );
+        assert!(state.todos.undo.is_none());
+    }
+
+    #[test]
+    fn u_restores_cleared_completed_todos() {
+        let mut state = state_with_three_panes();
+        state.todos.items = vec![
+            crate::todo::TodoItem {
+                text: "a".into(),
+                done: true,
+            },
+            crate::todo::TodoItem {
+                text: "b".into(),
+                done: false,
+            },
+        ];
+        handle_key_event(key(KeyCode::Char('t')), &mut state);
+
+        handle_key_event(key(KeyCode::Char('D')), &mut state);
+        assert_eq!(todo_texts(&state), vec!["b"]);
+
+        handle_key_event(key(KeyCode::Char('u')), &mut state);
+        assert_eq!(todo_texts(&state), vec!["a", "b"], "file order restored");
+        assert!(state.todos.items[0].done, "the done flag comes back too");
+        assert!(state.todos.undo.is_none());
+    }
+
+    #[test]
+    fn u_with_no_pending_undo_is_unbound() {
+        let mut state = state_with_three_panes();
+        handle_key_event(key(KeyCode::Char('u')), &mut state);
+        assert_eq!(
+            state.global.selected_pane_row, 0,
+            "outside the window u changes nothing in the list"
+        );
+
+        // Same inside the focused panel.
+        handle_key_event(key(KeyCode::Char('t')), &mut state);
+        handle_key_event(key(KeyCode::Char('u')), &mut state);
+        assert!(state.todos.undo.is_none());
+        assert_eq!(state.focus_state.focus, Focus::Todos, "u claims no focus");
+    }
+
+    #[test]
+    fn u_while_the_add_line_is_open_types_into_the_buffer() {
+        let mut state = state_with_three_panes();
+        state.todos.items = todo_items(&["a", "b"]);
+        handle_key_event(key(KeyCode::Char('t')), &mut state);
+        handle_key_event(key(KeyCode::Char('x')), &mut state); // stash pending
+        assert!(state.todos.undo.is_some());
+
+        handle_key_event(key(KeyCode::Char('a')), &mut state); // open add line
+        handle_key_event(key(KeyCode::Char('u')), &mut state);
+
+        assert_eq!(
+            state.todos.adding.as_deref(),
+            Some("u"),
+            "the add line owns the keyboard"
+        );
+        assert!(state.todos.undo.is_some(), "undo did not fire");
+        assert_eq!(todo_texts(&state), vec!["b"], "the item stays deleted");
+    }
+
+    #[test]
+    fn u_while_editing_types_into_the_edit_buffer() {
+        let mut state = state_with_three_panes();
+        state.todos.items = todo_items(&["a", "b"]);
+        handle_key_event(key(KeyCode::Char('t')), &mut state);
+        handle_key_event(key(KeyCode::Char('x')), &mut state); // stash pending
+        handle_key_event(key(KeyCode::Char('e')), &mut state); // edit b
+
+        handle_key_event(key(KeyCode::Char('u')), &mut state);
+
+        assert_eq!(
+            state.todos.editing.as_ref().unwrap().input,
+            "bu",
+            "the edit buffer owns the keyboard"
+        );
+        assert!(state.todos.undo.is_some(), "undo did not fire");
+    }
+
+    #[test]
+    fn u_from_panes_focus_undoes_a_pending_delete() {
+        let mut state = state_with_three_panes();
+        state.todos.items = todo_items(&["a", "b"]);
+        handle_key_event(key(KeyCode::Char('t')), &mut state);
+        handle_key_event(key(KeyCode::Char('x')), &mut state);
+        assert_eq!(todo_texts(&state), vec!["b"]);
+
+        handle_key_event(key(KeyCode::Esc), &mut state); // back to the list
+        assert_eq!(state.focus_state.focus, Focus::Panes);
+
+        handle_key_event(key(KeyCode::Char('u')), &mut state);
+        assert_eq!(
+            todo_texts(&state),
+            vec!["a", "b"],
+            "the banner's u works from the agent list too"
+        );
+        assert!(state.todos.undo.is_none());
+    }
+
+    #[test]
+    fn ctrl_u_does_not_fire_undo() {
+        let mut state = state_with_three_panes();
+        state.todos.items = todo_items(&["a", "b"]);
+        handle_key_event(key(KeyCode::Char('t')), &mut state);
+        handle_key_event(key(KeyCode::Char('x')), &mut state);
+        assert!(state.todos.undo.is_some());
+
+        handle_key_event(ctrl_key('u'), &mut state);
+
+        assert_eq!(
+            todo_texts(&state),
+            vec!["b"],
+            "only the plain u is the undo key"
+        );
+        assert!(state.todos.undo.is_some());
+    }
+
+    #[test]
+    fn u_types_into_the_search_query_not_undo() {
+        let mut state = state_with_three_panes();
+        state.todos.items = todo_items(&["a", "b"]);
+        handle_key_event(key(KeyCode::Char('t')), &mut state);
+        handle_key_event(key(KeyCode::Char('x')), &mut state);
+        assert!(state.todos.undo.is_some());
+
+        handle_key_event(key(KeyCode::Esc), &mut state);
+        handle_key_event(key(KeyCode::Char('/')), &mut state);
+        handle_key_event(key(KeyCode::Char('u')), &mut state);
+
+        assert_eq!(state.search.query, "u", "the search line owns u");
+        assert!(state.todos.undo.is_some(), "undo did not fire");
     }
 
     // ─── f (flag) ────────────────────────────────────────────────────

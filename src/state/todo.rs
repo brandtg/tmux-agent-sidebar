@@ -1,8 +1,32 @@
 use std::path::PathBuf;
-use std::time::SystemTime;
+use std::time::{Duration, Instant, SystemTime};
 
 use super::{AppState, Focus, TodoScope};
 use crate::todo::TodoItem;
+
+/// How long a delete / clear-completed stays undoable. Matches the
+/// clear-completed flash banner's own 4-second window so the stash and
+/// the banner that names `u` as the undo key expire together (a plain
+/// delete sets no banner — `?` documents the key).
+const UNDO_WINDOW: Duration = Duration::from_secs(4);
+
+/// A delete / clear-completed stashed for the undo window. `items` keeps
+/// each removed item with its original index into `TodoState.items`;
+/// `file_stamp` is the file state the deletion landed in, so a write by
+/// another instance during the window invalidates the stash (restoring
+/// over newer external state would resurrect stale data).
+#[derive(Debug, Clone)]
+pub struct TodoUndo {
+    pub items: Vec<(usize, TodoItem)>,
+    pub deadline: Instant,
+    pub file_stamp: Option<(SystemTime, u64)>,
+    /// Whether the removal actually reached the backing file. A
+    /// failed-persistence delete / clear removes the items from memory
+    /// only — the file still holds them — so the undo must restore
+    /// memory-only, or `update_in` would insert a second copy of items
+    /// the file never lost.
+    pub landed: bool,
+}
 
 /// In-progress text edit for one item, opened with `e`. The buffer is
 /// rendered in place of the item's own text; `cursor` is a char index
@@ -43,6 +67,10 @@ pub struct TodoState {
     pub error: Option<String>,
     /// Directory backing the list. `None` means in-memory only.
     pub dir: Option<PathBuf>,
+    /// The last destructive action (delete / clear-completed) stashed for
+    /// the undo window: `u` while this is `Some` and unexpired restores
+    /// the items. A new destructive action replaces the stash.
+    pub undo: Option<TodoUndo>,
 }
 
 impl TodoState {
@@ -94,14 +122,24 @@ impl TodoState {
         }
     }
 
-    /// Indices into `items` that should render, honoring hide-completed.
+    /// Indices into `items` in display order: every open item (in
+    /// `items` order) first, then every completed item (in `items`
+    /// order) below it. With `hide_completed` on the completed section
+    /// is collapsed and only the open block is returned.
     pub fn visible_indices(&self, hide_completed: bool) -> Vec<usize> {
-        self.items
-            .iter()
-            .enumerate()
-            .filter(|(_, item)| !(hide_completed && item.done))
-            .map(|(i, _)| i)
-            .collect()
+        let mut visible = Vec::with_capacity(self.items.len());
+        let mut done = Vec::new();
+        for (i, item) in self.items.iter().enumerate() {
+            if item.done {
+                done.push(i);
+            } else {
+                visible.push(i);
+            }
+        }
+        if !hide_completed {
+            visible.extend(done);
+        }
+        visible
     }
 
     pub fn open_count(&self) -> usize {
@@ -113,9 +151,10 @@ impl TodoState {
     }
 
     /// Keep the selection on a visible item. When the selected item was
-    /// hidden (completed under hide-completed, deleted, or removed by an
-    /// external edit), move to the nearest visible item at or after the
-    /// old position, falling back to the last one.
+    /// hidden (completed while the completed section is collapsed,
+    /// deleted, or removed by an external edit), move to the nearest
+    /// visible item at or after the old position, falling back to the
+    /// last one.
     pub fn clamp_selection(&mut self, hide_completed: bool) {
         let visible = self.visible_indices(hide_completed);
         if visible.is_empty() {
@@ -210,28 +249,53 @@ impl TodoState {
         self.selected = self.items.len().saturating_sub(1);
     }
 
-    /// Delete every completed item (both visible and hidden).
-    pub fn clear_completed(&mut self, hide_completed: bool) {
+    /// Delete every completed item (both visible and hidden), stashing
+    /// them with their original indices for the undo window. Returns the
+    /// removed items in file order; empty when there was nothing to clear
+    /// (and no undo was stashed).
+    pub fn clear_completed(&mut self, hide_completed: bool) -> Vec<(usize, TodoItem)> {
         if !self.items.iter().any(|item| item.done) {
-            return;
+            return Vec::new();
         }
-        match self.dir.clone() {
-            None => self.items.retain(|item| !item.done),
-            Some(dir) => match crate::todo::update_in(&dir, |items| {
-                items.retain(|item| !item.done);
-            }) {
-                Ok(items) => {
-                    self.items = items;
-                    self.file_stamp = crate::todo::stamp_in(&dir);
-                    self.error = None;
+        let mut landed = false;
+        let removed = match self.dir.clone() {
+            None => {
+                landed = true;
+                let removed = Self::completed_entries(&self.items);
+                self.items.retain(|item| !item.done);
+                removed
+            }
+            Some(dir) => {
+                let mut disk = Vec::new();
+                match crate::todo::update_in(&dir, |items| {
+                    disk = Self::completed_entries(items);
+                    items.retain(|item| !item.done);
+                }) {
+                    Ok(items) => {
+                        self.items = items;
+                        self.file_stamp = crate::todo::stamp_in(&dir);
+                        self.error = None;
+                        landed = true;
+                        disk
+                    }
+                    Err(err) => {
+                        // Persistence failed: apply the clear in memory
+                        // only — the file still holds the completed
+                        // items, so the undo must restore memory-only
+                        // instead of writing a second copy back.
+                        let removed = Self::completed_entries(&self.items);
+                        self.items.retain(|item| !item.done);
+                        self.error = Some(format!("save failed: {err}"));
+                        removed
+                    }
                 }
-                Err(err) => {
-                    self.items.retain(|item| !item.done);
-                    self.error = Some(format!("save failed: {err}"));
-                }
-            },
+            }
+        };
+        if !removed.is_empty() {
+            self.stash(removed.clone(), landed);
         }
         self.clamp_selection(hide_completed);
+        removed
     }
 
     /// Replace the text of the item at `index`, persisting first.
@@ -267,32 +331,211 @@ impl TodoState {
         }
     }
 
-    /// Delete the item at `index`.
-    pub fn delete(&mut self, index: usize, hide_completed: bool) {
+    /// Delete the item at `index`, stashing it for the undo window.
+    /// Returns the deleted item, or `None` when nothing was deleted
+    /// (bad index, or a concurrent edit that already removed the file
+    /// slot) — no undo is stashed in that case.
+    pub fn delete(&mut self, index: usize, hide_completed: bool) -> Option<TodoItem> {
         if index >= self.items.len() {
-            return;
+            return None;
         }
-        match self.dir.clone() {
+        let mut landed = false;
+        let removed = match self.dir.clone() {
             None => {
-                self.items.remove(index);
+                landed = true;
+                Some((index, self.items.remove(index)))
             }
-            Some(dir) => match crate::todo::update_in(&dir, |items| {
-                if index < items.len() {
-                    items.remove(index);
+            Some(dir) => {
+                let mut removed = None;
+                match crate::todo::update_in(&dir, |items| {
+                    if index < items.len() {
+                        removed = Some((index, items.remove(index)));
+                    }
+                }) {
+                    Ok(items) => {
+                        // A concurrent edit that shrank the file skips
+                        // the removal; the fresh file wins (no undo).
+                        self.items = items;
+                        self.file_stamp = crate::todo::stamp_in(&dir);
+                        self.error = None;
+                        landed = true;
+                        removed
+                    }
+                    Err(err) => {
+                        // Persistence failed: the delete lands in memory
+                        // only — the file still holds the item, so the
+                        // undo must restore memory-only instead of
+                        // writing a second copy back (`TodoUndo::landed`).
+                        let item = self.items.remove(index);
+                        self.error = Some(format!("save failed: {err}"));
+                        Some((index, item))
+                    }
                 }
-            }) {
+            }
+        };
+        // A concurrent edit that shrank the file skipped the removal and
+        // left a shorter `items` behind; keep the selection pinned before
+        // either return — the `?` included.
+        self.clamp_selection(hide_completed);
+        let (index, item) = removed?;
+        self.stash(vec![(index, item.clone())], landed);
+        Some(item)
+    }
+
+    /// Record a destructive action's removals as the pending undo: the
+    /// stash is relative to the file state after the write, so a later
+    /// write by another instance invalidates it. `landed` says whether
+    /// the removal reached the backing file (see [`TodoUndo::landed`]).
+    /// A new destructive action replaces any still-pending stash.
+    fn stash(&mut self, items: Vec<(usize, TodoItem)>, landed: bool) {
+        self.undo = Some(TodoUndo {
+            deadline: Instant::now() + UNDO_WINDOW,
+            file_stamp: self.file_stamp,
+            landed,
+            items,
+        });
+    }
+
+    /// Restore the stashed items if the undo window is still open: the
+    /// deadline must not have passed and the file must not have changed
+    /// since the deletion (a write by another instance would make the
+    /// stashed indices stale — restoring over a newer state would
+    /// resurrect stale data). An invalid stash is dropped silently.
+    ///
+    /// The freshness check stats the file fresh rather than trusting the
+    /// per-tick `self.file_stamp` cache, which can lag the disk by up to
+    /// one refresh tick — an external write inside that window must still
+    /// refuse the restore.
+    ///
+    /// The items go back to their original positions: entries are
+    /// applied in descending index order, each at its original index
+    /// minus the count of still-missing earlier entries (every earlier
+    /// removed item shifted the slot left by one), so the pre-delete
+    /// order comes back. When the removal reached the file the restore
+    /// persists through `update_in` like every other mutation; on a
+    /// persistence failure the restore still lands in memory and the
+    /// error is surfaced in the panel. When the removal never reached
+    /// the file (failed persistence) the restore is memory-only — the
+    /// file still holds the items, and a write would duplicate them.
+    pub fn undo(&mut self, hide_completed: bool) -> bool {
+        let Some(undo) = self.undo.take() else {
+            return false;
+        };
+        if Instant::now() >= undo.deadline {
+            return false;
+        }
+        if let Some(dir) = self.dir.clone()
+            && crate::todo::stamp_in(&dir) != undo.file_stamp
+        {
+            return false;
+        }
+        let mut entries = undo.items;
+        entries.sort_unstable_by_key(|(index, _)| *index);
+        let restore = |items: &mut Vec<TodoItem>| {
+            for (rank, (index, item)) in entries.iter().enumerate().rev() {
+                // `rank` stashed entries sit earlier in the original
+                // order and are still missing, each shifting this slot
+                // left by one.
+                let position = (index - rank).min(items.len());
+                items.insert(position, item.clone());
+            }
+        };
+        match self.dir.clone() {
+            None => restore(&mut self.items),
+            // The removal reached the file: the restore is a write like
+            // any other mutation.
+            Some(dir) if undo.landed => match crate::todo::update_in(&dir, restore) {
                 Ok(items) => {
                     self.items = items;
                     self.file_stamp = crate::todo::stamp_in(&dir);
                     self.error = None;
                 }
                 Err(err) => {
-                    self.items.remove(index);
+                    restore(&mut self.items);
                     self.error = Some(format!("save failed: {err}"));
                 }
             },
+            // The removal never reached the file: memory is the only
+            // place the items are missing, so restoring there lands back
+            // in sync — which also retires the stale save error.
+            Some(_) => {
+                restore(&mut self.items);
+                self.error = None;
+            }
         }
         self.clamp_selection(hide_completed);
+        true
+    }
+
+    /// The completed items with their indices into `items`.
+    fn completed_entries(items: &[TodoItem]) -> Vec<(usize, TodoItem)> {
+        items
+            .iter()
+            .enumerate()
+            .filter(|(_, item)| item.done)
+            .map(|(index, item)| (index, item.clone()))
+            .collect()
+    }
+
+    /// Move the item at `index` one position up or down **within the open
+    /// block**: it swaps with its open neighbor in file order, so a
+    /// completed item may sit between them, but the moved item never
+    /// enters or crosses the completed block (done items are a
+    /// graveyard, not reorderable work). A move of a completed item, a
+    /// bad index, or a move at the block boundary is a no-op.
+    ///
+    /// Persists through `update_in` when a backing directory exists; on a
+    /// persistence failure the swap still lands in memory and the error is
+    /// surfaced in the panel (same policy as [`Self::delete`]). Returns
+    /// the item's new index when it moved. Selection is index-based, so a
+    /// concurrent edit from another instance can drift the mapping; that
+    /// is accepted for now (no stable IDs in the file format).
+    pub fn move_item(&mut self, index: usize, delta: isize) -> Option<usize> {
+        let open: Vec<usize> = self
+            .items
+            .iter()
+            .enumerate()
+            .filter(|(_, item)| !item.done)
+            .map(|(i, _)| i)
+            .collect();
+        // `pos` is the item's rank in the open block; `None` means the
+        // index is bad or points at a completed item.
+        let pos = open.iter().position(|&i| i == index)?;
+        let target = pos as isize + delta;
+        if target < 0 || target >= open.len() as isize {
+            return None;
+        }
+        let partner = open[target as usize];
+        let moved = match self.dir.clone() {
+            None => {
+                self.items.swap(index, partner);
+                true
+            }
+            Some(dir) => {
+                let swapped = &mut false;
+                match crate::todo::update_in(&dir, |items| {
+                    if index < items.len() && partner < items.len() {
+                        items.swap(index, partner);
+                        *swapped = true;
+                    }
+                }) {
+                    Ok(items) => {
+                        // A concurrent edit that shrank the file skips the
+                        // swap; the fresh file then wins (the move is lost).
+                        self.items = items;
+                        self.file_stamp = crate::todo::stamp_in(&dir);
+                        self.error = None;
+                        *swapped
+                    }
+                    Err(err) => {
+                        self.items.swap(index, partner);
+                        self.error = Some(format!("save failed: {err}"));
+                        true
+                    }
+                }
+            }
+        };
+        moved.then_some(partner)
     }
 }
 
@@ -369,6 +612,24 @@ impl AppState {
             .move_selection(delta, self.global.todo_hide_completed)
     }
 
+    /// Move the selected item one position up or down within the open
+    /// block; the selection follows it. A no-op for a completed
+    /// selection, an empty list, or a boundary position.
+    pub fn move_todo_selected(&mut self, delta: isize) -> bool {
+        match self.todos.move_item(self.todos.selected, delta) {
+            Some(new_index) => {
+                self.todos.selected = new_index;
+                true
+            }
+            None => {
+                // No-op, or a concurrent edit invalidated the move: keep
+                // the selection on a visible item either way.
+                self.todos.clamp_selection(self.global.todo_hide_completed);
+                false
+            }
+        }
+    }
+
     /// Continue a downward walk from the agent list into the TODO panel:
     /// focus the panel landing on the first visible item. Only works when
     /// the panel is already visible and has items to show — a hidden
@@ -414,13 +675,29 @@ impl AppState {
         self.todos.toggle(index, self.global.todo_hide_completed);
     }
 
+    /// Delete the selected item. No banner: the list changing is the
+    /// feedback, and the undo window is documented under `?` (`u` /
+    /// Ctrl-z). The stash still expires after [`UNDO_WINDOW`].
     pub fn delete_todo_selected(&mut self) {
         let index = self.todos.selected;
         self.todos.delete(index, self.global.todo_hide_completed);
     }
 
+    /// Clear the completed section and offer the 4-second undo window
+    /// through the flash banner.
     pub fn clear_completed_todos(&mut self) {
-        self.todos.clear_completed(self.global.todo_hide_completed);
+        let removed = self.todos.clear_completed(self.global.todo_hide_completed);
+        if removed.is_empty() {
+            return;
+        }
+        self.set_flash(format!("cleared {} completed · u to undo", removed.len()));
+    }
+
+    /// Restore the last delete / clear-completed while its undo window
+    /// is open. A silent no-op once the window has passed, the file
+    /// changed since the deletion, or there is no pending stash.
+    pub fn undo_todo_last(&mut self) -> bool {
+        self.todos.undo(self.global.todo_hide_completed)
     }
 
     /// Open the inline add line, focusing the panel first.
@@ -432,17 +709,18 @@ impl AppState {
     }
 
     /// Commit the add line and immediately start a fresh one so several
-    /// items can be entered in a row (Google Tasks style). A
-    /// whitespace-only line adds nothing but keeps the input open; Esc
-    /// ends the streak.
+    /// items can be entered in a row (Google Tasks style). An empty
+    /// input ends the streak instead — there is nothing to create, so
+    /// Enter finishes and insert mode closes, exactly like Esc.
     pub fn commit_todo_add(&mut self) {
         let Some(input) = self.todos.adding.take() else {
             return;
         };
-        if !input.trim().is_empty() {
-            self.todos.add(input);
-            self.todos.clamp_selection(self.global.todo_hide_completed);
+        if input.trim().is_empty() {
+            return;
         }
+        self.todos.add(input);
+        self.todos.clamp_selection(self.global.todo_hide_completed);
         self.todos.adding = Some(String::new());
     }
 
@@ -450,13 +728,31 @@ impl AppState {
         self.todos.adding = None;
     }
 
+    /// Enter in the panel — Google's Return: the selected task opens for
+    /// editing; with no task under the selection (empty list, or a stale
+    /// index after an external edit) it starts a new one instead.
+    pub fn todo_enter(&mut self) {
+        if self.todos.selected >= self.todos.items.len() {
+            self.begin_todo_add();
+        } else {
+            self.begin_todo_edit();
+        }
+    }
+
     /// Start editing the selected item's text in place, prefilled with
-    /// its current text and the cursor at the end.
+    /// its current text and the cursor at the end. A no-op for a
+    /// completed item: the done block is a graveyard (the rule the
+    /// reorder lives by), so the editor never opens on struck-through
+    /// text — uncheck the item first to re-work it. This guard also
+    /// covers the mouse's click-to-edit path, which routes through here.
     pub fn begin_todo_edit(&mut self) {
         let index = self.todos.selected;
         let Some(item) = self.todos.items.get(index) else {
             return;
         };
+        if item.done {
+            return;
+        }
         let input = item.text.clone();
         let cursor = input.chars().count();
         self.todos.adding = None;
@@ -478,6 +774,14 @@ impl AppState {
         }
         self.todos.set_text(edit.index, edit.input);
         self.todos.clamp_selection(self.global.todo_hide_completed);
+    }
+
+    /// Enter while editing — the editor's newline: save the text and
+    /// open a fresh insert line for the next task, Google Tasks style.
+    /// The edit itself keeps the empty-means-unchanged rule.
+    pub fn commit_todo_edit_and_next(&mut self) {
+        self.commit_todo_edit();
+        self.begin_todo_add();
     }
 
     pub fn cancel_todo_edit(&mut self) {
@@ -719,10 +1023,84 @@ mod tests {
     }
 
     #[test]
-    fn visible_indices_hide_completed() {
+    fn visible_indices_lists_open_items_before_completed() {
         let state = state_with(vec![item("a", false), item("b", true), item("c", false)]);
-        assert_eq!(state.todos.visible_indices(false), vec![0, 1, 2]);
-        assert_eq!(state.todos.visible_indices(true), vec![0, 2]);
+        assert_eq!(
+            state.todos.visible_indices(false),
+            vec![0, 2, 1],
+            "expanded: open block first, then the completed block, each in items order"
+        );
+        assert_eq!(
+            state.todos.visible_indices(true),
+            vec![0, 2],
+            "collapsed: only the open block"
+        );
+    }
+
+    #[test]
+    fn h_collapses_and_expands_the_completed_section() {
+        let mut state = state_with(vec![item("a", false), item("b", true)]);
+        state.global.todo_hide_completed = false;
+        assert_eq!(
+            state
+                .todos
+                .visible_indices(state.global.todo_hide_completed),
+            vec![0, 1]
+        );
+
+        state.toggle_todo_hide_completed();
+
+        assert!(state.global.todo_hide_completed, "the shared flag flips");
+        assert_eq!(
+            state
+                .todos
+                .visible_indices(state.global.todo_hide_completed),
+            vec![0],
+            "collapsed: only the open block is visible"
+        );
+
+        state.toggle_todo_hide_completed();
+        assert!(!state.global.todo_hide_completed);
+        assert_eq!(
+            state
+                .todos
+                .visible_indices(state.global.todo_hide_completed),
+            vec![0, 1]
+        );
+    }
+
+    #[test]
+    fn navigation_reaches_completed_items_when_expanded() {
+        let mut state = state_with(vec![item("a", false), item("b", true)]);
+        state.global.todo_hide_completed = false;
+        state.todos.selected = 0;
+
+        assert!(state.move_todo_selection(1));
+        assert_eq!(
+            state.todos.selected, 1,
+            "j/k walks into the completed block"
+        );
+        assert!(!state.move_todo_selection(1), "clamped at the end");
+    }
+
+    #[test]
+    fn unchecking_a_completed_item_keeps_selection_on_it() {
+        let mut state = state_with(vec![item("a", false), item("b", true), item("c", true)]);
+        state.global.todo_hide_completed = false; // section expanded
+        state.todos.selected = 1;
+
+        state.toggle_todo_selected();
+
+        assert!(!state.todos.items[1].done);
+        assert_eq!(
+            state.todos.selected, 1,
+            "the item stays selected, now inside the open block"
+        );
+        assert_eq!(
+            state.todos.visible_indices(false),
+            vec![0, 1, 2],
+            "display order is derived: open block first, in items order"
+        );
     }
 
     #[test]
@@ -796,17 +1174,65 @@ mod tests {
     }
 
     #[test]
-    fn blank_add_is_ignored() {
+    fn blank_add_finishes_insert_mode() {
         let mut state = state_with(vec![]);
         state.begin_todo_add();
         state.todo_input_push_char(' ');
         state.commit_todo_add();
         assert!(state.todos.items.is_empty());
         assert_eq!(
+            state.todos.adding, None,
+            "Enter on an empty line ends the streak, like Google's empty Return"
+        );
+    }
+
+    #[test]
+    fn enter_edits_the_selected_task_or_starts_a_new_one() {
+        // With a selection, Enter opens the editor on that item.
+        let mut state = state_with(vec![item("a", false)]);
+        state.todo_enter();
+        assert_eq!(state.todos.editing.as_ref().unwrap().index, 0);
+
+        // With no items, Enter starts a new task instead.
+        let mut empty = state_with(vec![]);
+        empty.todo_enter();
+        assert!(empty.todos.editing.is_none());
+        assert_eq!(empty.todos.adding.as_deref(), Some(""));
+    }
+
+    #[test]
+    fn enter_while_editing_saves_and_opens_the_next_task() {
+        let mut state = state_with(vec![item("old", false)]);
+        state.todos.selected = 0;
+        state.begin_todo_edit();
+        state.todo_input_clear();
+        for c in "renamed".chars() {
+            state.todo_input_push_char(c);
+        }
+
+        state.commit_todo_edit_and_next();
+
+        assert_eq!(state.todos.items[0].text, "renamed", "the edit saved");
+        assert!(state.todos.editing.is_none());
+        assert_eq!(
             state.todos.adding.as_deref(),
             Some(""),
-            "a blank Enter keeps the input open"
+            "insert mode opens for the next task"
         );
+        assert_eq!(state.focus_state.focus, Focus::Todos);
+
+        // The next Enter adds the task and keeps the streak going.
+        for c in "next".chars() {
+            state.todo_input_push_char(c);
+        }
+        state.commit_todo_add();
+        assert_eq!(state.todos.items.len(), 2);
+        assert_eq!(state.todos.items[1].text, "next");
+        assert_eq!(state.todos.adding.as_deref(), Some(""));
+
+        // Enter on the empty buffer finishes the streak.
+        state.commit_todo_add();
+        assert_eq!(state.todos.adding, None);
     }
 
     #[test]
@@ -902,6 +1328,22 @@ mod tests {
     }
 
     #[test]
+    fn editing_a_done_item_is_a_no_op() {
+        let mut state = state_with(vec![item("a", false), item("b", true)]);
+        state.global.todo_hide_completed = false;
+        state.todos.selected = 1; // the done item
+
+        state.begin_todo_edit();
+
+        assert!(
+            state.todos.editing.is_none(),
+            "the editor never opens on struck-through text"
+        );
+        assert_eq!(state.todos.items[1].text, "b");
+        assert!(state.todos.items[1].done);
+    }
+
+    #[test]
     fn escape_cancels_the_edit_without_changing_the_item() {
         let mut state = state_with(vec![item("original", false)]);
         state.todos.selected = 0;
@@ -913,6 +1355,118 @@ mod tests {
         assert!(state.todos.editing.is_none());
         assert_eq!(state.todos.items[0].text, "original");
         assert_eq!(state.focus_state.focus, Focus::Todos);
+    }
+
+    #[test]
+    fn move_item_swaps_with_the_open_neighbor_in_file_order() {
+        let mut state = state_with(vec![
+            item("a", false),
+            item("b", true),
+            item("c", false),
+            item("d", false),
+        ]);
+        state.todos.selected = 2; // c
+
+        assert!(state.move_todo_selected(-1));
+
+        assert_eq!(
+            state
+                .todos
+                .items
+                .iter()
+                .map(|i| i.text.as_str())
+                .collect::<Vec<_>>(),
+            vec!["c", "b", "a", "d"],
+            "c swaps with a across the done b; done items stay put"
+        );
+        assert!(state.todos.items[1].done);
+        assert_eq!(state.todos.selected, 0, "selection follows the moved item");
+    }
+
+    #[test]
+    fn move_item_is_a_no_op_at_the_open_block_boundaries() {
+        let mut state = state_with(vec![item("a", false), item("b", true), item("c", false)]);
+        state.global.todo_hide_completed = false;
+
+        state.todos.selected = 0;
+        assert!(!state.move_todo_selected(-1), "top of the open block");
+
+        state.todos.selected = 2;
+        assert!(!state.move_todo_selected(1), "bottom of the open block");
+        assert_eq!(
+            state
+                .todos
+                .items
+                .iter()
+                .map(|i| i.text.as_str())
+                .collect::<Vec<_>>(),
+            vec!["a", "b", "c"],
+            "nothing moved"
+        );
+        assert_eq!(state.todos.selected, 2);
+    }
+
+    #[test]
+    fn moving_a_completed_item_is_a_no_op() {
+        let mut state = state_with(vec![item("a", false), item("b", true)]);
+        state.global.todo_hide_completed = false;
+        state.todos.selected = 1;
+
+        assert!(!state.move_todo_selected(1));
+        assert!(!state.move_todo_selected(-1));
+        assert_eq!(state.todos.selected, 1);
+        assert_eq!(
+            state
+                .todos
+                .items
+                .iter()
+                .map(|i| i.text.as_str())
+                .collect::<Vec<_>>(),
+            vec!["a", "b"]
+        );
+    }
+
+    #[test]
+    fn move_item_rejects_bad_indexes_and_empty_lists() {
+        let mut todos = TodoState::default();
+        assert!(todos.move_item(0, 1).is_none(), "empty list");
+        todos.items = vec![item("a", false), item("b", true)];
+        assert!(todos.move_item(5, 1).is_none(), "bad index");
+        assert!(
+            todos.move_item(1, 1).is_none(),
+            "completed items never reorder"
+        );
+    }
+
+    #[test]
+    fn move_item_persists_through_update_in() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut state = AppState::new("%99".into());
+        state.todos.attach(Some(tmp.path().to_path_buf()));
+        state.todos.add("a".into());
+        state.todos.add("b".into());
+        state.todos.add("c".into());
+        state.todos.toggle(1, false); // b done, now interleaved between a and c
+        state.todos.selected = 0;
+
+        assert!(state.move_todo_selected(1));
+
+        assert_eq!(
+            state
+                .todos
+                .items
+                .iter()
+                .map(|i| i.text.as_str())
+                .collect::<Vec<_>>(),
+            vec!["c", "b", "a"],
+            "a moves below c, around the done b"
+        );
+        assert_eq!(state.todos.selected, 2);
+        assert_eq!(
+            crate::todo::load_in(tmp.path()).unwrap(),
+            state.todos.items,
+            "the on-disk file agrees with memory"
+        );
     }
 
     #[test]
@@ -941,6 +1495,320 @@ mod tests {
         state.delete_todo_selected();
         assert_eq!(state.todos.items.len(), 1);
         assert_eq!(state.todos.selected, 0);
+    }
+
+    // ─── undo (delete / clear-completed) ────────────────────────────
+
+    #[test]
+    fn undo_restores_a_deleted_item_at_its_original_index() {
+        let mut state = state_with(vec![item("a", false), item("b", false), item("c", false)]);
+        state.todos.selected = 1;
+
+        state.delete_todo_selected();
+        assert_eq!(state.todos.items.len(), 2);
+        assert!(state.todos.undo.is_some(), "the delete stashes the item");
+
+        state.undo_todo_last();
+
+        assert_eq!(
+            state
+                .todos
+                .items
+                .iter()
+                .map(|i| i.text.as_str())
+                .collect::<Vec<_>>(),
+            vec!["a", "b", "c"],
+            "b is back in its original slot"
+        );
+        assert!(state.todos.undo.is_none(), "the stash is consumed");
+        assert_eq!(state.todos.selected, 1, "selection lands back on b");
+    }
+
+    #[test]
+    fn undo_restores_cleared_completed_items_at_their_original_indices() {
+        let mut state = state_with(vec![
+            item("a", true),
+            item("b", false),
+            item("c", true),
+            item("d", false),
+        ]);
+
+        state.clear_completed_todos();
+        assert_eq!(state.todos.items.len(), 2);
+
+        state.undo_todo_last();
+
+        assert_eq!(
+            state.todos.items.len(),
+            4,
+            "the file order comes back whole"
+        );
+        assert!(state.todos.items[0].done && state.todos.items[0].text == "a");
+        assert!(!state.todos.items[1].done && state.todos.items[1].text == "b");
+        assert!(state.todos.items[2].done && state.todos.items[2].text == "c");
+        assert!(!state.todos.items[3].done && state.todos.items[3].text == "d");
+        assert!(state.todos.undo.is_none());
+    }
+
+    #[test]
+    fn undo_is_a_no_op_after_the_deadline() {
+        let mut state = state_with(vec![item("a", false), item("b", false)]);
+        state.todos.selected = 0;
+        state.delete_todo_selected();
+
+        // Rewind the deadline into the past: the window has passed.
+        state.todos.undo.as_mut().unwrap().deadline = Instant::now() - Duration::from_secs(1);
+
+        assert!(!state.undo_todo_last());
+        assert_eq!(
+            state.todos.items.len(),
+            1,
+            "the expired stash is dropped with the item gone"
+        );
+        assert!(state.todos.undo.is_none());
+    }
+
+    #[test]
+    fn undo_with_no_pending_stash_is_a_no_op() {
+        let mut state = state_with(vec![item("a", false)]);
+        assert!(!state.undo_todo_last());
+        assert_eq!(state.todos.items.len(), 1);
+        assert!(state.todos.undo.is_none());
+    }
+
+    #[test]
+    fn a_new_destructive_action_replaces_the_undo_stash() {
+        let mut state = state_with(vec![item("a", false), item("b", false), item("c", false)]);
+        state.todos.selected = 1;
+        state.delete_todo_selected(); // stash b
+        state.todos.selected = 0;
+        state.delete_todo_selected(); // stash a, replacing b
+
+        state.undo_todo_last();
+
+        assert_eq!(
+            state
+                .todos
+                .items
+                .iter()
+                .map(|i| i.text.as_str())
+                .collect::<Vec<_>>(),
+            vec!["a", "c"],
+            "only the newest deletion is undoable"
+        );
+    }
+
+    #[test]
+    fn delete_sets_no_flash_banner() {
+        let mut state = state_with(vec![item("old", false), item("keep", false)]);
+        state.todos.selected = 0;
+
+        state.delete_todo_selected();
+
+        assert_eq!(state.todos.items.len(), 1);
+        assert!(
+            state.flash.is_none(),
+            "the list changing is the feedback; no banner"
+        );
+        assert!(state.todos.undo.is_some(), "the undo stash still arms");
+    }
+
+    #[test]
+    fn clear_completed_flashes_the_undo_banner() {
+        let mut state = state_with(vec![item("a", true), item("b", true), item("c", false)]);
+
+        state.clear_completed_todos();
+
+        assert_eq!(
+            state.flash.as_ref().map(|(text, _)| text.as_str()),
+            Some("cleared 2 completed · u to undo")
+        );
+    }
+
+    #[test]
+    fn a_changeless_delete_or_clear_stashes_and_flashes_nothing() {
+        let mut state = state_with(Vec::new());
+        state.delete_todo_selected();
+        assert!(state.todos.undo.is_none());
+        assert!(state.flash.is_none(), "an empty-list delete is a no-op");
+
+        state.todos.items = vec![item("open", false)];
+        state.clear_completed_todos();
+        assert!(state.todos.undo.is_none());
+        assert!(state.flash.is_none(), "a no-completed clear is a no-op");
+    }
+
+    #[test]
+    fn undo_persists_the_restore_through_update_in() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut state = AppState::new("%99".into());
+        state.todos.attach(Some(tmp.path().to_path_buf()));
+        state.todos.add("a".into());
+        state.todos.add("b".into());
+        state.todos.add("c".into());
+        state.todos.selected = 1;
+        state.delete_todo_selected();
+        assert_eq!(crate::todo::load_in(tmp.path()).unwrap().len(), 2);
+
+        state.undo_todo_last();
+
+        assert_eq!(
+            state
+                .todos
+                .items
+                .iter()
+                .map(|i| i.text.as_str())
+                .collect::<Vec<_>>(),
+            vec!["a", "b", "c"]
+        );
+        assert_eq!(
+            crate::todo::load_in(tmp.path()).unwrap(),
+            state.todos.items,
+            "the on-disk file agrees with memory after the restore"
+        );
+    }
+
+    #[test]
+    fn undo_of_cleared_completed_persists_through_update_in() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut state = AppState::new("%99".into());
+        state.todos.attach(Some(tmp.path().to_path_buf()));
+        state.todos.add("a".into());
+        state.todos.toggle(0, false);
+        state.todos.add("b".into());
+        state.todos.toggle(1, false);
+
+        state.clear_completed_todos();
+        assert!(state.todos.items.is_empty());
+
+        state.undo_todo_last();
+
+        assert_eq!(state.todos.items.len(), 2);
+        assert!(state.todos.items[0].done && state.todos.items[0].text == "a");
+        assert!(state.todos.items[1].done && state.todos.items[1].text == "b");
+        assert_eq!(crate::todo::load_in(tmp.path()).unwrap(), state.todos.items,);
+    }
+
+    #[test]
+    fn undo_after_a_failed_persistence_delete_does_not_duplicate_on_disk() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut state = AppState::new("%99".into());
+        state.todos.attach(Some(tmp.path().to_path_buf()));
+        state.todos.add("a".into());
+        state.todos.add("b".into());
+        state.todos.add("c".into());
+        state.todos.selected = 1;
+
+        // Break writes only: swapping the lock file for a directory makes
+        // update_in fail at the lock (O_RDWR on a directory) while the
+        // list file — and its stamp — stay readable.
+        std::fs::remove_file(tmp.path().join("todos.lock")).unwrap();
+        std::fs::create_dir(tmp.path().join("todos.lock")).unwrap();
+
+        state.delete_todo_selected();
+        assert_eq!(state.todos.items.len(), 2, "the delete applied in memory");
+        assert!(state.todos.error.is_some(), "the save failure is surfaced");
+
+        state.undo_todo_last();
+
+        assert_eq!(
+            state
+                .todos
+                .items
+                .iter()
+                .map(|i| i.text.as_str())
+                .collect::<Vec<_>>(),
+            vec!["a", "b", "c"],
+            "memory is restored"
+        );
+        assert_eq!(
+            crate::todo::load_in(tmp.path()).unwrap(),
+            vec![item("a", false), item("b", false), item("c", false)],
+            "the file never lost b, so the restore must not write a second copy"
+        );
+        assert!(
+            state.todos.error.is_none(),
+            "memory is back in sync with the file, so the error retires"
+        );
+    }
+
+    #[test]
+    fn undo_drops_the_stash_when_the_file_changed_since_delete() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut state = AppState::new("%99".into());
+        state.todos.attach(Some(tmp.path().to_path_buf()));
+        state.todos.add("a".into());
+        state.todos.add("b".into());
+        state.todos.selected = 0;
+        state.delete_todo_selected();
+
+        // Another instance edits the list while the window is open; the
+        // per-tick refresh picks it up and moves the stamp.
+        crate::todo::update_in(tmp.path(), |items| {
+            items.push(TodoItem {
+                text: "c".into(),
+                done: false,
+            });
+        })
+        .unwrap();
+        state
+            .todos
+            .refresh_if_changed(state.global.todo_hide_completed);
+
+        assert!(!state.undo_todo_last(), "the stale stash is refused");
+
+        assert_eq!(
+            state
+                .todos
+                .items
+                .iter()
+                .map(|i| i.text.as_str())
+                .collect::<Vec<_>>(),
+            vec!["b", "c"],
+            "the external state stands; the deleted item stays gone"
+        );
+        assert!(state.todos.undo.is_none());
+    }
+
+    #[test]
+    fn undo_refuses_an_external_write_without_waiting_for_the_refresh_tick() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut state = AppState::new("%99".into());
+        state.todos.attach(Some(tmp.path().to_path_buf()));
+        state.todos.add("a".into());
+        state.todos.add("b".into());
+        state.todos.selected = 0;
+        state.delete_todo_selected();
+
+        // Another instance writes while the per-tick stamp cache is still
+        // stale: no refresh_if_changed runs, so the cached stamp still
+        // matches the stash — the fresh stat at undo time must catch it.
+        crate::todo::update_in(tmp.path(), |items| {
+            items.push(TodoItem {
+                text: "c".into(),
+                done: false,
+            });
+        })
+        .unwrap();
+
+        assert!(!state.undo_todo_last(), "the restore is refused");
+
+        assert_eq!(
+            state
+                .todos
+                .items
+                .iter()
+                .map(|i| i.text.as_str())
+                .collect::<Vec<_>>(),
+            vec!["b"],
+            "nothing is resurrected over the newer external state"
+        );
+        assert_eq!(
+            crate::todo::load_in(tmp.path()).unwrap().len(),
+            2,
+            "the external write stands untouched"
+        );
+        assert!(state.todos.undo.is_none());
     }
 
     #[test]

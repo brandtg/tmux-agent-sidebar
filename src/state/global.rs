@@ -111,7 +111,8 @@ pub struct GlobalState {
     /// Hide completed TODO items in the manual TODO panel. Toggleable at
     /// runtime with `H` while the panel has focus; shared across open
     /// sidebars via `@sidebar_todo_hide_completed` and seeded by
-    /// `@sidebar_default_todo_hide_completed` (default on).
+    /// `@sidebar_default_todo_hide_completed` (default off: completed
+    /// items stay visible, struck through).
     pub todo_hide_completed: bool,
     /// Whether the manual TODO panel is open. Shared across open sidebars
     /// via `@sidebar_todo_visible` when [`Self::todo_scope`] is
@@ -168,7 +169,10 @@ impl GlobalState {
             repo_filter: RepoFilter::All,
             compact: false,
             show_windows: false,
-            todo_hide_completed: true,
+            // Google Tasks shows completed items at the bottom, struck
+            // through; `H` (or `@sidebar_default_todo_hide_completed`)
+            // opts into the collapsed view.
+            todo_hide_completed: false,
             todo_visible: false,
             todo_scope: TodoScope::default(),
             group_by: GroupBy::default(),
@@ -433,7 +437,9 @@ impl GlobalState {
     pub fn default_todo_hide_completed_from_options(opts: &HashMap<String, String>) -> bool {
         opts.get(tmux::SIDEBAR_DEFAULT_TODO_HIDE_COMPLETED)
             .map(|s| matches!(s.trim().to_ascii_lowercase().as_str(), "on" | "true" | "1"))
-            .unwrap_or(true)
+            // Google Tasks shows completed items struck at the bottom;
+            // collapsing is the opt-in.
+            .unwrap_or(false)
     }
 
     /// Parse `@sidebar_default_todo_visible` into the landing panel
