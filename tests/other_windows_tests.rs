@@ -65,9 +65,7 @@ fn snapshot_other_windows_rendered() {
     ┃ ○ claude
         Waiting for prompt…
       ◆ cargo
-        main · 0:cargo test
       ◆ nvim
-        main · 0:nvim
     ");
 }
 
@@ -139,9 +137,7 @@ fn snapshot_other_windows_with_args_rendered() {
     ┃ ○ claude
         Waiting for prompt…
       ◆ node server.js
-        main · 0:web
       ◆ cargo test --lib
-        main · 1:tests
     ");
 }
 
@@ -174,7 +170,6 @@ fn snapshot_other_windows_visible_under_matching_status_filter() {
     ⓘ                              — ▾
     project
       ◆ cargo
-        main · 0:cargo test
     ");
 }
 

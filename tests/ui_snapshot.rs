@@ -658,6 +658,5 @@ fn snapshot_window_row_keeps_marker_when_windows_visible() {
       ○ codex
         Waiting for prompt…
     ┃ ◆ nvim
-        main · 0:editor
     ");
 }
