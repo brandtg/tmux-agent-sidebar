@@ -33,7 +33,9 @@ pub(super) fn init_state(tmux_pane: String) -> AppState {
     // Populate session names synchronously before the refresh so
     // `/rename`-assigned labels show up on the very first frame —
     // `refresh` applies the map to every pane at the end of each pass.
-    state.sessions.names = session::scan_session_names();
+    let scanned = session::scan_session_names();
+    state.sessions.names = scanned.names;
+    state.sessions.derived = scanned.derived;
     state.refresh();
 
     // A popup never sees the event loop's focus-gain transition: it has

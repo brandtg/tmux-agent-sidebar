@@ -40,6 +40,8 @@ pub(super) fn render_pane_lines_with_ports(
     now: u64,
     preview_lines: usize,
 ) -> Vec<Line<'static>> {
+    let row_git = crate::ui::text::row_git_info(pane, git_info);
+    let git_info: &crate::group::PaneGitInfo = &row_git;
     let bg = if selected {
         Some(theme.selection_bg)
     } else {
@@ -130,6 +132,8 @@ pub(super) fn compact_row(
     spinner_frame: usize,
     now: u64,
 ) -> Vec<Line<'static>> {
+    let row_git = crate::ui::text::row_git_info(pane, git_info);
+    let git_info: &crate::group::PaneGitInfo = &row_git;
     let bg = if selected {
         Some(theme.selection_bg)
     } else {
