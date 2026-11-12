@@ -131,7 +131,63 @@ pub(in crate::cli::hook) fn sync_pane_location(
         // returned when children are active.
         sync_launch_anchor(pane, cwd, worktree, false);
     }
-    sync_worktree_meta(pane, worktree);
+    sync_worktree_meta(pane, &with_live_worktree(pane, worktree));
+}
+
+/// Fill in a worktree name and branch the payload left out. Claude sends
+/// neither when a session enters an existing worktree by path, but the
+/// agent process itself moves there, so the pane's live directory says
+/// which linked worktree (if any) it is working in.
+fn with_live_worktree(pane: &str, worktree: &Option<WorktreeInfo>) -> Option<WorktreeInfo> {
+    if let Some(wt) = worktree
+        && (!wt.name.is_empty() || !wt.branch.is_empty())
+    {
+        return worktree.clone();
+    }
+    let path = match worktree {
+        Some(wt) if !wt.path.is_empty() => wt.path.clone(),
+        _ => tmux::display_message(pane, "#{pane_current_path}"),
+    };
+    match linked_worktree_at(&path) {
+        Some((root, branch)) => Some(WorktreeInfo {
+            name: root.rsplit('/').next().unwrap_or_default().to_string(),
+            path: root,
+            branch,
+            original_repo_dir: worktree
+                .as_ref()
+                .map(|wt| wt.original_repo_dir.clone())
+                .unwrap_or_default(),
+        }),
+        None => worktree.clone(),
+    }
+}
+
+/// Root and branch of the linked worktree containing `path`, or `None`
+/// for a main checkout, a non-repo directory, or a detached HEAD.
+fn linked_worktree_at(path: &str) -> Option<(String, String)> {
+    if path.is_empty() {
+        return None;
+    }
+    let out = crate::git::run_git(
+        path,
+        &[
+            "rev-parse",
+            "--path-format=absolute",
+            "--git-dir",
+            "--git-common-dir",
+            "--show-toplevel",
+            "--abbrev-ref",
+            "HEAD",
+        ],
+    )?;
+    let lines: Vec<&str> = out.lines().collect();
+    let [git_dir, common_dir, root, branch] = lines.as_slice() else {
+        return None;
+    };
+    if git_dir == common_dir || *branch == "HEAD" {
+        return None;
+    }
+    Some((root.to_string(), branch.to_string()))
 }
 
 /// Returns true if pane-scoped writes from this hook event are safe to
@@ -150,6 +206,55 @@ mod tests {
     // every test that touches TMUX_AGENT_SIDEBAR_BIND_SESSION holds this so
     // concurrent sync_pane_location tests cannot observe the flag.
     static BIND_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn git(dir: &std::path::Path, args: &[&str]) {
+        let output = std::process::Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args([
+                "-c",
+                "user.name=test",
+                "-c",
+                "user.email=test@example.com",
+                "-c",
+                "commit.gpgsign=false",
+            ])
+            .args(args)
+            .output()
+            .expect("spawn git");
+        assert!(
+            output.status.success(),
+            "git {args:?} failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    #[test]
+    fn linked_worktree_at_reports_linked_worktrees_only() {
+        let tmp = tempfile::tempdir().expect("temp dir");
+        let main = tmp.path().join("main");
+        std::fs::create_dir_all(&main).expect("mkdir main");
+        git(&main, &["init", "-q", "-b", "main"]);
+        git(&main, &["commit", "-q", "--allow-empty", "-m", "init"]);
+        let linked = tmp.path().join("feat-wt");
+        git(
+            &main,
+            &[
+                "worktree",
+                "add",
+                "-q",
+                "-b",
+                "feat/x",
+                linked.to_str().unwrap(),
+            ],
+        );
+
+        assert_eq!(linked_worktree_at(main.to_str().unwrap()), None);
+        let (root, branch) = linked_worktree_at(linked.to_str().unwrap()).expect("linked worktree");
+        assert!(root.ends_with("/feat-wt"), "unexpected root {root}");
+        assert_eq!(branch, "feat/x");
+        assert_eq!(linked_worktree_at(tmp.path().to_str().unwrap()), None);
+    }
 
     #[test]
     fn resolve_cwd_prefers_worktree_original_repo_dir() {
