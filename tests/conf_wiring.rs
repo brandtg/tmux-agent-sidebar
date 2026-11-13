@@ -103,3 +103,17 @@ fn sidebar_session_windows_is_seeded_to_off() {
         "agent-sidebar.conf must seed @sidebar_session_windows off"
     );
 }
+
+#[test]
+fn sidebar_worktree_windows_is_seeded_to_off() {
+    // The repo-mode window level mirrors `session_windows`: defaults to
+    // off, seeded so the default is visible via
+    // `tmux show -g @sidebar_worktree_windows` (and `apply_all` treats
+    // unset as off regardless).
+    assert!(
+        CONF.contains(
+            "if -F '#{==:#{@sidebar_worktree_windows},}' 'set -g @sidebar_worktree_windows off'"
+        ),
+        "agent-sidebar.conf must seed @sidebar_worktree_windows off"
+    );
+}

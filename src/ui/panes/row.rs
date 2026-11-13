@@ -519,10 +519,12 @@ pub(super) fn window_row(
     vec![ctx.row_line_split(left_spans, left_width, right_spans, right_width)]
 }
 
-/// The session-mode window level header: one muted `index:name` line
-/// above each window's rows when `@sidebar_session_windows` is on and
-/// the panel is grouped by session — the `Session > Window >
-/// agent|process` hierarchy. Indented one column under the session
+/// The group's window level header: one muted `index:name` line
+/// above each window's rows when the mode's window option is on
+/// (`@sidebar_session_windows` grouped by session,
+/// `@sidebar_worktree_windows` grouped by repo) — the
+/// `Group > Window > agent|process` hierarchy. Indented one column
+/// under the group
 /// title: the detail rows hang at a two-space indent, so a two-column
 /// header read as row-internal detail instead of a hierarchy level.
 /// `index:name` is tmux's own window selector. An empty window name

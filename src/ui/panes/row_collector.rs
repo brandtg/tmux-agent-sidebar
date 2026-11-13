@@ -35,8 +35,9 @@ pub(super) fn collect(state: &AppState, width: u16) -> CollectedRows {
         state.focus_state.proxy_focused_pane_id.clone()
     };
     let effective_focus = proxy_focus.or_else(|| state.focus_state.focused_pane_id.clone());
-    // The focused pane's window, for lighting the session-mode window
-    // header the way the group title lights for the whole session.
+    // The focused pane's window, for lighting the group's window header
+    // (the `@sidebar_session_windows` / `@sidebar_worktree_windows`
+    // level) the way the group title lights for the whole group.
     // Agents and process panes live in separate collections
     // (`repo_groups` vs `other_windows`), so both are probed; pane ids
     // are unique tmux-wide, so at most one matches.
@@ -199,19 +200,23 @@ pub(super) fn collect(state: &AppState, width: u16) -> CollectedRows {
         // processes sit next to its agent instead of pooling below the
         // whole group. Window rows use a diamond status glyph
         // (see `row::window_row`), so they read as distinct without a
-        // header line — unless the session-mode window level is on
-        // (`@sidebar_session_windows`): then a muted `index:name` line
-        // renders above each window's rows, turning the group into a
-        // `Session > Window > agent|process` hierarchy — and the header
-        // takes the accent while one of the window's panes holds the
-        // terminal, the child level of the session title's highlight.
+        // header line — unless the group's window level is on (the
+        // session-mode `@sidebar_session_windows` or its repo-mode
+        // counterpart `@sidebar_worktree_windows`): then a muted
+        // `index:name` line renders above each window's rows, turning
+        // the group into a `Group > Window > agent|process` hierarchy —
+        // and the header takes the accent while one of the window's
+        // panes holds the terminal, the child level of the group title's
+        // highlight.
         // Header lines map
         // to `None` in `line_to_row` like the group header, and are
         // emitted lazily per distinct window key so a window whose rows
         // are all filtered out (search, status filter) leaves no empty
         // header behind.
-        let window_headers =
-            state.global.group_by == crate::state::GroupBy::Session && state.global.session_windows;
+        let window_headers = match state.global.group_by {
+            crate::state::GroupBy::Repo => state.global.worktree_windows,
+            crate::state::GroupBy::Session => state.global.session_windows,
+        };
         let mut current_window: Option<(&str, i64)> = None;
         for row in crate::group::ordered_group_rows(&filtered_panes, &matched_windows) {
             if window_headers {
@@ -986,6 +991,133 @@ mod tests {
         assert!(
             !text.contains("1:web"),
             "a window with no visible rows must not render a header:\n{text}"
+        );
+    }
+
+    #[test]
+    fn collect_repo_mode_window_headers_nest_rows_under_their_window() {
+        // @sidebar_worktree_windows on (repo mode): each window's rows
+        // render under a muted `index:name` header — the Repo > Window >
+        // agent|process level, mirroring the session-mode level. The
+        // option is mode-gated: session_windows stays off here, so only
+        // the worktree flag can produce headers. Header lines are
+        // non-rows (`None` in `line_to_row`), so selection still lands on
+        // agents/processes only, in the same interleaved order as without
+        // the headers.
+        let mut state = AppState::new("%0".into());
+        state.global.group_by = GroupBy::Repo;
+        state.global.worktree_windows = true;
+        state.global.show_windows = true;
+        let mut agent1 = make_window_pane("%1", PaneStatus::Idle, "main", 0);
+        agent1.window_name = "api".into();
+        let mut agent2 = make_window_pane("%2", PaneStatus::Idle, "main", 1);
+        agent2.window_name = "web".into();
+        state.repo_groups = vec![RepoGroup {
+            name: "repo".into(),
+            has_focus: false,
+            panes: vec![
+                (agent1, PaneGitInfo::default()),
+                (agent2, PaneGitInfo::default()),
+            ],
+        }];
+        // Repo mode buckets non-agent panes by the group's repo key
+        // (here the panes' grouping anchor, `path` with no launch cwd).
+        state.other_windows.insert(
+            "/tmp/repo".into(),
+            vec![other_window_in("%10", "api", "node", "main", 0)],
+        );
+
+        let collected = collect(&state, 40);
+        let lines: Vec<String> = collected.lines.iter().map(line_text).collect();
+
+        // Repo title, then per window: header, the window's agent
+        // (status + idle hint), and its process card.
+        assert_eq!(lines[0], "repo");
+        assert_eq!(lines[1], " 0:api");
+        assert_eq!(
+            lines[5], " 1:web",
+            "window 1's header precedes its rows:\n{lines:?}"
+        );
+        assert_eq!(
+            collected.line_to_row,
+            vec![
+                None, // repo header
+                None, // window 0 header
+                Some(0),
+                Some(0), // agent in window 0
+                Some(1), // process card in window 0
+                None,    // window 1 header
+                Some(2),
+                Some(2), // agent in window 1
+            ],
+            "headers are non-rows; row targets keep the interleaved order"
+        );
+    }
+
+    #[test]
+    fn collect_repo_mode_stays_flat_without_the_window_level() {
+        // Default (off): no window header lines — the group renders the
+        // same flat interleaved list as before the option existed.
+        let mut state = AppState::new("%0".into());
+        state.global.group_by = GroupBy::Repo;
+        state.global.show_windows = true;
+        let mut agent1 = make_window_pane("%1", PaneStatus::Idle, "main", 0);
+        agent1.window_name = "api".into();
+        let mut agent2 = make_window_pane("%2", PaneStatus::Idle, "main", 1);
+        agent2.window_name = "web".into();
+        state.repo_groups = vec![RepoGroup {
+            name: "repo".into(),
+            has_focus: false,
+            panes: vec![
+                (agent1, PaneGitInfo::default()),
+                (agent2, PaneGitInfo::default()),
+            ],
+        }];
+        state.other_windows.insert(
+            "/tmp/repo".into(),
+            vec![other_window_in("%10", "api", "node", "main", 0)],
+        );
+
+        let collected = collect(&state, 40);
+        assert_eq!(
+            collected.line_to_row,
+            vec![None, Some(0), Some(0), Some(1), Some(2), Some(2)],
+            "flag off renders no window headers"
+        );
+    }
+
+    #[test]
+    fn collect_repo_mode_window_headers_do_not_leak_into_session_mode() {
+        // Mode gating cuts both ways: `worktree_windows` on must not
+        // produce headers while the panel is grouped by session — there
+        // `session_windows` rules, and it stays off.
+        let mut state = AppState::new("%0".into());
+        state.global.group_by = GroupBy::Session;
+        state.global.worktree_windows = true;
+        state.global.show_windows = true;
+        state.repo_groups = vec![RepoGroup {
+            name: "main".into(),
+            has_focus: false,
+            panes: vec![(
+                make_window_pane("%1", PaneStatus::Idle, "main", 0),
+                PaneGitInfo::default(),
+            )],
+        }];
+        state.other_windows.insert(
+            "main".into(),
+            vec![other_window_in("%10", "api", "node", "main", 0)],
+        );
+
+        let collected = collect(&state, 40);
+        let text = collected
+            .lines
+            .iter()
+            .map(line_text)
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            !text.contains("0:api"),
+            "the repo-mode flag must not enable session-mode headers:\n{text}"
         );
     }
 

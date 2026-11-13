@@ -132,6 +132,13 @@ pub struct GlobalState {
     /// hierarchy. Set it in tmux.conf; like `group_by` it is read on
     /// every sync and has no runtime toggle.
     pub session_windows: bool,
+    /// Repo-mode window level (`@sidebar_worktree_windows`). The
+    /// worktree/repo counterpart of `session_windows`: when on and
+    /// grouped by repo, each window's rows render under a muted
+    /// `index:name` header — the `Repo > Window > agent|process`
+    /// hierarchy. Set it in tmux.conf; like `group_by` it is read on
+    /// every sync and has no runtime toggle.
+    pub worktree_windows: bool,
     /// Worktree row titles (`@sidebar_worktree_titles`): an agent row
     /// without a user-given session name is titled by its linked worktree.
     /// Read on every sync; no runtime toggle.
@@ -177,6 +184,7 @@ impl GlobalState {
             todo_scope: TodoScope::default(),
             group_by: GroupBy::default(),
             session_windows: false,
+            worktree_windows: false,
             worktree_titles: false,
             preview_lines: DEFAULT_PREVIEW_LINES,
             owner_pane,
@@ -545,6 +553,15 @@ impl GlobalState {
                 "on" | "true" | "1"
             );
         }
+        if let Some(worktree_windows_str) = opts.get(tmux::SIDEBAR_WORKTREE_WINDOWS) {
+            // Same accepted labels as `session_windows`; unset means off,
+            // so the seeding `if -F` in agent-sidebar.conf is the only
+            // writer of `off`.
+            self.worktree_windows = matches!(
+                worktree_windows_str.trim().to_ascii_lowercase().as_str(),
+                "on" | "true" | "1"
+            );
+        }
         if let Some(worktree_titles_str) = opts.get(tmux::SIDEBAR_WORKTREE_TITLES) {
             self.worktree_titles = matches!(
                 worktree_titles_str.trim().to_ascii_lowercase().as_str(),
@@ -661,6 +678,29 @@ mod tests {
         opts.insert(tmux::SIDEBAR_SESSION_WINDOWS.to_string(), "off".into());
         state.apply_all(&opts);
         assert!(!state.session_windows);
+    }
+
+    #[test]
+    fn apply_all_reads_worktree_window_level() {
+        // The repo-mode window level mirrors `session_windows`: a config
+        // option read on every sync, no runtime toggle. Unset keeps the
+        // default off; `on`/`true`/`1` enable it.
+        let mut state = GlobalState::default();
+        let mut opts = HashMap::new();
+        opts.insert(tmux::SIDEBAR_WORKTREE_WINDOWS.to_string(), "on".into());
+        state.apply_all(&opts);
+        assert!(state.worktree_windows);
+
+        let mut state = GlobalState::default();
+        let opts = HashMap::new();
+        state.apply_all(&opts);
+        assert!(!state.worktree_windows, "unset falls back to off");
+
+        let mut state = GlobalState::default();
+        let mut opts = HashMap::new();
+        opts.insert(tmux::SIDEBAR_WORKTREE_WINDOWS.to_string(), "off".into());
+        state.apply_all(&opts);
+        assert!(!state.worktree_windows);
     }
 
     #[test]
