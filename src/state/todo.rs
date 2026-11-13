@@ -879,6 +879,42 @@ impl AppState {
             .clamp(0, len as isize) as usize;
     }
 
+    /// Ctrl-Left: back to the start of the previous word, skipping the
+    /// whitespace and then the word's chars before it. The same
+    /// whitespace/word split Ctrl-w deletes by.
+    pub fn todo_edit_cursor_word_left(&mut self) {
+        let Some(edit) = self.todos.editing.as_mut() else {
+            return;
+        };
+        let chars: Vec<char> = edit.input.chars().collect();
+        let mut cursor = edit.cursor.min(chars.len());
+        while cursor > 0 && chars[cursor - 1].is_whitespace() {
+            cursor -= 1;
+        }
+        while cursor > 0 && !chars[cursor - 1].is_whitespace() {
+            cursor -= 1;
+        }
+        edit.cursor = cursor;
+    }
+
+    /// Ctrl-Right: forward past the end of the next word, skipping the
+    /// whitespace and then the word's chars after the cursor.
+    pub fn todo_edit_cursor_word_right(&mut self) {
+        let Some(edit) = self.todos.editing.as_mut() else {
+            return;
+        };
+        let chars: Vec<char> = edit.input.chars().collect();
+        let len = chars.len();
+        let mut cursor = edit.cursor.min(len);
+        while cursor < len && chars[cursor].is_whitespace() {
+            cursor += 1;
+        }
+        while cursor < len && !chars[cursor].is_whitespace() {
+            cursor += 1;
+        }
+        edit.cursor = cursor;
+    }
+
     pub fn todo_edit_cursor_home(&mut self) {
         if let Some(edit) = self.todos.editing.as_mut() {
             edit.cursor = 0;
@@ -1298,6 +1334,42 @@ mod tests {
         state.todo_edit_cursor_home();
         state.todo_edit_cursor_end();
         assert_eq!(state.todos.editing.as_ref().unwrap().cursor, 2);
+    }
+
+    #[test]
+    fn ctrl_left_walks_to_the_start_of_the_previous_word() {
+        let mut state = state_with(vec![item("one two  three", false)]);
+        state.todos.selected = 0;
+
+        state.begin_todo_edit();
+        // From the end: "three" starts at 9, the previous word at 4.
+        state.todo_edit_cursor_word_left();
+        assert_eq!(state.todos.editing.as_ref().unwrap().cursor, 9);
+        state.todo_edit_cursor_word_left();
+        assert_eq!(state.todos.editing.as_ref().unwrap().cursor, 4);
+        state.todo_edit_cursor_word_left();
+        assert_eq!(state.todos.editing.as_ref().unwrap().cursor, 0);
+        // Stays clamped at the buffer start.
+        state.todo_edit_cursor_word_left();
+        assert_eq!(state.todos.editing.as_ref().unwrap().cursor, 0);
+    }
+
+    #[test]
+    fn ctrl_right_walks_past_the_end_of_the_next_word() {
+        let mut state = state_with(vec![item("one two  three", false)]);
+        state.todos.selected = 0;
+
+        state.begin_todo_edit();
+        state.todo_edit_cursor_home();
+        state.todo_edit_cursor_word_right();
+        assert_eq!(state.todos.editing.as_ref().unwrap().cursor, 3);
+        state.todo_edit_cursor_word_right();
+        assert_eq!(state.todos.editing.as_ref().unwrap().cursor, 7);
+        state.todo_edit_cursor_word_right();
+        assert_eq!(state.todos.editing.as_ref().unwrap().cursor, 14);
+        // Stays clamped at the buffer end.
+        state.todo_edit_cursor_word_right();
+        assert_eq!(state.todos.editing.as_ref().unwrap().cursor, 14);
     }
 
     #[test]

@@ -315,10 +315,19 @@ fn handle_todo_key(key: KeyEvent, state: &mut AppState) -> bool {
             KeyCode::Enter => state.commit_todo_edit_and_next(),
             KeyCode::Backspace => state.todo_input_pop_char(),
             KeyCode::Delete => state.todo_input_delete_char(),
+            // Plain Home/End and their readline equivalents (Ctrl-a/e).
+            // The Ctrl aliases must be separate arms: a guard on an
+            // or-pattern applies to every alternative, which once left
+            // plain Home/End matching nothing.
+            KeyCode::Home => state.todo_edit_cursor_home(),
+            KeyCode::Char('a') if ctrl => state.todo_edit_cursor_home(),
+            KeyCode::End => state.todo_edit_cursor_end(),
+            KeyCode::Char('e') if ctrl => state.todo_edit_cursor_end(),
+            // Word-wise navigation, readline style.
+            KeyCode::Left if ctrl => state.todo_edit_cursor_word_left(),
+            KeyCode::Right if ctrl => state.todo_edit_cursor_word_right(),
             KeyCode::Left => state.todo_edit_cursor_move(-1),
             KeyCode::Right => state.todo_edit_cursor_move(1),
-            KeyCode::Home | KeyCode::Char('a') if ctrl => state.todo_edit_cursor_home(),
-            KeyCode::End | KeyCode::Char('e') if ctrl => state.todo_edit_cursor_end(),
             KeyCode::Char('u') if ctrl => state.todo_input_clear(),
             KeyCode::Char('w') if ctrl => state.todo_input_pop_word(),
             KeyCode::Char(c) if !ctrl => state.todo_input_push_char(c),
@@ -1178,6 +1187,45 @@ mod tests {
             Some(""),
             "the newline lands on a fresh task"
         );
+    }
+
+    #[test]
+    fn home_and_end_jump_the_edit_cursor_without_ctrl() {
+        // Regression: the Home/End arms shared a `if ctrl` guard with
+        // their Ctrl-a/e aliases, and the guard applies to the whole
+        // or-pattern — plain Home/End matched nothing.
+        let mut state = todo_fixture();
+        state.todos.items[0].text = "alpha beta".into();
+        handle_key_event(key(KeyCode::Char('t')), &mut state);
+        handle_key_event(key(KeyCode::Enter), &mut state);
+        let cursor = |s: &AppState| s.todos.editing.as_ref().unwrap().cursor;
+
+        handle_key_event(key(KeyCode::Home), &mut state);
+        assert_eq!(cursor(&state), 0, "plain Home jumps to the start");
+
+        handle_key_event(key(KeyCode::End), &mut state);
+        assert_eq!(cursor(&state), 10, "plain End jumps to the end");
+    }
+
+    #[test]
+    fn ctrl_arrows_move_the_edit_cursor_by_words() {
+        let mut state = todo_fixture();
+        state.todos.items[0].text = "alpha beta gamma".into();
+        handle_key_event(key(KeyCode::Char('t')), &mut state);
+        handle_key_event(key(KeyCode::Enter), &mut state);
+        let cursor = |s: &AppState| s.todos.editing.as_ref().unwrap().cursor;
+
+        handle_key_event(ctrl_code(KeyCode::Left), &mut state);
+        assert_eq!(cursor(&state), 11, "Ctrl-Left lands on 'gamma'");
+        handle_key_event(ctrl_code(KeyCode::Left), &mut state);
+        assert_eq!(cursor(&state), 6, "Ctrl-Left lands on 'beta'");
+        handle_key_event(ctrl_code(KeyCode::Right), &mut state);
+        assert_eq!(cursor(&state), 10, "Ctrl-Right stops after 'beta'");
+        handle_key_event(ctrl_code(KeyCode::Right), &mut state);
+        assert_eq!(cursor(&state), 16, "Ctrl-Right stops after 'gamma'");
+        // Plain arrows still move one char.
+        handle_key_event(key(KeyCode::Right), &mut state);
+        assert_eq!(cursor(&state), 16);
     }
 
     #[test]
