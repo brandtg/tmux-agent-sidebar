@@ -1,6 +1,6 @@
 {
   "name": "tmux-agent-sidebar",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Monitor Claude Code agents across tmux panes in a real-time sidebar TUI. Originally by Yuta Hiroto.",
   "author": {
     "name": "Greg Brandt",

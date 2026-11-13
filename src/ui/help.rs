@@ -1,114 +1,161 @@
 use ratatui::{
     Frame,
     layout::Rect,
-    style::Style,
+    style::{Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Clear, Paragraph},
+    widgets::{Block, BorderType, Borders, Clear, Paragraph},
 };
 
 use crate::state::AppState;
-use crate::ui::text::{display_width, truncate_to_width};
+use crate::ui::text::{display_width, truncate_to_width, wrap_flow};
 
-/// Rows of the `?` help popup: `(key, action)`. The ordering and wording
-/// follow the keybindings doc so the two can be diffed by eye.
-const HELP_ROWS: &[(&str, &str)] = &[
-    ("j / k", "Move selection"),
-    ("/", "Search agents"),
-    ("a", "Jump to next attention row"),
-    ("g / G", "Jump to top / bottom"),
-    ("[ / ]", "Previous / next group"),
-    ("z", "Collapse / expand group"),
-    ("Z", "Expand all groups"),
-    ("s", "Repo / session grouping"),
-    ("PgUp / PgDn", "Page the list"),
-    ("h / l", "Previous / next status filter"),
-    ("Tab", "Cycle status filter"),
-    ("Enter / →", "Jump to the selected pane"),
-    ("n", "Spawn worktree + agent"),
-    ("x", "Remove the selected spawn pane"),
-    ("f", "Flag / unflag the selected agent"),
-    ("r", "Open repo filter"),
-    ("c", "Toggle compact view"),
-    ("w", "List non-agent panes"),
-    ("t", "Open / focus / close TODO panel"),
-    ("Esc", "Return focus / close popup"),
-    ("?", "Toggle this help"),
-    ("q", "Quit"),
+/// The `?` overlay's content, grouped like Google's shortcut sheet: a
+/// section name, then `(key, action)` rows. The TODO section describes
+/// the Google Tasks flow — Enter edits, Enter again starts the next
+/// task, Space completes.
+const HELP_SECTIONS: &[(&str, &[(&str, &str)])] = &[
+    (
+        "list",
+        &[
+            ("j / k / ↑ / ↓", "Move selection"),
+            ("g / G", "Jump to top / bottom"),
+            ("PgUp / PgDn", "Page the list"),
+            ("a", "Next attention row"),
+            ("/", "Search agents"),
+            ("h / l", "Status filter"),
+            ("Tab", "Cycle status filter"),
+            ("[ / ]", "Prev / next group"),
+            ("z", "Collapse / expand group"),
+            ("Z", "Expand all groups"),
+            ("s", "Repo / session grouping"),
+            ("Enter / →", "Jump to selected pane"),
+            ("n", "Spawn worktree + agent"),
+            ("x", "Remove spawn pane"),
+            ("f", "Flag / unflag agent"),
+            ("r", "Open repo filter"),
+        ],
+    ),
+    (
+        "todos",
+        &[
+            ("Enter / e", "Edit the selected task"),
+            ("Enter (editing)", "Save, then next task"),
+            ("a", "New task (insert mode)"),
+            ("Space", "Complete / uncomplete"),
+            ("Ctrl-↓ / Ctrl-j", "Move task down"),
+            ("Ctrl-↑ / Ctrl-k", "Move task up"),
+            ("d / x", "Delete the selected task"),
+            ("D", "Clear completed"),
+            ("u / Ctrl-z", "Undo delete/clear (4 s)"),
+            ("H", "Show / hide completed"),
+            ("Esc", "Cancel / back to list"),
+        ],
+    ),
+    (
+        "global",
+        &[
+            ("t", "Open / close TODO panel"),
+            ("c", "Toggle compact view"),
+            ("w", "List non-agent panes"),
+            ("?", "Toggle this help"),
+            ("q", "Quit"),
+        ],
+    ),
 ];
 
-/// Read-only key reference centered on the pane area, opened with `?`.
-/// No clickable content, so nothing besides the rendered rect is stored.
-pub(in crate::ui) fn render_help_popup(frame: &mut Frame, state: &mut AppState, area: Rect) {
-    let theme = &state.theme;
+/// Minimum description columns the key column must leave behind before
+/// it starts truncating keys. Below this the sidebar is narrower than
+/// any key reference can help with anyway.
+const MIN_ACTION_WIDTH: usize = 10;
 
-    let key_w = HELP_ROWS
+/// Read-only key reference rendered over the whole sidebar, opened with
+/// `?`. The sidebar is a narrow column: a centered box would truncate
+/// every description on the right, so the overlay spans the full width,
+/// wraps descriptions with a hanging indent, and scrolls (`j` / `k`,
+/// PgUp / PgDn) when the terminal is too short for all of it. No
+/// clickable content, so nothing besides the rendered rect is stored.
+pub(in crate::ui) fn render_help_popup(frame: &mut Frame, state: &mut AppState, area: Rect) {
+    // Copy the palette out of `state` first: the metrics write-back below
+    // needs `&mut state` while the styles still reference the theme.
+    let (accent, text_active, text_muted) = {
+        let theme = &state.theme;
+        (theme.accent, theme.text_active, theme.text_muted)
+    };
+    state.popup.set_help_area(Some(area));
+
+    let inner_width = area.width.saturating_sub(2) as usize;
+
+    // The key column sizes itself from the widest key, capped so a
+    // clamped overlay always keeps a usable description column.
+    let widest_key = HELP_SECTIONS
         .iter()
+        .flat_map(|(_, rows)| rows.iter())
         .map(|(key, _)| display_width(key))
         .max()
         .unwrap_or(1);
-    let action_w = HELP_ROWS
-        .iter()
-        .map(|(_, action)| display_width(action))
-        .max()
-        .unwrap_or(1);
-    // Column layout inside the borders: ` key<key_w>  action `.
-    let inner_w = 1 + key_w + 2 + action_w + 1;
-    // Borders (2) on top of the content; clamp LAST to the pane area so a
-    // narrow sidebar gets a clamped popup, not an overflowing one.
-    let popup_width = ((inner_w as u16).saturating_add(2).max(12)).min(area.width);
-    let lines = HELP_ROWS.len() as u16 + 1; // +1 for the title row
-    let popup_height = ((lines + 2).max(3)).min(area.height);
+    let key_col = widest_key.min(inner_width.saturating_sub(3 + MIN_ACTION_WIDTH).max(1));
+    // The row prefix is ` key<pad>  ` = key_col + 3 columns.
+    let action_width = inner_width.saturating_sub(key_col + 3).max(1);
 
-    let popup_x = area.x + (area.width.saturating_sub(popup_width)) / 2;
-    let popup_y = area.y + (area.height.saturating_sub(popup_height)) / 2;
-    let popup_rect = Rect::new(popup_x, popup_y, popup_width, popup_height);
-    state.popup.set_help_area(Some(popup_rect));
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    for (section, rows) in HELP_SECTIONS {
+        if !lines.is_empty() {
+            lines.push(Line::from(Span::raw("")));
+        }
+        lines.push(Line::from(Span::styled(
+            format!(" {section}"),
+            Style::default().fg(accent).add_modifier(Modifier::BOLD),
+        )));
+        for (key, action) in rows.iter() {
+            let key_text = truncate_to_width(key, key_col);
+            let key_pad = " ".repeat(key_col.saturating_sub(display_width(&key_text)));
+            let mut wrapped = wrap_flow(action, action_width, action_width);
+            if wrapped.is_empty() {
+                wrapped.push(String::new());
+            }
+            for (i, chunk) in wrapped.into_iter().enumerate() {
+                let prefix = if i == 0 {
+                    format!(" {key_text}{key_pad}  ")
+                } else {
+                    // Hanging indent: continuation lines align under the
+                    // description column, never under the key.
+                    " ".repeat(key_col + 3)
+                };
+                lines.push(Line::from(vec![
+                    Span::styled(prefix, Style::default().fg(text_active)),
+                    Span::styled(chunk, Style::default().fg(text_muted)),
+                ]));
+            }
+        }
+    }
 
-    frame.render_widget(Clear, popup_rect);
+    let content = lines.len() as u16;
+    let viewport = area.height.saturating_sub(2);
+    // Write the metrics back first: the write-back re-clamps scroll
+    // against the fresh layout (a resize can shrink the content).
+    state.set_help_metrics(content, viewport);
+    let scrollable = content > viewport;
+    let scroll = state.help_scroll();
+
+    let mut title = "shortcuts · esc to close".to_string();
+    if scrollable {
+        title.push_str(" · j/k scrolls");
+    }
+    let title = truncate_to_width(&title, inner_width.max(1));
 
     let block = Block::default()
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(theme.accent));
-    let inner = block.inner(popup_rect);
-    frame.render_widget(block, popup_rect);
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(accent))
+        .title(Span::styled(
+            format!(" {title} "),
+            Style::default().fg(accent),
+        ));
+    let inner = block.inner(area);
+    frame.render_widget(Clear, area);
+    frame.render_widget(block, area);
 
-    let inner_width = inner.width as usize;
-    let title = truncate_to_width("Help", inner_width.saturating_sub(1));
-    let title_pad = " ".repeat(inner_width.saturating_sub(display_width(&title)));
-    frame.render_widget(
-        Paragraph::new(Line::from(Span::styled(
-            format!(" {title}{title_pad}"),
-            Style::default().fg(theme.text_active),
-        ))),
-        Rect::new(inner.x, inner.y, inner.width, 1),
-    );
-
-    for (i, (key, action)) in HELP_ROWS.iter().enumerate() {
-        let row_y = inner.y + 1 + i as u16;
-        if row_y >= inner.y + inner.height {
-            break;
-        }
-        let key_col = format!("{key:<key_w$}");
-        let action = truncate_to_width(
-            action,
-            inner_width.saturating_sub(1 + display_width(&key_col) + 2),
-        );
-        let pad =
-            " ".repeat(inner_width.saturating_sub(display_width(&key_col) + 2 + action.len()));
-        frame.render_widget(
-            Paragraph::new(Line::from(vec![
-                Span::styled(
-                    format!(" {key_col}  "),
-                    Style::default().fg(theme.text_active),
-                ),
-                Span::styled(
-                    format!("{action}{pad}"),
-                    Style::default().fg(theme.text_muted),
-                ),
-            ])),
-            Rect::new(inner.x, row_y, inner.width, 1),
-        );
-    }
+    frame.render_widget(Paragraph::new(lines).scroll((scroll, 0)), inner);
 }
 
 #[cfg(test)]
@@ -117,14 +164,13 @@ mod tests {
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
 
-    fn render_help_text(width: u16, height: u16) -> String {
-        let mut state = AppState::new("%99".into());
+    fn render_help_text(state: &mut AppState, width: u16, height: u16) -> String {
         let backend = TestBackend::new(width, height);
         let mut terminal = Terminal::new(backend).unwrap();
         terminal
             .draw(|frame| {
                 let area = frame.area();
-                render_help_popup(frame, &mut state, area);
+                render_help_popup(frame, state, area);
             })
             .unwrap();
         let buf = terminal.backend().buffer().clone();
@@ -141,56 +187,117 @@ mod tests {
     }
 
     #[test]
-    fn help_popup_renders_centered_key_reference() {
-        // Tall enough for every row: the narrow-area test below covers the
-        // clamped case.
-        let output = render_help_text(60, 30);
+    fn overlay_spans_the_full_sidebar_without_truncation() {
+        // At the sidebar's typical width every description renders in
+        // full — the old centered box truncated them on the right.
+        let mut state = AppState::new("%99".into());
+        state.toggle_help_popup();
+        let output = render_help_text(&mut state, 44, 44);
         insta::assert_snapshot!(output, @"
-
-
-        ┌───────────────────────────────────────────────┐
-        │ Help                                          │
-        │ j / k        Move selection                   │
-        │ /            Search agents                    │
-        │ a            Jump to next attention row       │
-        │ g / G        Jump to top / bottom             │
-        │ [ / ]        Previous / next group            │
-        │ z            Collapse / expand group          │
-        │ Z            Expand all groups                │
-        │ s            Repo / session grouping          │
-        │ PgUp / PgDn  Page the list                    │
-        │ h / l        Previous / next status filter    │
-        │ Tab          Cycle status filter              │
-        │ Enter / →    Jump to the selected pane        │
-        │ n            Spawn worktree + agent           │
-        │ x            Remove the selected spawn pane   │
-        │ f            Flag / unflag the selected agent │
-        │ r            Open repo filter                 │
-        │ c            Toggle compact view              │
-        │ w            List non-agent panes             │
-        │ t            Open / focus / close TODO panel  │
-        │ Esc          Return focus / close popup       │
-        │ ?            Toggle this help                 │
-        │ q            Quit                             │
-        └───────────────────────────────────────────────┘
+        ╭ shortcuts · esc to close ────────────────╮
+        │ list                                     │
+        │ j / k / ↑ / ↓    Move selection          │
+        │ g / G            Jump to top / bottom    │
+        │ PgUp / PgDn      Page the list           │
+        │ a                Next attention row      │
+        │ /                Search agents           │
+        │ h / l            Status filter           │
+        │ Tab              Cycle status filter     │
+        │ [ / ]            Prev / next group       │
+        │ z                Collapse / expand group │
+        │ Z                Expand all groups       │
+        │ s                Repo / session grouping │
+        │ Enter / →        Jump to selected pane   │
+        │ n                Spawn worktree + agent  │
+        │ x                Remove spawn pane       │
+        │ f                Flag / unflag agent     │
+        │ r                Open repo filter        │
+        │                                          │
+        │ todos                                    │
+        │ Enter / e        Edit the selected task  │
+        │ Enter (editing)  Save, then next task    │
+        │ a                New task (insert mode)  │
+        │ Space            Complete / uncomplete   │
+        │ Ctrl-↓ / Ctrl-j  Move task down          │
+        │ Ctrl-↑ / Ctrl-k  Move task up            │
+        │ d / x            Delete the selected task│
+        │ D                Clear completed         │
+        │ u / Ctrl-z       Undo delete/clear (4 s) │
+        │ H                Show / hide completed   │
+        │ Esc              Cancel / back to list   │
+        │                                          │
+        │ global                                   │
+        │ t                Open / close TODO panel │
+        │ c                Toggle compact view     │
+        │ w                List non-agent panes    │
+        │ ?                Toggle this help        │
+        │ q                Quit                    │
+        │                                          │
+        │                                          │
+        │                                          │
+        │                                          │
+        │                                          │
+        ╰──────────────────────────────────────────╯
         ");
     }
 
     #[test]
-    fn help_popup_clamps_to_narrow_area() {
-        // A narrow pane must not push the popup past the buffer.
-        let output = render_help_text(20, 10);
+    fn narrow_sidebar_wraps_descriptions_with_a_hanging_indent() {
+        // Half the width: long descriptions wrap onto continuation lines
+        // aligned under the description column instead of truncating.
+        let mut state = AppState::new("%99".into());
+        state.toggle_help_popup();
+        let output = render_help_text(&mut state, 26, 20);
         insta::assert_snapshot!(output, @"
-        ┌──────────────────┐
-        │ Help             │
-        │ j / k        Mov…│
-        │ /            Sea…│
-        │ a            Jum…│
-        │ g / G        Jum…│
-        │ [ / ]        Pre…│
-        │ z            Col…│
-        │ Z            Exp…│
-        └──────────────────┘
+        ╭ shortcuts · esc to clos╮
+        │ list                   │
+        │ j / k / ↑ …  Move      │
+        │              selection │
+        │ g / G        Jump to   │
+        │              top /     │
+        │              bottom    │
+        │ PgUp / PgDn  Page the  │
+        │              list      │
+        │ a            Next      │
+        │              attention │
+        │              row       │
+        │ /            Search    │
+        │              agents    │
+        │ h / l        Status    │
+        │              filter    │
+        │ Tab          Cycle     │
+        │              status    │
+        │              filter    │
+        ╰────────────────────────╯
+        ");
+    }
+
+    #[test]
+    fn overlay_scrolls_when_the_terminal_is_short() {
+        let mut state = AppState::new("%99".into());
+        state.toggle_help_popup();
+        let first = render_help_text(&mut state, 44, 12);
+        assert!(
+            first.contains("j/k scrolls"),
+            "clipped content advertises scrolling in the title"
+        );
+        // The renderer wrote back the metrics; scroll to the end and
+        // re-render: the tail sections come into view.
+        state.scroll_help(100);
+        let last = render_help_text(&mut state, 44, 12);
+        insta::assert_snapshot!(last, @"
+        ╭ shortcuts · esc to close · j/k scrolls ──╮
+        │ u / Ctrl-z       Undo delete/clear (4 s) │
+        │ H                Show / hide completed   │
+        │ Esc              Cancel / back to list   │
+        │                                          │
+        │ global                                   │
+        │ t                Open / close TODO panel │
+        │ c                Toggle compact view     │
+        │ w                List non-agent panes    │
+        │ ?                Toggle this help        │
+        │ q                Quit                    │
+        ╰──────────────────────────────────────────╯
         ");
     }
 }

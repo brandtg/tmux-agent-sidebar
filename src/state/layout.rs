@@ -41,10 +41,17 @@ pub struct SpawnRemoveTarget {
 }
 
 /// Click target for one rendered TODO item. `rect` spans every wrapped
-/// line of the item, so a click anywhere on it toggles the checkbox.
+/// line of the item for hit-testing. A click on `checkbox_rect` (the
+/// marker column of the item's first visible line) toggles the
+/// checkbox; a click on the rest of `rect` selects the item and — when
+/// it is already selected — opens the editor (Google Tasks'
+/// click-the-text-to-edit convention).
 #[derive(Debug, Clone)]
 pub struct TodoRowTarget {
     pub rect: ratatui::layout::Rect,
+    /// `None` when the item's first line is scrolled out of view, in
+    /// which case every visible line is the text target.
+    pub checkbox_rect: Option<ratatui::layout::Rect>,
     pub index: usize,
 }
 
@@ -574,13 +581,17 @@ impl AppState {
 
         // The TODO panel sits below the list area, so its screen rows would
         // otherwise fall through to the pane-row mapping. Claim every click
-        // inside the panel: items toggle, the add line opens the input, and
-        // header/empty space is inert.
+        // inside the panel: the checkbox column toggles, the item text
+        // selects (a second click on the selection opens the editor), the
+        // open input line re-opens insert mode, and header/empty space is
+        // inert.
         if self.todos.visible && point_in_rect(row, col, self.layout.todo_area) {
             if let Some(rect) = self.layout.todo_input_rect
                 && point_in_rect(row, col, rect)
             {
-                if self.todos.editing.is_none() {
+                // Insert mode already owns the line: a click inside it
+                // must not reset the buffer.
+                if self.todos.editing.is_none() && self.todos.adding.is_none() {
                     self.begin_todo_add();
                 }
                 return;
@@ -590,16 +601,28 @@ impl AppState {
             if self.todos.editing.is_some() {
                 return;
             }
-            if let Some(index) = self
+            if let Some(target) = self
                 .layout
                 .todo_row_targets
                 .iter()
                 .find(|t| point_in_rect(row, col, t.rect))
-                .map(|t| t.index)
             {
-                self.todos.selected = index;
+                // The marker column is a checklist click; the text only
+                // selects, and a click on the already-selected item opens
+                // the editor — two-step so a stray click never edits by
+                // surprise (the first click also focuses the panel, which
+                // is the second click's precondition).
+                let on_checkbox = target
+                    .checkbox_rect
+                    .is_some_and(|rect| point_in_rect(row, col, rect));
+                let already_selected = self.todos.selected == target.index;
+                self.todos.selected = target.index;
                 self.focus_state.focus = Focus::Todos;
-                self.toggle_todo_selected();
+                if on_checkbox {
+                    self.toggle_todo_selected();
+                } else if already_selected {
+                    self.begin_todo_edit();
+                }
             }
             return;
         }
@@ -610,5 +633,205 @@ impl AppState {
             self.global.queue_cursor_save();
             self.activate_selected_pane();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::todo::TodoItem;
+    use ratatui::layout::Rect;
+
+    /// A visible TODO panel with pre-registered click targets, as
+    /// `render_todo_panel` would write them: two open items on rows 2-3,
+    /// all inside `todo_area` (rows 2-5). Row 5 is left for the input
+    /// rect.
+    fn todo_click_state() -> AppState {
+        let mut state = AppState::new("%99".into());
+        state.todos.items = vec![
+            TodoItem {
+                text: "Buy milk".into(),
+                done: false,
+            },
+            TodoItem {
+                text: "Write the report".into(),
+                done: false,
+            },
+        ];
+        state.todos.visible = true;
+        state.layout.todo_area = Rect::new(0, 2, 30, 4);
+        state.layout.todo_row_targets = vec![
+            TodoRowTarget {
+                rect: Rect::new(0, 2, 30, 1),
+                checkbox_rect: Some(Rect::new(0, 2, 4, 1)),
+                index: 0,
+            },
+            TodoRowTarget {
+                rect: Rect::new(0, 3, 30, 1),
+                checkbox_rect: Some(Rect::new(0, 3, 4, 1)),
+                index: 1,
+            },
+        ];
+        state
+    }
+
+    #[test]
+    fn todo_checkbox_click_toggles_the_item() {
+        let mut state = todo_click_state();
+
+        state.handle_mouse_click(2, 1); // the marker column of item 0
+
+        assert!(state.todos.items[0].done, "the checkbox click toggles");
+        assert_eq!(state.focus_state.focus, Focus::Todos);
+        assert!(
+            state.todos.editing.is_none(),
+            "a checkbox click must not open the editor"
+        );
+        assert_eq!(
+            state.todos.selected, 0,
+            "the completed section is visible by default, so the item \
+            stays put and keeps the selection (Space behaves the same)"
+        );
+    }
+
+    #[test]
+    fn todo_text_click_selects_without_toggling() {
+        let mut state = todo_click_state();
+
+        state.handle_mouse_click(3, 5); // the text of item 1
+
+        assert_eq!(state.todos.selected, 1);
+        assert_eq!(state.focus_state.focus, Focus::Todos);
+        assert!(!state.todos.items[1].done, "a text click must not toggle");
+        assert!(
+            state.todos.editing.is_none(),
+            "the first click only selects"
+        );
+    }
+
+    #[test]
+    fn todo_second_text_click_on_the_selection_opens_the_editor() {
+        let mut state = todo_click_state();
+
+        state.handle_mouse_click(3, 5); // select item 1
+        state.handle_mouse_click(3, 5); // click it again
+
+        let edit = state
+            .todos
+            .editing
+            .as_ref()
+            .expect("the second click opens the editor");
+        assert_eq!(edit.index, 1);
+        assert_eq!(
+            edit.input, "Write the report",
+            "the editor prefills the item's text"
+        );
+    }
+
+    #[test]
+    fn todo_checkbox_click_unchecks_a_done_item() {
+        let mut state = todo_click_state();
+        state.global.todo_hide_completed = false; // section expanded
+        state.todos.items[0].done = true;
+
+        state.handle_mouse_click(2, 3);
+
+        assert!(
+            !state.todos.items[0].done,
+            "the done block toggles from the mouse"
+        );
+        assert_eq!(
+            state.todos.selected, 0,
+            "unchecking keeps the selection on the item, now in the open block"
+        );
+    }
+
+    #[test]
+    fn todo_second_text_click_on_a_done_item_does_not_edit() {
+        let mut state = todo_click_state();
+        state.global.todo_hide_completed = false; // done block clickable
+        state.todos.items[0].done = true;
+        state.todos.selected = 1;
+
+        state.handle_mouse_click(2, 5); // select the done item's text
+        state.handle_mouse_click(2, 5); // click it again
+
+        assert_eq!(state.todos.selected, 0, "the click still selects");
+        assert!(
+            state.todos.editing.is_none(),
+            "the done block is a graveyard: no editor on struck-through text"
+        );
+    }
+
+    #[test]
+    fn todo_clicks_stay_inert_while_an_edit_is_open() {
+        let mut state = todo_click_state();
+        state.todos.selected = 0;
+        state.focus_state.focus = Focus::Todos;
+        state.begin_todo_edit();
+
+        state.handle_mouse_click(3, 5); // another item's text
+        state.handle_mouse_click(2, 0); // even the edited item's checkbox
+
+        assert_eq!(state.todos.selected, 0, "the selection must not move");
+        assert_eq!(
+            state.todos.editing.as_ref().map(|e| e.index),
+            Some(0),
+            "the open edit must stay"
+        );
+        assert!(
+            !state.todos.items[0].done,
+            "nothing toggles underneath the edit"
+        );
+        assert!(!state.todos.items[1].done);
+    }
+
+    #[test]
+    fn todo_input_line_click_begins_adding() {
+        let mut state = todo_click_state();
+        state.layout.todo_input_rect = Some(Rect::new(0, 5, 30, 1));
+
+        state.handle_mouse_click(5, 1);
+
+        assert_eq!(
+            state.todos.adding.as_deref(),
+            Some(""),
+            "clicking the input line opens insert mode"
+        );
+        assert_eq!(state.focus_state.focus, Focus::Todos);
+    }
+
+    #[test]
+    fn todo_input_line_click_keeps_the_buffer_while_adding() {
+        let mut state = todo_click_state();
+        state.begin_todo_add();
+        for c in "draft".chars() {
+            state.todo_input_push_char(c);
+        }
+        state.layout.todo_input_rect = Some(Rect::new(0, 5, 30, 1));
+
+        state.handle_mouse_click(5, 1);
+
+        assert_eq!(
+            state.todos.adding.as_deref(),
+            Some("draft"),
+            "a click inside the input line must not reset the buffer"
+        );
+    }
+
+    #[test]
+    fn todo_input_line_click_stays_inert_while_an_edit_is_open() {
+        let mut state = todo_click_state();
+        state.todos.selected = 0;
+        state.begin_todo_edit();
+        state.layout.todo_input_rect = Some(Rect::new(0, 5, 30, 1));
+
+        state.handle_mouse_click(5, 1);
+
+        assert!(state.todos.editing.is_some(), "the edit survives the click");
+        assert!(
+            state.todos.adding.is_none(),
+            "the input must not open underneath the edit"
+        );
     }
 }

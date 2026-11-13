@@ -69,10 +69,17 @@ pub enum PopupState {
         working: Option<&'static str>,
         area: Option<ratatui::layout::Rect>,
     },
-    /// Keyboard reference shown when the user presses `?`. Static
-    /// content — no per-popup data beyond the rendered rect.
+    /// Keyboard reference shown when the user presses `?`. The renderer
+    /// writes back `content` / `viewport` each frame (both depend on the
+    /// sidebar's size), which `scroll_help` clamps against.
     Help {
         area: Option<ratatui::layout::Rect>,
+        /// First content line shown at the top of the overlay.
+        scroll: u16,
+        /// Total wrapped content lines, as of the last render.
+        content: u16,
+        /// Visible inner height, as of the last render.
+        viewport: u16,
     },
     /// Confirmation prompt shown when the user presses `x` on a
     /// spawn-created pane. `pane_id` feeds `worktree::remove`; `branch`
@@ -116,7 +123,7 @@ impl PopupState {
     }
 
     pub fn set_help_area(&mut self, rect: Option<ratatui::layout::Rect>) {
-        if let Self::Help { area } = self {
+        if let Self::Help { area, .. } = self {
             *area = rect;
         }
     }
@@ -232,8 +239,16 @@ impl AppState {
 
     pub fn help_popup_area(&self) -> Option<ratatui::layout::Rect> {
         match &self.popup {
-            PopupState::Help { area } => *area,
+            PopupState::Help { area, .. } => *area,
             _ => None,
+        }
+    }
+
+    /// The help overlay's current scroll offset (0 while closed).
+    pub fn help_scroll(&self) -> u16 {
+        match &self.popup {
+            PopupState::Help { scroll, .. } => *scroll,
+            _ => 0,
         }
     }
 
@@ -241,8 +256,55 @@ impl AppState {
         if self.is_help_open() {
             self.close_help_popup();
         } else {
-            self.popup = PopupState::Help { area: None };
+            self.popup = PopupState::Help {
+                area: None,
+                scroll: 0,
+                content: 0,
+                viewport: 0,
+            };
         }
+    }
+
+    /// Record the content/viewport heights the renderer just laid out,
+    /// re-clamping scroll against the fresh layout (a resize can shrink
+    /// the content).
+    pub fn set_help_metrics(&mut self, content: u16, viewport: u16) {
+        if let PopupState::Help {
+            scroll,
+            content: c,
+            viewport: v,
+            ..
+        } = &mut self.popup
+        {
+            *c = content;
+            *v = viewport;
+            *scroll = (*scroll).min(content.saturating_sub(viewport));
+        }
+    }
+
+    /// Scroll the help overlay by `delta` lines (negative up), clamped to
+    /// the content the renderer last reported. A no-op while closed.
+    pub fn scroll_help(&mut self, delta: isize) {
+        if let PopupState::Help {
+            scroll,
+            content,
+            viewport,
+            ..
+        } = &mut self.popup
+        {
+            let max = content.saturating_sub(*viewport) as isize;
+            *scroll = ((*scroll as isize + delta).clamp(0, max)) as u16;
+        }
+    }
+
+    /// Page the help overlay by `direction` (+1 / -1) viewport-sized
+    /// jumps, leaving one line of overlap so position is never lost.
+    pub fn scroll_help_page(&mut self, direction: isize) {
+        let page = match &self.popup {
+            PopupState::Help { viewport, .. } => viewport.saturating_sub(2).max(1) as isize,
+            _ => return,
+        };
+        self.scroll_help(direction * page);
     }
 
     pub fn close_help_popup(&mut self) {
@@ -862,9 +924,41 @@ mod tests {
             "a different popup must not be touched"
         );
 
-        state.popup = PopupState::Help { area: None };
+        state.popup = PopupState::Help {
+            area: None,
+            scroll: 0,
+            content: 0,
+            viewport: 0,
+        };
         state.close_help_popup();
         assert!(matches!(state.popup, PopupState::None));
+    }
+
+    #[test]
+    fn help_scroll_clamps_to_the_last_reported_content() {
+        let mut state = AppState::new("%99".into());
+        state.toggle_help_popup();
+        // The renderer has not reported anything yet: no room to scroll.
+        state.scroll_help(5);
+        assert_eq!(
+            state.help_scroll(),
+            0,
+            "scroll stays at zero before the first render"
+        );
+
+        state.set_help_metrics(30, 10);
+        state.scroll_help(100);
+        assert_eq!(state.help_scroll(), 20, "clamped to content - viewport");
+        state.scroll_help(-100);
+        assert_eq!(state.help_scroll(), 0, "clamped at the top");
+        state.scroll_help(3);
+        assert_eq!(state.help_scroll(), 3);
+
+        // A resize that shrinks the content: the next render writes new
+        // metrics and scroll re-clamps from there.
+        state.set_help_metrics(4, 10);
+        state.scroll_help(0);
+        assert_eq!(state.help_scroll(), 0);
     }
 
     // ─── Spawn input popup ───────────────────────────────────────────

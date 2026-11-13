@@ -85,29 +85,41 @@ Opened with `?`; a keyboard reference for the shortcuts above.
 
 Opened with `t`; hidden by default. Items are plain text, word-wrapped, and
 shared by every sidebar through `~/.local/state/tmux-agent-sidebar/todos.txt`
-(or `$XDG_STATE_HOME` when set). Completed items are hidden by default.
+(or `$XDG_STATE_HOME` when set). Completed items sink to the bottom of the
+list, struck through; `H` collapses the section (shared across open sidebars).
 
 The panel's open/closed state is shared across every sidebar by default: open
 it in one tmux session and it opens in the others, so the same list stays in
 view as you jump between sessions. Set `@sidebar_todo_scope local` to keep the
 panel per sidebar instead; the item list stays shared either way.
 
+The keyboard flow follows Google Tasks: Enter opens the selected task for
+editing and a second Enter (or Enter in the new-task line) saves and lands on
+a fresh task, so a run of items is entered without leaving the keyboard;
+Space completes; Esc backs out without creating anything.
+
 | Key             | Action                                                        |
 | --------------- | ------------------------------------------------------------- |
 | `t`             | Open the panel; focus it when open but unfocused, close it when focused |
 | `j` / `Down`    | Move to the next visible item                                 |
 | `k` / `Up`      | Move to the previous visible item                             |
+| `Ctrl-↓` / `Ctrl-j` | Move the selected item down within the open items        |
+| `Ctrl-↑` / `Ctrl-k` | Move the selected item up within the open items          |
 | `PageUp` / `PageDown` | Page the item list                                      |
-| `Enter`         | Toggle the selected item's checkbox                           |
-| `e`             | Edit the selected item's text (Enter saves, Esc cancels)      |
+| `Enter` / `e`   | Edit the selected item's text; with no item selected, start a new one |
+| `Enter` (while editing or adding) | Save and start the next item; on an empty line, finish entry |
+| `Space`         | Toggle the selected item's checkbox                           |
 | `x` / `d`       | Delete the selected item                                      |
 | `D`             | Delete all completed items                                    |
-| `a`             | Add a new item; while the add line is open, Enter commits and starts a fresh line, Esc ends entry |
-| `d`             | Delete the selected item                                      |
-| `H`             | Toggle "hide completed" (shared across open sidebars)         |
-| `Esc`           | Return focus to the agent list; the panel stays visible       |
+| `u` / `Ctrl-z`  | Undo the last delete / clear-completed (available for 4 s)    |
+| `a`             | Add a new item (insert mode); Esc ends entry                  |
+| `H`             | Collapse / expand the completed section (shared across open sidebars) |
+| `Esc`           | Stop editing without saving, end entry, or return focus to the agent list |
 
-Clicking an item toggles its checkbox; clicking the add line opens the input.
+Clicking an item's checkbox toggles it; clicking its text selects it, and
+clicking the selected item again opens the editor; clicking the open
+new-task line re-opens insert mode. The panel advertises nothing else —
+`?` (the shortcut overlay) documents the full flow.
 
 ## Worktree
 

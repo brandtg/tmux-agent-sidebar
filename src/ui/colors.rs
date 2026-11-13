@@ -262,7 +262,43 @@ pub fn tint_color(color: Color, factor: f32) -> Color {
         Color::Indexed(n) if n >= 16 => indexed_to_rgb(n),
         _ => return color,
     };
-    Color::Indexed(rgb_to_index(tint(r), tint(g), tint(b)))
+    Color::Indexed(nearest_256(tint(r), tint(g), tint(b)))
+}
+
+/// Blend a color toward black by `factor` (0.0-1.0) — the dark
+/// counterpart to [`tint_color`], used where a background band must sit
+/// quieter than the palette color it derives from (the TODO panel's
+/// full-width row washes). Same quantization and pass-through rules as
+/// [`tint_color`], except the indexed quantizer scans the grayscale ramp
+/// too: dark blends land near #2b2b2b, where the 6×6×6 cube has nothing
+/// between black and #5f5f5f but the ramp steps every 10 units.
+pub fn shade_color(color: Color, factor: f32) -> Color {
+    let shade = |c: u8| (f32::from(c) * (1.0 - factor)).round() as u8;
+    let (r, g, b) = match color {
+        Color::Rgb(r, g, b) => return Color::Rgb(shade(r), shade(g), shade(b)),
+        Color::Indexed(n) if n >= 16 => indexed_to_rgb(n),
+        _ => return color,
+    };
+    Color::Indexed(nearest_256(shade(r), shade(g), shade(b)))
+}
+
+/// Nearest 256-color index for an RGB triple, scanning the 6×6×6 cube
+/// and the 232-255 grayscale ramp.
+fn nearest_256(r: u8, g: u8, b: u8) -> u8 {
+    let mut best = 16u8;
+    let mut best_dist = u32::MAX;
+    for i in 16..=255u8 {
+        let (cr, cg, cb) = indexed_to_rgb(i);
+        let dr = i32::from(cr) - i32::from(r);
+        let dg = i32::from(cg) - i32::from(g);
+        let db = i32::from(cb) - i32::from(b);
+        let dist = (dr * dr + dg * dg + db * db) as u32;
+        if dist < best_dist {
+            best_dist = dist;
+            best = i;
+        }
+    }
+    best
 }
 
 fn indexed_to_rgb(n: u8) -> (u8, u8, u8) {
@@ -277,22 +313,6 @@ fn indexed_to_rgb(n: u8) -> (u8, u8, u8) {
             CUBE_LEVELS[(d % 6) as usize],
         )
     }
-}
-
-fn rgb_to_index(r: u8, g: u8, b: u8) -> u8 {
-    let nearest = |c: u8| -> u8 {
-        let mut best = 0u8;
-        let mut best_dist = i16::MAX;
-        for (i, level) in CUBE_LEVELS.iter().enumerate() {
-            let dist = (i16::from(*level) - i16::from(c)).abs();
-            if dist < best_dist {
-                best_dist = dist;
-                best = i as u8;
-            }
-        }
-        best
-    };
-    16 + 36 * nearest(r) + 6 * nearest(g) + nearest(b)
 }
 
 fn parse_tmux_color(value: &str) -> Option<Color> {
@@ -389,6 +409,33 @@ mod tests {
     fn tint_color_passes_system_colors_through() {
         // 0-15 are terminal-defined; tinting would guess at a palette.
         assert_eq!(tint_color(Color::Indexed(4), 0.5), Color::Indexed(4));
+    }
+
+    #[test]
+    fn shade_color_is_tint_colors_dark_counterpart() {
+        // 50% toward black: 239 (#4e4e4e) lands mid-ramp, where the
+        // grayscale entries beat the cube (which has nothing between
+        // black and #5f5f5f).
+        assert_eq!(shade_color(Color::Indexed(239), 0.5), Color::Indexed(235));
+        // 35% — the TODO row wash — sits three ramp steps below the
+        // selection gray.
+        assert_eq!(shade_color(Color::Indexed(239), 0.35), Color::Indexed(236));
+        // Full black collapses onto cube black; passthrough at 0.
+        assert_eq!(shade_color(Color::Indexed(239), 1.0), Color::Indexed(16));
+        assert_eq!(shade_color(Color::Indexed(239), 0.0), Color::Indexed(239));
+    }
+
+    #[test]
+    fn shade_color_scales_rgb_per_channel() {
+        assert_eq!(
+            shade_color(Color::Rgb(126, 156, 216), 0.5),
+            Color::Rgb(63, 78, 108)
+        );
+    }
+
+    #[test]
+    fn shade_color_passes_system_colors_through() {
+        assert_eq!(shade_color(Color::Indexed(4), 0.5), Color::Indexed(4));
     }
 
     #[test]
