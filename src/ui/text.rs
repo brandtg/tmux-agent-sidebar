@@ -206,7 +206,21 @@ fn wrap_text_inner(text: &str, max_width: usize, max_lines: usize, word_wrap: bo
 /// result is wrapped at `rest_width` and the caller must not render the
 /// first element on the prefix line.
 pub fn wrap_flow(text: &str, first_width: usize, rest_width: usize) -> Vec<String> {
-    let mut lines: Vec<String> = Vec::new();
+    wrap_flow_offsets(text, first_width, rest_width)
+        .into_iter()
+        .map(|(line, _)| line)
+        .collect()
+}
+
+/// [`wrap_flow`] paired with each line's starting char offset into
+/// `text`. Break spaces belong to no line: a line's start offset points
+/// at its first kept char, so offsets are monotonic but may skip chars.
+pub fn wrap_flow_offsets(
+    text: &str,
+    first_width: usize,
+    rest_width: usize,
+) -> Vec<(String, usize)> {
+    let mut lines: Vec<(String, usize)> = Vec::new();
     if text.is_empty() {
         return lines;
     }
@@ -249,7 +263,7 @@ pub fn wrap_flow(text: &str, first_width: usize, rest_width: usize) -> Vec<Strin
             end
         };
         let line: String = chars[pos..cut].iter().collect();
-        lines.push(line.trim_end().to_string());
+        lines.push((line.trim_end().to_string(), pos));
         pos = cut;
         // Word-wrap: skip the spaces the break happened at.
         while pos < chars.len() && chars[pos] == ' ' {
@@ -434,6 +448,22 @@ mod tests {
     #[test]
     fn wrap_flow_empty_text() {
         assert!(wrap_flow("", 5, 5).is_empty());
+    }
+
+    #[test]
+    fn wrap_flow_offsets_point_at_each_lines_first_char() {
+        let lines = wrap_flow_offsets("alpha beta gamma", 11, 11);
+        assert_eq!(
+            lines,
+            vec![("alpha beta".to_string(), 0), ("gamma".to_string(), 11)]
+        );
+    }
+
+    #[test]
+    fn wrap_flow_offsets_skip_the_break_spaces() {
+        // The two-space break belongs to no line: "two" starts at 5.
+        let lines = wrap_flow_offsets("one  two", 5, 5);
+        assert_eq!(lines, vec![("one".to_string(), 0), ("two".to_string(), 5)]);
     }
 
     // ─── elapsed_label ─────────────────────────────────────────────
