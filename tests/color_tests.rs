@@ -615,6 +615,70 @@ fn test_session_mode_window_level_headers() {
     ");
 }
 
+// ─── Repo-mode window level (@sidebar_worktree_windows) ─────────────
+
+#[test]
+fn test_repo_mode_window_level_headers() {
+    let mut agent1 = make_pane(AgentType::Claude, PaneStatus::Idle);
+    agent1.pane_id = "%1".into();
+    agent1.tmux_session = "main".into();
+    agent1.window_index = 0;
+    agent1.window_name = "api".into();
+    let mut agent2 = make_pane(AgentType::Codex, PaneStatus::Idle);
+    agent2.pane_id = "%2".into();
+    agent2.tmux_session = "main".into();
+    agent2.window_index = 1;
+    agent2.window_name = "web".into();
+
+    let mut state = make_state(vec![SessionInfo {
+        session_name: "main".into(),
+        windows: vec![
+            WindowInfo {
+                window_id: "@0".into(),
+                window_name: "api".into(),
+                window_active: true,
+                auto_rename: true,
+                panes: vec![agent1.clone()],
+            },
+            WindowInfo {
+                window_id: "@1".into(),
+                window_name: "web".into(),
+                window_active: false,
+                auto_rename: true,
+                panes: vec![agent2.clone()],
+            },
+        ],
+    }]);
+    state.global.group_by = tmux_agent_sidebar::state::GroupBy::Repo;
+    state.global.worktree_windows = true;
+    state.repo_groups = vec![tmux_agent_sidebar::group::RepoGroup {
+        name: "project".into(),
+        has_focus: false,
+        panes: vec![
+            (agent1, tmux_agent_sidebar::group::PaneGitInfo::default()),
+            (agent2, tmux_agent_sidebar::group::PaneGitInfo::default()),
+        ],
+    }];
+    state.rebuild_row_targets();
+
+    // Same hierarchy as the session-mode level, under a repo group
+    // title: `index:name` header lines at the resting shade (fg:249)
+    // with the focused window's header in the lightened accent tint
+    // (fg:189). The group's panes carry no repo_root git info, so the
+    // title stays a plain label without the `[+]` spawn button.
+    insta::assert_snapshot!(render_to_styled_string(&mut state, 28, 30), @"
+     ≡[fg:111]2[fg:255]  ●[fg:245]0[fg:245]  ◎[fg:245]0[fg:245]  ◐[fg:245]0[fg:245]  ○[fg:245]2[fg:255]  ✕[fg:245]0[fg:245]
+    ⓘ[fg:221]                        —[fg:252] ▾[fg:252]
+    p[fg:153]r[fg:153]o[fg:153]j[fg:153]e[fg:153]c[fg:153]t[fg:153]
+     [fg:189]0[fg:189]:[fg:189]a[fg:189]p[fg:189]i[fg:189]
+    ┃[fg:153,bg:239] [bg:239]○[fg:110,bg:239] [fg:173,bg:239]c[fg:173,bg:239]l[fg:173,bg:239]a[fg:173,bg:239]u[fg:173,bg:239]d[fg:173,bg:239]e[fg:173,bg:239] [bg:239] [bg:239] [bg:239] [bg:239] [bg:239] [bg:239] [bg:239] [bg:239] [bg:239] [bg:239] [bg:239] [bg:239] [bg:239] [bg:239] [bg:239] [bg:239] [bg:239] [bg:239]
+       [fg:255] [fg:255]W[fg:255]a[fg:255]i[fg:255]t[fg:255]i[fg:255]n[fg:255]g[fg:255] [fg:255]f[fg:255]o[fg:255]r[fg:255] [fg:255]p[fg:255]r[fg:255]o[fg:255]m[fg:255]p[fg:255]t[fg:255]…[fg:255]
+     [fg:249]1[fg:249]:[fg:249]w[fg:249]e[fg:249]b[fg:249]
+      ○[fg:110] [fg:141]c[fg:141]o[fg:141]d[fg:141]e[fg:141]x[fg:141]
+       [fg:244] [fg:244]W[fg:244]a[fg:244]i[fg:244]t[fg:244]i[fg:244]n[fg:244]g[fg:244] [fg:244]f[fg:244]o[fg:244]r[fg:244] [fg:244]p[fg:244]r[fg:244]o[fg:244]m[fg:244]p[fg:244]t[fg:244]…[fg:244]
+    ");
+}
+
 // ─── Status color rendering for each PaneStatus ─────────────────────
 
 #[test]

@@ -32,9 +32,10 @@ pub struct ColorTheme {
     pub text_active: Color,
     pub text_muted: Color,
     pub text_inactive: Color,
-    /// Session-mode window-level header (`@sidebar_session_windows`): the
-    /// `index:name` line under a session title. `Indexed(249)` keeps a
-    /// clear step below the session title's `text_active` (255) — the
+    /// Window-level header (`@sidebar_session_windows` /
+    /// `@sidebar_worktree_windows`): the `index:name` line under a
+    /// group title. `Indexed(249)` keeps a
+    /// clear step below the group title's `text_active` (255) — the
     /// gray ramp between 255 and the detail rows' 244 has no room for a
     /// third distinct level, so the header shares its lightness with the
     /// detail text and lets indent and the `index:` prefix carry the

@@ -164,6 +164,13 @@ pub const SIDEBAR_GROUP_BY: &str = "@sidebar_group_by";
 /// panes; see `row_collector::collect`). Set in tmux.conf; read on every
 /// global sync like [`SIDEBAR_GROUP_BY`], with no runtime toggle.
 pub const SIDEBAR_SESSION_WINDOWS: &str = "@sidebar_session_windows";
+/// Repo-mode window level (`on` / `off`, default `off`). The repo/worktree
+/// counterpart of [`SIDEBAR_SESSION_WINDOWS`]: when on and the panel is
+/// grouped by repo, each window's rows render under a muted `index:name`
+/// header line — the `Repo > Window > agent|process` hierarchy (see
+/// `row_collector::collect`). Set in tmux.conf; read on every global sync
+/// like [`SIDEBAR_GROUP_BY`], with no runtime toggle.
+pub const SIDEBAR_WORKTREE_WINDOWS: &str = "@sidebar_worktree_windows";
 /// Title agent rows by their worktree (`on` / `off`, default `off`): a
 /// session without a user-given name shows the linked worktree it is
 /// working in instead of the agent's auto-derived name. Read on every
@@ -265,8 +272,9 @@ pub const SIDEBAR_COLOR_TEXT_ACTIVE: &str = "@sidebar_color_text_active";
 pub const SIDEBAR_COLOR_FLAG: &str = "@sidebar_color_flag";
 pub const SIDEBAR_COLOR_TEXT_MUTED: &str = "@sidebar_color_text_muted";
 pub const SIDEBAR_COLOR_TEXT_INACTIVE: &str = "@sidebar_color_text_inactive";
-/// Session-mode window-level header (`@sidebar_session_windows`) — the
-/// `index:name` line rendered under each session title.
+/// Window-level header (`@sidebar_session_windows` /
+/// `@sidebar_worktree_windows`) — the `index:name` line rendered under
+/// each group title in the mode it belongs to.
 pub const SIDEBAR_COLOR_WINDOW_HEADER: &str = "@sidebar_color_window_header";
 pub const SIDEBAR_COLOR_SESSION: &str = "@sidebar_color_session";
 pub const SIDEBAR_COLOR_PORT: &str = "@sidebar_color_port";

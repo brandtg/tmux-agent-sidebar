@@ -336,10 +336,11 @@ pub enum GroupRow<'a> {
 impl<'a> GroupRow<'a> {
     /// `(tmux_session, window_index)` of the row's window — the same
     /// key [`ordered_group_rows`] sorts by, so consecutive rows sharing
-    /// it belong to one window. The session-mode window header
-    /// (`@sidebar_session_windows`) is emitted wherever this key
-    /// changes. Takes `self` (Copy) so the returned name borrows the
-    /// row's referent, not the `GroupRow` temporary.
+    /// it belong to one window. The window header level
+    /// (`@sidebar_session_windows` / `@sidebar_worktree_windows`) is
+    /// emitted wherever this key changes. Takes `self` (Copy) so the
+    /// returned name borrows the row's referent, not the `GroupRow`
+    /// temporary.
     pub fn window_key(self) -> (&'a str, i64) {
         match self {
             GroupRow::Agent((pane, _)) => (pane.tmux_session.as_str(), pane.window_index),
@@ -347,8 +348,8 @@ impl<'a> GroupRow<'a> {
         }
     }
 
-    /// The row's window name (`#{window_name}`), for the session-mode
-    /// window header line.
+    /// The row's window name (`#{window_name}`), for the window header
+    /// line.
     pub fn window_name(self) -> &'a str {
         match self {
             GroupRow::Agent((pane, _)) => pane.window_name.as_str(),
