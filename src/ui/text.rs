@@ -263,7 +263,18 @@ pub fn wrap_flow_offsets(
             end
         };
         let line: String = chars[pos..cut].iter().collect();
-        lines.push((line.trim_end().to_string(), pos));
+        // A mid-text break's trailing spaces are the break itself — the
+        // cut stops before a space run and the skip below consumes the
+        // rest, so trim them. The final chunk's trailing spaces are the
+        // buffer's own (an edit buffer can legitimately end in spaces):
+        // keeping them is what lets the edit cursor advance past a typed
+        // space instead of stalling on an invisible one.
+        let line = if end == chars.len() {
+            line
+        } else {
+            line.trim_end().to_string()
+        };
+        lines.push((line, pos));
         pos = cut;
         // Word-wrap: skip the spaces the break happened at.
         while pos < chars.len() && chars[pos] == ' ' {
@@ -464,6 +475,24 @@ mod tests {
         // The two-space break belongs to no line: "two" starts at 5.
         let lines = wrap_flow_offsets("one  two", 5, 5);
         assert_eq!(lines, vec![("one".to_string(), 0), ("two".to_string(), 5)]);
+    }
+
+    #[test]
+    fn wrap_flow_offsets_keeps_the_buffers_trailing_spaces() {
+        // The final chunk's trailing spaces are the buffer's own: an edit
+        // buffer can end in spaces, and the cursor must be able to render
+        // past them (a trimmed line would stall the cursor on the spot
+        // the space was typed from).
+        let lines = wrap_flow_offsets("abc  ", 10, 10);
+        assert_eq!(lines, vec![("abc  ".to_string(), 0)]);
+    }
+
+    #[test]
+    fn wrap_flow_offsets_trims_spaces_at_a_mid_text_break() {
+        // The first line breaks inside the space run: the run belongs to
+        // the break, not to the line.
+        let lines = wrap_flow_offsets("ab  cd", 4, 4);
+        assert_eq!(lines, vec![("ab".to_string(), 0), ("cd".to_string(), 4)]);
     }
 
     // ─── elapsed_label ─────────────────────────────────────────────

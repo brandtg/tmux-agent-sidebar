@@ -132,14 +132,11 @@ pub(super) fn render_todo_panel(frame: &mut Frame, state: &mut AppState, area: R
     let error_style = Style::default().fg(theme.status_error);
     let text_style = Style::default().fg(theme.text_active);
     // The completed block is the graveyard: struck through, and one step
-    // dimmer (text_inactive) while the panel owns the keyboard so the
-    // open block keeps the eye.
+    // dimmer than the open block's text in every state. Focus shifts the
+    // brightness within the open block; it never lights the graveyard
+    // back up.
     let done_text_style = Style::default()
-        .fg(if panel_focused {
-            theme.text_inactive
-        } else {
-            theme.text_muted
-        })
+        .fg(theme.text_inactive)
         .add_modifier(Modifier::CROSSED_OUT);
     // Row washes sit well below the shared selection gray: the todo rows
     // paint their background edge to edge (unlike the agent list, where
@@ -829,7 +826,7 @@ mod tests {
         [[fg:240] [fg:240]][fg:240] [fg:240]B[fg:255]u[fg:255]y[fg:255] [fg:255]m[fg:255]i[fg:255]l[fg:255]k[fg:255]
         [[fg:240] [fg:240]][fg:240] [fg:240]R[fg:255]e[fg:255]a[fg:255]d[fg:255] [fg:255]t[fg:255]h[fg:255]e[fg:255] [fg:255]t[fg:255]m[fg:255]u[fg:255]x[fg:255] [fg:255]c[fg:255]h[fg:255]a[fg:255]n[fg:255]g[fg:255]e[fg:255]l[fg:255]o[fg:255]g[fg:255] [fg:255]a[fg:255]n[fg:255]d[fg:255] [fg:255]t[fg:255]r[fg:255]y[fg:255] [fg:255]t[fg:255]h[fg:255]e[fg:255]
          [fg:240] [fg:240] [fg:240] [fg:240]n[fg:255]e[fg:255]w[fg:255] [fg:255]p[fg:255]a[fg:255]s[fg:255]t[fg:255]e[fg:255] [fg:255]b[fg:255]e[fg:255]h[fg:255]a[fg:255]v[fg:255]i[fg:255]o[fg:255]u[fg:255]r[fg:255]
-        [[fg:240]✓[fg:240]][fg:240] [fg:240]S[fg:252,crossed]e[fg:252,crossed]n[fg:252,crossed]d[fg:252,crossed] [fg:252,crossed]t[fg:252,crossed]h[fg:252,crossed]e[fg:252,crossed] [fg:252,crossed]i[fg:252,crossed]n[fg:252,crossed]v[fg:252,crossed]o[fg:252,crossed]i[fg:252,crossed]c[fg:252,crossed]e[fg:252,crossed]
+        [[fg:240]✓[fg:240]][fg:240] [fg:240]S[fg:244,crossed]e[fg:244,crossed]n[fg:244,crossed]d[fg:244,crossed] [fg:244,crossed]t[fg:244,crossed]h[fg:244,crossed]e[fg:244,crossed] [fg:244,crossed]i[fg:244,crossed]n[fg:244,crossed]v[fg:244,crossed]o[fg:244,crossed]i[fg:244,crossed]c[fg:244,crossed]e[fg:244,crossed]
         ");
     }
 
@@ -885,6 +882,41 @@ mod tests {
         [[fg:153] [fg:153]][fg:153] [fg:153]R[fg:255]e[fg:255]a[fg:255]d[fg:255] [fg:255]t[fg:255]h[fg:255]e[fg:255] [fg:255]t[fg:255]m[fg:255]u[fg:255]x[fg:255] [fg:255]c[fg:255]h[fg:255]a[fg:255]n[fg:255]g[fg:255]e[fg:255]l[fg:255]o[fg:255]g[fg:255] [fg:255]a[fg:255]n[fg:255]d[fg:255] [fg:255]t[fg:255]r[fg:255]y[fg:255] [fg:255]t[fg:255]h[fg:255]e[fg:255]
          [fg:153] [fg:153] [fg:153] [fg:153]n[fg:255]e[fg:255]w[fg:255] [fg:255]p[fg:255]a[fg:255]s[fg:255]t[fg:255]e[fg:255] [fg:255]b[fg:255]e[fg:255]h[fg:255]a[fg:255]v[fg:255]i[fg:255]o[fg:255]u[fg:255]r[fg:255]
         [[fg:240]✓[fg:240]][fg:240] [fg:240]S[fg:244,crossed]e[fg:244,crossed]n[fg:244,crossed]d[fg:244,crossed] [fg:244,crossed]t[fg:244,crossed]h[fg:244,crossed]e[fg:244,crossed] [fg:244,crossed]i[fg:244,crossed]n[fg:244,crossed]v[fg:244,crossed]o[fg:244,crossed]i[fg:244,crossed]c[fg:244,crossed]e[fg:244,crossed]
+        ");
+    }
+
+    #[test]
+    fn typing_a_trailing_space_advances_the_cursor() {
+        // A space typed at the end of the buffer must move the caret one
+        // column right. The wrap used to trim it off the rendered line,
+        // so the cursor sat on the same cell as before the keypress and
+        // the space looked lost.
+        let mut state = todo_state();
+        state.todos.editing = Some(crate::state::TodoEdit {
+            index: 0,
+            input: "Buy milk for the cat".into(),
+            cursor: 20,
+        });
+
+        let before = render_panel(&mut state, 30, 10);
+        insta::assert_snapshot!(before, @"
+        ─ todos · 2/3─────────────────
+        [ ] Buy milk for the cat█
+        [ ] Read the tmux changelog
+            and try the new paste
+            behaviour
+        [✓] Send the invoice
+        ");
+
+        state.todo_input_push_char(' ');
+        let after = render_panel(&mut state, 30, 10);
+        insta::assert_snapshot!(after, @"
+        ─ todos · 2/3─────────────────
+        [ ] Buy milk for the cat █
+        [ ] Read the tmux changelog
+            and try the new paste
+            behaviour
+        [✓] Send the invoice
         ");
     }
 }

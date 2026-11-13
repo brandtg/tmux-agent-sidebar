@@ -173,15 +173,23 @@ pub fn query_sessions() -> Vec<SessionInfo> {
 }
 
 pub(crate) fn query_session_snapshot(sidebar_pane: &str) -> Option<TmuxSnapshot> {
-    let pane_format = pane_format();
-    let all_panes_output = run_tmux(&["list-panes", "-a", "-F", &pane_format])?;
+    let all_panes_output = fetch_pane_listing()?;
     Some(build_session_snapshot(&all_panes_output, sidebar_pane))
+}
+
+/// The raw `list-panes -a` listing, unparsed. This is the one tmux spawn
+/// per refresh tick; the snapshot worker runs it off the render thread so
+/// a keystroke never queues behind the subprocess, and the caller parses
+/// with [`build_session_snapshot`] wherever the work lands.
+pub(crate) fn fetch_pane_listing() -> Option<String> {
+    let pane_format = pane_format();
+    run_tmux(&["list-panes", "-a", "-F", &pane_format])
 }
 
 /// Parse raw `list-panes` output into the session hierarchy, the process
 /// snapshot, and the sidebar-centric fields (own focus flags + the pane list
 /// of the sidebar's window) used to resolve the focused pane.
-fn build_session_snapshot(all_panes_output: &str, sidebar_pane: &str) -> TmuxSnapshot {
+pub(crate) fn build_session_snapshot(all_panes_output: &str, sidebar_pane: &str) -> TmuxSnapshot {
     let (sidebar_pane_active, sidebar_window_active, sidebar_window_panes) =
         extract_sidebar_window_info(all_panes_output, sidebar_pane);
     let process_snapshot = process_snapshot_for_panes(all_panes_output);

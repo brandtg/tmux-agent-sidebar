@@ -18,6 +18,13 @@ mod render;
 mod setup;
 mod workers;
 
+/// Minimum gap between signal-driven refresh requests. Hook events ride
+/// SIGUSR1 from every agent in every window; without a gap a burst of
+/// hooks would enqueue a spawn per signal. The gap only throttles the
+/// signal path — the periodic 1s tick is unaffected — and a coalesced
+/// signal is latched back onto `needs_refresh` until the gap elapses.
+const MIN_REFRESH_GAP: Duration = Duration::from_millis(150);
+
 /// Run the TUI event loop. Returns when the loop exits — on a fatal I/O
 /// error, or when the user presses `q` (`state.quit_requested`), which
 /// tears down a popup via `display-popup -E` and closes the pane-mode
@@ -44,6 +51,8 @@ pub fn run(
 
     let workers = workers::spawn(&state);
     let workers::Workers {
+        snapshot_tx,
+        snapshot_rx,
         session_rx,
         version_rx,
         git_info_tx,
@@ -58,6 +67,11 @@ pub fn run(
     let refresh_interval = Duration::from_secs(1);
     let spinner_interval = Duration::from_millis(200);
     let mut needs_redraw = true;
+    // A request is on the wire and has not been applied yet. Refresh
+    // requests coalesce onto this flag: hook events can arrive in bursts
+    // (every agent in every window), and each one used to cost its own
+    // synchronous tmux spawn.
+    let mut snapshot_in_flight = false;
 
     loop {
         if needs_redraw {
@@ -65,15 +79,40 @@ pub fn run(
             needs_redraw = false;
         }
 
+        // Refresh request: hook-event signals (SIGUSR1) and the periodic
+        // tick both land here. The tmux spawns run on the snapshot worker —
+        // `list-panes -a` used to run synchronously right here, and a
+        // keystroke arriving mid-spawn queued behind the subprocess, which
+        // is what made typing in the sidebar feel laggy. The raw listing is
+        // parsed and applied further down when it comes back. Signal-driven
+        // requests also keep a minimum gap so a hook storm cannot turn into
+        // a spawn storm.
+        let signal_pending = needs_refresh.swap(false, Ordering::Relaxed);
+        let since_refresh = last_refresh.elapsed();
+        let refresh_due = (signal_pending && since_refresh >= MIN_REFRESH_GAP)
+            || since_refresh >= refresh_interval;
+        if refresh_due && !snapshot_in_flight {
+            state.refresh_now();
+            state
+                .todos
+                .refresh_if_changed(state.global.todo_hide_completed);
+            let request = workers::SnapshotRequest {
+                include_globals: signal_pending,
+            };
+            if snapshot_tx.send(request).is_ok() {
+                snapshot_in_flight = true;
+            }
+            last_refresh = std::time::Instant::now();
+        } else if signal_pending {
+            // Coalesced: latch the signal back so the next wake fires it.
+            needs_refresh.store(true, Ordering::Relaxed);
+        }
+
         let refresh_timeout = refresh_interval.saturating_sub(last_refresh.elapsed());
         let spinner_timeout = spinner_interval.saturating_sub(last_spinner.elapsed());
-        let timeout = if needs_refresh.load(Ordering::Relaxed) {
-            Duration::ZERO
-        } else {
-            refresh_timeout
-                .min(spinner_timeout)
-                .min(Duration::from_millis(16))
-        };
+        let timeout = refresh_timeout
+            .min(spinner_timeout)
+            .min(Duration::from_millis(16));
         if event::poll(timeout)? {
             loop {
                 let ev = event::read()?;
@@ -104,10 +143,20 @@ pub fn run(
             needs_redraw = true;
         }
 
-        let sigusr1 = needs_refresh.swap(false, Ordering::Relaxed);
-        if sigusr1 || last_refresh.elapsed() >= refresh_interval {
+        // Snapshot apply: the worker's raw listing landed — fold it into
+        // state and run the per-refresh follow-ups (auto-close, focus
+        // selection, worker feeds, shared-option reload). The same work
+        // the synchronous refresh used to do inline, minus the spawn.
+        if let Ok(raw) = snapshot_rx.try_recv() {
+            snapshot_in_flight = false;
             let previous_sidebar_focused = state.focus_state.sidebar_focused;
-            let is_window_active = state.refresh();
+            let is_window_active = match raw.panes_output {
+                Some(output) => state.apply_session_refresh(&output),
+                // A failed `list-panes` call is not evidence that no panes
+                // exist (the sync twin holds the same line): apply nothing,
+                // keep the last known-good snapshot, retry next tick.
+                None => state.focus_state.window_active,
+            };
             // A sidebar whose window has no panes left besides itself
             // would render as a full-window sidebar. The `auto-close`
             // hook cannot always repair that (its pane-exited
@@ -163,18 +212,19 @@ pub fn run(
                 let _ = git_info_tx.send(paths);
             }
             needs_redraw = true;
-            // Reload shared global options (compact, filters, cursor) on
-            // every SIGUSR1-driven refresh, and when an inactive window
-            // regains visibility (≥2 inactive ticks). The signal must
-            // reload regardless of window-active state: a broadcast from
-            // another sidebar has to land on *inactive* instances too —
-            // those are exactly the stale ones — and `#{window_active}`
-            // is per-session, so a sidebar whose window leads its own
-            // (unfocused) session never registers a visible→hidden
-            // transition for the second branch to catch.
-            if sigusr1 || (is_window_active && window_inactive_count >= 2) {
+            // Reload shared global options (compact, filters, cursor) when
+            // the tick was signal-driven — the request asked the worker to
+            // fetch them, because a broadcast from another sidebar has to
+            // land on *inactive* instances too (those are exactly the
+            // stale ones) — and when an inactive window regains visibility
+            // (≥2 inactive ticks) as the missed-signal safety net, falling
+            // back to a direct load since no globals rode this snapshot.
+            if raw.global_options.is_some() || (is_window_active && window_inactive_count >= 2) {
                 let previous_group_by = state.global.group_by;
-                state.global.load_from_tmux();
+                match &raw.global_options {
+                    Some(opts) => state.global.apply_all(opts),
+                    None => state.global.load_from_tmux(),
+                }
                 // Group names are mode-specific (repo names vs session
                 // names). A collapse set from the previous mode would
                 // otherwise hide an unrelated group that happens to share
@@ -228,7 +278,6 @@ pub fn run(
             } else {
                 window_inactive_count = window_inactive_count.saturating_add(1);
             }
-            last_refresh = std::time::Instant::now();
         }
 
         if let Ok(scanned) = session_rx.try_recv() {

@@ -310,7 +310,7 @@ fn handle_todo_key(key: KeyEvent, state: &mut AppState) -> bool {
 
     if state.todos.editing.is_some() {
         match key.code {
-            KeyCode::Esc => state.cancel_todo_edit(),
+            KeyCode::Esc => state.todo_escape(),
             // The editor's newline: save and land on a fresh task.
             KeyCode::Enter => state.commit_todo_edit_and_next(),
             KeyCode::Backspace => state.todo_input_pop_char(),
@@ -338,11 +338,13 @@ fn handle_todo_key(key: KeyEvent, state: &mut AppState) -> bool {
 
     if state.todos.adding.is_some() {
         match key.code {
-            KeyCode::Esc => state.cancel_todo_add(),
+            KeyCode::Esc => state.todo_escape(),
             // Commits the task and keeps a fresh line open; an empty
             // buffer ends the streak instead (see `commit_todo_add`).
             KeyCode::Enter => state.commit_todo_add(),
-            KeyCode::Backspace => state.todo_input_pop_char(),
+            // Google Tasks' backspace: on the empty new-task line the
+            // caret returns to the previous task, insert mode intact.
+            KeyCode::Backspace => state.todo_input_backspace(),
             KeyCode::Char('u') if ctrl => state.todo_input_clear(),
             KeyCode::Char('w') if ctrl => state.todo_input_pop_word(),
             KeyCode::Char(c) if !ctrl => state.todo_input_push_char(c),
@@ -1187,6 +1189,89 @@ mod tests {
             Some(""),
             "the newline lands on a fresh task"
         );
+    }
+
+    #[test]
+    fn escape_while_editing_saves_instead_of_discarding() {
+        let mut state = todo_fixture();
+        handle_key_event(key(KeyCode::Char('t')), &mut state);
+        handle_key_event(key(KeyCode::Enter), &mut state); // edit item 0
+        handle_key_event(key(KeyCode::Backspace), &mut state);
+        handle_key_event(key(KeyCode::Char('z')), &mut state); // types into the buffer
+
+        handle_key_event(key(KeyCode::Esc), &mut state);
+
+        assert_eq!(
+            state.todos.items[0].text, "z",
+            "Esc is vim's insert-mode exit: the edit stays"
+        );
+        assert!(state.todos.editing.is_none());
+        assert!(state.todos.adding.is_none(), "no fresh line opens");
+    }
+
+    #[test]
+    fn escape_on_the_add_line_saves_the_typed_text() {
+        let mut state = todo_fixture();
+        handle_key_event(key(KeyCode::Char('t')), &mut state);
+        handle_key_event(key(KeyCode::Char('a')), &mut state);
+        handle_key_event(key(KeyCode::Char('h')), &mut state);
+        handle_key_event(key(KeyCode::Char('i')), &mut state);
+
+        handle_key_event(key(KeyCode::Esc), &mut state);
+
+        assert!(state.todos.adding.is_none(), "insert mode closes");
+        assert_eq!(
+            state
+                .todos
+                .items
+                .iter()
+                .map(|i| i.text.as_str())
+                .collect::<Vec<_>>(),
+            vec!["a", "b", "hi"],
+            "the buffered text stays"
+        );
+    }
+
+    #[test]
+    fn backspace_on_the_fresh_streak_line_edits_the_previous_task() {
+        let mut state = todo_fixture();
+        handle_key_event(key(KeyCode::Char('t')), &mut state);
+        handle_key_event(key(KeyCode::Char('a')), &mut state);
+        handle_key_event(key(KeyCode::Char('h')), &mut state);
+        handle_key_event(key(KeyCode::Char('i')), &mut state);
+        handle_key_event(key(KeyCode::Enter), &mut state); // commits "hi", fresh line
+        assert_eq!(state.todos.adding.as_deref(), Some(""));
+
+        handle_key_event(key(KeyCode::Backspace), &mut state);
+
+        let edit = state.todos.editing.as_ref().unwrap();
+        assert_eq!(edit.index, 2, "the previous task reopened");
+        assert_eq!(edit.input, "hi");
+        assert_eq!(edit.cursor, 2, "the caret sits at the end of the text");
+        assert!(
+            state.todos.adding.is_none(),
+            "insert mode continues on the previous task"
+        );
+    }
+
+    #[test]
+    fn backspacing_through_the_whole_draft_lands_on_the_previous_task() {
+        let mut state = todo_fixture();
+        handle_key_event(key(KeyCode::Char('t')), &mut state);
+        handle_key_event(key(KeyCode::Char('a')), &mut state);
+        for ch in 'a'..'e' {
+            handle_key_event(key(KeyCode::Char(ch)), &mut state);
+        }
+        // Four pops empty the draft; the next backspace returns the caret.
+        for _ in 0..5 {
+            handle_key_event(key(KeyCode::Backspace), &mut state);
+        }
+
+        assert!(state.todos.adding.is_none(), "the draft line closed");
+        let edit = state.todos.editing.as_ref().unwrap();
+        assert_eq!(edit.index, 1, "the caret returned to the previous task");
+        assert_eq!(edit.input, "b");
+        assert_eq!(edit.cursor, 1);
     }
 
     #[test]

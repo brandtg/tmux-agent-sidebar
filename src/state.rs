@@ -36,7 +36,7 @@ pub use scroll::{ScrollState, ScrollStates};
 pub use search::SearchState;
 pub use session::SessionNamesState;
 pub use timers::RefreshTimers;
-pub use todo::TodoState;
+pub use todo::{TodoEdit, TodoState};
 
 pub struct AppState {
     pub now: u64,
