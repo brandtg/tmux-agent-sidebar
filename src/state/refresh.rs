@@ -466,8 +466,10 @@ impl AppState {
         self.refresh_task_progress();
     }
 
-    /// Fast refresh: tmux state + activity log (called every 1s).
-    /// Returns whether the sidebar's window is the active tmux window.
+    /// Fast refresh: tmux state + activity log (called synchronously at
+    /// startup and on the explicit `s` regroup; the per-tick path fetches
+    /// on the snapshot worker instead). Returns whether the sidebar's
+    /// window is the active tmux window.
     ///
     /// Costs exactly one tmux spawn (`list-panes -a`): the sidebar's own
     /// focus flags and its window's pane list — historically two extra
@@ -486,11 +488,26 @@ impl AppState {
             // the repo filter to All and persist that reset in a tmux
             // global option — surviving restarts and propagating to every
             // sidebar instance. Hold the last known-good snapshot instead
-            // and retry on the next tick. The window-active flag rides
-            // the same way: reporting a fabricated `false` would trip the
-            // per-tick global-option reload in the event loop.
+            // and retry on the next tick.
             return self.focus_state.window_active;
         };
+        self.apply_snapshot(snapshot)
+    }
+
+    /// The apply half of [`Self::refresh`] for the async snapshot worker:
+    /// fold an already-fetched `list-panes -a` listing into state. The
+    /// spawn runs off the render thread (a keystroke must never queue
+    /// behind the subprocess); the parse is string work, safe to run
+    /// where `AppState` lives. Returns whether the sidebar's window is
+    /// the active tmux window.
+    pub fn apply_session_refresh(&mut self, all_panes_output: &str) -> bool {
+        let snapshot = tmux::build_session_snapshot(all_panes_output, &self.tmux_pane);
+        self.apply_snapshot(snapshot)
+    }
+
+    /// Fold a parsed snapshot into state; the shared tail of
+    /// [`Self::refresh`] and [`Self::apply_session_refresh`].
+    fn apply_snapshot(&mut self, snapshot: TmuxSnapshot) -> bool {
         // Inside a popup `TMUX_PANE` is the window's active pane at
         // popup-open time, not the sidebar itself, and the popup always
         // holds keyboard focus while open — so the snapshot's focus

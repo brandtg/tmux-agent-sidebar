@@ -45,6 +45,11 @@ const PERMISSION_PROMPT_PATTERNS: [&str; 9] = [
 /// Channels and shared flags produced by [`spawn`] that the main event loop
 /// drains every tick.
 pub(super) struct Workers {
+    /// Requests the snapshot worker: one refresh tick. The raw listing
+    /// comes back on `snapshot_rx`; the parse and apply stay on the
+    /// render thread (cheap string work, and [`AppState`] lives there).
+    pub snapshot_tx: mpsc::Sender<SnapshotRequest>,
+    pub snapshot_rx: Receiver<SnapshotRaw>,
     pub session_rx: Receiver<session::ScannedNames>,
     pub version_rx: Receiver<UpdateNotice>,
     /// Requests the git-info resolver worker: the distinct pane working
@@ -62,9 +67,28 @@ pub(super) struct Workers {
     pub approval_tx: mpsc::Sender<Vec<String>>,
 }
 
+/// One snapshot refresh request. `include_globals` asks the worker to also
+/// fetch the shared global options (`show -g`) — set when the tick was
+/// driven by a hook-event signal, which is exactly when another sidebar may
+/// have broadcast a setting change.
+pub(super) struct SnapshotRequest {
+    pub include_globals: bool,
+}
+
+/// The raw outputs of one snapshot pass. `panes_output` is `None` when the
+/// `list-panes` spawn failed — the caller holds its last-known-good state
+/// and retries on the next tick (a failed call is not evidence that no
+/// panes exist).
+pub(super) struct SnapshotRaw {
+    pub panes_output: Option<String>,
+    pub global_options: Option<HashMap<String, String>>,
+}
+
 /// Spawn the background threads (session-name polling, version notice
 /// fetch, git-info resolution, port scanning) that feed the event loop.
 pub(super) fn spawn(_state: &crate::state::AppState) -> Workers {
+    let (snapshot_tx, snapshot_req_rx) = mpsc::channel::<SnapshotRequest>();
+    let (snapshot_res_tx, snapshot_rx) = mpsc::channel::<SnapshotRaw>();
     let (session_tx, session_rx) = mpsc::channel::<session::ScannedNames>();
     let (version_tx, version_rx) = mpsc::channel::<UpdateNotice>();
     let (git_info_tx, git_info_req_rx) = mpsc::channel::<Vec<String>>();
@@ -72,6 +96,9 @@ pub(super) fn spawn(_state: &crate::state::AppState) -> Workers {
     let (port_scan_tx, port_scan_req_rx) = mpsc::channel::<Vec<PaneScanTarget>>();
     let (port_scan_res_tx, port_scan_rx) = mpsc::channel::<Option<PaneProcessSnapshot>>();
     let (approval_tx, approval_req_rx) = mpsc::channel::<Vec<String>>();
+    std::thread::spawn(move || {
+        snapshot_poll_loop(&snapshot_req_rx, &snapshot_res_tx);
+    });
     std::thread::spawn(move || {
         session_poll_loop(&session_tx);
     });
@@ -91,6 +118,8 @@ pub(super) fn spawn(_state: &crate::state::AppState) -> Workers {
     });
 
     Workers {
+        snapshot_tx,
+        snapshot_rx,
         session_rx,
         version_rx,
         git_info_tx,
@@ -98,6 +127,26 @@ pub(super) fn spawn(_state: &crate::state::AppState) -> Workers {
         port_scan_tx,
         port_scan_rx,
         approval_tx,
+    }
+}
+
+/// Snapshot worker. The per-tick `list-panes -a` spawn (plus a `show -g`
+/// when the tick was signal-driven) used to run synchronously on the
+/// render thread: a keystroke arriving mid-spawn queued behind the
+/// subprocess, which is what made typing in the sidebar feel laggy. The
+/// spawn now happens here; the event loop drains the result and parses
+/// on its own thread.
+pub(super) fn snapshot_poll_loop(
+    rx: &mpsc::Receiver<SnapshotRequest>,
+    tx: &mpsc::Sender<SnapshotRaw>,
+) {
+    while let Ok(request) = rx.recv() {
+        let panes_output = tmux::fetch_pane_listing();
+        let global_options = request.include_globals.then(tmux::get_all_global_options);
+        let _ = tx.send(SnapshotRaw {
+            panes_output,
+            global_options,
+        });
     }
 }
 

@@ -47,7 +47,9 @@ pub(crate) use query::TmuxSnapshot;
 pub(crate) use query::classify_window_status;
 pub(crate) use query::query_session_snapshot;
 pub use query::query_sessions;
-pub(crate) use query::{is_shell_basename, is_shell_command};
+pub(crate) use query::{
+    build_session_snapshot, fetch_pane_listing, is_shell_basename, is_shell_command,
+};
 pub(crate) use signal::broadcast_refresh;
 pub(crate) use signal::is_sidebar_process;
 pub(crate) use signal::signal_usr1;

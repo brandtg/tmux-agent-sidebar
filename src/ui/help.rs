@@ -48,7 +48,7 @@ const HELP_SECTIONS: &[(&str, &[(&str, &str)])] = &[
             ("D", "Clear completed"),
             ("u / Ctrl-z", "Undo delete/clear (4 s)"),
             ("H", "Show / hide completed"),
-            ("Esc", "Cancel / back to list"),
+            ("Esc", "Save / back to list"),
         ],
     ),
     (
@@ -224,7 +224,7 @@ mod tests {
         │ D                Clear completed         │
         │ u / Ctrl-z       Undo delete/clear (4 s) │
         │ H                Show / hide completed   │
-        │ Esc              Cancel / back to list   │
+        │ Esc              Save / back to list     │
         │                                          │
         │ global                                   │
         │ t                Open / close TODO panel │
@@ -289,7 +289,7 @@ mod tests {
         ╭ shortcuts · esc to close · j/k scrolls ──╮
         │ u / Ctrl-z       Undo delete/clear (4 s) │
         │ H                Show / hide completed   │
-        │ Esc              Cancel / back to list   │
+        │ Esc              Save / back to list     │
         │                                          │
         │ global                                   │
         │ t                Open / close TODO panel │

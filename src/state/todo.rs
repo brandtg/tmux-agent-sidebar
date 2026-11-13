@@ -594,14 +594,15 @@ impl AppState {
         self.todos.clamp_selection(self.global.todo_hide_completed);
     }
 
-    /// Esc inside the panel: cancel the in-place edit, then the add
-    /// line, otherwise hand focus back to the agent list and leave the
-    /// panel visible.
+    /// Esc inside the panel — vim's insert-mode exit: an open edit saves
+    /// its text and an open add line commits its buffer (what was typed
+    /// stays), and with neither open focus hands back to the agent list,
+    /// leaving the panel visible.
     pub fn todo_escape(&mut self) {
         if self.todos.editing.is_some() {
-            self.todos.editing = None;
+            self.commit_todo_edit();
         } else if self.todos.adding.is_some() {
-            self.todos.adding = None;
+            self.commit_todo_add_and_close();
         } else {
             self.focus_state.focus = Focus::Panes;
         }
@@ -711,7 +712,8 @@ impl AppState {
     /// Commit the add line and immediately start a fresh one so several
     /// items can be entered in a row (Google Tasks style). An empty
     /// input ends the streak instead — there is nothing to create, so
-    /// Enter finishes and insert mode closes, exactly like Esc.
+    /// Enter finishes and insert mode closes, exactly like Esc on an
+    /// empty line.
     pub fn commit_todo_add(&mut self) {
         let Some(input) = self.todos.adding.take() else {
             return;
@@ -724,8 +726,18 @@ impl AppState {
         self.todos.adding = Some(String::new());
     }
 
-    pub fn cancel_todo_add(&mut self) {
-        self.todos.adding = None;
+    /// Esc on the add line: commit the buffered text (vim's insert-mode
+    /// exit — what was typed stays) and close insert mode. An empty
+    /// buffer has nothing to create and just closes the line.
+    pub fn commit_todo_add_and_close(&mut self) {
+        let Some(input) = self.todos.adding.take() else {
+            return;
+        };
+        if input.trim().is_empty() {
+            return;
+        }
+        self.todos.add(input);
+        self.todos.clamp_selection(self.global.todo_hide_completed);
     }
 
     /// Enter in the panel — Google's Return: the selected task opens for
@@ -784,10 +796,6 @@ impl AppState {
         self.begin_todo_add();
     }
 
-    pub fn cancel_todo_edit(&mut self) {
-        self.todos.editing = None;
-    }
-
     pub fn todo_input_push_char(&mut self, c: char) {
         if let Some(edit) = self.todos.editing.as_mut() {
             let mut chars: Vec<char> = edit.input.chars().collect();
@@ -813,6 +821,32 @@ impl AppState {
         } else if let Some(input) = self.todos.adding.as_mut() {
             input.pop();
         }
+    }
+
+    /// Backspace on the add line. With text in the buffer this pops the
+    /// last typed char. Once nothing but whitespace remains — an erased
+    /// draft, or a line of spaces — the line reads as empty, so the same
+    /// key does what Google Tasks does on the empty new-task line: the
+    /// caret moves to the end of the previous task and insert mode
+    /// continues there. The add line closes and the nearest open item
+    /// opens for editing (the done block is a graveyard, so completed
+    /// items are skipped); with no open item at all the line stays put.
+    /// Only wired on the add line — an open edit's Backspace is the
+    /// plain pop (its buffer can be emptied without leaving the item,
+    /// and that must not jump tasks).
+    pub fn todo_input_backspace(&mut self) {
+        let Some(input) = self.todos.adding.as_deref() else {
+            return;
+        };
+        if !input.trim().is_empty() {
+            self.todo_input_pop_char();
+            return;
+        }
+        let Some(target) = self.todos.items.iter().rposition(|item| !item.done) else {
+            return;
+        };
+        self.todos.selected = target;
+        self.begin_todo_edit();
     }
 
     /// Delete: remove the char at the cursor. The add line has no
@@ -1387,6 +1421,114 @@ mod tests {
     }
 
     #[test]
+    fn backspace_on_the_empty_new_task_line_returns_to_the_previous_task() {
+        let mut state = state_with(vec![item("alpha", false), item("beta", false)]);
+        state.todos.selected = 0;
+
+        state.begin_todo_add();
+        state.todo_input_push_char('g');
+        state.todo_input_push_char('a');
+        state.todo_input_backspace();
+        assert_eq!(
+            state.todos.adding.as_deref(),
+            Some("g"),
+            "a non-empty buffer pops the ordinary way"
+        );
+
+        state.commit_todo_add(); // Enter: commits "g", leaves a fresh line
+        assert_eq!(state.todos.adding.as_deref(), Some(""));
+
+        state.todo_input_backspace();
+
+        assert!(state.todos.adding.is_none(), "the add line closed");
+        let edit = state.todos.editing.as_ref().unwrap();
+        assert_eq!(edit.index, 2, "the previous task reopened");
+        assert_eq!(edit.input, "g");
+        assert_eq!(edit.cursor, 1, "the caret sits at the end of the text");
+    }
+
+    #[test]
+    fn backspacing_through_the_whole_draft_lands_on_the_previous_task() {
+        // The draft is erased the way it was typed — from the end, over
+        // its spaces — and the backspace that empties it returns the
+        // caret to the previous task, insert mode intact.
+        let mut state = state_with(vec![item("old task", false)]);
+
+        state.begin_todo_add();
+        for ch in "new stuff".chars() {
+            state.todo_input_push_char(ch);
+        }
+        // Nine pops empty the draft; the next backspace returns the caret.
+        for _ in 0..10 {
+            state.todo_input_backspace();
+        }
+
+        assert!(state.todos.adding.is_none(), "the draft line closed");
+        let edit = state.todos.editing.as_ref().unwrap();
+        assert_eq!(edit.index, 0, "the previous task reopened");
+        assert_eq!(edit.input, "old task");
+        assert_eq!(edit.cursor, 8, "the caret sits at the end of the text");
+    }
+
+    #[test]
+    fn backspace_on_a_whitespace_only_add_line_jumps_to_the_previous_task() {
+        // A line of spaces reads as empty: the jump fires instead of
+        // popping the last space and stalling on an invisible buffer.
+        let mut state = state_with(vec![item("old task", false)]);
+
+        state.begin_todo_add();
+        state.todo_input_push_char(' ');
+        state.todo_input_push_char(' ');
+        state.todo_input_backspace();
+
+        assert!(state.todos.adding.is_none());
+        let edit = state.todos.editing.as_ref().unwrap();
+        assert_eq!(edit.index, 0);
+        assert_eq!(edit.input, "old task");
+    }
+
+    #[test]
+    fn backspace_with_real_content_still_pops_the_ordinary_way() {
+        let mut state = state_with(vec![item("old task", false)]);
+
+        state.begin_todo_add();
+        state.todo_input_push_char('h');
+        state.todo_input_push_char('i');
+        state.todo_input_push_char(' ');
+        state.todo_input_backspace();
+
+        assert_eq!(
+            state.todos.adding.as_deref(),
+            Some("hi"),
+            "content remains, so the key is an ordinary pop"
+        );
+        assert!(state.todos.editing.is_none());
+    }
+
+    #[test]
+    fn backspace_on_an_empty_add_line_skips_completed_items() {
+        let mut state = state_with(vec![item("alpha", false), item("old", true)]);
+
+        state.begin_todo_add();
+        state.todo_input_backspace();
+
+        let edit = state.todos.editing.as_ref().unwrap();
+        assert_eq!(edit.index, 0, "the nearest open item reopened");
+        assert_eq!(edit.input, "alpha");
+    }
+
+    #[test]
+    fn backspace_on_an_empty_add_line_with_no_open_tasks_is_a_no_op() {
+        let mut state = state_with(vec![item("old", true)]);
+
+        state.begin_todo_add();
+        state.todo_input_backspace();
+
+        assert!(state.todos.adding.is_some(), "nothing to fall back to");
+        assert!(state.todos.editing.is_none());
+    }
+
+    #[test]
     fn empty_edit_keeps_the_original_text() {
         let mut state = state_with(vec![item("keep me", false)]);
         state.todos.selected = 0;
@@ -1416,7 +1558,7 @@ mod tests {
     }
 
     #[test]
-    fn escape_cancels_the_edit_without_changing_the_item() {
+    fn escape_keeps_the_edit_like_vim_insert_mode() {
         let mut state = state_with(vec![item("original", false)]);
         state.todos.selected = 0;
 
@@ -1425,8 +1567,45 @@ mod tests {
         state.todo_escape();
 
         assert!(state.todos.editing.is_none());
-        assert_eq!(state.todos.items[0].text, "original");
+        assert_eq!(
+            state.todos.items[0].text, "original!",
+            "Esc saves the edit instead of discarding it"
+        );
         assert_eq!(state.focus_state.focus, Focus::Todos);
+    }
+
+    #[test]
+    fn escape_on_the_add_line_commits_and_closes_insert_mode() {
+        let mut state = state_with(vec![item("existing", false)]);
+
+        state.begin_todo_add();
+        state.todo_input_push_char('n');
+        state.todo_input_push_char('e');
+        state.todo_input_push_char('w');
+        state.todo_escape();
+
+        assert!(state.todos.adding.is_none());
+        assert_eq!(
+            state
+                .todos
+                .items
+                .iter()
+                .map(|i| i.text.as_str())
+                .collect::<Vec<_>>(),
+            vec!["existing", "new"],
+            "the buffered text stays"
+        );
+    }
+
+    #[test]
+    fn escape_on_an_empty_add_line_just_closes() {
+        let mut state = state_with(vec![item("existing", false)]);
+
+        state.begin_todo_add();
+        state.todo_escape();
+
+        assert!(state.todos.adding.is_none());
+        assert_eq!(state.todos.items.len(), 1, "nothing was created");
     }
 
     #[test]
