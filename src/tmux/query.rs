@@ -771,7 +771,7 @@ pub fn classify_window_status(command: &str) -> WindowStatus {
 /// command-only classification reads it `Idle` — indistinguishable from
 /// an idle prompt. When a ps snapshot is available and the pane's
 /// process tree contains any non-shell descendant (the script doing
-/// work), the pane is promoted to `Task` so it gets the pulsing diamond
+/// work), the pane is promoted to `Task` so it gets the pulsing triangle
 /// and, on exit, the completion flash. Without a snapshot (ps failure)
 /// the plain classification stands.
 pub(crate) fn classify_pane_status(

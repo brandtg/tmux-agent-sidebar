@@ -10,7 +10,7 @@ Status: design agreed, nothing built. Come back here when picking this up.
 - Standing UI contract that motivated it, and that any follow-up must respect:
   - text_inactive gray is exclusively agent text (prompt previews, Waiting for
     prompt…, todos). Scanning for "what needs me" is a pure gray-scan.
-  - Magenta diamond = process family, green = agents. Never blur the split.
+  - Magenta triangle = process family, green = agents. Never blur the split.
   - Process cards render one line; detail rides line 1.
 
 ## The idea

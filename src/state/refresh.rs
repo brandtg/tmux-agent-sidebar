@@ -10,7 +10,7 @@ use crate::tmux::{self, PaneAttention, PaneStatus, SessionInfo, TmuxSnapshot, Wi
 use super::{AppState, PaneRuntimeMap};
 
 /// Minimum flash duration for finished non-agent task indicators: a
-/// tracked task that finished keeps its hollow-diamond flash for this
+/// tracked task that finished keeps its hollow-triangle flash for this
 /// long even while its pane is focused, so the transition is actually
 /// visible. Pane-focus ticks consume the flag after this grace —
 /// without it, a finish that lands while the user is looking at the

@@ -93,7 +93,7 @@ impl StatusFilter {
     /// - a shell or an interactive program (editor, pager) counts as
     ///   idle — the "nothing ran here" case stays separated from tasks;
     /// - a finished task whose shell integration reported a non-zero
-    ///   exit code surfaces in `Error` with a red diamond;
+    ///   exit code surfaces in `Error` with a red triangle;
     /// - there is no non-agent analogue for the `Background` and
     ///   `Waiting` buckets, which is fine: those express agent-session
     ///   semantics.

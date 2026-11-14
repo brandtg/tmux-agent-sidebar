@@ -311,10 +311,10 @@ fn port_text_lowest_first(ports: Option<&[u16]>, budget: usize) -> Option<String
 
 /// Lines for a non-agent window row.
 ///
-/// Line 1 (both densities) uses the same gutter as agent rows. A diamond
-/// glyph (`◇`/`◆`) replaces the agent circle, painted in the process
-/// magenta family so a stack of open processes reads apart from the
-/// agent greens while color still conveys status.
+/// Line 1 (both densities) uses the same gutter as agent rows. An
+/// up-pointing triangle glyph (`△`/`▲`) replaces the agent circle, painted
+/// in the process magenta family so a stack of open processes reads apart
+/// from the agent greens while color still conveys status.
 ///
 /// Rendering uses two-tone styling: the binary name is highlighted in
 /// [`theme.text_active`], followed by its cleaned arguments in
@@ -330,9 +330,9 @@ fn port_text_lowest_first(ports: Option<&[u16]>, budget: usize) -> Option<String
 ///
 /// `finished` carries the completed foreground task tracked runtime-side.
 /// A finished task overrides the plain status: exit 0 (or an unknown
-/// exit, no shell integration) draws a hollow diamond in the
+/// exit, no shell integration) draws a hollow triangle in the
 /// flashing-magenta process pulse until the user focuses the pane;
-/// a non-zero exit draws a solid red diamond plus an `exit N` note.
+/// a non-zero exit draws a solid red triangle plus an `exit N` note.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn window_row(
     window: &crate::group::OtherWindow,
@@ -342,7 +342,7 @@ pub(super) fn window_row(
     active: bool,
     flagged: bool,
     width: usize,
-    // Intentionally unused since the diamond family stopped borrowing the
+    // Intentionally unused since the triangle family stopped borrowing the
     // agent spinner pulse — kept so the call sites stay uniform.
     _icons: &StatusIcons,
     theme: &ColorTheme,
@@ -381,26 +381,26 @@ pub(super) fn window_row(
         active,
     };
 
-    // Diamond family: hollow = idle, solid magenta = busy, solid pulsing
+    // Triangle family: hollow = idle, solid magenta = busy, solid pulsing
     // magenta = task, hollow pulsing magenta = finished. The process pink
     // keeps a column of open processes reading apart from the agent
     // greens, while the pulse still marks "doing work" — just in the
     // process family, not the agent's. A finished task flashes in that
     // same family: the done pulse would paint it agent-green.
     let (icon, icon_color): (&str, ratatui::style::Color) = match window.status {
-        WindowStatus::Idle => ("\u{25C7}", theme.status_idle),
-        WindowStatus::Busy => ("\u{25C6}", theme.process),
-        WindowStatus::Task => ("\u{25C6}", theme.process_pulse_color(spinner_frame)),
+        WindowStatus::Idle => ("\u{25B3}", theme.status_idle),
+        WindowStatus::Busy => ("\u{25B2}", theme.process),
+        WindowStatus::Task => ("\u{25B2}", theme.process_pulse_color(spinner_frame)),
     };
 
     // A finished tracked task outranks the plain status glyph.
     let mut exit_note: Option<String> = None;
     let (icon, icon_color) = match finished {
         Some(finished) => match finished.exit_code {
-            None | Some(0) => ("\u{25C7}", theme.process_pulse_color(spinner_frame)),
+            None | Some(0) => ("\u{25B3}", theme.process_pulse_color(spinner_frame)),
             Some(code) => {
                 exit_note = Some(format!("exit {code}"));
-                ("\u{25C6}", theme.status_error)
+                ("\u{25B2}", theme.status_error)
             }
         },
         None => (icon, icon_color),
@@ -499,7 +499,7 @@ pub(super) fn window_row(
     }
 
     // Failed-run marker: a note naming the failing exit code keeps
-    // the red diamond unambiguous on theme colors that also tint tasks.
+    // the red triangle unambiguous on theme colors that also tint tasks.
     let remaining_for_note = ctx.inner_width.saturating_sub(left_width + right_width);
     if let Some(note) = exit_note
         && remaining_for_note >= 3
@@ -1971,7 +1971,7 @@ mod tests {
         assert_eq!(lines.len(), 1, "window rows render a single line");
         let line = &lines[0];
         let text = line_text(line);
-        assert!(text.contains('\u{25C6}'), "diamond glyph missing: {text}");
+        assert!(text.contains('\u{25B2}'), "triangle glyph missing: {text}");
         assert!(text.contains("node"), "program missing: {text}");
         // Displays the pane's own foreground program, not the window name.
         assert!(!text.contains("web"), "window name must not appear: {text}");
@@ -1979,7 +1979,7 @@ mod tests {
     }
 
     #[test]
-    fn window_row_task_diamond_pulses_process_magenta() {
+    fn window_row_task_triangle_pulses_process_magenta() {
         let theme = ColorTheme::default();
         let w = window("web", "node", crate::tmux::WindowStatus::Task);
         // Task rows breathe the magenta PROCESS_PULSE, not the agents'
@@ -1998,12 +1998,12 @@ mod tests {
             4,
         );
         let icon_span = &lines[0].spans[2];
-        assert_eq!(icon_span.content.as_ref(), "\u{25C6}");
+        assert_eq!(icon_span.content.as_ref(), "\u{25B2}");
         assert_eq!(icon_span.style.fg, Some(theme.process_pulse_color(4)));
     }
 
     #[test]
-    fn window_row_busy_diamond_is_solid_process_magenta() {
+    fn window_row_busy_triangle_is_solid_process_magenta() {
         let theme = ColorTheme::default();
         let w = window("nvim", "nvim", crate::tmux::WindowStatus::Busy);
         let lines = window_row(
@@ -2019,7 +2019,7 @@ mod tests {
             0,
         );
         let icon_span = &lines[0].spans[2];
-        assert_eq!(icon_span.content.as_ref(), "\u{25C6}");
+        assert_eq!(icon_span.content.as_ref(), "\u{25B2}");
         assert_eq!(icon_span.style.fg, Some(theme.process));
     }
 
@@ -2140,10 +2140,10 @@ mod tests {
     }
 
     #[test]
-    fn window_row_finished_success_flashes_hollow_magenta_diamond() {
+    fn window_row_finished_success_flashes_hollow_magenta_triangle() {
         let theme = ColorTheme::default();
         // A tracked task that finished with exit 0 (or an unknown exit)
-        // renders a hollow diamond in the magenta process pulse — the
+        // renders a hollow triangle in the magenta process pulse — the
         // process family color, not the agents' green done pulse.
         let w = window("tests", "cargo", crate::tmux::WindowStatus::Idle);
         let finished = crate::state::WindowFinished {
@@ -2166,9 +2166,9 @@ mod tests {
         assert_eq!(lines.len(), 1, "window rows render a single line");
         let line = &lines[0];
         let text = line_text(line);
-        assert!(text.contains('\u{25C7}'), "hollow diamond missing: {text}");
+        assert!(text.contains('\u{25B3}'), "hollow triangle missing: {text}");
         let icon_span = &line.spans[2];
-        assert_eq!(icon_span.content.as_ref(), "\u{25C7}");
+        assert_eq!(icon_span.content.as_ref(), "\u{25B3}");
         assert_eq!(
             icon_span.style.fg,
             Some(theme.process_pulse_color(0)),
@@ -2177,7 +2177,7 @@ mod tests {
     }
 
     #[test]
-    fn window_row_finished_nonzero_gets_red_diamond_and_exit_note() {
+    fn window_row_finished_nonzero_gets_red_triangle_and_exit_note() {
         let theme = ColorTheme::default();
         let w = window("tests", "cargo", crate::tmux::WindowStatus::Idle);
         let finished = crate::state::WindowFinished {
@@ -2202,7 +2202,7 @@ mod tests {
         let text = line_text(line);
         assert!(text.contains("(exit 1)"), "exit note missing: {text}");
         let icon_span = &line.spans[2];
-        assert_eq!(icon_span.content.as_ref(), "\u{25C6}");
+        assert_eq!(icon_span.content.as_ref(), "\u{25B2}");
         assert_eq!(icon_span.style.fg, Some(theme.status_error));
     }
 
