@@ -282,7 +282,7 @@ pub const SIDEBAR_COLOR_WAIT_REASON: &str = "@sidebar_color_wait_reason";
 pub const SIDEBAR_COLOR_SELECTION: &str = "@sidebar_color_selection";
 pub const SIDEBAR_COLOR_BRANCH: &str = "@sidebar_color_branch";
 pub const SIDEBAR_COLOR_TASK_PROGRESS: &str = "@sidebar_color_task_progress";
-/// Neon magenta family for non-agent (process) window rows — the diamond
+/// Neon magenta family for non-agent (process) window rows — the triangle
 /// glyph's base color and the peak of its [`crate::PROCESS_PULSE`] breathe.
 pub const SIDEBAR_COLOR_PROCESS: &str = "@sidebar_color_process";
 pub const SIDEBAR_COLOR_SUBAGENT: &str = "@sidebar_color_subagent";

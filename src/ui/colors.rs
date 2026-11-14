@@ -53,7 +53,7 @@ pub struct ColorTheme {
     pub badge_auto: Color,
     pub badge_plan: Color,
     pub task_progress: Color,
-    /// Base color for non-agent (process) window rows — the diamond
+    /// Base color for non-agent (process) window rows — the triangle
     /// glyph on busy rows and the peak of the PROCESS_PULSE breathe on
     /// task rows. Hot pink: the only hue family the palette doesn't
     /// already claim, so a stack of open processes reads apart from the
@@ -109,7 +109,7 @@ impl Default for ColorTheme {
             badge_auto: Color::Indexed(221),
             badge_plan: Color::Indexed(117),
             task_progress: Color::Indexed(223),
-            // Hot pink — the diamond family for processes. The one hue
+            // Hot pink — the triangle family for processes. The one hue
             // family the palette leaves unclaimed: nothing else renders
             // pink, and unlike orange it carries no warning subtext
             // (error 167, waiting 221, flag 208 all live nearby).
@@ -224,9 +224,9 @@ impl ColorTheme {
         }
     }
 
-    /// Magenta breathe for working process diamonds — the process
+    /// Magenta breathe for working process triangles — the process
     /// counterpart to the agents' green [`SPINNER_PULSE`], so a pulsing
-    /// diamond reads "process doing work" in a hue nothing else uses.
+    /// triangle reads "process doing work" in a hue nothing else uses.
     /// The cycle repeats once past the end of the table.
     pub fn process_pulse_color(&self, spinner_frame: usize) -> Color {
         let idx = crate::PROCESS_PULSE[spinner_frame % crate::PROCESS_PULSE.len()];

@@ -198,7 +198,7 @@ pub(super) fn collect(state: &AppState, width: u16) -> CollectedRows {
         // Agents and non-agent rows interleave in session → window →
         // pane order (see `group::ordered_group_rows`), so each window's
         // processes sit next to its agent instead of pooling below the
-        // whole group. Window rows use a diamond status glyph
+        // whole group. Window rows use a triangle status glyph
         // (see `row::window_row`), so they read as distinct without a
         // header line — unless the group's window level is on (the
         // session-mode `@sidebar_session_windows` or its repo-mode
@@ -493,7 +493,7 @@ mod tests {
             .join("\n");
 
         assert!(text.contains("cargo"), "window row missing:\n{text}");
-        assert!(text.contains('\u{25C6}'), "window glyph missing:\n{text}");
+        assert!(text.contains('\u{25B2}'), "window glyph missing:\n{text}");
         // Layout: repo header, agent status, agent idle hint, then the
         // window card (maps to row index 1). No sub-header line.
         assert_eq!(
@@ -658,7 +658,7 @@ mod tests {
             .join("\n");
 
         assert!(
-            !text.contains("cargo test") && !text.contains('\u{25C6}'),
+            !text.contains("cargo test") && !text.contains('\u{25B2}'),
             "window section must be hidden:\n{text}"
         );
     }
