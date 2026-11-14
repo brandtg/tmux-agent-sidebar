@@ -616,7 +616,7 @@ mod tests {
         ];
         assert_eq!(state.status_counts(), (3, 1, 0, 1, 1, 0));
 
-        state.collapsed_groups.insert("backend".into());
+        state.global.collapsed_groups.insert("backend".into());
         assert_eq!(
             state.status_counts(),
             (1, 0, 0, 1, 0, 0),

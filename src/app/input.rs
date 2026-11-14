@@ -225,8 +225,21 @@ pub(super) fn handle_key_event(key: KeyEvent, state: &mut AppState) -> bool {
         // waiting for the next tick.
         KeyCode::Char('s') => {
             state.global.toggle_group_by();
-            state.collapsed_groups.clear();
+            state.global.collapsed_groups.clear();
+            // Names are mode-specific; drop the parked cursor group too
+            // and persist the cleared set so every sidebar starts the
+            // new mode fully expanded.
+            state.collapsed_cursor_group = None;
+            state.global.save_collapsed_groups();
             state.refresh();
+        }
+        // `M` folds every group — the zM counterpart of `Z`'s zR. The
+        // cursor's group is parked first, so `z` reopens it from the
+        // fully-folded list.
+        KeyCode::Char('M') => {
+            if state.focus_state.focus == Focus::Panes && state.collapse_all_groups() {
+                state.global.queue_cursor_save();
+            }
         }
         KeyCode::PageDown => page_scroll(state, 1),
         KeyCode::PageUp => page_scroll(state, -1),
@@ -414,6 +427,12 @@ fn pane_nav_down(state: &mut AppState) {
             state.focus_state.focus = Focus::Panes;
         }
         Focus::Panes => {
+            // A fully-folded list has no rows to move through and no
+            // bottom to fall off: keep the focus instead of dropping
+            // into the TODO panel, where the fold keys go dead.
+            if state.layout.pane_row_targets.is_empty() {
+                return;
+            }
             if state.move_pane_selection(1) {
                 state.global.queue_cursor_save();
             } else if state.focus_todo_from_panes() {
@@ -445,6 +464,11 @@ fn pane_nav_up(state: &mut AppState) {
     match state.focus_state.focus {
         Focus::Filter => {}
         Focus::Panes => {
+            // Same empty-list rule as the downward walk: a fully-folded
+            // list has no top to leave through the filter bar with.
+            if state.layout.pane_row_targets.is_empty() {
+                return;
+            }
             if state.move_pane_selection(-1) {
                 state.global.queue_cursor_save();
             } else {
@@ -873,6 +897,81 @@ mod tests {
 
         assert!(state.is_group_collapsed("backend"));
         assert_eq!(target_ids(&state), vec!["%3"]);
+    }
+
+    #[test]
+    fn z_reopens_the_parked_group_after_collapsing_everything() {
+        // Folding every group leaves the cursor with no visible row, and
+        // `group_starts` holds only groups with rows — without the park,
+        // the keyboard went dead there and a click was the only way back.
+        let mut state = state_with_search_groups();
+
+        handle_key_event(key(KeyCode::Char('z')), &mut state);
+        handle_key_event(key(KeyCode::Char('z')), &mut state);
+        assert!(
+            state.layout.pane_row_targets.is_empty(),
+            "both groups folded"
+        );
+
+        handle_key_event(key(KeyCode::Char('z')), &mut state);
+        assert!(
+            !state.is_group_collapsed("frontend"),
+            "the group that swallowed the cursor reopens"
+        );
+        assert!(
+            state.is_group_collapsed("backend"),
+            "the untouched fold stays"
+        );
+        assert_eq!(target_ids(&state), vec!["%3"]);
+        assert_eq!(
+            state.global.selected_pane_row, 0,
+            "the cursor lands on the reopened fold's first row, vim-za style"
+        );
+    }
+
+    #[test]
+    fn m_collapses_every_group_and_z_reopens_the_cursor_group() {
+        let mut state = state_with_search_groups();
+        state.global.selected_pane_row = 2; // %3, the frontend row
+
+        handle_key_event(key(KeyCode::Char('M')), &mut state);
+        assert!(state.layout.pane_row_targets.is_empty());
+        assert!(state.is_group_collapsed("backend"));
+        assert!(state.is_group_collapsed("frontend"));
+
+        handle_key_event(key(KeyCode::Char('z')), &mut state);
+        assert_eq!(target_ids(&state), vec!["%3"], "the cursor's group reopens");
+        assert!(state.is_group_collapsed("backend"));
+
+        handle_key_event(key(KeyCode::Char('Z')), &mut state);
+        assert_eq!(target_ids(&state), vec!["%1", "%2", "%3"]);
+    }
+
+    #[test]
+    fn j_does_not_fall_into_the_todo_panel_when_every_group_is_folded() {
+        // The downward walk ends in the TODO panel only when there is a
+        // list to walk; off a fully-folded (empty) list it must keep the
+        // focus, or the fold keys go dead one keypress later.
+        let mut state = state_with_search_groups();
+        state.todos.items = vec![crate::todo::TodoItem {
+            text: "Buy milk".into(),
+            done: false,
+        }];
+        state.todos.visible = true;
+
+        handle_key_event(key(KeyCode::Char('M')), &mut state);
+        handle_key_event(key(KeyCode::Char('j')), &mut state);
+        assert_eq!(
+            state.focus_state.focus,
+            Focus::Panes,
+            "an empty list has no bottom to fall off"
+        );
+        handle_key_event(key(KeyCode::Char('k')), &mut state);
+        assert_eq!(
+            state.focus_state.focus,
+            Focus::Panes,
+            "nor a top to leave through the filter row"
+        );
     }
 
     #[test]

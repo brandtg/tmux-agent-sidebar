@@ -46,13 +46,14 @@ first row applies as usual.
 | `repo_filter` | `@sidebar_repo_filter` | User input (repo popup) | Repository filter (All or specific repo) |
 | `compact` | `@sidebar_compact` | User input (`c` key) | Compact one-line-per-pane rendering; the live value is shared by all open sidebars, and `@sidebar_default_compact_view` seeds it only before the first toggle |
 | `group_by` | `@sidebar_group_by` | User input (`s` key) | Group panes by repo root or tmux session; the runtime toggle writes the shared value and broadcasts, matching `c` / `w` |
+| `collapsed_groups` | `@sidebar_collapsed_groups` | User input (`z` / `M` / `Z`, or a header click) | Group names folded to a header-only row, stored as a JSON array so names round-trip; persists across restarts and syncs to every open sidebar. Cleared when the grouping mode changes — names are mode-specific |
 | `session_windows` | `@sidebar_session_windows` | tmux.conf (read on every sync) | Session-mode window level: when grouped by session, each window's rows render under an `index:name` header (the `Session > Window > agent|process` hierarchy) that takes a lightened tint of the accent while one of the window's panes is focused. Config-time only — there is no runtime toggle. Default off |
 | `worktree_windows` | `@sidebar_worktree_windows` | tmux.conf (read on every sync) | Repo-mode window level: when grouped by repo, each window's rows render under an `index:name` header (the `Repo > Window > agent|process` hierarchy) that takes a lightened tint of the accent while one of the window's panes is focused. Config-time only — there is no runtime toggle. Default off |
 | `worktree_titles` | `@sidebar_worktree_titles` | tmux.conf (read on every sync) | Worktree row titles: an agent row whose session has no user-given name is titled by the linked worktree it works in (`@pane_worktree_name`) instead of the agent's auto-derived name, and the branch line drops the repeated worktree name. Config-time only — there is no runtime toggle. Default off |
 | `preview_lines` | `@sidebar_preview_lines` | tmux.conf (read on every sync) | Line cap for the agent message preview (the prompt / response body wrapped under the status row); clamped to 1–10, default 2. Config-time only — there is no runtime toggle |
 | sidebar mode | `@sidebar_mode` | `toggle-all` sweep | Server-global `open`/`closed` intent; consulted by the new-window and new-session hooks (falling back to `@sidebar_auto_create` while unset) so toggle-all covers windows and sessions created afterwards |
 
-`status_filter`, `selected_pane_row`, and `repo_filter` each have a corresponding `last_saved_*` marker to prevent sync conflicts — tmux only overwrites the local value when it differs from what this instance last wrote. `compact` is exempt: the live tmux value is adopted unconditionally so sidebars can never diverge on density.
+`status_filter`, `selected_pane_row`, `repo_filter`, and `collapsed_groups` each have a corresponding `last_saved_*` marker to prevent sync conflicts — tmux only overwrites the local value when it differs from what this instance last wrote. `compact` is exempt: the live tmux value is adopted unconditionally so sidebars can never diverge on density.
 
 ### Per-pane State (keyed by pane ID)
 
@@ -120,7 +121,7 @@ Per-pane file-based state:
 | `now` | Every 1s | Current Unix epoch |
 | `scrolls.panes` | On user input / render | Agent list scroll position |
 | `search` | On user input | Per-sidebar `/` query and whether the input line is open. Not broadcast: the query is transient |
-| `collapsed_groups` | On user input / grouping mode change | Local `HashSet` of group names collapsed to a header-only row (`z` / `Z`, or clicking the header); cleared when the shared grouping mode changes. A collapsed header renders a fold summary — hidden pane count plus nonzero waiting/done/error segments — computed from the filtered row set |
+| `collapsed_cursor_group` | On fold/unfold via `rebuild_row_targets` | Group that swallowed the cursor when every row is hidden behind folds; lets `z` keep resolving the right fold with nothing visible. Transient, like the cursor |
 | `theme` | Once at startup | Color theme from tmux `@sidebar_color_*` variables |
 | `popup` | On user input / render | `PopupState` enum: `None` / `Repo { selected, area }` / `Notices { area }`. Enforces "at most one popup open" via the type system |
 | `layout` | Every frame (render) | `FrameLayout` sub-struct bundling the ephemeral fields the UI rewrites every frame for click hit-testing: `pane_row_targets`, `group_starts` (visible group headers and their first row, used by `[` / `]`), `line_to_row`, `repo_button_col`, `repo_spawn_targets`, `spawn_remove_targets`, `group_header_targets` (fold toggles), `hyperlink_overlays` |

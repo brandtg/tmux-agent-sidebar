@@ -27,6 +27,7 @@ const HELP_SECTIONS: &[(&str, &[(&str, &str)])] = &[
             ("[ / ]", "Prev / next group"),
             ("z", "Collapse / expand group (or click header)"),
             ("Z", "Expand all groups"),
+            ("M", "Collapse all groups"),
             ("s", "Repo / session grouping"),
             ("Enter / →", "Jump to selected pane"),
             ("n", "Spawn worktree + agent"),
@@ -207,6 +208,7 @@ mod tests {
         │ z                Collapse / expand group │
         │                  (or click header)       │
         │ Z                Expand all groups       │
+        │ M                Collapse all groups     │
         │ s                Repo / session grouping │
         │ Enter / →        Jump to selected pane   │
         │ n                Spawn worktree + agent  │
@@ -233,7 +235,6 @@ mod tests {
         │ w                List non-agent panes    │
         │ ?                Toggle this help        │
         │ q                Quit                    │
-        │                                          │
         │                                          │
         │                                          │
         │                                          │

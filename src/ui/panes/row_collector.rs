@@ -700,7 +700,7 @@ mod tests {
                 panes: vec![(make_pane("%2", PaneStatus::Idle), PaneGitInfo::default())],
             },
         ];
-        state.collapsed_groups.insert("backend".into());
+        state.global.collapsed_groups.insert("backend".into());
         state.rebuild_row_targets();
 
         let collected = collect(&state, 40);
@@ -747,7 +747,7 @@ mod tests {
                 (make_pane("%3", PaneStatus::Error), PaneGitInfo::default()),
             ],
         }];
-        state.collapsed_groups.insert("backend".into());
+        state.global.collapsed_groups.insert("backend".into());
 
         let badge_text = |state: &AppState| {
             let collected = collect(state, 60);
@@ -784,7 +784,7 @@ mod tests {
             "work".into(),
             vec![other_window("%10", "dev server", "node")],
         );
-        state.collapsed_groups.insert("work".into());
+        state.global.collapsed_groups.insert("work".into());
 
         let collected = collect(&state, 60);
         let text = collected

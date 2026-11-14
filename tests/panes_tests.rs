@@ -684,7 +684,7 @@ fn snapshot_search_bar_filters_list_but_keeps_group() {
 #[test]
 fn snapshot_collapsed_group_renders_header_only() {
     let mut state = search_state();
-    state.collapsed_groups.insert("backend".into());
+    state.global.collapsed_groups.insert("backend".into());
     state.rebuild_row_targets();
 
     insta::assert_snapshot!(render_to_string(&mut state, 40, 20), @"
@@ -708,7 +708,7 @@ fn snapshot_collapsed_group_badge_colors_status_segments() {
     error.pane_id = "%2".into();
     let mut state = make_state(vec![]);
     state.repo_groups = vec![make_repo_group("backend", vec![waiting, error])];
-    state.collapsed_groups.insert("backend".into());
+    state.global.collapsed_groups.insert("backend".into());
     state.rebuild_row_targets();
 
     insta::assert_snapshot!(render_to_styled_string(&mut state, 40, 20), @"

@@ -223,10 +223,15 @@ impl AppState {
         let len = self.layout.pane_row_targets.len();
         if len == 0 {
             // No rows to select — reset the cursor so a later, larger view
-            // cannot inherit a stale index and auto-scroll down to it.
+            // cannot inherit a stale index and auto-scroll down to it. The
+            // parked group survives: with nothing visible it is the only
+            // way `z` can still resolve a fold.
             self.global.selected_pane_row = 0;
             return;
         }
+        // The cursor ends up on a visible row from here on, so a group
+        // parked behind the folds is no longer needed.
+        self.collapsed_cursor_group = None;
         // Keep the cursor on the same pane when it survives the rebuild
         // (search typing, status changes, refreshes). During an active
         // search, a cursor whose pane fell out of the result set moves to
@@ -250,7 +255,7 @@ impl AppState {
     }
 
     pub fn is_group_collapsed(&self, name: &str) -> bool {
-        self.collapsed_groups.contains(name)
+        self.global.collapsed_groups.contains(name)
     }
 
     /// Index into `layout.group_starts` of the group containing the
@@ -262,13 +267,19 @@ impl AppState {
             .rposition(|group| group.row_start <= self.global.selected_pane_row)
     }
 
-    /// Name of the group containing the current selection.
+    /// Name of the group containing the current selection. When every
+    /// row is hidden behind collapsed headers the cursor has no visible
+    /// group; the parked group (see `collapsed_cursor_group`) stands in
+    /// so `z` keeps toggling the fold that swallowed the cursor.
     pub fn selected_group_name(&self) -> Option<String> {
-        let index = self.current_group_index()?;
-        self.layout
-            .group_starts
-            .get(index)
-            .map(|group| group.name.clone())
+        if let Some(index) = self.current_group_index() {
+            return self
+                .layout
+                .group_starts
+                .get(index)
+                .map(|group| group.name.clone());
+        }
+        self.collapsed_cursor_group.clone()
     }
 
     /// Select the first row. Returns whether the selection moved.
@@ -366,12 +377,51 @@ impl AppState {
 
     /// Expand every collapsed group. Collapsed groups have no selectable
     /// rows, so this is the recovery path when the group the user wants is
-    /// hidden behind its header.
+    /// hidden behind its header. If the cursor was parked inside a fold,
+    /// it lands on that group's first row once everything opens.
     pub fn expand_all_groups(&mut self) -> bool {
-        if self.collapsed_groups.is_empty() {
+        if self.global.collapsed_groups.is_empty() {
             return false;
         }
-        self.collapsed_groups.clear();
+        let parked = self.collapsed_cursor_group.clone();
+        self.global.collapsed_groups.clear();
+        self.global.save_collapsed_groups();
+        self.rebuild_row_targets();
+        if let Some(name) = parked
+            && let Some(start) = self
+                .layout
+                .group_starts
+                .iter()
+                .find(|group| group.name == name)
+        {
+            self.global.selected_pane_row = start.row_start;
+        }
+        true
+    }
+
+    /// Collapse every group — the `zM` counterpart of
+    /// [`Self::expand_all_groups`]. The cursor's group is parked first,
+    /// so `z` reopens it from the fully-folded list and `Z` lands back
+    /// on its first row. Returns false when there is nothing left to
+    /// fold.
+    pub fn collapse_all_groups(&mut self) -> bool {
+        let visible: std::collections::HashSet<String> = self
+            .repo_groups
+            .iter()
+            .map(|group| group.name.clone())
+            .collect();
+        if visible.is_empty()
+            || visible
+                .iter()
+                .all(|name| self.global.collapsed_groups.contains(name))
+        {
+            return false;
+        }
+        if let Some(name) = self.selected_group_name() {
+            self.collapsed_cursor_group = Some(name);
+        }
+        self.global.collapsed_groups.extend(visible);
+        self.global.save_collapsed_groups();
         self.rebuild_row_targets();
         true
     }
@@ -394,10 +444,34 @@ impl AppState {
     /// [`Self::toggle_selected_group_collapse`]. The rebuild shifts the
     /// cursor the same way the keyboard path does.
     pub fn toggle_group_collapse(&mut self, name: &str) -> bool {
-        if !self.collapsed_groups.remove(name) {
-            self.collapsed_groups.insert(name.to_string());
+        let collapsing = !self.global.collapsed_groups.contains(name);
+        // When the fold takes the cursor's own group, remember it: with
+        // no visible row left, the cursor has no group to resolve
+        // against and `z` would go dead (the pre-park bug behind
+        // "collapse everything and the keyboard stops working").
+        if collapsing && self.selected_group_name().as_deref() == Some(name) {
+            self.collapsed_cursor_group = Some(name.to_string());
         }
+        // Reopening the parked group moves the cursor onto the fold's
+        // first line — vim's `za` on a closed fold — instead of the
+        // rebuild's clamp to the last row of the list.
+        let reopen_parked = !collapsing
+            && self.current_group_index().is_none()
+            && self.collapsed_cursor_group.as_deref() == Some(name);
+        if !self.global.collapsed_groups.remove(name) {
+            self.global.collapsed_groups.insert(name.to_string());
+        }
+        self.global.save_collapsed_groups();
         self.rebuild_row_targets();
+        if reopen_parked
+            && let Some(start) = self
+                .layout
+                .group_starts
+                .iter()
+                .find(|group| group.name == name)
+        {
+            self.global.selected_pane_row = start.row_start;
+        }
         true
     }
 
@@ -615,6 +689,14 @@ impl AppState {
             .map(|t| t.group_name.clone())
         {
             self.toggle_group_collapse(&name);
+            // The header lives in the agents panel, so the click acts
+            // from Panes focus — a recovery click must not leave the
+            // fold keys dead one press later. The TODO panel keeps the
+            // keyboard while an edit or add is open, though: silently
+            // abandoning it would be worse than the extra Esc.
+            if self.todos.editing.is_none() && self.todos.adding.is_none() {
+                self.focus_state.focus = Focus::Panes;
+            }
             self.global.queue_cursor_save();
             return;
         }
