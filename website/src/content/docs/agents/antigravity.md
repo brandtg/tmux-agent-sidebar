@@ -18,7 +18,7 @@ Antigravity's summaries store.
 - Prompt text from the newest `USER_INPUT` step of the conversation
   transcript, recovered on `PreInvocation` (the hook payload itself carries
   no prompt)
-- Response preview (`▷ ...`) from the final `PLANNER_RESPONSE` transcript
+- Response preview from the final `PLANNER_RESPONSE` transcript
   step, recovered on `Stop`
 - Elapsed time for the current turn
 

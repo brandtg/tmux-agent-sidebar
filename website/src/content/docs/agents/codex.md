@@ -11,7 +11,7 @@ Codex exposes a smaller hook set than Claude Code, so some sidebar features are 
 
 - Live status from `SessionStart` / `UserPromptSubmit` / `Stop`
 - Prompt text from `UserPromptSubmit`
-- Response preview (`▷ …`) from `Stop`
+- Response preview from `Stop`
 - Elapsed time since the last prompt
 
 ### Git

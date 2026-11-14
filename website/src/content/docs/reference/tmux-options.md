@@ -81,13 +81,12 @@ Most options must be set **before** loading the plugin in your `tmux.conf`. Colo
 | `@sidebar_color_window_header` | `249`&nbsp;(light gray) | Session-mode window headers (`index:name` under each session title). While one of the window's panes is focused, the header takes a lightened tint of the accent — brighter than the resting gray and a clear step off the session title's highlight |
 | `@sidebar_color_port`          | `246`&nbsp;(light gray) | Port numbers                                                                                   |
 | `@sidebar_color_wait_reason`   | `221`&nbsp;(yellow)   | Wait reason text                                                                                 |
-| `@sidebar_color_response_arrow`| `81`&nbsp;(bright cyan) | Response arrow                                                                                 |
 
 ## Task and sub-agent colors
 
 | Option                          | Default           | What it paints        |
 | ------------------------------- | ----------------- | --------------------- |
-| `@sidebar_color_process`        | `207`&nbsp;(hot pink) | Process diamonds — busy rows and the pulse peak on working tasks |
+| `@sidebar_color_process`        | `207`&nbsp;(hot pink) | Process triangles — busy rows and the pulse peak on working tasks |
 | `@sidebar_color_task_progress`  | `223`&nbsp;(pale yellow) | Task progress summary |
 | `@sidebar_color_subagent`       | `73`&nbsp;(soft teal)  | Sub-agent tree        |
 

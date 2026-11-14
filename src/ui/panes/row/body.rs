@@ -1,5 +1,5 @@
 use ratatui::{
-    style::{Modifier, Style},
+    style::Style,
     text::{Line, Span},
 };
 
@@ -133,6 +133,8 @@ pub(super) fn prompt_rows(
     // hierarchy the gray exists to create.
     let prompt_color = theme.text_inactive;
     let wrap_width = ctx.inner_width.saturating_sub(2);
+    // Responses keep char-wrap so their spacing renders verbatim; user
+    // prompts word-wrap.
     let wrapped = if is_response {
         wrap_text_char(&pane.prompt, wrap_width, preview_lines)
     } else {
@@ -140,36 +142,17 @@ pub(super) fn prompt_rows(
     };
 
     let mut out = Vec::with_capacity(wrapped.len());
-    for (li, wl) in wrapped.iter().enumerate() {
-        if is_response && li == 0 {
-            let arrow_color = theme.response_arrow;
-            let text_dw = 2 + display_width(wl); // "▷ " width
-            out.push(ctx.row_line(
-                vec![
-                    Span::styled(
-                        "▷ ",
-                        ctx.apply_bg(
-                            Style::default()
-                                .fg(arrow_color)
-                                .add_modifier(Modifier::BOLD),
-                        ),
-                    ),
-                    Span::styled(wl.clone(), ctx.apply_bg(Style::default().fg(prompt_color))),
-                ],
-                text_dw,
-            ));
-        } else {
-            let indent = "  ";
-            let text = format!("{}{}", indent, wl);
-            let text_dw = display_width(&text);
-            out.push(ctx.row_line(
-                vec![Span::styled(
-                    text,
-                    ctx.apply_bg(Style::default().fg(prompt_color)),
-                )],
-                text_dw,
-            ));
-        }
+    for wl in wrapped.iter() {
+        let indent = "  ";
+        let text = format!("{indent}{wl}");
+        let text_dw = display_width(&text);
+        out.push(ctx.row_line(
+            vec![Span::styled(
+                text,
+                ctx.apply_bg(Style::default().fg(prompt_color)),
+            )],
+            text_dw,
+        ));
     }
     out
 }

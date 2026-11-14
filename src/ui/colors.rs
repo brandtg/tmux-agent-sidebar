@@ -67,7 +67,6 @@ pub struct ColorTheme {
     pub pr_link: Color,
     pub section_title: Color,
     pub activity_timestamp: Color,
-    pub response_arrow: Color,
 }
 
 impl Default for ColorTheme {
@@ -122,7 +121,6 @@ impl Default for ColorTheme {
             pr_link: Color::Indexed(117),
             section_title: Color::Indexed(109),
             activity_timestamp: Color::Indexed(109),
-            response_arrow: Color::Indexed(81),
         }
     }
 }
@@ -184,7 +182,6 @@ impl ColorTheme {
             tmux::SIDEBAR_COLOR_ACTIVITY_TIMESTAMP,
             theme.activity_timestamp,
         );
-        theme.response_arrow = read(tmux::SIDEBAR_COLOR_RESPONSE_ARROW, theme.response_arrow);
 
         theme
     }
