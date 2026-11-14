@@ -22,8 +22,8 @@ pub use filter::{RepoFilter, StatusFilter};
 pub use focus::{Focus, FocusState};
 pub use global::{GlobalState, GroupBy, TodoScope};
 pub use layout::{
-    FrameLayout, GroupStart, HyperlinkOverlay, RepoSpawnTarget, RowTarget, SpawnRemoveTarget,
-    TodoRowTarget,
+    FrameLayout, GroupHeaderTarget, GroupStart, HyperlinkOverlay, RepoSpawnTarget, RowTarget,
+    SpawnRemoveTarget, TodoRowTarget,
 };
 pub(crate) use notices::debug_forced_display;
 pub(crate) use notices::parse_enabled_agents;

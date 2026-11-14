@@ -122,7 +122,7 @@ fn test_running_icon_blink_off() {
     insta::assert_snapshot!(render_to_string(&mut state, 28, 25), @"
      ≡1  ●1  ◎0  ◐0  ○0  ✕0
     ⓘ                        — ▾
-    project
+    ▾ project
     ┃ ● claude
     ");
 }
@@ -148,7 +148,7 @@ fn test_running_spinner_frame_advances() {
     insta::assert_snapshot!(render_to_string(&mut state, 28, 25), @"
      ≡1  ●1  ◎0  ◐0  ○0  ✕0
     ⓘ                        — ▾
-    project
+    ▾ project
     ┃ ● claude
     ");
 }
@@ -173,7 +173,7 @@ fn test_waiting_icon() {
     insta::assert_snapshot!(render_to_string(&mut state, 28, 25), @"
      ≡1  ●0  ◎0  ◐1  ○0  ✕0
     ⓘ                        — ▾
-    project
+    ▾ project
     ┃ ◐ claude
     ");
 }
@@ -198,7 +198,7 @@ fn test_error_icon() {
     insta::assert_snapshot!(render_to_string(&mut state, 28, 25), @"
      ≡1  ●0  ◎0  ◐0  ○0  ✕1
     ⓘ                        — ▾
-    project
+    ▾ project
     ┃ ✕ claude
     ");
 }
@@ -284,10 +284,10 @@ fn test_agents_auto_scroll_up_shows_group_header() {
     state.global.selected_pane_row = 0;
     // The snapshot locks in that the `project` repo header is visible after
     // scrolling back up to the first agent.
-    insta::assert_snapshot!(render_to_string(&mut state, 28, 5), @r"
+    insta::assert_snapshot!(render_to_string(&mut state, 28, 5), @"
      ≡8  ●0  ◎0  ◐0  ○8  ✕0
     ⓘ                        — ▾
-    project
+    ▾ project
       ○ claude
         Waiting for prompt…
     ");
@@ -460,11 +460,11 @@ fn repo_popup_renders_repo_names_when_open() {
     insta::assert_snapshot!(render_to_string(&mut state, 40, 30), @"
      ≡2  ●0  ◎0  ◐0  ○2  ✕0
     ⓘ                                    — ▾
-    frontend                    ┌──────────┐
+    ▾ frontend                  ┌──────────┐
     ┃ ○ claude                  │ All      │
         Waiting for prompt…     │ frontend │
                                 │ backend  │
-    backend                     └──────────┘
+    ▾ backend                   └──────────┘
     ┃ ○ claude
         Waiting for prompt…
     ");
@@ -505,11 +505,11 @@ fn repo_popup_highlights_selected_entry_with_background() {
     insta::assert_snapshot!(render_to_styled_string(&mut state, 40, 30), @"
      ≡[fg:111]2[fg:255]  ●[fg:245]0[fg:245]  ◎[fg:245]0[fg:245]  ◐[fg:245]0[fg:245]  ○[fg:245]2[fg:255]  ✕[fg:245]0[fg:245]
     ⓘ[fg:221]                                    —[fg:255] ▾[fg:255]
-    f[fg:153]r[fg:153]o[fg:153]n[fg:153]t[fg:153]e[fg:153]n[fg:153]d[fg:153]                    ┌[fg:153]─[fg:153]─[fg:153]─[fg:153]─[fg:153]─[fg:153]─[fg:153]─[fg:153]─[fg:153]─[fg:153]─[fg:153]┐[fg:153]
+    ▾[fg:153] [fg:153]f[fg:153]r[fg:153]o[fg:153]n[fg:153]t[fg:153]e[fg:153]n[fg:153]d[fg:153]                  ┌[fg:153]─[fg:153]─[fg:153]─[fg:153]─[fg:153]─[fg:153]─[fg:153]─[fg:153]─[fg:153]─[fg:153]─[fg:153]┐[fg:153]
     ┃[fg:153] ○[fg:110] [fg:173]c[fg:173]l[fg:173]a[fg:173]u[fg:173]d[fg:173]e[fg:173]                  │[fg:153] [fg:255]A[fg:255]l[fg:255]l[fg:255] [fg:255] [fg:255] [fg:255] [fg:255] [fg:255] [fg:255]│[fg:153]
        [fg:255] [fg:255]W[fg:255]a[fg:255]i[fg:255]t[fg:255]i[fg:255]n[fg:255]g[fg:255] [fg:255]f[fg:255]o[fg:255]r[fg:255] [fg:255]p[fg:255]r[fg:255]o[fg:255]m[fg:255]p[fg:255]t[fg:255]…[fg:255]     │[fg:153] [fg:252]f[fg:252]r[fg:252]o[fg:252]n[fg:252]t[fg:252]e[fg:252]n[fg:252]d[fg:252] [fg:252]│[fg:153]
                                 │[fg:153] [fg:255,bg:239]b[fg:255,bg:239]a[fg:255,bg:239]c[fg:255,bg:239]k[fg:255,bg:239]e[fg:255,bg:239]n[fg:255,bg:239]d[fg:255,bg:239] [fg:255,bg:239] [fg:255,bg:239]│[fg:153]
-    b[fg:153]a[fg:153]c[fg:153]k[fg:153]e[fg:153]n[fg:153]d[fg:153]                     └[fg:153]─[fg:153]─[fg:153]─[fg:153]─[fg:153]─[fg:153]─[fg:153]─[fg:153]─[fg:153]─[fg:153]─[fg:153]┘[fg:153]
+    ▾[fg:153] [fg:153]b[fg:153]a[fg:153]c[fg:153]k[fg:153]e[fg:153]n[fg:153]d[fg:153]                   └[fg:153]─[fg:153]─[fg:153]─[fg:153]─[fg:153]─[fg:153]─[fg:153]─[fg:153]─[fg:153]─[fg:153]─[fg:153]┘[fg:153]
     ┃[fg:153] ○[fg:110] [fg:173]c[fg:173]l[fg:173]a[fg:173]u[fg:173]d[fg:173]e[fg:173]
        [fg:255] [fg:255]W[fg:255]a[fg:255]i[fg:255]t[fg:255]i[fg:255]n[fg:255]g[fg:255] [fg:255]f[fg:255]o[fg:255]r[fg:255] [fg:255]p[fg:255]r[fg:255]o[fg:255]m[fg:255]p[fg:255]t[fg:255]…[fg:255]
     ");
@@ -549,7 +549,7 @@ fn snapshot_compact_mode_renders_one_line_per_pane() {
     insta::assert_snapshot!(render_to_string(&mut state, 28, 14), @"
      ≡2  ●1  ◎0  ◐0  ○1  ✕0
     ⓘ                        — ▾
-    project
+    ▾ project
     ┃ ● fix-api             1m5s
       ○ docs +2
     ");
@@ -585,9 +585,9 @@ fn snapshot_compact_mode_multiple_repo_groups() {
     insta::assert_snapshot!(render_to_string(&mut state, 28, 14), @"
      ≡2  ●2  ◎0  ◐0  ○0  ✕0
     ⓘ                        — ▾
-    frontend
+    ▾ frontend
     ┃ ● alpha
-    backend
+    ▾ backend
       ● beta
     ");
 }
@@ -631,7 +631,7 @@ fn snapshot_compact_mode_spawned_worktree_remove_marker() {
     insta::assert_snapshot!(render_to_string(&mut state, 28, 14), @"
      ≡1  ●1  ◎0  ◐0  ○0  ✕0
     ⓘ                        — ▾
-    project                    +
+    ▾ project                  +
     ┃ ● fix-api + agent/fix-a… ×
     ");
 }
@@ -675,7 +675,7 @@ fn snapshot_search_bar_filters_list_but_keeps_group() {
     insta::assert_snapshot!(render_to_string(&mut state, 40, 20), @"
      ≡1  ●0  ◎0  ◐0  ○1  ✕0
     ⓘ /codex█                            — ▾
-    backend
+    ▾ backend
       ○ codex-ui
         Waiting for prompt…
     ");
@@ -690,10 +690,31 @@ fn snapshot_collapsed_group_renders_header_only() {
     insta::assert_snapshot!(render_to_string(&mut state, 40, 20), @"
      ≡1  ●0  ◎0  ◐0  ○1  ✕0
     ⓘ                                    — ▾
-    ▸ backend
-    frontend
+    ▸ backend (2 panes)
+    ▾ frontend
       ○ frontend
         Waiting for prompt…
+    ");
+}
+
+#[test]
+fn snapshot_collapsed_group_badge_colors_status_segments() {
+    // The fold summary reuses the row palette: the pane count is muted,
+    // waiting gold, error red — so a collapsed group still signals
+    // "come look" without expanding it.
+    let mut waiting = make_pane(AgentType::Claude, PaneStatus::Waiting);
+    waiting.pane_id = "%1".into();
+    let mut error = make_pane(AgentType::Codex, PaneStatus::Error);
+    error.pane_id = "%2".into();
+    let mut state = make_state(vec![]);
+    state.repo_groups = vec![make_repo_group("backend", vec![waiting, error])];
+    state.collapsed_groups.insert("backend".into());
+    state.rebuild_row_targets();
+
+    insta::assert_snapshot!(render_to_styled_string(&mut state, 40, 20), @"
+     ≡[fg:111]0[fg:245]  ●[fg:245]0[fg:245]  ◎[fg:245]0[fg:245]  ◐[fg:245]0[fg:245]  ○[fg:245]0[fg:245]  ✕[fg:245]0[fg:245]
+    ⓘ[fg:221]                                    —[fg:252] ▾[fg:252]
+    ▸[fg:153] [fg:153]b[fg:153]a[fg:153]c[fg:153]k[fg:153]e[fg:153]…[fg:153] [fg:252]([fg:252]2[fg:252] [fg:252]p[fg:252]a[fg:252]n[fg:252]e[fg:252]s[fg:252])[fg:252] [fg:221]·[fg:221] [fg:221]1[fg:221] [fg:221]w[fg:221]a[fg:221]i[fg:221]t[fg:221]i[fg:221]n[fg:221]g[fg:221] [fg:167]·[fg:167] [fg:167]1[fg:167] [fg:167]e[fg:167]r[fg:167]r[fg:167]o[fg:167]r[fg:167]
     ");
 }
 

@@ -40,6 +40,16 @@ pub struct SpawnRemoveTarget {
     pub pane_id: String,
 }
 
+/// Click target for a group header row in the agents panel. The whole
+/// row folds/unfolds the group; the `+` spawn button and `×` remove
+/// marker are matched first in `handle_mouse_click` and win the click
+/// when their slice of the row is hit.
+#[derive(Debug, Clone)]
+pub struct GroupHeaderTarget {
+    pub rect: ratatui::layout::Rect,
+    pub group_name: String,
+}
+
 /// Click target for one rendered TODO item. `rect` spans every wrapped
 /// line of the item for hit-testing. A click on `checkbox_rect` (the
 /// marker column of the item's first visible line) toggles the
@@ -93,6 +103,10 @@ pub struct FrameLayout {
     /// Click regions for the red `×` remove marker rendered next to the
     /// branch of each sidebar-spawned pane. One entry per visible row.
     pub spawn_remove_targets: Vec<SpawnRemoveTarget>,
+    /// Click regions for group header rows: clicking anywhere on a
+    /// header toggles that group's collapsed state. One entry per
+    /// rendered header, expanded or collapsed.
+    pub group_header_targets: Vec<GroupHeaderTarget>,
     /// OSC 8 hyperlink overlays the main loop writes after each frame so
     /// terminals can recognise PR numbers as clickable links.
     pub hyperlink_overlays: Vec<HyperlinkOverlay>,
@@ -370,8 +384,18 @@ impl AppState {
         let Some(name) = self.selected_group_name() else {
             return false;
         };
-        if !self.collapsed_groups.remove(&name) {
-            self.collapsed_groups.insert(name);
+        self.toggle_group_collapse(&name)
+    }
+
+    /// Collapse or expand a named group. The click path lands here
+    /// straight from the header's hit rect (see
+    /// [`GroupHeaderTarget`]); the keyboard path resolves the
+    /// selection's group first, via
+    /// [`Self::toggle_selected_group_collapse`]. The rebuild shifts the
+    /// cursor the same way the keyboard path does.
+    pub fn toggle_group_collapse(&mut self, name: &str) -> bool {
+        if !self.collapsed_groups.remove(name) {
+            self.collapsed_groups.insert(name.to_string());
         }
         self.rebuild_row_targets();
         true
@@ -579,6 +603,22 @@ impl AppState {
             return;
         }
 
+        // Check group header rows next: a click anywhere on a header
+        // toggles that group's fold (same state the `z` key writes). The
+        // `+` / `×` targets above are matched first and keep their slice
+        // of the header row.
+        if let Some(name) = self
+            .layout
+            .group_header_targets
+            .iter()
+            .find(|t| point_in_rect(row, col, t.rect))
+            .map(|t| t.group_name.clone())
+        {
+            self.toggle_group_collapse(&name);
+            self.global.queue_cursor_save();
+            return;
+        }
+
         // The TODO panel sits below the list area, so its screen rows would
         // otherwise fall through to the pane-row mapping. Claim every click
         // inside the panel: the checkbox column toggles, the item text
@@ -639,8 +679,149 @@ impl AppState {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::group::{PaneGitInfo, RepoGroup};
+    use crate::tmux::{
+        AgentType, PaneAttention, PaneInfo, PaneStatus, PermissionMode, WorktreeMetadata,
+    };
     use crate::todo::TodoItem;
     use ratatui::layout::Rect;
+
+    /// A minimal idle agent pane for group fixtures.
+    fn idle_pane(id: &str) -> PaneInfo {
+        PaneInfo {
+            pane_id: id.into(),
+            pane_active: false,
+            status: PaneStatus::Idle,
+            attention: PaneAttention::None,
+            agent: AgentType::Claude,
+            path: "/tmp/repo".into(),
+            launch_cwd: String::new(),
+            current_command: String::new(),
+            prompt: String::new(),
+            prompt_is_response: false,
+            started_at: None,
+            wait_reason: String::new(),
+            permission_mode: PermissionMode::Default,
+            subagents: vec![],
+            pane_pid: None,
+            worktree: WorktreeMetadata::default(),
+            session_id: None,
+            session_name: String::new(),
+            tmux_session: String::new(),
+            window_index: 0,
+            window_name: String::new(),
+            sidebar_spawned: false,
+            bg_shell_cmd: None,
+            bg_shell_pid: None,
+            pane_title: String::new(),
+            flagged: false,
+        }
+    }
+
+    /// Two groups with one agent pane each, targets rebuilt — the
+    /// minimal state for header-click routing tests.
+    fn two_group_state() -> AppState {
+        let mut state = AppState::new("%99".into());
+        state.repo_groups = vec![
+            RepoGroup {
+                name: "backend".into(),
+                has_focus: false,
+                panes: vec![(idle_pane("%1"), PaneGitInfo::default())],
+            },
+            RepoGroup {
+                name: "frontend".into(),
+                has_focus: false,
+                panes: vec![(idle_pane("%2"), PaneGitInfo::default())],
+            },
+        ];
+        state.rebuild_row_targets();
+        state
+    }
+
+    #[test]
+    fn clicking_a_group_header_toggles_its_fold() {
+        let mut state = two_group_state();
+        assert_eq!(state.layout.pane_row_targets.len(), 2);
+        // Simulate the frame's hit rect for the first header row (as
+        // `click_targets::materialize` writes it): full-width, one row.
+        state.layout.group_header_targets = vec![GroupHeaderTarget {
+            rect: Rect::new(0, 2, 40, 1),
+            group_name: "backend".into(),
+        }];
+
+        state.handle_mouse_click(2, 7);
+
+        assert!(state.is_group_collapsed("backend"));
+        assert_eq!(
+            state
+                .layout
+                .pane_row_targets
+                .iter()
+                .map(|t| t.pane_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["%2"],
+            "the fold rebuilds the target list"
+        );
+
+        // The collapsed header re-registers as a target on the next
+        // frame; clicking it again expands the group.
+        state.handle_mouse_click(2, 7);
+        assert!(!state.is_group_collapsed("backend"));
+        assert_eq!(state.layout.pane_row_targets.len(), 2);
+    }
+
+    #[test]
+    fn header_click_folds_session_groups_too() {
+        // The fold state is keyed by group name, and session grouping
+        // names groups by tmux session — the same click path must fold
+        // there, leaving the other sessions' rows untouched.
+        let mut state = two_group_state();
+        state.global.group_by = crate::state::GroupBy::Session;
+        state.rebuild_row_targets();
+        state.layout.group_header_targets = vec![GroupHeaderTarget {
+            rect: Rect::new(0, 2, 40, 1),
+            group_name: "frontend".into(),
+        }];
+
+        state.handle_mouse_click(2, 0);
+
+        assert!(state.is_group_collapsed("frontend"));
+        assert_eq!(
+            state
+                .layout
+                .pane_row_targets
+                .iter()
+                .map(|t| t.pane_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["%1"],
+            "the backend session keeps its row"
+        );
+    }
+
+    #[test]
+    fn header_click_leaves_the_spawn_button_in_charge_of_its_slice() {
+        // The `+` spawn button is matched before header targets; when
+        // both rects cover the click, the button wins and the fold
+        // state is untouched.
+        let mut state = two_group_state();
+        state.layout.group_header_targets = vec![GroupHeaderTarget {
+            rect: Rect::new(0, 2, 40, 1),
+            group_name: "backend".into(),
+        }];
+        state.layout.repo_spawn_targets = vec![RepoSpawnTarget {
+            rect: Rect::new(38, 2, 1, 1),
+            repo_name: "backend".into(),
+            repo_root: "/tmp/repo".into(),
+        }];
+
+        state.handle_mouse_click(2, 38);
+
+        assert!(
+            state.is_spawn_input_open(),
+            "the spawn modal opened instead of folding"
+        );
+        assert!(!state.is_group_collapsed("backend"));
+    }
 
     /// A visible TODO panel with pre-registered click targets, as
     /// `render_todo_panel` would write them: two open items on rows 2-3,

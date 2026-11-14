@@ -862,6 +862,20 @@ mod tests {
     }
 
     #[test]
+    fn z_collapses_in_session_grouping_mode() {
+        // The fold state is keyed by group name, and session grouping
+        // names groups by tmux session — the same key must fold there.
+        let mut state = state_with_search_groups();
+        state.global.group_by = crate::state::GroupBy::Session;
+        state.rebuild_row_targets();
+
+        handle_key_event(key(KeyCode::Char('z')), &mut state);
+
+        assert!(state.is_group_collapsed("backend"));
+        assert_eq!(target_ids(&state), vec!["%3"]);
+    }
+
+    #[test]
     fn collapsing_the_last_group_clamps_selection_to_a_visible_row() {
         let mut state = state_with_search_groups();
         state.global.selected_pane_row = 2; // %3, the only frontend row

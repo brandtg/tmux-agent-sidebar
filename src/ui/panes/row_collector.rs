@@ -1,11 +1,12 @@
 use ratatui::{
-    style::Style,
+    style::{Color, Style},
     text::{Line, Span},
 };
 
 use super::SPAWN_BUTTON;
 use super::row;
-use crate::state::{AppState, Focus};
+use crate::state::{AppState, Focus, StatusFilter};
+use crate::tmux::{PaneAttention, PaneStatus};
 use crate::ui::text::{display_width, truncate_to_width};
 
 #[derive(Debug, Default)]
@@ -14,6 +15,10 @@ pub(super) struct CollectedRows {
     pub line_to_row: Vec<Option<usize>>,
     pub pending_spawn: Vec<(usize, String, String)>,
     pub pending_remove: Vec<(usize, u16, String)>,
+    /// `(line_idx, group_name)` for every rendered group header — the
+    /// click target that folds the group. Expanded and collapsed
+    /// headers both register; the whole row is the target.
+    pub pending_header: Vec<(usize, String)>,
 }
 
 pub(super) fn collect(state: &AppState, width: u16) -> CollectedRows {
@@ -138,14 +143,70 @@ pub(super) fn collect(state: &AppState, width: u16) -> CollectedRows {
         // get a plain title. Session groups are not a spawn target (a
         // session is not a repo to spawn into), so they always render a
         // plain title.
-        // A collapsed group keeps its header (so the user can see what is
-        // hidden and expand it) but renders no rows. The `▸` prefix is the
-        // only visual cue; expanded headers stay unadorned.
-        let title = if collapsed {
-            format!("▸ {}", group.name)
+        // Every header is a fold: expanded ones carry a `▾` marker,
+        // collapsed ones `▸` plus a vim-fold-style summary of what
+        // expanding would reveal under the active filters — `(N panes)`
+        // plus the eye-catching status segments (waiting / done / error)
+        // that are nonzero. The summary is computed from the filtered
+        // row set, so it never promises rows the active filter would
+        // hide. The badge reserves its width first and the name is what
+        // truncates, so on a narrow pane the counts survive; when even
+        // a sliver of name would not fit next to the badge, the badge is
+        // dropped rather than overflowing the row.
+        let marker = if collapsed { "▸ " } else { "▾ " };
+        let base_title = format!("{marker}{}", group.name);
+        let badge_segments: Vec<(String, Color)> = if !collapsed {
+            Vec::new()
         } else {
-            group.name.clone()
+            let (mut waiting, mut done, mut error) = (0usize, 0usize, 0usize);
+            for (pane, _) in &filtered_panes {
+                match pane.status {
+                    PaneStatus::Waiting => waiting += 1,
+                    PaneStatus::Error => error += 1,
+                    _ => {}
+                }
+                if pane.attention == PaneAttention::Done {
+                    done += 1;
+                }
+            }
+            // Window rows add to the total and to `error` via the status
+            // filter's own match rule; they have no waiting analogue
+            // (`matches_window` never matches Waiting).
+            for window in &matched_windows {
+                if StatusFilter::Error.matches_window(window, state.pane_state(&window.pane_id)) {
+                    error += 1;
+                }
+                if window.attention == PaneAttention::Done {
+                    done += 1;
+                }
+            }
+            let total = filtered_panes.len() + matched_windows.len();
+            let mut segments = vec![(
+                format!(" ({} pane{})", total, if total == 1 { "" } else { "s" }),
+                theme.text_muted,
+            )];
+            if waiting > 0 {
+                segments.push((format!(" · {waiting} waiting"), theme.status_waiting));
+            }
+            // The done color is the same pulsing green the row icons
+            // breathe, so a collapsed group's "come look" cue animates
+            // in step with the rest of the list.
+            if done > 0 {
+                let color = theme
+                    .attention_color(PaneAttention::Done, state.spinner_frame)
+                    .unwrap_or(theme.text_muted);
+                segments.push((format!(" · {done} done"), color));
+            }
+            if error > 0 {
+                segments.push((format!(" · {error} error"), theme.status_error));
+            }
+            segments
         };
+        let badge_text: String = badge_segments
+            .iter()
+            .map(|(text, _)| text.as_str())
+            .collect();
+        let badge_width = display_width(&badge_text);
         let title_color = if group_has_focused_pane {
             theme.accent
         } else {
@@ -158,36 +219,63 @@ pub(super) fn collect(state: &AppState, width: u16) -> CollectedRows {
                 .find_map(|(_, git)| git.repo_root.clone()),
             crate::state::GroupBy::Session => None,
         };
-        let spans: Vec<Span<'static>> = if let Some(ref root) = repo_root {
-            // The `+` button must stay visible: the title is truncated to
-            // the space left of the button. An untruncated long repo name
-            // used to push the button past the panel edge — the row then
-            // rendered no `+` at all while the click target (anchored at
-            // the right edge by `click_targets::materialize`) stayed live.
-            let button_width = SPAWN_BUTTON.len();
-            let title_budget = width.saturating_sub(button_width);
-            let title = truncate_to_width(&title, title_budget);
-            let title_w = display_width(&title);
-            let pad_width = width.saturating_sub(title_w).saturating_sub(button_width);
+        let button_allowance = if repo_root.is_some() {
+            SPAWN_BUTTON.len()
+        } else {
+            0
+        };
+        // The `+` button must stay visible: the title is truncated to
+        // the space left of the button (and of the badge, when one is
+        // shown). An untruncated long repo name used to push the button
+        // past the panel edge — the row then rendered no `+` at all
+        // while the click target (anchored at the right edge by
+        // `click_targets::materialize`) stayed live.
+        let title_budget = width.saturating_sub(button_allowance);
+        let keep_badge = badge_width > 0 && title_budget >= badge_width + 3;
+        let title = if keep_badge {
+            truncate_to_width(&base_title, title_budget.saturating_sub(badge_width))
+        } else {
+            truncate_to_width(&base_title, title_budget)
+        };
+        let shown_width = display_width(&title) + if keep_badge { badge_width } else { 0 };
+        let pad_width = width
+            .saturating_sub(shown_width)
+            .saturating_sub(button_allowance);
+        if let Some(ref root) = repo_root {
             collected
                 .pending_spawn
                 .push((collected.lines.len(), group.name.clone(), root.clone()));
+        }
+        // The whole header row is a click target for folding the group
+        // (both directions). Registered before the line is pushed so the
+        // recorded line index matches; the `+` spawn button above keeps
+        // its slice of the row because `handle_mouse_click` matches it
+        // first.
+        collected
+            .pending_header
+            .push((collected.lines.len(), group.name.clone()));
+
+        let mut spans: Vec<Span<'static>> =
+            vec![Span::styled(title, Style::default().fg(title_color))];
+        if keep_badge {
+            spans.extend(
+                badge_segments
+                    .into_iter()
+                    .map(|(text, color)| Span::styled(text, Style::default().fg(color))),
+            );
+        }
+        if button_allowance > 0 {
+            spans.push(Span::raw(" ".repeat(pad_width)));
             let button_color = if group_has_focused_pane {
                 theme.accent
             } else {
                 theme.text_active
             };
-            vec![
-                Span::styled(title, Style::default().fg(title_color)),
-                Span::raw(" ".repeat(pad_width)),
-                Span::styled(SPAWN_BUTTON, Style::default().fg(button_color)),
-            ]
-        } else {
-            vec![Span::styled(
-                title.clone(),
-                Style::default().fg(title_color),
-            )]
-        };
+            spans.push(Span::styled(
+                SPAWN_BUTTON,
+                Style::default().fg(button_color),
+            ));
+        }
         collected.lines.push(Line::from(spans));
         collected.line_to_row.push(None);
 
@@ -624,15 +712,109 @@ mod tests {
             .join("\n");
 
         assert!(
-            text.contains("▸ backend"),
-            "collapsed header missing:\n{text}"
+            text.contains("▸ backend (1 pane)"),
+            "collapsed header missing its fold summary:\n{text}"
         );
-        assert!(text.contains("frontend"), "expanded group missing:\n{text}");
+        assert!(
+            text.contains("▾ frontend"),
+            "expanded group missing:\n{text}"
+        );
         assert_eq!(
             collected.line_to_row,
             vec![None, None, None, Some(0), Some(0)],
             "only the expanded group's agent row is selectable"
         );
+        // Every rendered header is a fold click target, collapsed or not.
+        assert_eq!(
+            collected.pending_header,
+            vec![(0, "backend".to_string()), (2, "frontend".to_string())],
+            "both headers must register fold click targets"
+        );
+    }
+
+    #[test]
+    fn collect_collapsed_badge_segments_reflect_status_counts() {
+        // The badge describes what expanding would reveal under the
+        // active filters: waiting/error segments only when nonzero, and
+        // under a status filter the total narrows to the matching rows.
+        let mut state = AppState::new("%0".into());
+        state.repo_groups = vec![RepoGroup {
+            name: "backend".into(),
+            has_focus: false,
+            panes: vec![
+                (make_pane("%1", PaneStatus::Waiting), PaneGitInfo::default()),
+                (make_pane("%2", PaneStatus::Running), PaneGitInfo::default()),
+                (make_pane("%3", PaneStatus::Error), PaneGitInfo::default()),
+            ],
+        }];
+        state.collapsed_groups.insert("backend".into());
+
+        let badge_text = |state: &AppState| {
+            let collected = collect(state, 60);
+            line_text(&collected.lines[0])
+        };
+        assert_eq!(
+            badge_text(&state),
+            "▸ backend (3 panes) · 1 waiting · 1 error",
+            "nonzero status segments render in the badge"
+        );
+
+        state.global.status_filter = StatusFilter::Running;
+        assert_eq!(
+            badge_text(&state),
+            "▸ backend (1 pane)",
+            "the badge counts only rows the active filter keeps"
+        );
+    }
+
+    #[test]
+    fn collect_collapsed_session_group_badge_counts_window_panes() {
+        // Both grouping modes fold: a collapsed session group's badge
+        // counts its agent panes plus its process panes (when the w
+        // level renders them).
+        let mut state = AppState::new("%0".into());
+        state.global.group_by = GroupBy::Session;
+        state.global.show_windows = true;
+        state.repo_groups = vec![RepoGroup {
+            name: "work".into(),
+            has_focus: false,
+            panes: vec![(make_pane("%1", PaneStatus::Idle), PaneGitInfo::default())],
+        }];
+        state.other_windows.insert(
+            "work".into(),
+            vec![other_window("%10", "dev server", "node")],
+        );
+        state.collapsed_groups.insert("work".into());
+
+        let collected = collect(&state, 60);
+        let text = collected
+            .lines
+            .iter()
+            .map(line_text)
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            text.contains("▸ work (2 panes)"),
+            "session fold must count process panes:\n{text}"
+        );
+        assert_eq!(
+            collected.line_to_row,
+            vec![None],
+            "a collapsed session renders no selectable rows"
+        );
+    }
+
+    #[test]
+    fn collect_expanded_header_carries_no_badge() {
+        let mut state = AppState::new("%0".into());
+        state.repo_groups = vec![RepoGroup {
+            name: "backend".into(),
+            has_focus: false,
+            panes: vec![(make_pane("%1", PaneStatus::Idle), PaneGitInfo::default())],
+        }];
+
+        let collected = collect(&state, 60);
+        assert_eq!(line_text(&collected.lines[0]), "▾ backend");
     }
 
     #[test]
@@ -730,7 +912,7 @@ mod tests {
             collected
                 .lines
                 .iter()
-                .find(|l| line_text(l) == name)
+                .find(|l| line_text(l) == format!("▾ {name}"))
                 .expect("title line")
                 .spans
                 .first()
@@ -788,7 +970,7 @@ mod tests {
         let title_fg = collected
             .lines
             .iter()
-            .find(|l| line_text(l) == "repo")
+            .find(|l| line_text(l) == "▾ repo")
             .expect("title line")
             .spans
             .first()
@@ -856,7 +1038,7 @@ mod tests {
 
         // Session title, then per window: header, the window's agent
         // (status + idle hint), and its process card.
-        assert_eq!(lines[0], "main");
+        assert_eq!(lines[0], "▾ main");
         assert_eq!(lines[1], " 0:api");
         assert_eq!(
             lines[5], " 1:web",
@@ -1032,7 +1214,7 @@ mod tests {
 
         // Repo title, then per window: header, the window's agent
         // (status + idle hint), and its process card.
-        assert_eq!(lines[0], "repo");
+        assert_eq!(lines[0], "▾ repo");
         assert_eq!(lines[1], " 0:api");
         assert_eq!(
             lines[5], " 1:web",

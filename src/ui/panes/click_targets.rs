@@ -1,12 +1,13 @@
 use ratatui::layout::Rect;
 
 use super::{REMOVE_MARKER_HIT_WIDTH, SPAWN_BUTTON};
-use crate::state::{AppState, RepoSpawnTarget, SpawnRemoveTarget};
+use crate::state::{AppState, GroupHeaderTarget, RepoSpawnTarget, SpawnRemoveTarget};
 
 pub(super) fn materialize(
     state: &mut AppState,
     pending_spawn: Vec<(usize, String, String)>,
     pending_remove: Vec<(usize, u16, String)>,
+    pending_header: Vec<(usize, String)>,
     scroll_offset: usize,
     list_area: Rect,
 ) {
@@ -57,6 +58,26 @@ pub(super) fn materialize(
             })
         })
         .collect();
+
+    // Group header rows: the full-width row folds the group. The `+`
+    // spawn button and `×` markers are matched first in
+    // `handle_mouse_click`, so their slices of the row keep priority.
+    state.layout.group_header_targets = pending_header
+        .into_iter()
+        .filter_map(|(line_idx, group_name)| {
+            if line_idx < scroll_offset {
+                return None;
+            }
+            let screen_row = (line_idx - scroll_offset) as u16;
+            if screen_row >= list_area.height {
+                return None;
+            }
+            Some(GroupHeaderTarget {
+                rect: Rect::new(list_area.x, list_area.y + screen_row, list_area.width, 1),
+                group_name,
+            })
+        })
+        .collect();
 }
 
 #[cfg(test)]
@@ -82,6 +103,7 @@ mod tests {
             &mut state,
             vec![(0, "repo".into(), "/tmp/repo".into())],
             Vec::new(),
+            Vec::new(),
             0,
             list_area,
         );
@@ -97,6 +119,10 @@ mod tests {
         assert_eq!(target.rect.y, list_area.y);
         assert_eq!(target.rect.width, btn_width);
         assert_eq!(target.rect.height, 1);
+        assert!(
+            state.layout.group_header_targets.is_empty(),
+            "no header targets without pending headers"
+        );
     }
 
     #[test]
@@ -109,6 +135,7 @@ mod tests {
             &mut state,
             Vec::new(),
             vec![(2, marker_col, "%42".into())],
+            Vec::new(),
             0,
             list_area,
         );
@@ -137,6 +164,7 @@ mod tests {
                 (5, "visible".into(), "/repo/visible".into()),
             ],
             vec![(0, 20, "%above".into()), (5, 20, "%visible".into())],
+            vec![(0, "above".into()), (5, "visible".into())],
             3,
             list_area,
         );
@@ -145,6 +173,8 @@ mod tests {
         assert_eq!(state.layout.repo_spawn_targets[0].repo_name, "visible");
         assert_eq!(state.layout.spawn_remove_targets.len(), 1);
         assert_eq!(state.layout.spawn_remove_targets[0].pane_id, "%visible");
+        assert_eq!(state.layout.group_header_targets.len(), 1);
+        assert_eq!(state.layout.group_header_targets[0].group_name, "visible");
     }
 
     #[test]
@@ -160,6 +190,7 @@ mod tests {
                 (15, "outside".into(), "/repo/outside".into()),
             ],
             vec![(0, 20, "%inside".into()), (15, 20, "%outside".into())],
+            Vec::new(),
             0,
             list_area,
         );
@@ -183,10 +214,47 @@ mod tests {
             rect: Rect::new(0, 0, 1, 1),
             pane_id: "%stale".into(),
         }];
+        state.layout.group_header_targets = vec![GroupHeaderTarget {
+            rect: Rect::new(0, 0, 1, 1),
+            group_name: "stale".into(),
+        }];
 
-        materialize(&mut state, Vec::new(), Vec::new(), 0, test_list_area());
+        materialize(
+            &mut state,
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            0,
+            test_list_area(),
+        );
 
         assert!(state.layout.repo_spawn_targets.is_empty());
         assert!(state.layout.spawn_remove_targets.is_empty());
+        assert!(state.layout.group_header_targets.is_empty());
+    }
+
+    #[test]
+    fn materialize_places_header_targets_across_the_full_row() {
+        let mut state = AppState::new("%0".into());
+        let list_area = test_list_area();
+
+        materialize(
+            &mut state,
+            Vec::new(),
+            Vec::new(),
+            vec![(2, "backend".into())],
+            0,
+            list_area,
+        );
+
+        assert_eq!(state.layout.group_header_targets.len(), 1);
+        let target = &state.layout.group_header_targets[0];
+        assert_eq!(target.group_name, "backend");
+        // The whole header row is the fold target: anchored at the
+        // list's left edge, spanning its full width, one row tall.
+        assert_eq!(
+            target.rect,
+            Rect::new(list_area.x, list_area.y + 2, list_area.width, 1)
+        );
     }
 }

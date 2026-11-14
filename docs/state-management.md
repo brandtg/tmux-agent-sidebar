@@ -120,10 +120,10 @@ Per-pane file-based state:
 | `now` | Every 1s | Current Unix epoch |
 | `scrolls.panes` | On user input / render | Agent list scroll position |
 | `search` | On user input | Per-sidebar `/` query and whether the input line is open. Not broadcast: the query is transient |
-| `collapsed_groups` | On user input / grouping mode change | Local `HashSet` of group names collapsed to a header-only row (`z` / `Z`); cleared when the shared grouping mode changes |
+| `collapsed_groups` | On user input / grouping mode change | Local `HashSet` of group names collapsed to a header-only row (`z` / `Z`, or clicking the header); cleared when the shared grouping mode changes. A collapsed header renders a fold summary — hidden pane count plus nonzero waiting/done/error segments — computed from the filtered row set |
 | `theme` | Once at startup | Color theme from tmux `@sidebar_color_*` variables |
 | `popup` | On user input / render | `PopupState` enum: `None` / `Repo { selected, area }` / `Notices { area }`. Enforces "at most one popup open" via the type system |
-| `layout` | Every frame (render) | `FrameLayout` sub-struct bundling the ephemeral fields the UI rewrites every frame for click hit-testing: `pane_row_targets`, `group_starts` (visible group headers and their first row, used by `[` / `]`), `line_to_row`, `repo_button_col`, `repo_spawn_targets`, `spawn_remove_targets`, `hyperlink_overlays` |
+| `layout` | Every frame (render) | `FrameLayout` sub-struct bundling the ephemeral fields the UI rewrites every frame for click hit-testing: `pane_row_targets`, `group_starts` (visible group headers and their first row, used by `[` / `]`), `line_to_row`, `repo_button_col`, `repo_spawn_targets`, `spawn_remove_targets`, `group_header_targets` (fold toggles), `hyperlink_overlays` |
 | `notices` | Once at startup / on copy | `NoticesState` sub-struct: `button_col`, `missing_hook_groups`, `claude_plugin_status`, `claude_settings_has_residual_hooks`, `claude_plugin_notice`, `enabled_agents`, `copy_targets`, `copied_at` |
 | `timers` | Refresh cycle / on user input | `RefreshTimers` sub-struct gating periodic work: `last_filter_click` (debounce), `last_port_refresh`, `port_scan_initialized` |
 | `spinner_frame` | Every 200ms (animation) | Spinner animation frame counter |

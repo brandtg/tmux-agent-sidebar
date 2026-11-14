@@ -61,7 +61,7 @@ fn snapshot_other_windows_rendered() {
     insta::assert_snapshot!(output, @"
      ≡3  ●1  ◎0  ◐0  ○2  ✕0
     ⓘ                              — ▾
-    project
+    ▾ project
     ┃ ○ claude
         Waiting for prompt…
       ▲ cargo
@@ -133,7 +133,7 @@ fn snapshot_other_windows_with_args_rendered() {
     insta::assert_snapshot!(output, @"
      ≡3  ●2  ◎0  ◐0  ○1  ✕0
     ⓘ                              — ▾
-    project
+    ▾ project
     ┃ ○ claude
         Waiting for prompt…
       ▲ node server.js
@@ -149,7 +149,7 @@ fn snapshot_other_windows_hidden_when_off() {
     insta::assert_snapshot!(output, @"
      ≡1  ●0  ◎0  ◐0  ○1  ✕0
     ⓘ                              — ▾
-    project
+    ▾ project
     ┃ ○ claude
         Waiting for prompt…
     ");
@@ -168,7 +168,7 @@ fn snapshot_other_windows_visible_under_matching_status_filter() {
     insta::assert_snapshot!(output, @"
      ≡3  ●1  ◎0  ◐0  ○2  ✕0
     ⓘ                              — ▾
-    project
+    ▾ project
       ▲ cargo
     ");
 }
