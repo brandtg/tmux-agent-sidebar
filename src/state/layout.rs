@@ -375,13 +375,36 @@ impl AppState {
         }
     }
 
-    /// Expand every collapsed group. Collapsed groups have no selectable
-    /// rows, so this is the recovery path when the group the user wants is
-    /// hidden behind its header. If the cursor was parked inside a fold,
-    /// it lands on that group's first row once everything opens.
-    pub fn expand_all_groups(&mut self) -> bool {
-        if self.global.collapsed_groups.is_empty() {
+    /// Fold or unfold every group from one key: with every visible group
+    /// expanded, `Z` collapses them all; the moment any of them is
+    /// collapsed — none or N-1 expanded — it expands everything back.
+    /// Only visible groups count: stale persisted names and groups the
+    /// repo filter hides are not part of the list. The cursor's group is
+    /// parked on the collapse path so `z` reopens it from the
+    /// fully-folded list, and the expand path lands the cursor on the
+    /// parked group's first row (vim's za/zR behavior). Returns false
+    /// when there is no visible group to act on.
+    pub fn toggle_all_groups(&mut self) -> bool {
+        let visible: std::collections::HashSet<String> = self
+            .repo_groups
+            .iter()
+            .filter(|group| self.global.repo_filter.matches_group(&group.name))
+            .map(|group| group.name.clone())
+            .collect();
+        if visible.is_empty() {
             return false;
+        }
+        let all_expanded = visible
+            .iter()
+            .all(|name| !self.global.collapsed_groups.contains(name));
+        if all_expanded {
+            if let Some(name) = self.selected_group_name() {
+                self.collapsed_cursor_group = Some(name);
+            }
+            self.global.collapsed_groups.extend(visible);
+            self.global.save_collapsed_groups();
+            self.rebuild_row_targets();
+            return true;
         }
         let parked = self.collapsed_cursor_group.clone();
         self.global.collapsed_groups.clear();
@@ -396,33 +419,6 @@ impl AppState {
         {
             self.global.selected_pane_row = start.row_start;
         }
-        true
-    }
-
-    /// Collapse every group — the `zM` counterpart of
-    /// [`Self::expand_all_groups`]. The cursor's group is parked first,
-    /// so `z` reopens it from the fully-folded list and `Z` lands back
-    /// on its first row. Returns false when there is nothing left to
-    /// fold.
-    pub fn collapse_all_groups(&mut self) -> bool {
-        let visible: std::collections::HashSet<String> = self
-            .repo_groups
-            .iter()
-            .map(|group| group.name.clone())
-            .collect();
-        if visible.is_empty()
-            || visible
-                .iter()
-                .all(|name| self.global.collapsed_groups.contains(name))
-        {
-            return false;
-        }
-        if let Some(name) = self.selected_group_name() {
-            self.collapsed_cursor_group = Some(name);
-        }
-        self.global.collapsed_groups.extend(visible);
-        self.global.save_collapsed_groups();
-        self.rebuild_row_targets();
         true
     }
 

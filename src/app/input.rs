@@ -214,8 +214,12 @@ pub(super) fn handle_key_event(key: KeyEvent, state: &mut AppState) -> bool {
                 state.global.queue_cursor_save();
             }
         }
+        // `Z` folds or unfolds everything in one key: from a fully
+        // expanded list it collapses every group; with anything folded
+        // it expands all. The cursor's group is parked on the collapse
+        // path so `z` reopens it from the fully-folded list.
         KeyCode::Char('Z') => {
-            if state.focus_state.focus == Focus::Panes && state.expand_all_groups() {
+            if state.focus_state.focus == Focus::Panes && state.toggle_all_groups() {
                 state.global.queue_cursor_save();
             }
         }
@@ -232,14 +236,6 @@ pub(super) fn handle_key_event(key: KeyEvent, state: &mut AppState) -> bool {
             state.collapsed_cursor_group = None;
             state.global.save_collapsed_groups();
             state.refresh();
-        }
-        // `M` folds every group — the zM counterpart of `Z`'s zR. The
-        // cursor's group is parked first, so `z` reopens it from the
-        // fully-folded list.
-        KeyCode::Char('M') => {
-            if state.focus_state.focus == Focus::Panes && state.collapse_all_groups() {
-                state.global.queue_cursor_save();
-            }
         }
         KeyCode::PageDown => page_scroll(state, 1),
         KeyCode::PageUp => page_scroll(state, -1),
@@ -930,11 +926,12 @@ mod tests {
     }
 
     #[test]
-    fn m_collapses_every_group_and_z_reopens_the_cursor_group() {
+    fn z_toggles_all_groups_and_z_reopens_the_cursor_group() {
         let mut state = state_with_search_groups();
         state.global.selected_pane_row = 2; // %3, the frontend row
 
-        handle_key_event(key(KeyCode::Char('M')), &mut state);
+        // From a fully expanded list, Z folds everything.
+        handle_key_event(key(KeyCode::Char('Z')), &mut state);
         assert!(state.layout.pane_row_targets.is_empty());
         assert!(state.is_group_collapsed("backend"));
         assert!(state.is_group_collapsed("frontend"));
@@ -943,6 +940,7 @@ mod tests {
         assert_eq!(target_ids(&state), vec!["%3"], "the cursor's group reopens");
         assert!(state.is_group_collapsed("backend"));
 
+        // One collapsed group flips Z back to expand-all.
         handle_key_event(key(KeyCode::Char('Z')), &mut state);
         assert_eq!(target_ids(&state), vec!["%1", "%2", "%3"]);
     }
@@ -959,7 +957,7 @@ mod tests {
         }];
         state.todos.visible = true;
 
-        handle_key_event(key(KeyCode::Char('M')), &mut state);
+        handle_key_event(key(KeyCode::Char('Z')), &mut state);
         handle_key_event(key(KeyCode::Char('j')), &mut state);
         assert_eq!(
             state.focus_state.focus,
