@@ -167,7 +167,7 @@ pub(super) fn render_todo_panel(frame: &mut Frame, state: &mut AppState, area: R
         chrome
     };
     let header = format!(
-        "─ todos · {}/{}",
+        "─ □ todos · {}/{}",
         state.todos.open_count(),
         state.todos.total_count()
     );
@@ -499,7 +499,7 @@ mod tests {
         state.todos.selected = 0;
         let output = render_panel(&mut state, 40, 8);
         insta::assert_snapshot!(output, @"
-        ─ todos · 2/3───────────────────────────
+        ─ □ todos · 2/3─────────────────────────
         [ ] Buy milk
         [ ] Read the tmux changelog and try the
             new paste behaviour
@@ -514,7 +514,7 @@ mod tests {
         state.todos.selected = 0;
         let output = render_panel(&mut state, 40, 8);
         insta::assert_snapshot!(output, @"
-        ─ todos · 2/3───────────────────────────
+        ─ □ todos · 2/3─────────────────────────
         [ ] Buy milk
         [ ] Read the tmux changelog and try the
             new paste behaviour
@@ -528,7 +528,7 @@ mod tests {
         state.todos.selected = 2;
         let output = render_panel(&mut state, 24, 10);
         insta::assert_snapshot!(output, @"
-        ─ todos · 2/3───────────
+        ─ □ todos · 2/3─────────
         [ ] Buy milk
         [ ] Read the tmux
             changelog and try
@@ -546,7 +546,7 @@ mod tests {
         }
         let output = render_panel(&mut state, 40, 10);
         insta::assert_snapshot!(output, @"
-        ─ todos · 2/3───────────────────────────
+        ─ □ todos · 2/3─────────────────────────
         [ ] Buy milk
         [ ] Read the tmux changelog and try the
             new paste behaviour
@@ -562,7 +562,7 @@ mod tests {
         state.begin_todo_edit();
         let output = render_panel(&mut state, 40, 8);
         insta::assert_snapshot!(output, @"
-        ─ todos · 2/3───────────────────────────
+        ─ □ todos · 2/3─────────────────────────
         [ ] Buy milk█
         [ ] Read the tmux changelog and try the
             new paste behaviour
@@ -581,7 +581,7 @@ mod tests {
         state.todo_input_push_char('X');
         let output = render_panel_styled(&mut state, 40, 8);
         insta::assert_snapshot!(output, @"
-        ─[fg:153,bold] [fg:153,bold]t[fg:153,bold]o[fg:153,bold]d[fg:153,bold]o[fg:153,bold]s[fg:153,bold] [fg:153,bold]·[fg:153,bold] [fg:153,bold]2[fg:153,bold]/[fg:153,bold]3[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]
+        ─[fg:153,bold] [fg:153,bold]□[fg:153,bold] [fg:153,bold]t[fg:153,bold]o[fg:153,bold]d[fg:153,bold]o[fg:153,bold]s[fg:153,bold] [fg:153,bold]·[fg:153,bold] [fg:153,bold]2[fg:153,bold]/[fg:153,bold]3[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]
         [[fg:153,bg:60] [fg:153,bg:60]][fg:153,bg:60] [fg:153,bg:60]B[fg:255,bg:60]u[fg:255,bg:60]y[fg:255,bg:60] [fg:255,bg:60]m[fg:255,bg:60]i[fg:255,bg:60]X[fg:255,bg:60]l[fg:255,bg:60,rev]k[fg:255,bg:60] [bg:60] [bg:60] [bg:60] [bg:60] [bg:60] [bg:60] [bg:60] [bg:60] [bg:60] [bg:60] [bg:60] [bg:60] [bg:60] [bg:60] [bg:60] [bg:60] [bg:60] [bg:60] [bg:60] [bg:60] [bg:60] [bg:60] [bg:60] [bg:60] [bg:60] [bg:60] [bg:60]
         [[fg:153] [fg:153]][fg:153] [fg:153]R[fg:255]e[fg:255]a[fg:255]d[fg:255] [fg:255]t[fg:255]h[fg:255]e[fg:255] [fg:255]t[fg:255]m[fg:255]u[fg:255]x[fg:255] [fg:255]c[fg:255]h[fg:255]a[fg:255]n[fg:255]g[fg:255]e[fg:255]l[fg:255]o[fg:255]g[fg:255] [fg:255]a[fg:255]n[fg:255]d[fg:255] [fg:255]t[fg:255]r[fg:255]y[fg:255] [fg:255]t[fg:255]h[fg:255]e[fg:255]
          [fg:153] [fg:153] [fg:153] [fg:153]n[fg:255]e[fg:255]w[fg:255] [fg:255]p[fg:255]a[fg:255]s[fg:255]t[fg:255]e[fg:255] [fg:255]b[fg:255]e[fg:255]h[fg:255]a[fg:255]v[fg:255]i[fg:255]o[fg:255]u[fg:255]r[fg:255]
@@ -597,7 +597,7 @@ mod tests {
         state.todo_edit_cursor_home();
         let output = render_panel_styled(&mut state, 24, 10);
         insta::assert_snapshot!(output, @"
-        ─[fg:153,bold] [fg:153,bold]t[fg:153,bold]o[fg:153,bold]d[fg:153,bold]o[fg:153,bold]s[fg:153,bold] [fg:153,bold]·[fg:153,bold] [fg:153,bold]2[fg:153,bold]/[fg:153,bold]3[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]
+        ─[fg:153,bold] [fg:153,bold]□[fg:153,bold] [fg:153,bold]t[fg:153,bold]o[fg:153,bold]d[fg:153,bold]o[fg:153,bold]s[fg:153,bold] [fg:153,bold]·[fg:153,bold] [fg:153,bold]2[fg:153,bold]/[fg:153,bold]3[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]
         [[fg:153] [fg:153]][fg:153] [fg:153]B[fg:255]u[fg:255]y[fg:255] [fg:255]m[fg:255]i[fg:255]l[fg:255]k[fg:255]
         [[fg:153,bg:60] [fg:153,bg:60]][fg:153,bg:60] [fg:153,bg:60]R[fg:255,bg:60,rev]e[fg:255,bg:60]a[fg:255,bg:60]d[fg:255,bg:60] [fg:255,bg:60]t[fg:255,bg:60]h[fg:255,bg:60]e[fg:255,bg:60] [fg:255,bg:60]t[fg:255,bg:60]m[fg:255,bg:60]u[fg:255,bg:60]x[fg:255,bg:60] [bg:60] [bg:60] [bg:60] [bg:60] [bg:60] [bg:60] [bg:60]
          [fg:153,bg:60] [fg:153,bg:60] [fg:153,bg:60] [fg:153,bg:60]c[fg:255,bg:60]h[fg:255,bg:60]a[fg:255,bg:60]n[fg:255,bg:60]g[fg:255,bg:60]e[fg:255,bg:60]l[fg:255,bg:60]o[fg:255,bg:60]g[fg:255,bg:60] [fg:255,bg:60]a[fg:255,bg:60]n[fg:255,bg:60]d[fg:255,bg:60] [fg:255,bg:60]t[fg:255,bg:60]r[fg:255,bg:60]y[fg:255,bg:60] [bg:60] [bg:60] [bg:60]
@@ -615,7 +615,7 @@ mod tests {
         state.todo_input_clear();
         let output = render_panel(&mut state, 40, 8);
         insta::assert_snapshot!(output, @"
-        ─ todos · 2/3───────────────────────────
+        ─ □ todos · 2/3─────────────────────────
         [ ] █
         [ ] Read the tmux changelog and try the
             new paste behaviour
@@ -658,9 +658,7 @@ mod tests {
         state.todos.visible = true;
         state.focus_state.focus = Focus::Todos;
         let output = render_panel(&mut state, 40, 4);
-        insta::assert_snapshot!(output, @"
-        ─ todos · 0/0───────────────────────────
-        ");
+        insta::assert_snapshot!(output, @"─ □ todos · 0/0─────────────────────────");
     }
 
     #[test]
@@ -674,9 +672,7 @@ mod tests {
         state.global.todo_hide_completed = true;
         state.focus_state.focus = Focus::Todos;
         let output = render_panel(&mut state, 40, 4);
-        insta::assert_snapshot!(output, @"
-        ─ todos · 0/1───────────────────────────
-        ");
+        insta::assert_snapshot!(output, @"─ □ todos · 0/1─────────────────────────");
     }
 
     #[test]
@@ -695,7 +691,7 @@ mod tests {
         state.todos.selected = 0;
         let output = render_panel(&mut state, 40, 6);
         insta::assert_snapshot!(output, @"
-        ─ todos · 2/2───────────────────────────
+        ─ □ todos · 2/2─────────────────────────
         [ ] First
         [ ] Second
         ");
@@ -708,7 +704,7 @@ mod tests {
         let mut state = todo_state();
         let output = render_panel(&mut state, 40, 8);
         insta::assert_snapshot!(output, @"
-        ─ todos · 2/3───────────────────────────
+        ─ □ todos · 2/3─────────────────────────
         [ ] Buy milk
         [ ] Read the tmux changelog and try the
             new paste behaviour
@@ -723,7 +719,7 @@ mod tests {
         state.todos.selected = 1; // the completed item
         let output = render_panel(&mut state, 40, 8);
         insta::assert_snapshot!(output, @"
-        ─ todos · 2/3───────────────────────────
+        ─ □ todos · 2/3─────────────────────────
         [ ] Buy milk
         [ ] Read the tmux changelog and try the
             new paste behaviour
@@ -822,7 +818,7 @@ mod tests {
         state.focus_state.focus = Focus::Panes;
         let output = render_panel_styled(&mut state, 40, 6);
         insta::assert_snapshot!(output, @"
-        ─[fg:240] [fg:240]t[fg:240]o[fg:240]d[fg:240]o[fg:240]s[fg:240] [fg:240]·[fg:240] [fg:240]2[fg:240]/[fg:240]3[fg:240]─[fg:240]─[fg:240]─[fg:240]─[fg:240]─[fg:240]─[fg:240]─[fg:240]─[fg:240]─[fg:240]─[fg:240]─[fg:240]─[fg:240]─[fg:240]─[fg:240]─[fg:240]─[fg:240]─[fg:240]─[fg:240]─[fg:240]─[fg:240]─[fg:240]─[fg:240]─[fg:240]─[fg:240]─[fg:240]─[fg:240]─[fg:240]
+        ─[fg:240] [fg:240]□[fg:240] [fg:240]t[fg:240]o[fg:240]d[fg:240]o[fg:240]s[fg:240] [fg:240]·[fg:240] [fg:240]2[fg:240]/[fg:240]3[fg:240]─[fg:240]─[fg:240]─[fg:240]─[fg:240]─[fg:240]─[fg:240]─[fg:240]─[fg:240]─[fg:240]─[fg:240]─[fg:240]─[fg:240]─[fg:240]─[fg:240]─[fg:240]─[fg:240]─[fg:240]─[fg:240]─[fg:240]─[fg:240]─[fg:240]─[fg:240]─[fg:240]─[fg:240]─[fg:240]
         [[fg:240] [fg:240]][fg:240] [fg:240]B[fg:255]u[fg:255]y[fg:255] [fg:255]m[fg:255]i[fg:255]l[fg:255]k[fg:255]
         [[fg:240] [fg:240]][fg:240] [fg:240]R[fg:255]e[fg:255]a[fg:255]d[fg:255] [fg:255]t[fg:255]h[fg:255]e[fg:255] [fg:255]t[fg:255]m[fg:255]u[fg:255]x[fg:255] [fg:255]c[fg:255]h[fg:255]a[fg:255]n[fg:255]g[fg:255]e[fg:255]l[fg:255]o[fg:255]g[fg:255] [fg:255]a[fg:255]n[fg:255]d[fg:255] [fg:255]t[fg:255]r[fg:255]y[fg:255] [fg:255]t[fg:255]h[fg:255]e[fg:255]
          [fg:240] [fg:240] [fg:240] [fg:240]n[fg:255]e[fg:255]w[fg:255] [fg:255]p[fg:255]a[fg:255]s[fg:255]t[fg:255]e[fg:255] [fg:255]b[fg:255]e[fg:255]h[fg:255]a[fg:255]v[fg:255]i[fg:255]o[fg:255]u[fg:255]r[fg:255]
@@ -838,7 +834,7 @@ mod tests {
         let mut state = state_chrome_state();
         let output = render_panel_styled(&mut state, 40, 6);
         insta::assert_snapshot!(output, @"
-        ─[fg:153,bold] [fg:153,bold]t[fg:153,bold]o[fg:153,bold]d[fg:153,bold]o[fg:153,bold]s[fg:153,bold] [fg:153,bold]·[fg:153,bold] [fg:153,bold]2[fg:153,bold]/[fg:153,bold]3[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]
+        ─[fg:153,bold] [fg:153,bold]□[fg:153,bold] [fg:153,bold]t[fg:153,bold]o[fg:153,bold]d[fg:153,bold]o[fg:153,bold]s[fg:153,bold] [fg:153,bold]·[fg:153,bold] [fg:153,bold]2[fg:153,bold]/[fg:153,bold]3[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]
         [[fg:153,bg:236] [fg:153,bg:236]][fg:153,bg:236] [fg:153,bg:236]B[fg:255,bg:236]u[fg:255,bg:236]y[fg:255,bg:236] [fg:255,bg:236]m[fg:255,bg:236]i[fg:255,bg:236]l[fg:255,bg:236]k[fg:255,bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236]
         [[fg:153] [fg:153]][fg:153] [fg:153]R[fg:255]e[fg:255]a[fg:255]d[fg:255] [fg:255]t[fg:255]h[fg:255]e[fg:255] [fg:255]t[fg:255]m[fg:255]u[fg:255]x[fg:255] [fg:255]c[fg:255]h[fg:255]a[fg:255]n[fg:255]g[fg:255]e[fg:255]l[fg:255]o[fg:255]g[fg:255] [fg:255]a[fg:255]n[fg:255]d[fg:255] [fg:255]t[fg:255]r[fg:255]y[fg:255] [fg:255]t[fg:255]h[fg:255]e[fg:255]
          [fg:153] [fg:153] [fg:153] [fg:153]n[fg:255]e[fg:255]w[fg:255] [fg:255]p[fg:255]a[fg:255]s[fg:255]t[fg:255]e[fg:255] [fg:255]b[fg:255]e[fg:255]h[fg:255]a[fg:255]v[fg:255]i[fg:255]o[fg:255]u[fg:255]r[fg:255]
@@ -858,7 +854,7 @@ mod tests {
         }
         let output = render_panel_styled(&mut state, 40, 7);
         insta::assert_snapshot!(output, @"
-        ─[fg:153,bold] [fg:153,bold]t[fg:153,bold]o[fg:153,bold]d[fg:153,bold]o[fg:153,bold]s[fg:153,bold] [fg:153,bold]·[fg:153,bold] [fg:153,bold]2[fg:153,bold]/[fg:153,bold]3[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]
+        ─[fg:153,bold] [fg:153,bold]□[fg:153,bold] [fg:153,bold]t[fg:153,bold]o[fg:153,bold]d[fg:153,bold]o[fg:153,bold]s[fg:153,bold] [fg:153,bold]·[fg:153,bold] [fg:153,bold]2[fg:153,bold]/[fg:153,bold]3[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]
         [[fg:153,bg:236] [fg:153,bg:236]][fg:153,bg:236] [fg:153,bg:236]B[fg:255,bg:236]u[fg:255,bg:236]y[fg:255,bg:236] [fg:255,bg:236]m[fg:255,bg:236]i[fg:255,bg:236]l[fg:255,bg:236]k[fg:255,bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236]
         [[fg:153] [fg:153]][fg:153] [fg:153]R[fg:255]e[fg:255]a[fg:255]d[fg:255] [fg:255]t[fg:255]h[fg:255]e[fg:255] [fg:255]t[fg:255]m[fg:255]u[fg:255]x[fg:255] [fg:255]c[fg:255]h[fg:255]a[fg:255]n[fg:255]g[fg:255]e[fg:255]l[fg:255]o[fg:255]g[fg:255] [fg:255]a[fg:255]n[fg:255]d[fg:255] [fg:255]t[fg:255]r[fg:255]y[fg:255] [fg:255]t[fg:255]h[fg:255]e[fg:255]
          [fg:153] [fg:153] [fg:153] [fg:153]n[fg:255]e[fg:255]w[fg:255] [fg:255]p[fg:255]a[fg:255]s[fg:255]t[fg:255]e[fg:255] [fg:255]b[fg:255]e[fg:255]h[fg:255]a[fg:255]v[fg:255]i[fg:255]o[fg:255]u[fg:255]r[fg:255]
@@ -877,7 +873,7 @@ mod tests {
         state.begin_todo_edit();
         let output = render_panel_styled(&mut state, 40, 6);
         insta::assert_snapshot!(output, @"
-        ─[fg:153,bold] [fg:153,bold]t[fg:153,bold]o[fg:153,bold]d[fg:153,bold]o[fg:153,bold]s[fg:153,bold] [fg:153,bold]·[fg:153,bold] [fg:153,bold]2[fg:153,bold]/[fg:153,bold]3[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]
+        ─[fg:153,bold] [fg:153,bold]□[fg:153,bold] [fg:153,bold]t[fg:153,bold]o[fg:153,bold]d[fg:153,bold]o[fg:153,bold]s[fg:153,bold] [fg:153,bold]·[fg:153,bold] [fg:153,bold]2[fg:153,bold]/[fg:153,bold]3[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]
         [[fg:153,bg:60] [fg:153,bg:60]][fg:153,bg:60] [fg:153,bg:60]B[fg:255,bg:60]u[fg:255,bg:60]y[fg:255,bg:60] [fg:255,bg:60]m[fg:255,bg:60]i[fg:255,bg:60]l[fg:255,bg:60]k[fg:255,bg:60]█[fg:153,bg:60] [bg:60] [bg:60] [bg:60] [bg:60] [bg:60] [bg:60] [bg:60] [bg:60] [bg:60] [bg:60] [bg:60] [bg:60] [bg:60] [bg:60] [bg:60] [bg:60] [bg:60] [bg:60] [bg:60] [bg:60] [bg:60] [bg:60] [bg:60] [bg:60] [bg:60] [bg:60] [bg:60]
         [[fg:153] [fg:153]][fg:153] [fg:153]R[fg:255]e[fg:255]a[fg:255]d[fg:255] [fg:255]t[fg:255]h[fg:255]e[fg:255] [fg:255]t[fg:255]m[fg:255]u[fg:255]x[fg:255] [fg:255]c[fg:255]h[fg:255]a[fg:255]n[fg:255]g[fg:255]e[fg:255]l[fg:255]o[fg:255]g[fg:255] [fg:255]a[fg:255]n[fg:255]d[fg:255] [fg:255]t[fg:255]r[fg:255]y[fg:255] [fg:255]t[fg:255]h[fg:255]e[fg:255]
          [fg:153] [fg:153] [fg:153] [fg:153]n[fg:255]e[fg:255]w[fg:255] [fg:255]p[fg:255]a[fg:255]s[fg:255]t[fg:255]e[fg:255] [fg:255]b[fg:255]e[fg:255]h[fg:255]a[fg:255]v[fg:255]i[fg:255]o[fg:255]u[fg:255]r[fg:255]
@@ -900,7 +896,7 @@ mod tests {
 
         let before = render_panel(&mut state, 30, 10);
         insta::assert_snapshot!(before, @"
-        ─ todos · 2/3─────────────────
+        ─ □ todos · 2/3───────────────
         [ ] Buy milk for the cat█
         [ ] Read the tmux changelog
             and try the new paste
@@ -911,7 +907,7 @@ mod tests {
         state.todo_input_push_char(' ');
         let after = render_panel(&mut state, 30, 10);
         insta::assert_snapshot!(after, @"
-        ─ todos · 2/3─────────────────
+        ─ □ todos · 2/3───────────────
         [ ] Buy milk for the cat █
         [ ] Read the tmux changelog
             and try the new paste
