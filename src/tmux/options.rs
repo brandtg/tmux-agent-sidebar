@@ -138,6 +138,14 @@ pub const SIDEBAR_FILTER: &str = "@sidebar_filter";
 pub const SIDEBAR_DEFAULT_VIEW: &str = "@sidebar_default_view";
 pub const SIDEBAR_CURSOR: &str = "@sidebar_cursor";
 pub const SIDEBAR_REPO_FILTER: &str = "@sidebar_repo_filter";
+/// Group names currently folded in the agents panel, stored as a JSON
+/// array of strings (group names may contain almost anything, so a
+/// plain separator would round-trip badly). Written whenever a sidebar
+/// folds or unfolds a group (`z`, a header click, `M`, `Z`) and synced
+/// across sidebars like [`SIDEBAR_FILTER`], so the folds survive
+/// restarts and follow the user to every other sidebar. Cleared when
+/// the grouping mode changes: names are mode-specific.
+pub const SIDEBAR_COLLAPSED_GROUPS: &str = "@sidebar_collapsed_groups";
 /// Live compact-view flag (`1`/`0`). Written whenever a sidebar toggles
 /// compact mode so every open sidebar instance renders the same density.
 /// Synced across sidebars like [`SIDEBAR_FILTER`] but deliberately not

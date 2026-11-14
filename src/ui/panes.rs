@@ -554,6 +554,7 @@ pub fn draw_agents(frame: &mut Frame, state: &mut AppState, area: Rect) {
         line_to_row,
         pending_spawn,
         pending_remove,
+        pending_header,
     } = row_collector::collect(state, layout.list_area.width);
     state.layout.line_to_row = line_to_row;
     let scroll_offset = compute_scroll_offset(state, lines.len(), layout.list_area);
@@ -561,6 +562,7 @@ pub fn draw_agents(frame: &mut Frame, state: &mut AppState, area: Rect) {
         state,
         pending_spawn,
         pending_remove,
+        pending_header,
         scroll_offset,
         layout.list_area,
     );

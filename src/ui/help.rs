@@ -25,8 +25,8 @@ const HELP_SECTIONS: &[(&str, &[(&str, &str)])] = &[
             ("h / l", "Status filter"),
             ("Tab", "Cycle status filter"),
             ("[ / ]", "Prev / next group"),
-            ("z", "Collapse / expand group"),
-            ("Z", "Expand all groups"),
+            ("z", "Collapse / expand group (or click header)"),
+            ("Z", "Collapse / expand all groups"),
             ("s", "Repo / session grouping"),
             ("Enter / →", "Jump to selected pane"),
             ("n", "Spawn worktree + agent"),
@@ -205,7 +205,9 @@ mod tests {
         │ Tab              Cycle status filter     │
         │ [ / ]            Prev / next group       │
         │ z                Collapse / expand group │
-        │ Z                Expand all groups       │
+        │                  (or click header)       │
+        │ Z                Collapse / expand all   │
+        │                  groups                  │
         │ s                Repo / session grouping │
         │ Enter / →        Jump to selected pane   │
         │ n                Spawn worktree + agent  │
@@ -232,8 +234,6 @@ mod tests {
         │ w                List non-agent panes    │
         │ ?                Toggle this help        │
         │ q                Quit                    │
-        │                                          │
-        │                                          │
         │                                          │
         │                                          │
         │                                          │

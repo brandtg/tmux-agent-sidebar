@@ -228,9 +228,11 @@ pub fn run(
                 // Group names are mode-specific (repo names vs session
                 // names). A collapse set from the previous mode would
                 // otherwise hide an unrelated group that happens to share
-                // a name, so start the new mode fully expanded.
+                // a name, so start the new mode fully expanded. The mode
+                // changer already persisted the cleared set.
                 if state.global.group_by != previous_group_by {
-                    state.collapsed_groups.clear();
+                    state.global.collapsed_groups.clear();
+                    state.collapsed_cursor_group = None;
                 }
                 state.rebuild_row_targets();
                 // The hide-completed setting may have changed in another

@@ -31,7 +31,7 @@ fn snapshot_single_agent_idle_ui() {
     insta::assert_snapshot!(output, @"
      ≡1  ●0  ◎0  ◐0  ○1  ✕0
     ⓘ                        — ▾
-    project
+    ▾ project
     ┃ ○ claude
         Waiting for prompt…
     ");
@@ -62,7 +62,7 @@ fn snapshot_done_unseen_pane_matches_idle_layout() {
     insta::assert_snapshot!(output, @"
      ≡1  ●1  ◎0  ◐0  ○1  ✕0
     ⓘ                        — ▾
-    project
+    ▾ project
     ┃ ○ claude
         Waiting for prompt…
     ");
@@ -94,7 +94,7 @@ fn snapshot_secondary_header_without_notices() {
     insta::assert_snapshot!(output, @"
      ≡1  ●0  ◎0  ◐0  ○1  ✕0
                              — ▾
-    project
+    ▾ project
     ┃ ○ claude
         Waiting for prompt…
     ");
@@ -122,7 +122,7 @@ fn snapshot_secondary_header_long_repo_filter_truncated() {
     insta::assert_snapshot!(output, @"
      ≡1  ●0  ◎0  ◐0  ○1  ✕0
     ⓘ  very-long-repository-n… ▾
-    very-long-repository-name-th
+    ▾ very-long-repository-name…
     ┃ ○ claude
         Waiting for prompt…
     ");
@@ -149,10 +149,10 @@ fn snapshot_version_banner_does_not_duplicate_in_scroll_area() {
     state.rebuild_row_targets();
 
     let output = render_to_string(&mut state, 28, 10);
-    insta::assert_snapshot!(output, @r"
+    insta::assert_snapshot!(output, @"
      ≡1  ●0  ◎0  ◐0  ○1  ✕0
     ⓘ                        — ▾
-    project
+    ▾ project
     ┃ ○ claude
         Waiting for prompt…
     ");
@@ -179,10 +179,10 @@ fn snapshot_popup_mode_forces_focus_semantics() {
     state.rebuild_row_targets();
 
     let output = render_to_string(&mut state, 40, 20);
-    insta::assert_snapshot!(output, @r"
+    insta::assert_snapshot!(output, @"
      ≡1  ●0  ◎0  ◐0  ○1  ✕0
     ⓘ                                    — ▾
-    project
+    ▾ project
     ┃ ○ claude
         Waiting for prompt…
     ");
@@ -207,10 +207,10 @@ fn snapshot_single_agent_running_with_elapsed() {
     state.rebuild_row_targets();
 
     let output = render_to_string(&mut state, 28, 25);
-    insta::assert_snapshot!(output, @r"
+    insta::assert_snapshot!(output, @"
      ≡1  ●1  ◎0  ◐0  ○0  ✕0
     ⓘ                        — ▾
-    dotfiles
+    ▾ dotfiles
     ┃ ● claude              2m5s
     ");
 }
@@ -235,10 +235,10 @@ fn snapshot_long_session_name_truncated_keeps_elapsed_visible() {
     state.rebuild_row_targets();
 
     let output = render_to_string(&mut state, 28, 25);
-    insta::assert_snapshot!(output, @r"
+    insta::assert_snapshot!(output, @"
      ≡1  ●1  ◎0  ◐0  ○0  ✕0
     ⓘ                        — ▾
-    dotfiles
+    ▾ dotfiles
     ┃ ● this-is-a-ridiculo… 2m5s
     ");
 }
@@ -261,10 +261,10 @@ fn running_spinner_different_frame() {
     state.spinner_frame = 0;
 
     let output = render_to_string(&mut state, 28, 25);
-    insta::assert_snapshot!(output, @r"
+    insta::assert_snapshot!(output, @"
      ≡1  ●1  ◎0  ◐0  ○0  ✕0
     ⓘ                        — ▾
-    project
+    ▾ project
     ┃ ● claude
     ");
 }
@@ -291,7 +291,7 @@ fn snapshot_agent_with_prompt_ui() {
     insta::assert_snapshot!(output, @"
      ≡1  ●0  ◎0  ◐0  ○1  ✕0
     ⓘ                        — ▾
-    project
+    ▾ project
     ┃ ○ claude
         fix the bug
     ");
@@ -319,7 +319,7 @@ fn snapshot_agent_with_japanese_prompt_ui() {
     insta::assert_snapshot!(output, @"
      ≡1  ●1  ◎0  ◐0  ○0  ✕0
     ⓘ                        — ▾
-    project
+    ▾ project
     ┃ ● claude
         こ れ っ て 今 1時 間 経 っ て い
         る け ど 、 起 動 し て 確 認 し …
@@ -402,7 +402,7 @@ fn snapshot_two_agents_same_window_ui() {
     insta::assert_snapshot!(output, @"
      ≡2  ●1  ◎0  ◐0  ○1  ✕0
     ⓘ                        — ▾
-    project
+    ▾ project
     ┃ ● claude
         fix the bug
       ○ codex
@@ -448,9 +448,9 @@ fn snapshot_two_windows_ui() {
     insta::assert_snapshot!(output, @"
      ≡2  ●1  ◎0  ◐0  ○1  ✕0
     ⓘ                        — ▾
-    project-a
+    ▾ project-a
     ┃ ● claude
-    project-b
+    ▾ project-b
       ○ codex
         Waiting for prompt…
     ");
@@ -497,9 +497,9 @@ fn snapshot_multi_session_ui() {
     insta::assert_snapshot!(output, @"
      ≡2  ●1  ◎0  ◐0  ○1  ✕0
     ⓘ                        — ▾
-    dotfiles
+    ▾ dotfiles
     ┃ ● claude
-    api
+    ▾ api
       ○ codex
         Waiting for prompt…
     ");
@@ -527,7 +527,7 @@ fn snapshot_wait_reason_ui() {
     insta::assert_snapshot!(output, @"
      ≡1  ●0  ◎0  ◐1  ○0  ✕0
     ⓘ                        — ▾
-    project
+    ▾ project
     ┃ ◐ claude
         permission required
     ");
@@ -555,7 +555,7 @@ fn snapshot_auto_rename_window_title_ui() {
     insta::assert_snapshot!(output, @"
      ≡1  ●0  ◎0  ◐0  ○1  ✕0
     ⓘ                        — ▾
-    project
+    ▾ project
     ┃ ○ claude
         Waiting for prompt…
     ");
@@ -634,7 +634,7 @@ fn snapshot_proxy_active_bar_lights_cursor_window_agent() {
     insta::assert_snapshot!(output, @"
      ≡2  ●0  ◎0  ◐0  ○2  ✕0
     ⓘ                        — ▾
-    project
+    ▾ project
     ┃ ○ claude
         Waiting for prompt…
       ○ codex
@@ -652,7 +652,7 @@ fn snapshot_window_row_keeps_marker_when_windows_visible() {
     insta::assert_snapshot!(output, @"
      ≡3  ●0  ◎0  ◐0  ○3  ✕0
     ⓘ                        — ▾
-    project
+    ▾ project
       ○ claude
         Waiting for prompt…
       ○ codex

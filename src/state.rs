@@ -22,8 +22,8 @@ pub use filter::{RepoFilter, StatusFilter};
 pub use focus::{Focus, FocusState};
 pub use global::{GlobalState, GroupBy, TodoScope};
 pub use layout::{
-    FrameLayout, GroupStart, HyperlinkOverlay, RepoSpawnTarget, RowTarget, SpawnRemoveTarget,
-    TodoRowTarget,
+    FrameLayout, GroupHeaderTarget, GroupStart, HyperlinkOverlay, RepoSpawnTarget, RowTarget,
+    SpawnRemoveTarget, TodoRowTarget,
 };
 pub(crate) use notices::debug_forced_display;
 pub(crate) use notices::parse_enabled_agents;
@@ -97,10 +97,16 @@ pub struct AppState {
     /// sidebar instances: the query is transient, and broadcasting it on
     /// every keystroke would refresh every open sidebar.
     pub search: SearchState,
-    /// Group names collapsed to a header-only row (`z`). Local to this
-    /// sidebar instance, like search: collapse is a transient view choice,
-    /// not a shared setting.
-    pub collapsed_groups: std::collections::HashSet<String>,
+    /// The group that swallowed the cursor. When every row the cursor
+    /// could sit on is hidden behind collapsed headers,
+    /// `selected_group_name()` has nothing to resolve against
+    /// (`group_starts` only holds groups with visible rows) — this
+    /// remembers the last group the cursor was inside, the way vim
+    /// keeps the cursor line inside a closed fold, so `z` keeps
+    /// toggling the right fold. Set when a fold takes the cursor's
+    /// group; cleared by `rebuild_row_targets` the moment the cursor is
+    /// back on a visible row. Transient, like the cursor itself.
+    pub collapsed_cursor_group: Option<String>,
     /// Manual TODO list panel: shared item list (backed by a file) plus
     /// selection and add-line buffer. Panel visibility follows the shared
     /// `@sidebar_todo_visible` flag by default.
@@ -164,7 +170,7 @@ impl AppState {
             version_notice: None,
             global,
             search: SearchState::default(),
-            collapsed_groups: std::collections::HashSet::new(),
+            collapsed_cursor_group: None,
             todos: TodoState::default(),
             sessions: SessionNamesState::default(),
             popup_mode: false,

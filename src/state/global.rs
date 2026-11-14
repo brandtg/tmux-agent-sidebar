@@ -126,6 +126,13 @@ pub struct GlobalState {
     /// session names. Read from `@sidebar_group_by` on every sync — set
     /// it in tmux.conf; there is no runtime toggle.
     pub group_by: GroupBy,
+    /// Group names currently folded in the agents panel (`z`, a header
+    /// click, `M`). Persisted to `@sidebar_collapsed_groups` and synced
+    /// across open sidebars like the other shared options, so folds
+    /// survive restarts and follow the user everywhere. Cleared when the
+    /// grouping mode changes: the names are mode-specific, and a session
+    /// that shares a name with a repo would otherwise inherit its fold.
+    pub collapsed_groups: std::collections::HashSet<String>,
     /// Session-mode window level (`@sidebar_session_windows`). When on
     /// and grouped by session, each window's rows render under a muted
     /// `index:name` header — the `Session > Window > agent|process`
@@ -158,6 +165,8 @@ pub struct GlobalState {
     last_saved_cursor: usize,
     /// Last repo filter value successfully written to tmux.
     last_saved_repo_filter: RepoFilter,
+    /// Last collapsed-group set successfully written to tmux.
+    last_saved_collapsed_groups: Option<std::collections::HashSet<String>>,
     /// When the selected cursor was last changed and still needs persisting.
     pending_cursor_save_since: Option<Instant>,
 }
@@ -183,6 +192,7 @@ impl GlobalState {
             todo_visible: false,
             todo_scope: TodoScope::default(),
             group_by: GroupBy::default(),
+            collapsed_groups: std::collections::HashSet::new(),
             session_windows: false,
             worktree_windows: false,
             worktree_titles: false,
@@ -191,6 +201,7 @@ impl GlobalState {
             last_saved_filter: StatusFilter::All,
             last_saved_cursor: 0,
             last_saved_repo_filter: RepoFilter::All,
+            last_saved_collapsed_groups: None,
             pending_cursor_save_since: None,
         }
     }
@@ -281,6 +292,20 @@ impl GlobalState {
         .is_some()
         {
             self.last_saved_repo_filter = self.repo_filter.clone();
+            self.broadcast_change();
+        }
+    }
+
+    /// Save the collapsed-group set to tmux as a JSON array, then
+    /// broadcast the change to every other open sidebar. A failed write
+    /// leaves `last_saved_collapsed_groups` untouched so the next sync
+    /// reverts this sidebar to the shared value instead of diverging.
+    pub fn save_collapsed_groups(&mut self) {
+        let Ok(json) = serde_json::to_string(&self.collapsed_groups) else {
+            return;
+        };
+        if tmux::run_tmux(&["set", "-g", tmux::SIDEBAR_COLLAPSED_GROUPS, &json]).is_some() {
+            self.last_saved_collapsed_groups = Some(self.collapsed_groups.clone());
             self.broadcast_change();
         }
     }
@@ -573,6 +598,18 @@ impl GlobalState {
         {
             self.preview_lines = n;
         }
+        if let Some(collapsed_str) = opts.get(tmux::SIDEBAR_COLLAPSED_GROUPS)
+            && let Ok(names) =
+                serde_json::from_str::<std::collections::HashSet<String>>(collapsed_str)
+            && Some(&names) != self.last_saved_collapsed_groups.as_ref()
+        {
+            // A set this sidebar itself just wrote equals its
+            // `last_saved` copy and is skipped, matching the filter
+            // echo-guard above; anything else (another sidebar's fold,
+            // a restored value at startup) is adopted wholesale.
+            self.collapsed_groups = names.clone();
+            self.last_saved_collapsed_groups = Some(names);
+        }
     }
 }
 
@@ -588,6 +625,34 @@ fn parse_preview_lines(s: &str) -> Option<usize> {
 mod tests {
     use super::*;
     use std::collections::HashMap;
+
+    #[test]
+    fn collapsed_groups_round_trip_through_the_shared_option() {
+        let mut global = GlobalState::new("%99".into());
+        let mut opts = HashMap::new();
+        opts.insert(
+            tmux::SIDEBAR_COLLAPSED_GROUPS.to_string(),
+            r#"["backend","⎇ fix (repo)"]"#.to_string(),
+        );
+        global.apply_all(&opts);
+        assert_eq!(
+            global.collapsed_groups,
+            ["backend", "⎇ fix (repo)"]
+                .map(str::to_string)
+                .into_iter()
+                .collect::<std::collections::HashSet<_>>(),
+            "the persisted JSON set is adopted wholesale"
+        );
+
+        // A value that fails to parse leaves the adopted set alone
+        // instead of silently unfolding everything.
+        opts.insert(
+            tmux::SIDEBAR_COLLAPSED_GROUPS.to_string(),
+            "not json".to_string(),
+        );
+        global.apply_all(&opts);
+        assert_eq!(global.collapsed_groups.len(), 2);
+    }
 
     #[test]
     fn todo_scope_labels_round_trip() {

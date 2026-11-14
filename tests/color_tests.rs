@@ -146,7 +146,7 @@ fn test_permission_mode_bypass_all_renders_danger_color() {
     insta::assert_snapshot!(render_to_styled_string(&mut state, 28, 26), @"
      ≡[fg:111]1[fg:255]  ●[fg:245]1[fg:255]  ◎[fg:245]0[fg:245]  ◐[fg:245]0[fg:245]  ○[fg:245]0[fg:245]  ✕[fg:245]0[fg:245]
     ⓘ[fg:221]                        —[fg:252] ▾[fg:252]
-    p[fg:153]r[fg:153]o[fg:153]j[fg:153]e[fg:153]c[fg:153]t[fg:153]
+    ▾[fg:153] [fg:153]p[fg:153]r[fg:153]o[fg:153]j[fg:153]e[fg:153]c[fg:153]t[fg:153]
     ┃[fg:153] ●[fg:82] [fg:173]c[fg:173]l[fg:173]a[fg:173]u[fg:173]d[fg:173]e[fg:173] [fg:167]![fg:167]
     ");
 }
@@ -175,7 +175,7 @@ fn test_permission_mode_full_auto_renders_no_badge() {
     insta::assert_snapshot!(render_to_styled_string(&mut state, 28, 26), @"
      ≡[fg:111]1[fg:255]  ●[fg:245]1[fg:255]  ◎[fg:245]0[fg:245]  ◐[fg:245]0[fg:245]  ○[fg:245]0[fg:245]  ✕[fg:245]0[fg:245]
     ⓘ[fg:221]                        —[fg:252] ▾[fg:252]
-    p[fg:153]r[fg:153]o[fg:153]j[fg:153]e[fg:153]c[fg:153]t[fg:153]
+    ▾[fg:153] [fg:153]p[fg:153]r[fg:153]o[fg:153]j[fg:153]e[fg:153]c[fg:153]t[fg:153]
     ┃[fg:153] ●[fg:82] [fg:173]c[fg:173]l[fg:173]a[fg:173]u[fg:173]d[fg:173]e[fg:173]
     ");
 }
@@ -200,11 +200,11 @@ fn test_permission_mode_normal_no_badge() {
     state.focus_state.sidebar_focused = false;
 
     // Snapshot locks in that the agent row shows no badge in Normal mode.
-    insta::assert_snapshot!(render_to_string(&mut state, 28, 25), @r"
- ≡1  ●1  ◎0  ◐0  ○0  ✕0
-ⓘ                        — ▾
-project
-┃ ● claude
+    insta::assert_snapshot!(render_to_string(&mut state, 28, 25), @"
+     ≡1  ●1  ◎0  ◐0  ○0  ✕0
+    ⓘ                        — ▾
+    ▾ project
+    ┃ ● claude
     ");
 }
 
@@ -244,7 +244,7 @@ fn test_task_progress_line_uses_task_progress_color() {
     insta::assert_snapshot!(render_to_styled_string(&mut state, 40, 40), @"
      ≡[fg:111]1[fg:255]  ●[fg:245]1[fg:255]  ◎[fg:245]0[fg:245]  ◐[fg:245]0[fg:245]  ○[fg:245]0[fg:245]  ✕[fg:245]0[fg:245]
     ⓘ[fg:221]                                    —[fg:252] ▾[fg:252]
-    p[fg:153]r[fg:153]o[fg:153]j[fg:153]e[fg:153]c[fg:153]t[fg:153]
+    ▾[fg:153] [fg:153]p[fg:153]r[fg:153]o[fg:153]j[fg:153]e[fg:153]c[fg:153]t[fg:153]
     ┃[fg:153] ●[fg:82] [fg:173]c[fg:173]l[fg:173]a[fg:173]u[fg:173]d[fg:173]e[fg:173]
        [fg:223] [fg:223]✔[fg:223]◼[fg:223]◻[fg:223] [fg:223]1[fg:223]/[fg:223]3[fg:223]
     ");
@@ -274,7 +274,7 @@ fn test_subagent_line_uses_subagent_color() {
     insta::assert_snapshot!(render_to_styled_string(&mut state, 40, 27), @"
      ≡[fg:111]1[fg:255]  ●[fg:245]1[fg:255]  ◎[fg:245]0[fg:245]  ◐[fg:245]0[fg:245]  ○[fg:245]0[fg:245]  ✕[fg:245]0[fg:245]
     ⓘ[fg:221]                                    —[fg:252] ▾[fg:252]
-    p[fg:153]r[fg:153]o[fg:153]j[fg:153]e[fg:153]c[fg:153]t[fg:153]
+    ▾[fg:153] [fg:153]p[fg:153]r[fg:153]o[fg:153]j[fg:153]e[fg:153]c[fg:153]t[fg:153]
     ┃[fg:153] ●[fg:82] [fg:173]c[fg:173]l[fg:173]a[fg:173]u[fg:173]d[fg:173]e[fg:173]
        [fg:252] [fg:252]└[fg:252] [fg:252]E[fg:73]x[fg:73]p[fg:73]l[fg:73]o[fg:73]r[fg:73]e[fg:73] [fg:73]#[fg:73]1[fg:73]
     ");
@@ -308,7 +308,7 @@ fn test_response_renders_plain_gray() {
     insta::assert_snapshot!(render_to_styled_string(&mut state, 40, 27), @"
      ≡[fg:111]1[fg:255]  ●[fg:245]0[fg:245]  ◎[fg:245]0[fg:245]  ◐[fg:245]0[fg:245]  ○[fg:245]1[fg:255]  ✕[fg:245]0[fg:245]
     ⓘ[fg:221]                                    —[fg:252] ▾[fg:252]
-    p[fg:153]r[fg:153]o[fg:153]j[fg:153]e[fg:153]c[fg:153]t[fg:153]
+    ▾[fg:153] [fg:153]p[fg:153]r[fg:153]o[fg:153]j[fg:153]e[fg:153]c[fg:153]t[fg:153]
     ┃[fg:153] ○[fg:110] [fg:173]c[fg:173]l[fg:173]a[fg:173]u[fg:173]d[fg:173]e[fg:173]
        [fg:244] [fg:244]T[fg:244]a[fg:244]s[fg:244]k[fg:244] [fg:244]c[fg:244]o[fg:244]m[fg:244]p[fg:244]l[fg:244]e[fg:244]t[fg:244]e[fg:244]d[fg:244] [fg:244]s[fg:244]u[fg:244]c[fg:244]c[fg:244]e[fg:244]s[fg:244]s[fg:244]f[fg:244]u[fg:244]l[fg:244]l[fg:244]y[fg:244]
     ");
@@ -386,7 +386,7 @@ fn test_branch_color_in_agent_panel() {
     insta::assert_snapshot!(render_to_styled_string(&mut state, 40, 26), @"
      ≡[fg:111]1[fg:255]  ●[fg:245]1[fg:255]  ◎[fg:245]0[fg:245]  ◐[fg:245]0[fg:245]  ○[fg:245]0[fg:245]  ✕[fg:245]0[fg:245]
     ⓘ[fg:221]                                    —[fg:252] ▾[fg:252]
-    p[fg:153]r[fg:153]o[fg:153]j[fg:153]e[fg:153]c[fg:153]t[fg:153]                                +[fg:153]
+    ▾[fg:153] [fg:153]p[fg:153]r[fg:153]o[fg:153]j[fg:153]e[fg:153]c[fg:153]t[fg:153]                              +[fg:153]
     ┃[fg:153] ●[fg:82] [fg:173]c[fg:173]l[fg:173]a[fg:173]u[fg:173]d[fg:173]e[fg:173]
     ┃[fg:153]  [fg:109] [fg:109]f[fg:109]e[fg:109]a[fg:109]t[fg:109]u[fg:109]r[fg:109]e[fg:109]/[fg:109]c[fg:109]o[fg:109]o[fg:109]l[fg:109]-[fg:109]f[fg:109]e[fg:109]a[fg:109]t[fg:109]u[fg:109]r[fg:109]e[fg:109]
     ");
@@ -417,7 +417,7 @@ fn test_selection_bg_color_applied() {
     insta::assert_snapshot!(render_to_styled_string(&mut state, 28, 25), @"
      ≡[fg:111]1[fg:255]  ●[fg:245]0[fg:245]  ◎[fg:245]0[fg:245]  ◐[fg:245]0[fg:245]  ○[fg:245]1[fg:255]  ✕[fg:245]0[fg:245]
     ⓘ[fg:221]                        —[fg:252] ▾[fg:252]
-    p[fg:153]r[fg:153]o[fg:153]j[fg:153]e[fg:153]c[fg:153]t[fg:153]
+    ▾[fg:153] [fg:153]p[fg:153]r[fg:153]o[fg:153]j[fg:153]e[fg:153]c[fg:153]t[fg:153]
     ┃[fg:153,bg:239] [bg:239]○[fg:110,bg:239] [fg:173,bg:239]c[fg:173,bg:239]l[fg:173,bg:239]a[fg:173,bg:239]u[fg:173,bg:239]d[fg:173,bg:239]e[fg:173,bg:239] [bg:239] [bg:239] [bg:239] [bg:239] [bg:239] [bg:239] [bg:239] [bg:239] [bg:239] [bg:239] [bg:239] [bg:239] [bg:239] [bg:239] [bg:239] [bg:239] [bg:239] [bg:239]
        [fg:255] [fg:255]W[fg:255]a[fg:255]i[fg:255]t[fg:255]i[fg:255]n[fg:255]g[fg:255] [fg:255]f[fg:255]o[fg:255]r[fg:255] [fg:255]p[fg:255]r[fg:255]o[fg:255]m[fg:255]p[fg:255]t[fg:255]…[fg:255]
     ");
@@ -463,10 +463,10 @@ fn test_accent_vs_border_inactive_colors() {
     insta::assert_snapshot!(render_to_styled_string(&mut state, 28, 30), @"
      ≡[fg:111]2[fg:255]  ●[fg:245]1[fg:255]  ◎[fg:245]0[fg:245]  ◐[fg:245]0[fg:245]  ○[fg:245]1[fg:255]  ✕[fg:245]0[fg:245]
     ⓘ[fg:221]                        —[fg:252] ▾[fg:252]
-    f[fg:153]o[fg:153]c[fg:153]u[fg:153]s[fg:153]e[fg:153]d[fg:153]-[fg:153]r[fg:153]e[fg:153]p[fg:153]o[fg:153]
+    ▾[fg:153] [fg:153]f[fg:153]o[fg:153]c[fg:153]u[fg:153]s[fg:153]e[fg:153]d[fg:153]-[fg:153]r[fg:153]e[fg:153]p[fg:153]o[fg:153]
     ┃[fg:153,bg:239] [bg:239]●[fg:82,bg:239] [fg:173,bg:239]c[fg:173,bg:239]l[fg:173,bg:239]a[fg:173,bg:239]u[fg:173,bg:239]d[fg:173,bg:239]e[fg:173,bg:239] [bg:239] [bg:239] [bg:239] [bg:239] [bg:239] [bg:239] [bg:239] [bg:239] [bg:239] [bg:239] [bg:239] [bg:239] [bg:239] [bg:239] [bg:239] [bg:239] [bg:239] [bg:239]
 
-    u[fg:255]n[fg:255]f[fg:255]o[fg:255]c[fg:255]u[fg:255]s[fg:255]e[fg:255]d[fg:255]-[fg:255]r[fg:255]e[fg:255]p[fg:255]o[fg:255]
+    ▾[fg:255] [fg:255]u[fg:255]n[fg:255]f[fg:255]o[fg:255]c[fg:255]u[fg:255]s[fg:255]e[fg:255]d[fg:255]-[fg:255]r[fg:255]e[fg:255]p[fg:255]o[fg:255]
       ○[fg:110] [fg:141]c[fg:141]o[fg:141]d[fg:141]e[fg:141]x[fg:141]
        [fg:244] [fg:244]W[fg:244]a[fg:244]i[fg:244]t[fg:244]i[fg:244]n[fg:244]g[fg:244] [fg:244]f[fg:244]o[fg:244]r[fg:244] [fg:244]p[fg:244]r[fg:244]o[fg:244]m[fg:244]p[fg:244]t[fg:244]…[fg:244]
     ");
@@ -540,11 +540,11 @@ fn test_session_mode_header_accent_with_focused_process_pane() {
     insta::assert_snapshot!(render_to_styled_string(&mut state, 28, 30), @"
      ≡[fg:111]2[fg:255]  ●[fg:245]0[fg:245]  ◎[fg:245]0[fg:245]  ◐[fg:245]0[fg:245]  ○[fg:245]2[fg:255]  ✕[fg:245]0[fg:245]
     ⓘ[fg:221]                        —[fg:252] ▾[fg:252]
-    m[fg:153]a[fg:153]i[fg:153]n[fg:153]
+    ▾[fg:153] [fg:153]m[fg:153]a[fg:153]i[fg:153]n[fg:153]
       ○[fg:110] [fg:173]c[fg:173]l[fg:173]a[fg:173]u[fg:173]d[fg:173]e[fg:173]
        [fg:244] [fg:244]W[fg:244]a[fg:244]i[fg:244]t[fg:244]i[fg:244]n[fg:244]g[fg:244] [fg:244]f[fg:244]o[fg:244]r[fg:244] [fg:244]p[fg:244]r[fg:244]o[fg:244]m[fg:244]p[fg:244]t[fg:244]…[fg:244]
 
-    u[fg:255]n[fg:255]f[fg:255]o[fg:255]c[fg:255]u[fg:255]s[fg:255]e[fg:255]d[fg:255]
+    ▾[fg:255] [fg:255]u[fg:255]n[fg:255]f[fg:255]o[fg:255]c[fg:255]u[fg:255]s[fg:255]e[fg:255]d[fg:255]
       ○[fg:110] [fg:141]c[fg:141]o[fg:141]d[fg:141]e[fg:141]x[fg:141]
        [fg:244] [fg:244]W[fg:244]a[fg:244]i[fg:244]t[fg:244]i[fg:244]n[fg:244]g[fg:244] [fg:244]f[fg:244]o[fg:244]r[fg:244] [fg:244]p[fg:244]r[fg:244]o[fg:244]m[fg:244]p[fg:244]t[fg:244]…[fg:244]
     ");
@@ -606,7 +606,7 @@ fn test_session_mode_window_level_headers() {
     insta::assert_snapshot!(render_to_styled_string(&mut state, 28, 30), @"
      ≡[fg:111]2[fg:255]  ●[fg:245]0[fg:245]  ◎[fg:245]0[fg:245]  ◐[fg:245]0[fg:245]  ○[fg:245]2[fg:255]  ✕[fg:245]0[fg:245]
     ⓘ[fg:221]                        —[fg:252] ▾[fg:252]
-    m[fg:153]a[fg:153]i[fg:153]n[fg:153]
+    ▾[fg:153] [fg:153]m[fg:153]a[fg:153]i[fg:153]n[fg:153]
      [fg:189]0[fg:189]:[fg:189]a[fg:189]p[fg:189]i[fg:189]
     ┃[fg:153,bg:239] [bg:239]○[fg:110,bg:239] [fg:173,bg:239]c[fg:173,bg:239]l[fg:173,bg:239]a[fg:173,bg:239]u[fg:173,bg:239]d[fg:173,bg:239]e[fg:173,bg:239] [bg:239] [bg:239] [bg:239] [bg:239] [bg:239] [bg:239] [bg:239] [bg:239] [bg:239] [bg:239] [bg:239] [bg:239] [bg:239] [bg:239] [bg:239] [bg:239] [bg:239] [bg:239]
        [fg:255] [fg:255]W[fg:255]a[fg:255]i[fg:255]t[fg:255]i[fg:255]n[fg:255]g[fg:255] [fg:255]f[fg:255]o[fg:255]r[fg:255] [fg:255]p[fg:255]r[fg:255]o[fg:255]m[fg:255]p[fg:255]t[fg:255]…[fg:255]
@@ -670,7 +670,7 @@ fn test_repo_mode_window_level_headers() {
     insta::assert_snapshot!(render_to_styled_string(&mut state, 28, 30), @"
      ≡[fg:111]2[fg:255]  ●[fg:245]0[fg:245]  ◎[fg:245]0[fg:245]  ◐[fg:245]0[fg:245]  ○[fg:245]2[fg:255]  ✕[fg:245]0[fg:245]
     ⓘ[fg:221]                        —[fg:252] ▾[fg:252]
-    p[fg:153]r[fg:153]o[fg:153]j[fg:153]e[fg:153]c[fg:153]t[fg:153]
+    ▾[fg:153] [fg:153]p[fg:153]r[fg:153]o[fg:153]j[fg:153]e[fg:153]c[fg:153]t[fg:153]
      [fg:189]0[fg:189]:[fg:189]a[fg:189]p[fg:189]i[fg:189]
     ┃[fg:153,bg:239] [bg:239]○[fg:110,bg:239] [fg:173,bg:239]c[fg:173,bg:239]l[fg:173,bg:239]a[fg:173,bg:239]u[fg:173,bg:239]d[fg:173,bg:239]e[fg:173,bg:239] [bg:239] [bg:239] [bg:239] [bg:239] [bg:239] [bg:239] [bg:239] [bg:239] [bg:239] [bg:239] [bg:239] [bg:239] [bg:239] [bg:239] [bg:239] [bg:239] [bg:239] [bg:239]
        [fg:255] [fg:255]W[fg:255]a[fg:255]i[fg:255]t[fg:255]i[fg:255]n[fg:255]g[fg:255] [fg:255]f[fg:255]o[fg:255]r[fg:255] [fg:255]p[fg:255]r[fg:255]o[fg:255]m[fg:255]p[fg:255]t[fg:255]…[fg:255]
@@ -704,7 +704,7 @@ fn test_running_status_color_in_output() {
     insta::assert_snapshot!(render_to_styled_string(&mut state, 28, 25), @"
      ≡[fg:111]1[fg:255]  ●[fg:245]1[fg:255]  ◎[fg:245]0[fg:245]  ◐[fg:245]0[fg:245]  ○[fg:245]0[fg:245]  ✕[fg:245]0[fg:245]
     ⓘ[fg:221]                        —[fg:252] ▾[fg:252]
-    p[fg:153]r[fg:153]o[fg:153]j[fg:153]e[fg:153]c[fg:153]t[fg:153]
+    ▾[fg:153] [fg:153]p[fg:153]r[fg:153]o[fg:153]j[fg:153]e[fg:153]c[fg:153]t[fg:153]
     ┃[fg:153] ●[fg:82] [fg:173]c[fg:173]l[fg:173]a[fg:173]u[fg:173]d[fg:173]e[fg:173]
     ");
 }
@@ -731,7 +731,7 @@ fn test_waiting_status_color_in_output() {
     insta::assert_snapshot!(render_to_styled_string(&mut state, 28, 25), @"
      ≡[fg:111]1[fg:255]  ●[fg:245]0[fg:245]  ◎[fg:245]0[fg:245]  ◐[fg:245]1[fg:255]  ○[fg:245]0[fg:245]  ✕[fg:245]0[fg:245]
     ⓘ[fg:221]                        —[fg:252] ▾[fg:252]
-    p[fg:153]r[fg:153]o[fg:153]j[fg:153]e[fg:153]c[fg:153]t[fg:153]
+    ▾[fg:153] [fg:153]p[fg:153]r[fg:153]o[fg:153]j[fg:153]e[fg:153]c[fg:153]t[fg:153]
     ┃[fg:153] ◐[fg:221] [fg:173]c[fg:173]l[fg:173]a[fg:173]u[fg:173]d[fg:173]e[fg:173]
     ");
 }
@@ -758,7 +758,7 @@ fn test_error_status_color_in_output() {
     insta::assert_snapshot!(render_to_styled_string(&mut state, 28, 25), @"
      ≡[fg:111]1[fg:255]  ●[fg:245]0[fg:245]  ◎[fg:245]0[fg:245]  ◐[fg:245]0[fg:245]  ○[fg:245]0[fg:245]  ✕[fg:245]1[fg:255]
     ⓘ[fg:221]                        —[fg:252] ▾[fg:252]
-    p[fg:153]r[fg:153]o[fg:153]j[fg:153]e[fg:153]c[fg:153]t[fg:153]
+    ▾[fg:153] [fg:153]p[fg:153]r[fg:153]o[fg:153]j[fg:153]e[fg:153]c[fg:153]t[fg:153]
     ┃[fg:153] ✕[fg:167] [fg:173]c[fg:173]l[fg:173]a[fg:173]u[fg:173]d[fg:173]e[fg:173]
     ");
 }
@@ -785,7 +785,7 @@ fn test_idle_status_color_in_output() {
     insta::assert_snapshot!(render_to_styled_string(&mut state, 28, 25), @"
      ≡[fg:111]1[fg:255]  ●[fg:245]0[fg:245]  ◎[fg:245]0[fg:245]  ◐[fg:245]0[fg:245]  ○[fg:245]1[fg:255]  ✕[fg:245]0[fg:245]
     ⓘ[fg:221]                        —[fg:252] ▾[fg:252]
-    p[fg:153]r[fg:153]o[fg:153]j[fg:153]e[fg:153]c[fg:153]t[fg:153]
+    ▾[fg:153] [fg:153]p[fg:153]r[fg:153]o[fg:153]j[fg:153]e[fg:153]c[fg:153]t[fg:153]
     ┃[fg:153] ○[fg:110] [fg:173]c[fg:173]l[fg:173]a[fg:173]u[fg:173]d[fg:173]e[fg:173]
        [fg:255] [fg:255]W[fg:255]a[fg:255]i[fg:255]t[fg:255]i[fg:255]n[fg:255]g[fg:255] [fg:255]f[fg:255]o[fg:255]r[fg:255] [fg:255]p[fg:255]r[fg:255]o[fg:255]m[fg:255]p[fg:255]t[fg:255]…[fg:255]
     ");
