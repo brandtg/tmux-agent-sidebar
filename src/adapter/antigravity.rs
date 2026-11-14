@@ -232,7 +232,7 @@ fn transcript_prompt(input: &Value) -> String {
 /// The final assistant response, from the last `PLANNER_RESPONSE` step with
 /// content. `GENERIC` steps are tool-result renderings, and tool-call turns
 /// carry `tool_calls` without content — both are skipped, leaving the last
-/// visible model message, which is what the `▷ ...` response preview shows.
+/// visible model message, which is what the response preview shows.
 fn transcript_response(input: &Value) -> String {
     last_step_content(
         &transcript_tail(json_str(input, "transcriptPath")),

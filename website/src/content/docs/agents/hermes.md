@@ -14,7 +14,7 @@ with a few Hermes-specific gaps.
 - Live status: `pre_llm_call` marks the pane running, `post_llm_call` marks it
   idle (Hermes' `post_llm_call` is the turn-end hook)
 - Prompt text from `pre_llm_call`'s `user_message`
-- Response preview (`▷ ...`) from `post_llm_call`'s `assistant_response`
+- Response preview from `post_llm_call`'s `assistant_response`
 - Elapsed time for the current turn
 
 ### Attention cues

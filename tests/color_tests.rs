@@ -281,7 +281,7 @@ fn test_subagent_line_uses_subagent_color() {
 }
 
 #[test]
-fn test_response_arrow_uses_response_arrow_color() {
+fn test_response_renders_plain_gray() {
     let mut pane = make_pane(AgentType::Claude, PaneStatus::Idle);
     pane.pane_active = false;
     pane.prompt = "Task completed successfully".into();
@@ -302,14 +302,15 @@ fn test_response_arrow_uses_response_arrow_color() {
     state.focus_state.sidebar_focused = false;
 
     // Styled snapshot locks in:
-    //   • response_arrow color (fg:81) + bold on the ▷ glyph
-    //   • text_active color (fg:255) on the focused response text
+    //   • the response renders as plain muted-gray prose — no glyph, no
+    //     accent; whether the text needs attention rides the status
+    //     circle's done pulse, not a marker on the text row
     insta::assert_snapshot!(render_to_styled_string(&mut state, 40, 27), @"
      ≡[fg:111]1[fg:255]  ●[fg:245]0[fg:245]  ◎[fg:245]0[fg:245]  ◐[fg:245]0[fg:245]  ○[fg:245]1[fg:255]  ✕[fg:245]0[fg:245]
     ⓘ[fg:221]                                    —[fg:252] ▾[fg:252]
     p[fg:153]r[fg:153]o[fg:153]j[fg:153]e[fg:153]c[fg:153]t[fg:153]
     ┃[fg:153] ○[fg:110] [fg:173]c[fg:173]l[fg:173]a[fg:173]u[fg:173]d[fg:173]e[fg:173]
-      ▷[fg:81,bold] [fg:81,bold]T[fg:244]a[fg:244]s[fg:244]k[fg:244] [fg:244]c[fg:244]o[fg:244]m[fg:244]p[fg:244]l[fg:244]e[fg:244]t[fg:244]e[fg:244]d[fg:244] [fg:244]s[fg:244]u[fg:244]c[fg:244]c[fg:244]e[fg:244]s[fg:244]s[fg:244]f[fg:244]u[fg:244]l[fg:244]l[fg:244]y[fg:244]
+       [fg:244] [fg:244]T[fg:244]a[fg:244]s[fg:244]k[fg:244] [fg:244]c[fg:244]o[fg:244]m[fg:244]p[fg:244]l[fg:244]e[fg:244]t[fg:244]e[fg:244]d[fg:244] [fg:244]s[fg:244]u[fg:244]c[fg:244]c[fg:244]e[fg:244]s[fg:244]s[fg:244]f[fg:244]u[fg:244]l[fg:244]l[fg:244]y[fg:244]
     ");
 }
 

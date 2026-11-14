@@ -11,7 +11,7 @@ Claude Code is the reference agent for the sidebar — every feature is wired th
 
 - Live status (`running` / `background` / `waiting` / `idle` / `error`) from `SessionStart` / `UserPromptSubmit` / `Stop`
 - Prompt text from `UserPromptSubmit`
-- Response preview (`▷ …`) from `Stop`
+- Response preview from `Stop`
 - Elapsed time since the last prompt
 
 ### Attention cues
