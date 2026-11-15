@@ -543,19 +543,23 @@ fn render_flash_banner_into(frame: &mut Frame, state: &mut AppState, area: Rect)
 }
 
 pub fn draw_agents(frame: &mut Frame, state: &mut AppState, area: Rect) {
-    let todo_height = todo::panel_height(state, area);
-    let layout = PaneLayout::compute_with_todo(area, todo_height);
-    state.layout.todo_area = layout.todo_area;
-    render_filter_bar_into(frame, state, layout.filter_area);
-    render_secondary_header_into(frame, state, layout.secondary_area);
-
+    // Collect the agent rows up front: the TODO panel sizes itself to
+    // the rows the agent list doesn't use, so it needs the rendered line
+    // count before the layout is computed. Width drives the row count,
+    // not height, so `area.width` matches the later `list_area`.
     let row_collector::CollectedRows {
         lines,
         line_to_row,
         pending_spawn,
         pending_remove,
         pending_header,
-    } = row_collector::collect(state, layout.list_area.width);
+    } = row_collector::collect(state, area.width);
+    let todo_height = todo::panel_height(state, area, lines.len());
+    let layout = PaneLayout::compute_with_todo(area, todo_height);
+    state.layout.todo_area = layout.todo_area;
+    render_filter_bar_into(frame, state, layout.filter_area);
+    render_secondary_header_into(frame, state, layout.secondary_area);
+
     state.layout.line_to_row = line_to_row;
     let scroll_offset = compute_scroll_offset(state, lines.len(), layout.list_area);
     click_targets::materialize(
