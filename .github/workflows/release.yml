@@ -61,55 +61,119 @@ jobs:
               ;;
           esac
           echo "tag=v$new" >> "$GITHUB_OUTPUT"
+          echo "version=$new" >> "$GITHUB_OUTPUT"
           echo "release plan: $current -> $new (tag v$new)"
 
-      # Resume semantics: a tag that already exists and points at this ref's
-      # HEAD means a previous run already bumped and tagged; skip the
-      # mutations and go straight to the build. A tag pointing anywhere else
-      # is a conflict (delete it or bump past it).
+      # Resume semantics, three modes:
+      # - full: the tag already exists and points at this ref's HEAD — a
+      #   previous run finished the mutations; skip straight to the build.
+      # - landed: the base branch already carries the planned version — a
+      #   previous run's bump PR merged but the tag never went up; skip the
+      #   bump and tag the base tip.
+      # - fresh: do the bump, land it via PR, then tag.
+      # A tag pointing anywhere else than HEAD is a hard conflict.
       - id: resume
-        name: Check for an existing tag
+        name: Check for an existing tag or landed bump
         env:
           TAG: ${{ steps.plan.outputs.tag }}
+          VERSION: ${{ steps.plan.outputs.version }}
+          BASE: ${{ github.ref_name }}
         run: |
           set -euo pipefail
-          sha="$(git ls-remote origin "refs/tags/$TAG" | awk -F'\t' -v t="refs/tags/$TAG" '$2 == t {s = $1} $2 == t "^{}" {s = $1} END {print s}')"
-          if [ -n "$sha" ] && [ "$sha" != "$GITHUB_SHA" ]; then
-            echo "::error::tag $TAG already exists on origin at ${sha:0:7}, not this ref's HEAD (${GITHUB_SHA:0:7})"
-            exit 1
-          fi
-          if [ -n "$sha" ]; then
-            echo "tag $TAG already exists at ${sha:0:7}; resuming the release"
-            echo "resume=true" >> "$GITHUB_OUTPUT"
+          mode="fresh"
+          tag_sha="$(git ls-remote origin "refs/tags/$TAG" | awk -F'\t' -v t="refs/tags/$TAG" '$2 == t {s = $1} $2 == t "^{}" {s = $1} END {print s}')"
+          if [ -n "$tag_sha" ]; then
+            if [ "$tag_sha" != "$GITHUB_SHA" ]; then
+              echo "::error::tag $TAG already exists on origin at ${tag_sha:0:7}, not this ref's HEAD (${GITHUB_SHA:0:7})"
+              exit 1
+            fi
+            mode="full"
+            echo "tag $TAG already exists at ${tag_sha:0:7}; resuming the release"
           else
-            echo "resume=false" >> "$GITHUB_OUTPUT"
+            base_version="$(git show "origin/$BASE":Cargo.toml | sed -n 's/^version = "\(.*\)"/\1/p')"
+            if [ "$base_version" = "$VERSION" ]; then
+              mode="landed"
+              echo "$BASE already carries $VERSION; skipping the bump and tagging its tip"
+            fi
           fi
+          echo "mode=$mode" >> "$GITHUB_OUTPUT"
 
       - name: Bump the version
-        if: steps.resume.outputs.resume != 'true' && inputs.part != 'none'
+        if: steps.resume.outputs.mode == 'fresh' && inputs.part != 'none'
         run: make bump part=${{ inputs.part }}
 
       - name: Run checks
-        if: steps.resume.outputs.resume != 'true' && inputs.part != 'none'
+        if: steps.resume.outputs.mode == 'fresh' && inputs.part != 'none'
         run: make ci
 
-      - name: Commit and push the bump
-        if: steps.resume.outputs.resume != 'true' && inputs.part != 'none'
-        run: |
-          set -euo pipefail
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add Cargo.toml Cargo.lock .claude-plugin/plugin.json
-          git commit -m "Bump version to $(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml)"
-          git push origin "HEAD:$GITHUB_REF_NAME"
-
-      - name: Tag and push
-        if: steps.resume.outputs.resume != 'true'
+      # Land the bump through its own pull request: the base branch's
+      # ruleset requires changes to arrive via PR, and a merge is exactly
+      # that — no bypass actors needed. Requires the repo setting
+      # "Allow GitHub Actions to create and approve pull requests".
+      # If the token can't merge (protection added later), it waits for a
+      # manual merge; a re-run of the workflow picks up from there.
+      - name: Land the bump through a PR
+        if: steps.resume.outputs.mode == 'fresh' && inputs.part != 'none'
         env:
+          GH_TOKEN: ${{ github.token }}
+          BRANCH: release-bump/${{ steps.plan.outputs.tag }}
+          BASE: ${{ github.ref_name }}
           TAG: ${{ steps.plan.outputs.tag }}
         run: |
           set -euo pipefail
-          git tag "$TAG"
+          version="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml)"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -b "$BRANCH"
+          git add Cargo.toml Cargo.lock .claude-plugin/plugin.json
+          git commit -m "Bump version to $version"
+          git push --force origin "$BRANCH"
+          number="$(gh pr list --repo "$GITHUB_REPOSITORY" --head "$BRANCH" --base "$BASE" --json number --jq '.[0].number // empty')"
+          if [ -z "$number" ]; then
+            url="$(gh pr create --repo "$GITHUB_REPOSITORY" \
+              --base "$BASE" --head "$BRANCH" \
+              --title "Bump version to $version" \
+              --body "Automatic version bump for the $TAG release, opened by the Release workflow.")"
+            number="${url##*/}"
+          fi
+          echo "bump PR: #$number"
+          if ! merge_err="$(gh pr merge "$number" --repo "$GITHUB_REPOSITORY" --squash 2>&1)"; then
+            echo "::notice::auto-merge failed ($merge_err); waiting up to 15 min for a manual merge of ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/pull/$number"
+          fi
+          for i in $(seq 1 60); do
+            state="$(gh pr view "$number" --repo "$GITHUB_REPOSITORY" --json state --jq .state)"
+            [ "$state" = "MERGED" ] && break
+            sleep 15
+          done
+          if [ "$(gh pr view "$number" --repo "$GITHUB_REPOSITORY" --json state --jq .state)" != "MERGED" ]; then
+            echo "::error::PR #$number never merged. Merge it, then re-run this workflow — the landed bump is detected and the release resumes."
+            exit 1
+          fi
+          git push origin --delete "$BRANCH" 2>/dev/null || true
+
+      - name: Tag and push
+        if: steps.resume.outputs.mode != 'full'
+        env:
+          TAG: ${{ steps.plan.outputs.tag }}
+          VERSION: ${{ steps.plan.outputs.version }}
+          BASE: ${{ github.ref_name }}
+          PART: ${{ inputs.part }}
+        run: |
+          set -euo pipefail
+          # No bump: tag exactly what was dispatched. Bump: tag the base
+          # tip the PR merge just landed (or an earlier run landed).
+          if [ "$PART" = "none" ]; then
+            sha="$GITHUB_SHA"
+          else
+            git fetch origin "$BASE"
+            sha="$(git rev-parse "origin/$BASE")"
+          fi
+          tagged="$(git show "$sha":Cargo.toml | sed -n 's/^version = "\(.*\)"/\1/p')"
+          if [ "$tagged" != "$VERSION" ]; then
+            echo "::error::$sha carries Cargo.toml version $tagged, expected $VERSION — another push landed mid-release; re-run the workflow"
+            exit 1
+          fi
+          git tag "$TAG" "$sha"
           git push origin "$TAG"
 
   build:
