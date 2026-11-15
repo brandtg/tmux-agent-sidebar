@@ -11,11 +11,13 @@ use crate::state::{AppState, Focus, TodoRowTarget};
 use crate::ui::colors::shade_color;
 use crate::ui::text::{display_width, truncate_to_width, wrap_flow, wrap_flow_offsets};
 
-/// Maximum rows the panel may occupy, including its header. Kept small so
-/// the agent list keeps most of the sidebar even on a short terminal.
-const MAX_PANEL_HEIGHT: u16 = 10;
-/// Tighter cap for the narrow popup viewport (phones).
-const POPUP_MAX_PANEL_HEIGHT: u16 = 6;
+/// Baseline rows the panel occupies when the agent list leaves no spare
+/// space, including its header. The panel grows past this into whatever
+/// rows the agent list isn't using (see [`panel_height`]), so this only
+/// bites on short terminals where the agents fill the sidebar.
+const BASE_PANEL_HEIGHT: u16 = 10;
+/// Tighter baseline for the narrow popup viewport (phones).
+const POPUP_BASE_PANEL_HEIGHT: u16 = 6;
 /// Columns used by the `[ ]` / `[✓]` marker plus one separating space.
 const CHECKBOX_WIDTH: usize = 4;
 
@@ -66,9 +68,16 @@ fn wrap_with_cursor(
     result
 }
 
-/// Rows the panel needs, clamped to its cap and to the space left after
-/// the two header rows and at least one agent row.
-pub(super) fn panel_height(state: &AppState, area: Rect) -> u16 {
+/// Rows the panel needs, clamped to what the agent list can spare.
+///
+/// The panel grows with its content, but the sessions/agents take
+/// precedence: it may only expand into rows the agent list isn't using
+/// (`agent_rows` is the agent list's rendered line count). Once the
+/// agent list fills its space the panel keeps its baseline window and
+/// scrolls inside it — the header stays pinned and the header indicator
+/// reports what is hidden. The final clamp always leaves the two header
+/// rows plus at least one agent row.
+pub(super) fn panel_height(state: &AppState, area: Rect, agent_rows: usize) -> u16 {
     if !state.todos.visible {
         return 0;
     }
@@ -100,15 +109,27 @@ pub(super) fn panel_height(state: &AppState, area: Rect) -> u16 {
         rows += 1;
     }
 
-    let cap = if state.popup_mode {
-        POPUP_MAX_PANEL_HEIGHT
+    let baseline = if state.popup_mode {
+        POPUP_BASE_PANEL_HEIGHT
     } else {
-        MAX_PANEL_HEIGHT
+        BASE_PANEL_HEIGHT
     };
-    (rows as u16).min(cap).min(area.height.saturating_sub(3))
+    // Rows the agent list doesn't use: the panel may expand into them,
+    // but never into a row an agent occupies. When the agents alone
+    // overflow the sidebar there is no spare space and the panel keeps
+    // its baseline window.
+    let spare = area
+        .height
+        .saturating_sub(agent_rows.min(area.height as usize) as u16)
+        .saturating_sub(2);
+    let room = baseline.max(spare);
+    (rows as u16).min(room).min(area.height.saturating_sub(3))
 }
 
 /// Render the TODO panel into `area` (already sized by [`panel_height`]).
+///
+/// The header row is pinned to the top of the panel and always visible;
+/// the items, error line and add line scroll in the rows beneath it.
 pub(super) fn render_todo_panel(frame: &mut Frame, state: &mut AppState, area: Rect) {
     state.layout.todo_row_targets.clear();
     state.layout.todo_input_rect = None;
@@ -152,31 +173,9 @@ pub(super) fn render_todo_panel(frame: &mut Frame, state: &mut AppState, area: R
 
     let mut lines: Vec<Line<'static>> = Vec::new();
     // (item index, first line index, last line index) for click targets
-    // and selection auto-scroll.
+    // and selection auto-scroll. Indices are relative to the item area
+    // beneath the pinned header.
     let mut ranges: Vec<(usize, usize, usize)> = Vec::new();
-
-    // Header: the separator carries the counts. At rest it sinks to the
-    // border gray; while the panel owns the keyboard it lights up in the
-    // accent so it is obvious whether the agent list or the TODO list is
-    // active.
-    let header_style = if panel_focused {
-        Style::default()
-            .fg(theme.accent)
-            .add_modifier(Modifier::BOLD)
-    } else {
-        chrome
-    };
-    let header = format!(
-        "─ □ todos · {}/{}",
-        state.todos.open_count(),
-        state.todos.total_count()
-    );
-    let header = truncate_to_width(&header, width);
-    let fill = width.saturating_sub(display_width(&header));
-    lines.push(Line::from(vec![
-        Span::styled(header, header_style),
-        Span::styled("─".repeat(fill), header_style),
-    ]));
 
     if let Some(err) = &state.todos.error {
         lines.push(Line::from(Span::styled(
@@ -318,33 +317,89 @@ pub(super) fn render_todo_panel(frame: &mut Frame, state: &mut AppState, area: R
         lines.push(Line::from(spans));
     }
 
-    let visible_height = area.height as usize;
+    // The items viewport is everything below the pinned header row.
+    let items_area = Rect {
+        x: area.x,
+        y: area.y + 1,
+        width: area.width,
+        height: area.height.saturating_sub(1),
+    };
+    let visible_height = items_area.height as usize;
     state.scrolls.todos.total_lines = lines.len();
     state.scrolls.todos.visible_height = visible_height;
     state.scrolls.todos.scroll(0);
 
-    if panel_focused && let Some((_, start, end)) = ranges.iter().find(|(i, _, _)| *i == selected) {
-        let offset = state.scrolls.todos.offset;
-        if *start < offset {
-            state.scrolls.todos.offset = *start;
-        } else if *end >= offset + visible_height {
-            state.scrolls.todos.offset = (end + 1).saturating_sub(visible_height);
+    if visible_height > 0 {
+        if panel_focused
+            && let Some((_, start, end)) = ranges.iter().find(|(i, _, _)| *i == selected)
+        {
+            let offset = state.scrolls.todos.offset;
+            if *start < offset {
+                state.scrolls.todos.offset = *start;
+            } else if *end >= offset + visible_height {
+                state.scrolls.todos.offset = (end + 1).saturating_sub(visible_height);
+            }
         }
-    }
-    // Keep the add line visible while typing.
-    if input_line.is_some() && lines.len() > state.scrolls.todos.offset + visible_height {
-        state.scrolls.todos.offset = lines.len() - visible_height;
+        // Keep the add line visible while typing.
+        if input_line.is_some() && lines.len() > state.scrolls.todos.offset + visible_height {
+            state.scrolls.todos.offset = lines.len() - visible_height;
+        }
     }
 
     let offset = state.scrolls.todos.offset;
-    let paragraph = Paragraph::new(lines).scroll((offset as u16, 0));
-    frame.render_widget(paragraph, area);
+
+    // Header: the separator carries the counts. At rest it sinks to the
+    // border gray; while the panel owns the keyboard it lights up in the
+    // accent so it is obvious whether the agent list or the TODO list is
+    // active. Built last so it can carry the scroll indicator — the one
+    // row that never scrolls away.
+    let header_style = if panel_focused {
+        Style::default()
+            .fg(theme.accent)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        chrome
+    };
+    let header = format!(
+        "─ □ todos · {}/{}",
+        state.todos.open_count(),
+        state.todos.total_count()
+    );
+    let header = truncate_to_width(&header, width);
+    let mut spans = vec![Span::styled(header.clone(), header_style)];
+    let fill = width.saturating_sub(display_width(&header));
+    let indicator = scroll_indicator(lines.len(), visible_height, offset);
+    let indicator_width = display_width(&indicator);
+    if !indicator.is_empty() && indicator_width < fill {
+        // Right-align the indicator inside the separator fill.
+        spans.push(Span::styled(
+            "─".repeat(fill - indicator_width - 1),
+            header_style,
+        ));
+        spans.push(Span::styled(format!(" {indicator}"), header_style));
+    } else {
+        spans.push(Span::styled("─".repeat(fill), header_style));
+    }
+    frame.render_widget(
+        Paragraph::new(Line::from(spans)),
+        Rect {
+            x: area.x,
+            y: area.y,
+            width: area.width,
+            height: 1,
+        },
+    );
+
+    if visible_height > 0 {
+        let paragraph = Paragraph::new(lines).scroll((offset as u16, 0));
+        frame.render_widget(paragraph, items_area);
+    }
 
     // Click targets, clipped to the visible window. The checkbox target
     // covers the marker column of the item's first wrapped line only; a
     // scrolled-away first line (or a continuation line) leaves the whole
     // visible rect as the text target, where a click selects instead of
-    // toggling.
+    // toggling. Rows are offset one below the pinned header.
     for (index, start, end) in ranges {
         let first = start.max(offset);
         let last = end.min(offset + visible_height.saturating_sub(1));
@@ -354,14 +409,14 @@ pub(super) fn render_todo_panel(frame: &mut Frame, state: &mut AppState, area: R
         state.layout.todo_row_targets.push(TodoRowTarget {
             rect: Rect::new(
                 area.x,
-                area.y + (first - offset) as u16,
+                area.y + 1 + (first - offset) as u16,
                 area.width,
                 (last - first + 1) as u16,
             ),
             checkbox_rect: (start >= offset).then(|| {
                 Rect::new(
                     area.x,
-                    area.y + (start - offset) as u16,
+                    area.y + 1 + (start - offset) as u16,
                     CHECKBOX_WIDTH as u16,
                     1,
                 )
@@ -376,11 +431,30 @@ pub(super) fn render_todo_panel(frame: &mut Frame, state: &mut AppState, area: R
     {
         state.layout.todo_input_rect = Some(Rect::new(
             area.x,
-            area.y + (index - offset) as u16,
+            area.y + 1 + (index - offset) as u16,
             area.width,
             1,
         ));
     }
+}
+
+/// What the scroll hides, as a compact directional count: `1 more ↓` at
+/// the top, `↑1` at the bottom, `↑1 · 1 more ↓` in between. Empty when
+/// everything fits, so a list that needs no scrolling stays clean.
+fn scroll_indicator(total_lines: usize, visible_height: usize, offset: usize) -> String {
+    if total_lines <= visible_height {
+        return String::new();
+    }
+    let above = offset;
+    let below = total_lines.saturating_sub(offset + visible_height);
+    let mut parts: Vec<String> = Vec::new();
+    if above > 0 {
+        parts.push(format!("↑{above}"));
+    }
+    if below > 0 {
+        parts.push(format!("{below} more ↓"));
+    }
+    parts.join(" · ")
 }
 
 #[cfg(test)]
@@ -489,7 +563,7 @@ mod tests {
     #[test]
     fn hidden_panel_needs_no_rows() {
         let state = AppState::new("%99".into());
-        assert_eq!(panel_height(&state, Rect::new(0, 0, 40, 20)), 0);
+        assert_eq!(panel_height(&state, Rect::new(0, 0, 40, 20), 0), 0);
     }
 
     #[test]
@@ -634,7 +708,7 @@ mod tests {
         // 8 columns − 4 checkbox = 4 text columns: "abcd" is exactly full,
         // so the end-of-buffer cursor glyph spills onto its own row.
         state.begin_todo_edit();
-        assert_eq!(panel_height(&state, Rect::new(0, 0, 8, 20)), 3);
+        assert_eq!(panel_height(&state, Rect::new(0, 0, 8, 20), 0), 3);
     }
 
     #[test]
@@ -649,7 +723,7 @@ mod tests {
         // exactly full line needs no spill row.
         state.begin_todo_edit();
         state.todo_edit_cursor_move(-2);
-        assert_eq!(panel_height(&state, Rect::new(0, 0, 8, 20)), 2);
+        assert_eq!(panel_height(&state, Rect::new(0, 0, 8, 20), 0), 2);
     }
 
     #[test]
@@ -727,16 +801,123 @@ mod tests {
         ");
     }
 
+    // ─── Pinned header + scroll indicator ────────────────────────────
+    // The header row never scrolls away: a list longer than the panel
+    // scrolls beneath it, and the header reports what is hidden.
+
+    #[test]
+    fn scrolled_list_pins_the_header_and_counts_what_is_hidden() {
+        // 4 item lines under the header in a 4-row panel: 3 rows of
+        // items are visible, one is hidden below.
+        let mut state = todo_state();
+        state.global.todo_hide_completed = false;
+        state.todos.selected = 0;
+        let output = render_panel(&mut state, 40, 4);
+        insta::assert_snapshot!(output, @"
+        ─ □ todos · 2/3──────────────── 1 more ↓
+        [ ] Buy milk
+        [ ] Read the tmux changelog and try the
+            new paste behaviour
+        ");
+    }
+
+    #[test]
+    fn scrolled_to_the_end_shows_what_is_hidden_above() {
+        let mut state = todo_state();
+        state.global.todo_hide_completed = false;
+        state.todos.selected = 1; // the done item, auto-scrolled into view
+        let output = render_panel(&mut state, 40, 4);
+        insta::assert_snapshot!(output, @"
+        ─ □ todos · 2/3────────────────────── ↑1
+        [ ] Read the tmux changelog and try the
+            new paste behaviour
+        [✓] Send the invoice
+        ");
+    }
+
+    #[test]
+    fn mid_scroll_shows_hidden_lines_in_both_directions() {
+        let mut state = todo_state();
+        state.todos.items.push(TodoItem {
+            text: "Fourth".into(),
+            done: false,
+        });
+        state.global.todo_hide_completed = false;
+        // Open items first, completed last: selecting the fourth item
+        // (just above the completed block) leaves lines hidden both
+        // above and below the viewport.
+        state.todos.selected = 3;
+        let output = render_panel(&mut state, 40, 4);
+        insta::assert_snapshot!(output, @"
+        ─ □ todos · 3/4─────────── ↑1 · 1 more ↓
+        [ ] Read the tmux changelog and try the
+            new paste behaviour
+        [ ] Fourth
+        ");
+    }
+
     #[test]
     fn panel_height_ignores_the_completed_count() {
         let mut state = todo_state();
         // Expanded: header + 1 + 2 (wrapped open item) + 1 (done item).
         // No divider row, no resting add row.
         state.global.todo_hide_completed = false;
-        assert_eq!(panel_height(&state, Rect::new(0, 0, 40, 20)), 5);
+        assert_eq!(panel_height(&state, Rect::new(0, 0, 40, 20), 0), 5);
         // Collapsed: header + 1 + 2.
         state.global.todo_hide_completed = true;
-        assert_eq!(panel_height(&state, Rect::new(0, 0, 40, 20)), 4);
+        assert_eq!(panel_height(&state, Rect::new(0, 0, 40, 20), 0), 4);
+    }
+
+    #[test]
+    fn panel_height_expands_into_rows_the_agent_list_does_not_use() {
+        let mut state = AppState::new("%99".into());
+        state.todos.visible = true;
+        state.global.todo_hide_completed = false;
+        // 30 single-line items on a 50-row sidebar with 3 agent rows:
+        // the agents only need 3 of the 48 free rows, so the panel takes
+        // exactly what its content needs (header + 30 items) — no
+        // scrolling.
+        state.todos.items = (0..30)
+            .map(|i| TodoItem {
+                text: format!("task {i}"),
+                done: false,
+            })
+            .collect();
+        assert_eq!(panel_height(&state, Rect::new(0, 0, 40, 50), 3), 31);
+
+        // 60 rows of content overflow the 45 spare rows: the panel stops
+        // right where growing one more row would cover the first agent
+        // (50 − 2 headers − 3 agents) and scrolls inside that instead.
+        state.todos.items = (0..60)
+            .map(|i| TodoItem {
+                text: format!("task {i}"),
+                done: false,
+            })
+            .collect();
+        assert_eq!(panel_height(&state, Rect::new(0, 0, 40, 50), 3), 45);
+    }
+
+    #[test]
+    fn panel_height_keeps_its_baseline_when_agents_fill_the_sidebar() {
+        let mut state = AppState::new("%99".into());
+        state.todos.visible = true;
+        state.global.todo_hide_completed = false;
+        state.todos.items = (0..30)
+            .map(|i| TodoItem {
+                text: format!("task {i}"),
+                done: false,
+            })
+            .collect();
+        // Agents alone need more rows than the sidebar has: no spare
+        // space, so the panel keeps its baseline window and scrolls
+        // inside it.
+        assert_eq!(panel_height(&state, Rect::new(0, 0, 40, 20), 25), 10);
+        // A tiny sidebar still reserves the two header rows plus one
+        // agent row before the panel gets anything.
+        assert_eq!(panel_height(&state, Rect::new(0, 0, 40, 6), 25), 3);
+        // Zero agents (empty list) leaves the panel the whole sidebar
+        // minus the two header rows and one spare agent row.
+        assert_eq!(panel_height(&state, Rect::new(0, 0, 40, 20), 0), 17);
     }
 
     #[test]
