@@ -66,13 +66,15 @@ jobs:
           echo "release plan: $current -> $new (tag v$new)"
 
       # Resume semantics, three modes:
-      # - full: the tag already exists and points at this ref's HEAD — a
+      # - full: the tag already exists and carries the planned version — a
       #   previous run finished the mutations; skip straight to the build.
+      #   The tag may point below the base tip (the base can move while a
+      #   failed build is being retried); the build checks out the tag, so
+      #   that is fine. A tag carrying the WRONG version is a hard error.
       # - landed: the base branch already carries the planned version — a
       #   previous run's bump PR merged but the tag never went up; skip the
       #   bump and tag the base tip.
       # - fresh: do the bump, land it via PR, then tag.
-      # A tag pointing anywhere else than HEAD is a hard conflict.
       - id: resume
         name: Check for an existing tag or landed bump
         env:
@@ -85,8 +87,11 @@ jobs:
           tag_sha="$(git ls-remote origin "refs/tags/$TAG" | awk -F'\t' -v t="refs/tags/$TAG" '$2 == t {s = $1} $2 == t "^{}" {s = $1} END {print s}')"
           if [ -n "$tag_sha" ]; then
             if [ "$tag_sha" != "$GITHUB_SHA" ]; then
-              echo "::error::tag $TAG already exists on origin at ${tag_sha:0:7}, not this ref's HEAD (${GITHUB_SHA:0:7})"
-              exit 1
+              tagged_version="$(git show "$TAG":Cargo.toml | sed -n 's/^version = "\(.*\)"/\1/p')"
+              if [ "$tagged_version" != "$VERSION" ]; then
+                echo "::error::tag $TAG exists on origin at ${tag_sha:0:7} carrying version $tagged_version, expected $VERSION — pick a new version or delete the tag"
+                exit 1
+              fi
             fi
             mode="full"
             echo "tag $TAG already exists at ${tag_sha:0:7}; resuming the release"
