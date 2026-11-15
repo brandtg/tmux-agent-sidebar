@@ -192,6 +192,19 @@ impl AppState {
         // left instead of the pane being activated.
         self.focus_state.focused_pane_id = Some(target_pane_id.clone());
         self.focus_state.proxy_focused_pane_id = None;
+        // The jump always moves tmux focus off the sidebar pane, so drop
+        // the focus flag the same frame instead of waiting for the next
+        // snapshot to report it. The selection background is gated on
+        // this flag: without the optimistic clear it lingers on the
+        // cursor row for the snapshot latency (hundreds of ms under
+        // hook-event load) — and during that window a signal-driven
+        // refresh can drag it to a different agent via the shared-cursor
+        // reload. Popup mode is excluded: its apply path forces the flag
+        // true (the popup holds keyboard focus) and its context
+        // selection already ran at setup.
+        if !self.popup_mode {
+            self.focus_state.sidebar_focused = false;
+        }
         tmux::select_pane(&target_pane_id);
 
         // The jump may land on a window that has no sidebar of its own —
@@ -430,6 +443,72 @@ mod tests {
         assert!(state.move_pane_selection(1));
         assert_eq!(state.global.selected_pane_row, 1);
         assert!(!state.move_pane_selection(5));
+    }
+
+    // ─── activate_selected_pane ──────────────────────────────────────
+
+    #[test]
+    fn activate_selected_pane_clears_sidebar_focus_the_same_frame() {
+        let _tmux_down = crate::tmux::test_fail_tmux::install();
+        let mut state = AppState::new("%99".into());
+        state.repo_groups = vec![RepoGroup {
+            name: "alpha".into(),
+            has_focus: true,
+            panes: vec![
+                (test_pane("%1"), PaneGitInfo::default()),
+                (test_pane("%2"), PaneGitInfo::default()),
+            ],
+        }];
+        state.layout.pane_row_targets = vec![
+            RowTarget {
+                pane_id: "%1".into(),
+                is_window: false,
+            },
+            RowTarget {
+                pane_id: "%2".into(),
+                is_window: false,
+            },
+        ];
+        state.global.selected_pane_row = 1;
+        state.focus_state.sidebar_focused = true;
+
+        state.activate_selected_pane();
+
+        assert_eq!(
+            state.focus_state.focused_pane_id.as_deref(),
+            Some("%2"),
+            "the jump still names the target pane optimistically"
+        );
+        assert!(
+            !state.focus_state.sidebar_focused,
+            "the jump moves tmux focus off the sidebar pane, so the flag \
+             must drop the same frame — the selection background is gated \
+             on it and would otherwise linger until the next snapshot"
+        );
+    }
+
+    #[test]
+    fn activate_selected_pane_keeps_the_forced_focus_flag_in_popup_mode() {
+        let _tmux_down = crate::tmux::test_fail_tmux::install();
+        let mut state = AppState::new("%99".into());
+        state.popup_mode = true;
+        state.repo_groups = vec![RepoGroup {
+            name: "alpha".into(),
+            has_focus: true,
+            panes: vec![(test_pane("%1"), PaneGitInfo::default())],
+        }];
+        state.layout.pane_row_targets = vec![RowTarget {
+            pane_id: "%1".into(),
+            is_window: false,
+        }];
+        state.global.selected_pane_row = 0;
+        // Popup mode forces the flag true on every apply; the jump path
+        // must not fight that.
+        state.focus_state.sidebar_focused = true;
+
+        state.activate_selected_pane();
+
+        assert!(state.focus_state.sidebar_focused);
     }
 
     // ─── toggle_selected_flag ────────────────────────────────────────
