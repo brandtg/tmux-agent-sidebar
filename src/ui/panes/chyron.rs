@@ -6,16 +6,16 @@ use ratatui::{
 use crate::state::{AppState, ChyronKind, ChyronPhase, RepoFilter};
 use crate::tmux::PaneStatus;
 
-use crate::ui::text::{display_width, truncate_to_width};
+use crate::ui::text::display_width;
 
-/// Render the chyron row: the most recent agent event, named in its own
-/// color and fading to rest. `None` renders a blank row (nothing has
-/// fired since the sidebar started).
+/// Render the chyron: the most recent agent event, named in its own
+/// color and fading out. `None` means the toolbar owns the row — no
+/// event has fired, the fade has completed, or the event was consumed.
 ///
 /// Consumption is resolved here against live pane state: a pane the
 /// user has looked at (attention flag cleared), one that left its event
-/// status, or one that vanished drops the event to rest immediately —
-/// the remaining fade frames are skipped, never the rest text.
+/// status, or one that vanished ends the display immediately — the
+/// remaining fade frames are skipped and the toolbar returns.
 pub(super) fn render_chyron<'a>(state: &AppState, width: u16) -> Option<Line<'a>> {
     let event = state.chyron.current.as_ref()?;
     let theme = &state.theme;
@@ -24,6 +24,9 @@ pub(super) fn render_chyron<'a>(state: &AppState, width: u16) -> Option<Line<'a>
     let mut phase = event.phase();
     if state.chyron.is_consumed(state, event) {
         phase = ChyronPhase::Rest;
+    }
+    if phase == ChyronPhase::Rest {
+        return None;
     }
 
     let label = state.chyron.label(state, event);
@@ -43,6 +46,7 @@ pub(super) fn render_chyron<'a>(state: &AppState, width: u16) -> Option<Line<'a>
             Some(theme.chyron_flash_bg(event.kind)),
         ),
         ChyronPhase::Fade { frame } => (theme.chyron_color(event.kind, frame), None),
+        // Unreachable: rest (and consumed) return None above.
         ChyronPhase::Rest => (theme.filter_inactive, None),
     };
 
@@ -60,47 +64,41 @@ pub(super) fn render_chyron<'a>(state: &AppState, width: u16) -> Option<Line<'a>
     )))
 }
 
-/// Render the merged toolbar row: notices indicator, the `/` search
-/// input, and the repo filter button. This is the panel's only toolbar;
-/// the chyron owns the row above it.
-pub(super) fn render_secondary_header<'a>(
-    state: &AppState,
-    width: u16,
-) -> (Line<'a>, Option<u16>, Option<u16>) {
+/// Render the toolbar row: the `/` search input flush left, and the
+/// merged menu button right-aligned. This is the header's resting
+/// state — the chyron overlays the row only while an event is alive
+/// (see [`super::render_header_into`]).
+///
+/// The button merges the old notices indicator and repo selector into
+/// one target: `ⓘ ▾` when a notice exists (info glyph in the waiting
+/// color, top-right where alerts live), `— ▾` otherwise. Both labels
+/// are one column, so the button's width — and its click column — never
+/// moves.
+pub(super) fn render_secondary_header<'a>(state: &AppState, width: u16) -> (Line<'a>, Option<u16>) {
     let theme = &state.theme;
-    let repo_icon = "▾";
 
-    let repo_has_filter = !matches!(state.global.repo_filter, RepoFilter::All);
-    let repo_style = if state.is_repo_popup_open() || repo_has_filter {
-        Style::default().fg(theme.text_active)
+    const BUTTON_WIDTH: usize = 3; // label + space + arrow
+    let has_info = crate::ui::notices::has_info(state);
+    let menu_open = state.is_repo_popup_open();
+    let repo_filtered = !matches!(state.global.repo_filter, RepoFilter::All);
+
+    let (label, label_color) = if has_info {
+        ("ⓘ", theme.status_waiting)
     } else {
-        Style::default().fg(theme.text_muted)
+        ("—", theme.text_muted)
+    };
+    let arrow_color = if menu_open || repo_filtered {
+        theme.text_active
+    } else {
+        theme.text_muted
     };
 
-    let has_notices_info = crate::ui::notices::has_info(state);
-    let notices_button_col = has_notices_info.then_some(0);
-    let notices_width = crate::ui::notices::BUTTON_WIDTH;
-    let max_repo_label_width = width.saturating_sub((notices_width + 3) as u16) as usize;
-    let repo_label = match &state.global.repo_filter {
-        RepoFilter::All => "—".to_string(),
-        RepoFilter::Repo(name) => truncate_to_width(name, max_repo_label_width),
-    };
-    let repo_btn_width = display_width(&repo_label) + 2; // label + space + arrow
-
-    let gap = (width as usize).saturating_sub(repo_btn_width + notices_width);
-    let repo_button_col = Some((notices_width + gap) as u16);
-
+    let gap = (width as usize).saturating_sub(BUTTON_WIDTH);
     let mut spans: Vec<Span<'a>> = Vec::new();
-    if has_notices_info {
-        spans.push(crate::ui::notices::button_span(state));
-        spans.push(Span::raw(" "));
-    } else {
-        spans.push(Span::raw("  "));
-    }
 
-    // While `/` is open (or a query is applied), the left side of this
-    // row becomes the search input. The repo button stays right-aligned,
-    // so its column — and click target — does not move.
+    // While `/` is open (or a query is applied) the left side is the
+    // search input, flush left. The button stays right-aligned so its
+    // click column does not move.
     let searching = state.search.is_active() || state.search.has_query();
     if searching {
         let cursor = if state.search.is_active() { "█" } else { "" };
@@ -123,11 +121,13 @@ pub(super) fn render_secondary_header<'a>(
     } else {
         spans.push(Span::raw(" ".repeat(gap)));
     }
-    spans.push(Span::styled(repo_label, repo_style));
-    spans.push(Span::raw(" "));
-    spans.push(Span::styled(repo_icon, repo_style));
 
-    (Line::from(spans), notices_button_col, repo_button_col)
+    spans.push(Span::styled(label, Style::default().fg(label_color)));
+    spans.push(Span::raw(" "));
+    spans.push(Span::styled("▾", Style::default().fg(arrow_color)));
+
+    let button_col = (width as usize).saturating_sub(BUTTON_WIDTH) as u16;
+    (Line::from(spans), Some(button_col))
 }
 
 #[cfg(test)]
@@ -200,15 +200,19 @@ mod tests {
             .collect()
     }
 
+    // ─── chyron render ───────────────────────────────────────────────
+
     #[test]
-    fn blank_when_no_event_has_ever_fired() {
+    fn nothing_renders_when_no_event_has_ever_fired() {
         let state = AppState::new("%99".into());
         assert!(render_chyron(&state, 40).is_none());
+        assert!(!state.chyron.is_showing(&state));
     }
 
     #[test]
     fn flash_frame_names_glyph_agent_and_verb() {
         let state = state_with_event(done_event(), true);
+        assert!(state.chyron.is_showing(&state));
         let line = render_chyron(&state, 40).expect("an event renders");
         let text = line_text(&line);
         assert_eq!(text, " ✓ fix-auth done");
@@ -225,32 +229,30 @@ mod tests {
     }
 
     #[test]
-    fn rest_frame_is_dim_with_no_background() {
+    fn rest_frame_renders_nothing_toolbar_owns_the_row() {
         let mut event = done_event();
         event.shown_at = Instant::now() - std::time::Duration::from_secs(5);
         let state = state_with_event(event, true);
-        let line = render_chyron(&state, 40).expect("an event renders");
-        let span = &line.spans[0];
-        assert_eq!(span.style.fg, Some(state.theme.filter_inactive));
-        assert_eq!(span.style.bg, None);
-        assert_eq!(line_text(&line), " ✓ fix-auth done");
+        assert!(render_chyron(&state, 40).is_none());
+        assert!(!state.chyron.is_showing(&state));
     }
 
     #[test]
-    fn consumed_event_renders_as_rest_not_blank() {
+    fn consumed_event_renders_nothing() {
         let mut state = state_with_event(done_event(), true);
         // The user looked: the flag cleared.
         state.repo_groups[0].panes[0].0.attention = PaneAttention::None;
-        let line = render_chyron(&state, 40).expect("consumed events still render");
-        assert_eq!(line.spans[0].style.fg, Some(state.theme.filter_inactive));
-        assert_eq!(line.spans[0].style.bg, None);
+        assert!(render_chyron(&state, 40).is_none());
+        assert!(!state.chyron.is_showing(&state));
     }
 
     #[test]
-    fn vanished_pane_uses_the_stored_label() {
+    fn vanished_pane_ends_the_display() {
+        // A pane that disappeared has been consumed: the overlay ends
+        // and the toolbar returns. There is no resting chyron text.
         let state = state_with_event(done_event(), false);
-        let line = render_chyron(&state, 40).expect("an event renders");
-        assert_eq!(line_text(&line), " ✓ fix-auth done");
+        assert!(render_chyron(&state, 40).is_none());
+        assert!(!state.chyron.is_showing(&state));
     }
 
     #[test]
@@ -260,7 +262,10 @@ mod tests {
         let line = render_chyron(&state, 40).unwrap();
         assert_eq!(line_text(&line), " ◐ fix-auth waiting");
 
+        // A failed event stays visible only while the pane is still in
+        // error; mirror the live state the consumption check reads.
         state.chyron.current.as_mut().unwrap().kind = ChyronKind::Failed;
+        state.repo_groups[0].panes[0].0.status = crate::tmux::PaneStatus::Error;
         let line = render_chyron(&state, 40).unwrap();
         assert_eq!(line_text(&line), " ✕ fix-auth failed");
     }
@@ -269,7 +274,10 @@ mod tests {
     fn long_labels_truncate_to_the_row_width() {
         let mut event = done_event();
         event.label = "a-very-long-session-name-that-will-not-fit".into();
-        let state = state_with_event(event, false);
+        let mut state = state_with_event(event, true);
+        // The label resolves live from the pane's title.
+        state.repo_groups[0].panes[0].0.session_name =
+            "a-very-long-session-name-that-will-not-fit".into();
         let line = render_chyron(&state, 20).unwrap();
         let text = line_text(&line);
         assert!(
@@ -280,88 +288,86 @@ mod tests {
         assert!(text.ends_with("done"), "the verb survives truncation");
     }
 
-    // ─── toolbar (moved from filter_bar.rs) ──────────────────────────
+    // ─── suppression: search and the menu claim the row ─────────────
 
     #[test]
-    fn toolbar_shows_notices_repo_and_search() {
+    fn open_search_suppresses_the_chyron() {
+        let mut state = state_with_event(done_event(), true);
+        state.open_search();
+        assert!(!state.chyron.is_showing(&state));
+        // Dismissal is outright: the event does not come back.
+        assert!(state.chyron.current.is_none());
+    }
+
+    #[test]
+    fn opening_the_menu_suppresses_the_chyron() {
+        let mut state = state_with_event(done_event(), true);
+        state.repo_groups = vec![crate::group::RepoGroup {
+            name: "app".into(),
+            has_focus: false,
+            panes: vec![],
+        }];
+        state.toggle_repo_popup();
+        assert!(state.is_repo_popup_open());
+        assert!(!state.chyron.is_showing(&state));
+        assert!(state.chyron.current.is_none());
+    }
+
+    // ─── toolbar ─────────────────────────────────────────────────────
+
+    #[test]
+    fn toolbar_shows_placeholder_button_flush_right() {
+        let state = AppState::new(String::new());
+        let (line, col) = render_secondary_header(&state, 30);
+        let text = line_text(&line);
+        insta::assert_snapshot!(text, @"                           — ▾");
+        // The button is the last three columns; its click column is
+        // width - 3.
+        assert_eq!(col, Some(27));
+        assert!(text.ends_with("— ▾"));
+    }
+
+    #[test]
+    fn toolbar_button_reads_info_when_a_notice_exists() {
         let mut state = AppState::new(String::new());
         state.version_notice = Some(crate::version::UpdateNotice {
             local_version: "0.2.6".into(),
             latest_version: "0.2.7".into(),
         });
-        let text = line_text(&render_secondary_header(&state, 30).0);
-        insta::assert_snapshot!(text, @"ⓘ                          — ▾");
+        let (line, col) = render_secondary_header(&state, 30);
+        let text = line_text(&line);
+        insta::assert_snapshot!(text, @"                           ⓘ ▾");
+        // The label flip is one column wide either way: the click
+        // column — and the button's position — does not move.
+        assert_eq!(col, Some(27));
+        let label_span = &line.spans[line.spans.len() - 3];
+        assert_eq!(label_span.content.as_ref(), "ⓘ");
+        assert_eq!(label_span.style.fg, Some(state.theme.status_waiting));
     }
 
     #[test]
-    fn toolbar_keeps_repo_position_with_or_without_notices_info() {
-        let mut with_info = AppState::new(String::new());
-        with_info.version_notice = Some(crate::version::UpdateNotice {
-            local_version: "0.2.6".into(),
-            latest_version: "0.2.7".into(),
-        });
-        with_info.notices.missing_hook_groups = vec![crate::state::NoticesMissingHookGroup {
-            agent: "claude".into(),
-            hooks: vec!["SessionStart".into()],
-        }];
-
-        let without_info = AppState::new(String::new());
-
-        let (_, _, with_repo_col) = render_secondary_header(&with_info, 30);
-        let (_, _, without_repo_col) = render_secondary_header(&without_info, 30);
-
-        assert_eq!(with_repo_col, without_repo_col);
-        assert_eq!(with_repo_col, Some(27));
-    }
-
-    #[test]
-    fn toolbar_shows_active_search() {
+    fn toolbar_search_input_is_flush_left() {
         let mut state = AppState::new(String::new());
         state.search.query = "codex".into();
         state.search.active = true;
-        let text = line_text(&render_secondary_header(&state, 30).0);
-        insta::assert_snapshot!(text, @"  /codex█                  — ▾");
+        let (line, col) = render_secondary_header(&state, 30);
+        let text = line_text(&line);
+        insta::assert_snapshot!(text, @"/codex█                    — ▾");
+        assert!(text.starts_with("/codex█"), "no leading gutter: {text:?}");
+        // The button column is unchanged by the input.
+        assert_eq!(col, Some(27));
     }
 
     #[test]
-    fn toolbar_shows_filtered_repo_name() {
+    fn toolbar_button_column_stable_while_searching() {
         let mut state = AppState::new(String::new());
-        state.global.repo_filter = RepoFilter::Repo("my-app".into());
-        let text = line_text(&render_secondary_header(&state, 40).0);
-        assert!(
-            text.contains("my-app"),
-            "toolbar should show the filtered repo name, got: {text}"
-        );
-        assert!(
-            text.find("my-app").unwrap() < text.find("▾").unwrap(),
-            "repo name should come before the arrow"
-        );
-    }
-
-    #[test]
-    fn toolbar_truncates_long_repo_name() {
-        let mut state = AppState::new(String::new());
-        state.global.repo_filter =
-            RepoFilter::Repo("very-long-repository-name-that-exceeds-width".into());
-        let text = line_text(&render_secondary_header(&state, 28).0);
-        assert!(text.contains('…'), "repo name should be truncated");
-        assert!(text.contains("▾"));
-        assert!(
-            text.find('…').unwrap() < text.find("▾").unwrap(),
-            "repo name should come before the arrow"
-        );
-    }
-
-    #[test]
-    fn toolbar_repo_button_column_stable_while_searching() {
-        let mut state = AppState::new(String::new());
-        let (_, _, before) = render_secondary_header(&state, 30);
+        let (_, before) = render_secondary_header(&state, 30);
         state.search.query = "a-very-long-query-that-will-truncate".into();
         state.search.active = true;
-        let (_, _, after) = render_secondary_header(&state, 30);
+        let (_, after) = render_secondary_header(&state, 30);
         assert_eq!(
             before, after,
-            "the repo button must stay right-aligned while searching"
+            "the menu button must stay right-aligned while searching"
         );
     }
 
@@ -370,7 +376,8 @@ mod tests {
         let mut state = AppState::new(String::new());
         state.search.query = "a-very-long-query".into();
         state.search.active = true;
-        let text = line_text(&render_secondary_header(&state, 12).0);
+        let (line, _) = render_secondary_header(&state, 12);
+        let text = line_text(&line);
         assert!(
             display_width(&text) <= 12,
             "search header overflowed its width: {text:?}"
@@ -378,27 +385,21 @@ mod tests {
     }
 
     #[test]
-    fn toolbar_repo_button_not_underlined_when_popup_open() {
+    fn toolbar_arrow_lights_when_repo_filtered() {
         let mut state = AppState::new(String::new());
-        state.popup = crate::state::PopupState::Repo {
-            selected: 0,
-            area: None,
-        };
-        let (line, _, _) = render_secondary_header(&state, 28);
-        let last_span = line.spans.last().unwrap();
-        assert!(
-            !last_span
-                .style
-                .add_modifier
-                .contains(ratatui::style::Modifier::UNDERLINED),
-            "repo button should not be underlined when popup is open"
-        );
-        assert!(
-            !last_span
-                .style
-                .add_modifier
-                .contains(ratatui::style::Modifier::BOLD),
-            "repo button should not be bold when popup is open"
-        );
+        state.global.repo_filter = RepoFilter::Repo("my-app".into());
+        let (line, _) = render_secondary_header(&state, 30);
+        let text = line_text(&line);
+        assert!(text.ends_with("— ▾"), "the label stays —: {text:?}");
+        let arrow_span = line.spans.last().unwrap();
+        assert_eq!(arrow_span.style.fg, Some(state.theme.text_active));
+    }
+
+    #[test]
+    fn toolbar_fits_extremely_narrow_width() {
+        let state = AppState::new(String::new());
+        // Below the button width: nothing panics, the col saturates.
+        let (_, col) = render_secondary_header(&state, 2);
+        assert_eq!(col, Some(0));
     }
 }

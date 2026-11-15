@@ -93,14 +93,13 @@ pub struct FrameLayout {
     /// `pane_row_targets`. `None` for header/blank lines that should not
     /// route clicks to a pane.
     pub line_to_row: Vec<Option<usize>>,
-    /// X column of the repo filter button in the secondary header. `None`
-    /// when the button is hidden. Used for click hit-testing.
-    pub repo_button_col: Option<u16>,
-    /// Screen row of the chyron (event) row, when it is rendered. On a
-    /// one-row panel the toolbar takes the row and this is `None`.
-    pub chyron_row: Option<u16>,
-    /// Screen row of the merged toolbar (notices / search / repo).
-    pub toolbar_row: Option<u16>,
+    /// X column of the merged menu button in the header row. `None`
+    /// before the first render. Used for click hit-testing.
+    pub menu_button_col: Option<u16>,
+    /// Screen row of the single header row (toolbar, or the chyron
+    /// while it overlays the toolbar). Defaults to 0 for callers that
+    /// have not rendered a frame yet.
+    pub toolbar_row: u16,
     /// Click regions for the `[+]` spawn button rendered at the right
     /// edge of each repo-group header. One entry per visible repo group.
     pub repo_spawn_targets: Vec<RepoSpawnTarget>,
@@ -508,22 +507,15 @@ impl AppState {
         }
     }
 
-    /// Handle mouse click on the toolbar row (notices indicator left,
-    /// repo filter button right). The repo filter button lives on the
-    /// far right of this row.
+    /// Handle a mouse click on the toolbar row. The merged menu button
+    /// (`— ▾` / `ⓘ ▾`) is the row's only click target on the right edge;
+    /// while the chyron shows, the whole row selects the event's pane
+    /// instead (see [`Self::handle_mouse_click`]).
     pub fn handle_secondary_header_click(&mut self, col: u16) {
         if self
-            .notices
-            .button_col
-            .is_some_and(|notices_col| col == notices_col)
-        {
-            self.toggle_notices_popup();
-            return;
-        }
-        if self
             .layout
-            .repo_button_col
-            .is_some_and(|repo_button_col| col >= repo_button_col)
+            .menu_button_col
+            .is_some_and(|menu_button_col| col >= menu_button_col)
         {
             self.toggle_repo_popup();
         }
@@ -531,35 +523,30 @@ impl AppState {
 
     /// Handle mouse click in agents panel. Maps screen row to agent row
     /// via line_to_row (adjusted for scroll offset) and activates that pane.
-    /// Row 0 is the chyron (event) row, row 1 the merged toolbar; both are
-    /// matched by the renderer-recorded rows, then the scrollable list maps.
+    /// Row 0 is the single header row: while the chyron shows it selects
+    /// the event's pane, otherwise it routes toolbar clicks (the merged
+    /// menu button). Rows below map into the scrollable list.
     pub fn handle_mouse_click(&mut self, row: u16, col: u16) {
-        if self.is_notices_popup_open() {
-            if let Some(area) = self.notices_popup_area()
-                && point_in_rect(row, col, area)
-            {
-                if let Some(agent) = self.notices_copy_target_at(row, col).map(str::to_string) {
-                    self.copy_notices_prompt(&agent);
-                }
-                return;
-            }
-            self.close_notices_popup();
-            return;
-        }
         if self.is_repo_popup_open() {
             if let Some(area) = self.repo_popup_area()
                 && point_in_rect(row, col, area)
             {
-                // Skip clicks on the popup chrome (top border / title row).
-                // Without this guard `saturating_sub(1)` collapses a click on
-                // the title row into `item_index == 0`, switching the filter
-                // to the first repo the moment the user reaches for the
-                // popup.
+                // Skip clicks on the popup chrome (top border). Rows in
+                // the notices section are click-to-copy via the copy
+                // targets; rows in the repo list select + confirm.
+                if let Some(agent) = self.notices_copy_target_at(row, col).map(str::to_string) {
+                    self.copy_notices_prompt(&agent);
+                    return;
+                }
                 if row > area.y {
-                    let item_index = (row - area.y - 1) as usize;
-                    if item_index < self.repo_names().len() {
-                        self.set_repo_popup_selected(item_index);
-                        self.confirm_repo_popup();
+                    let repo_start = self.repo_popup_repo_start() as usize;
+                    let inner_row = (row - area.y - 1) as usize;
+                    if inner_row >= repo_start {
+                        let item_index = inner_row - repo_start;
+                        if item_index < self.repo_names().len() {
+                            self.set_repo_popup_selected(item_index);
+                            self.confirm_repo_popup();
+                        }
                     }
                 }
                 return;
@@ -595,18 +582,16 @@ impl AppState {
             return;
         }
 
-        // The chyron row and the toolbar row are the panel's two fixed
-        // header rows. Their screen rows come from the renderer; the
-        // defaults match the normal two-row layout for callers (tests)
-        // that have not rendered a frame yet.
-        let chyron_row = self.layout.chyron_row.unwrap_or(0);
-        let toolbar_row = self.layout.toolbar_row.unwrap_or(1);
-        if chyron_row == row {
-            self.handle_chyron_click();
-            return;
-        }
+        // The single header row hosts the toolbar, or the chyron while
+        // one is showing. Row defaults match the normal layout for
+        // callers (tests) that have not rendered a frame yet.
+        let toolbar_row = self.layout.toolbar_row;
         if toolbar_row == row {
-            self.handle_secondary_header_click(col);
+            if self.chyron.is_showing(self) {
+                self.handle_chyron_click();
+            } else {
+                self.handle_secondary_header_click(col);
+            }
             return;
         }
 
@@ -707,7 +692,8 @@ impl AppState {
             return;
         }
 
-        let line_index = row.saturating_sub(2) as usize + self.scrolls.panes.offset;
+        // The list starts below the single header row.
+        let line_index = row.saturating_sub(1) as usize + self.scrolls.panes.offset;
         if let Some(Some(agent_row)) = self.layout.line_to_row.get(line_index) {
             self.global.selected_pane_row = *agent_row;
             self.global.queue_cursor_save();

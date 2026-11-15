@@ -202,7 +202,7 @@ fn test_line_to_row_with_version_banner() {
 }
 
 #[test]
-fn test_secondary_header_click_on_i_opens_notices_popup_even_without_missing_hooks() {
+fn test_secondary_header_click_on_menu_button_opens_menu() {
     let pane = make_pane(AgentType::Claude, PaneStatus::Idle);
     let mut state = make_state(vec![SessionInfo {
         session_name: "main".into(),
@@ -215,9 +215,9 @@ fn test_secondary_header_click_on_i_opens_notices_popup_even_without_missing_hoo
         }],
     }]);
     state.repo_groups = vec![make_repo_group("project", vec![pane])];
-    // make_state() seeds a missing hook group for general-purpose
-    // tests; clear it here so the test actually exercises the
-    // version-notice-only path described in the test name.
+    // The merged menu button replaces the old ⓘ indicator and repo
+    // selector; a version notice flips the label to ⓘ but the click
+    // behavior is one and the same.
     state.notices.missing_hook_groups.clear();
     state.version_notice = Some(tmux_agent_sidebar::version::UpdateNotice {
         local_version: "0.2.6".into(),
@@ -226,10 +226,15 @@ fn test_secondary_header_click_on_i_opens_notices_popup_even_without_missing_hoo
     state.rebuild_row_targets();
     let _ = render_to_string(&mut state, 28, 10);
 
-    state.handle_mouse_click(1, 0);
+    // The renderer wrote back the button column; click its label.
+    let col = state
+        .layout
+        .menu_button_col
+        .expect("renderer recorded the button");
+    state.handle_mouse_click(0, col);
     assert!(
-        state.is_notices_popup_open(),
-        "i should stay clickable even when there are no missing hooks"
+        state.is_repo_popup_open(),
+        "the menu button opens the merged dropdown"
     );
 }
 

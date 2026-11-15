@@ -35,12 +35,6 @@ pub(super) fn handle_event(ev: Event, state: &mut AppState) -> bool {
 /// unit tests can drive the keyboard path without constructing a real
 /// terminal handle.
 pub(super) fn handle_key_event(key: KeyEvent, state: &mut AppState) -> bool {
-    if state.is_notices_popup_open() {
-        if key.code == KeyCode::Esc {
-            state.close_notices_popup();
-        }
-        return true;
-    }
     if state.is_help_open() {
         match key.code {
             KeyCode::Esc | KeyCode::Char('?') => state.close_help_popup(),
@@ -233,10 +227,10 @@ pub(super) fn handle_key_event(key: KeyEvent, state: &mut AppState) -> bool {
         }
         KeyCode::PageDown => page_scroll(state, 1),
         KeyCode::PageUp => page_scroll(state, -1),
-        KeyCode::Right => {
+        KeyCode::Char('l') | KeyCode::Right => {
             if state.focus_state.focus == Focus::Panes {
-                // "Go into" the agent: Right mirrors Enter's jump-to-pane
-                // from the agent list.
+                // "Go into" the agent: Right (and its vim pair `l`)
+                // mirrors Enter's jump-to-pane from the agent list.
                 state.activate_selected_pane();
             }
         }

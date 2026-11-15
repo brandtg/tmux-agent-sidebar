@@ -42,8 +42,11 @@ impl AppState {
     pub fn open_search(&mut self) {
         self.search.active = true;
         // Search acts on the list, so give it the selection highlight even
-        // when the status row happened to own focus.
+        // when the chyron happened to own the header row.
         self.focus_state.focus = super::Focus::Panes;
+        // The input claims the header row: a chyron mid-fade is dismissed
+        // rather than left to fight the input for row 0.
+        self.chyron.current = None;
     }
 
     /// Leave the input line, keeping the query applied to the list.

@@ -30,7 +30,7 @@ const HELP_SECTIONS: &[(&str, &[(&str, &str)])] = &[
             ("n", "Spawn worktree + agent"),
             ("x", "Remove spawn pane"),
             ("f", "Flag / unflag agent"),
-            ("r", "Open repo filter"),
+            ("r", "Open repo menu"),
         ],
     ),
     (
@@ -209,7 +209,7 @@ mod tests {
         │ n                Spawn worktree + agent  │
         │ x                Remove spawn pane       │
         │ f                Flag / unflag agent     │
-        │ r                Open repo filter        │
+        │ r                Open repo menu          │
         │                                          │
         │ todos                                    │
         │ Enter / e        Edit the selected task  │

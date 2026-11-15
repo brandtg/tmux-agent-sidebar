@@ -111,6 +111,12 @@ pub enum ChyronPhase {
 /// same global pane flags, so open sidebars converge on the same
 /// event; consumption via focus is already global through tmux.
 ///
+/// The chyron owns the single header row only while an event is
+/// alive: it overlays the toolbar for the flash/fade window and the
+/// toolbar returns afterwards (or immediately on consumption, or when
+/// the `/` input or header menu opens). There is no resting state —
+/// the row is never reserved for the chyron alone.
+///
 /// Startup floods are impossible by construction: the first snapshot
 /// diffs against an empty baseline (`repo_groups` is still empty), so
 /// no transition exists yet — only changes observed *after* the first
@@ -134,6 +140,25 @@ impl ChyronState {
             ChyronKind::Done | ChyronKind::Waiting => pane.attention == PaneAttention::None,
             ChyronKind::Failed => pane.status != PaneStatus::Error,
         }
+    }
+
+    /// Whether the chyron currently owns the header row. The single
+    /// header row is shared with the toolbar: the chyron shows only
+    /// while an unconsumed event is inside its flash/fade window, and
+    /// yields when the `/` input or the header menu is open (opening
+    /// either dismisses the event outright — this guard covers any
+    /// other path that opens them).
+    pub fn is_showing(&self, state: &AppState) -> bool {
+        let Some(event) = &self.current else {
+            return false;
+        };
+        if state.search.is_active() || state.is_repo_popup_open() {
+            return false;
+        }
+        if self.is_consumed(state, event) {
+            return false;
+        }
+        !matches!(event.phase(), ChyronPhase::Rest)
     }
 
     /// Display label for the event: the pane's current title when it

@@ -13,6 +13,20 @@
 > The old `@sidebar_color_all` / `@sidebar_icon_all` options died with
 > the bar's `≡` glyph and were removed alongside the filter options.
 >
+> **Update (2026-11-15, overlay):** after living with it, the reserved
+> row read as dead air — chyron state is per-process, so every restart
+> blanked it again. The dedicated row is gone: the header is one row,
+> the toolbar, and the chyron overlays it for the flash/fade window
+> only, then the toolbar returns (immediately on consumption, or when
+> `/` or the menu opens — both dismiss the event outright). The list
+> gains the reclaimed row. On the same pass the two toolbar buttons
+> merged: the right-edge button reads `ⓘ ▾` when a notice exists and
+> `— ▾` otherwise, and opens one dropdown whose notices sections
+> (version, plugin, missing hooks with their `[copy]` / `[prompt]`
+> slots) sit above the repo list; the standalone notices popup is gone.
+> The search input is now flush left. `l` keeps its vim "go into"
+> binding alongside `→`.
+>
 > Replaces the status filter bar in the agents panel's top row with a
 > one-line event channel: a transient, self-fading banner that names the
 > agent an event just happened to. The filter bar is deleted in the same

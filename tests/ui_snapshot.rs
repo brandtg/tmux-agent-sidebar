@@ -29,7 +29,7 @@ fn snapshot_single_agent_idle_ui() {
 
     let output = render_to_string(&mut state, 28, 25);
     insta::assert_snapshot!(output, @"
-    ⓘ                        — ▾
+                             ⓘ ▾
     ▾ project
     ┃ ○ claude
         Waiting for prompt…
@@ -59,7 +59,7 @@ fn snapshot_done_unseen_pane_matches_idle_layout() {
 
     let output = render_to_string(&mut state, 28, 25);
     insta::assert_snapshot!(output, @"
-    ⓘ                        — ▾
+                             ⓘ ▾
     ▾ project
     ┃ ○ claude
         Waiting for prompt…
@@ -117,7 +117,7 @@ fn snapshot_secondary_header_long_repo_filter_truncated() {
 
     let output = render_to_string(&mut state, 28, 25);
     insta::assert_snapshot!(output, @"
-    ⓘ  very-long-repository-n… ▾
+                             ⓘ ▾
     ▾ very-long-repository-name…
     ┃ ○ claude
         Waiting for prompt…
@@ -146,7 +146,7 @@ fn snapshot_version_banner_does_not_duplicate_in_scroll_area() {
 
     let output = render_to_string(&mut state, 28, 10);
     insta::assert_snapshot!(output, @"
-    ⓘ                        — ▾
+                             ⓘ ▾
     ▾ project
     ┃ ○ claude
         Waiting for prompt…
@@ -175,7 +175,7 @@ fn snapshot_popup_mode_forces_focus_semantics() {
 
     let output = render_to_string(&mut state, 40, 20);
     insta::assert_snapshot!(output, @"
-    ⓘ                                    — ▾
+                                         ⓘ ▾
     ▾ project
     ┃ ○ claude
         Waiting for prompt…
@@ -202,7 +202,7 @@ fn snapshot_single_agent_running_with_elapsed() {
 
     let output = render_to_string(&mut state, 28, 25);
     insta::assert_snapshot!(output, @"
-    ⓘ                        — ▾
+                             ⓘ ▾
     ▾ dotfiles
     ┃ ● claude              2m5s
     ");
@@ -229,7 +229,7 @@ fn snapshot_long_session_name_truncated_keeps_elapsed_visible() {
 
     let output = render_to_string(&mut state, 28, 25);
     insta::assert_snapshot!(output, @"
-    ⓘ                        — ▾
+                             ⓘ ▾
     ▾ dotfiles
     ┃ ● this-is-a-ridiculo… 2m5s
     ");
@@ -254,7 +254,7 @@ fn running_spinner_different_frame() {
 
     let output = render_to_string(&mut state, 28, 25);
     insta::assert_snapshot!(output, @"
-    ⓘ                        — ▾
+                             ⓘ ▾
     ▾ project
     ┃ ● claude
     ");
@@ -280,7 +280,7 @@ fn snapshot_agent_with_prompt_ui() {
 
     let output = render_to_string(&mut state, 28, 25);
     insta::assert_snapshot!(output, @"
-    ⓘ                        — ▾
+                             ⓘ ▾
     ▾ project
     ┃ ○ claude
         fix the bug
@@ -307,7 +307,7 @@ fn snapshot_agent_with_japanese_prompt_ui() {
 
     let output = render_to_string(&mut state, 28, 27);
     insta::assert_snapshot!(output, @"
-    ⓘ                        — ▾
+                             ⓘ ▾
     ▾ project
     ┃ ● claude
         こ れ っ て 今 1時 間 経 っ て い
@@ -389,7 +389,7 @@ fn snapshot_two_agents_same_window_ui() {
 
     let output = render_to_string(&mut state, 28, 25);
     insta::assert_snapshot!(output, @"
-    ⓘ                        — ▾
+                             ⓘ ▾
     ▾ project
     ┃ ● claude
         fix the bug
@@ -434,7 +434,7 @@ fn snapshot_two_windows_ui() {
 
     let output = render_to_string(&mut state, 28, 25);
     insta::assert_snapshot!(output, @"
-    ⓘ                        — ▾
+                             ⓘ ▾
     ▾ project-a
     ┃ ● claude
     ▾ project-b
@@ -482,7 +482,7 @@ fn snapshot_multi_session_ui() {
 
     let output = render_to_string(&mut state, 28, 25);
     insta::assert_snapshot!(output, @"
-    ⓘ                        — ▾
+                             ⓘ ▾
     ▾ dotfiles
     ┃ ● claude
     ▾ api
@@ -511,7 +511,7 @@ fn snapshot_wait_reason_ui() {
 
     let output = render_to_string(&mut state, 28, 25);
     insta::assert_snapshot!(output, @"
-    ⓘ                        — ▾
+                             ⓘ ▾
     ▾ project
     ┃ ◐ claude
         permission required
@@ -538,7 +538,7 @@ fn snapshot_auto_rename_window_title_ui() {
 
     let output = render_to_string(&mut state, 28, 25);
     insta::assert_snapshot!(output, @"
-    ⓘ                        — ▾
+                             ⓘ ▾
     ▾ project
     ┃ ○ claude
         Waiting for prompt…
@@ -616,7 +616,7 @@ fn snapshot_proxy_active_bar_lights_cursor_window_agent() {
 
     let output = render_to_string(&mut state, 28, 25);
     insta::assert_snapshot!(output, @"
-    ⓘ                        — ▾
+                             ⓘ ▾
     ▾ project
     ┃ ○ claude
         Waiting for prompt…
@@ -633,7 +633,7 @@ fn snapshot_window_row_keeps_marker_when_windows_visible() {
 
     let output = render_to_string(&mut state, 28, 25);
     insta::assert_snapshot!(output, @"
-    ⓘ                        — ▾
+                             ⓘ ▾
     ▾ project
       ○ claude
         Waiting for prompt…

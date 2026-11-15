@@ -1083,11 +1083,12 @@ mod tests {
         state.layout.line_to_row = vec![None, Some(0), Some(1)];
         state.scrolls.panes.offset = 0;
 
-        // row 0 = filter bar, row 1 = secondary header, row 2+ = agent list rows
-        state.handle_mouse_click(3, 5); // row 3 → line_index = (3-2) = 1 → agent row 0
+        // row 0 = the header (toolbar, or chyron while one shows); rows
+        // 1+ map into the agent list.
+        state.handle_mouse_click(2, 5); // row 2 → line_index = (2-1) = 1 → agent row 0
         assert_eq!(state.global.selected_pane_row, 0);
 
-        state.handle_mouse_click(4, 5); // row 4 → line_index = (4-2) = 2 → agent row 1
+        state.handle_mouse_click(3, 5); // row 3 → line_index = (3-1) = 2 → agent row 1
         assert_eq!(state.global.selected_pane_row, 1);
     }
 
@@ -1113,8 +1114,8 @@ mod tests {
         state.scrolls.panes.offset = 0;
         state.global.selected_pane_row = 1;
 
-        // row 0 = filter bar, row 1 = secondary header, row 2+ = list lines.
-        state.handle_mouse_click(4, 5); // row 4 → line_index = (4-2) = 2 → card 0, second line
+        // row 0 = the header, rows 1+ = list lines.
+        state.handle_mouse_click(3, 5); // row 3 → line_index = (3-1) = 2 → card 0, second line
         assert_eq!(state.global.selected_pane_row, 0);
         assert_eq!(
             state.focus_state.focused_pane_id.as_deref(),
@@ -1124,11 +1125,11 @@ mod tests {
 
         state.global.selected_pane_row = 1;
         state.focus_state.focused_pane_id = None;
-        state.handle_mouse_click(3, 5); // row 3 → line_index = (3-2) = 1 → card 0, first line
+        state.handle_mouse_click(2, 5); // row 2 → line_index = (2-1) = 1 → card 0, first line
         assert_eq!(state.global.selected_pane_row, 0);
         assert_eq!(state.focus_state.focused_pane_id.as_deref(), Some("%10"));
 
-        state.handle_mouse_click(6, 5); // row 6 → line_index = (6-2) = 4 → card 1, second line
+        state.handle_mouse_click(5, 5); // row 5 → line_index = (5-1) = 4 → card 1, second line
         assert_eq!(state.global.selected_pane_row, 1);
         assert_eq!(state.focus_state.focused_pane_id.as_deref(), Some("%11"));
     }
@@ -1136,6 +1137,13 @@ mod tests {
     #[test]
     fn mouse_click_on_chyron_selects_the_events_pane() {
         let mut state = AppState::new("%99".into());
+        let mut event_pane = test_pane("%2");
+        event_pane.attention = PaneAttention::Done;
+        state.repo_groups = vec![RepoGroup {
+            name: "app".into(),
+            has_focus: true,
+            panes: vec![(event_pane, PaneGitInfo::default())],
+        }];
         state.layout.pane_row_targets = vec![
             RowTarget {
                 pane_id: "%1".into(),
@@ -1147,7 +1155,7 @@ mod tests {
             },
         ];
         state.layout.line_to_row = vec![None, Some(0), Some(1)];
-        state.layout.chyron_row = Some(0);
+        state.layout.toolbar_row = 0;
         state.chyron.current = Some(crate::state::ChyronEvent {
             pane_id: "%2".into(),
             kind: crate::state::ChyronKind::Done,
@@ -1169,7 +1177,7 @@ mod tests {
             is_window: false,
         }];
         state.layout.line_to_row = vec![None, Some(0)];
-        state.layout.chyron_row = Some(0);
+        state.layout.toolbar_row = 0;
         state.global.selected_pane_row = 0;
 
         state.handle_mouse_click(0, 5);
@@ -1191,12 +1199,13 @@ mod tests {
                 panes: vec![(test_pane("%2"), PaneGitInfo::default())],
             },
         ];
-        state.layout.repo_button_col = Some(20);
+        state.layout.menu_button_col = Some(20);
+        state.layout.toolbar_row = 0;
 
-        state.handle_mouse_click(1, 19);
+        state.handle_mouse_click(0, 19);
         assert!(!state.is_repo_popup_open());
 
-        state.handle_mouse_click(1, 20);
+        state.handle_mouse_click(0, 20);
         assert!(state.is_repo_popup_open());
     }
 
@@ -1222,6 +1231,7 @@ mod tests {
         state.popup = PopupState::Repo {
             selected: 2,
             area: Some(ratatui::layout::Rect::new(0, 3, 20, 5)),
+            repo_start: 0,
         };
 
         // Click the top border row (row == area.y = 3).
@@ -1258,6 +1268,7 @@ mod tests {
         state.popup = PopupState::Repo {
             selected: 0,
             area: Some(ratatui::layout::Rect::new(0, 3, 20, 5)),
+            repo_start: 0,
         };
 
         // Click row area.y + 1 (first list entry = "All").
@@ -1284,8 +1295,8 @@ mod tests {
         state.layout.line_to_row = vec![None, Some(0), Some(0), None, Some(1)];
         state.scrolls.panes.offset = 2;
 
-        // row 4 → line_index = (4-2) + 2 = 4 → agent row 1
-        state.handle_mouse_click(4, 5);
+        // row 3 → line_index = (3-1) + 2 = 4 → agent row 1
+        state.handle_mouse_click(3, 5);
         assert_eq!(state.global.selected_pane_row, 1);
     }
 

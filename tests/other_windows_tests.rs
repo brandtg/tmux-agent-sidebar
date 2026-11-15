@@ -58,7 +58,7 @@ fn snapshot_other_windows_rendered() {
 
     let output = render_to_string(&mut state, 34, 40);
     insta::assert_snapshot!(output, @"
-    ⓘ                              — ▾
+                                   ⓘ ▾
     ▾ project
     ┃ ○ claude
         Waiting for prompt…
@@ -129,7 +129,7 @@ fn snapshot_other_windows_with_args_rendered() {
 
     let output = render_to_string(&mut state, 34, 40);
     insta::assert_snapshot!(output, @"
-    ⓘ                              — ▾
+                                   ⓘ ▾
     ▾ project
     ┃ ○ claude
         Waiting for prompt…
@@ -144,7 +144,7 @@ fn snapshot_other_windows_hidden_when_off() {
 
     let output = render_to_string(&mut state, 34, 40);
     insta::assert_snapshot!(output, @"
-    ⓘ                              — ▾
+                                   ⓘ ▾
     ▾ project
     ┃ ○ claude
         Waiting for prompt…

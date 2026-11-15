@@ -10,10 +10,11 @@ import agentPane from '../../../assets/captures/agent-pane-focus.png';
 
 The sidebar renders one row per agent pane across all tmux sessions and windows. Each row is packed with live metadata pulled from the agent's hooks and from tmux itself.
 
-## Chyron (top row)
+## Chyron (header overlay)
 
-The top row is an event channel: when an agent's state changes in a way
-that wants your eye, it names the event for a moment, then fades.
+The single header row is an event channel that shares space with the
+toolbar: when an agent's state changes in a way that wants your eye,
+the row names the event for a moment, then hands the row back.
 
 - `✓ <agent> done` — a turn finished and you have not looked at it yet
   (green flash, fading over ~1.6 s)
@@ -21,23 +22,27 @@ that wants your eye, it names the event for a moment, then fades.
   (amber)
 - `✕ <agent> failed` — the pane transitioned to error (red)
 
-The banner rests as dim text naming the last event until the next one
-replaces it. The moment you focus the pane the event has fired for, the
-fade skips to rest — no green bar lingering over output you already
-read. Clicking the banner selects that agent's row and scrolls it into
-view. A sidebar that opens mid-session shows nothing until its first
-event; a restart never replays old flags.
+The moment you focus the pane the event has fired for, the fade skips
+to its end and the toolbar returns — no banner lingering over output
+you already read. Opening the `/` search or the menu dismisses the
+event outright. Clicking the banner selects that agent's row and
+scrolls it into view. A sidebar that opens mid-session shows nothing
+until its first event, and a restart never replays old flags.
 
-### Repo filter
+### Menu (repo filter + notices)
 
-On the toolbar row, a repo selector (`▾`) narrows the list to a single
-repository. Open it with `r` or by clicking the arrow; `—` means no repo
-filter is active.
+The header's right edge is one button: `— ▾` normally, `ⓘ ▾` when a
+notice exists (top-right, where alerts live). Opening it with `r` or a
+click drops a menu with the notices sections — new version,
+`Plugin / claude`, missing hooks with per-agent `[copy]` / `[prompt]`
+buttons — above a `Repos` section listing the repo filter. With no
+notice, the menu is just the repo list. `j` / `k` and `Enter` navigate
+the repo list; the notice rows are click-to-copy.
 
 ### Search
 
-Press `/` to type a query in the secondary header. The list narrows in place
-while the repo groups stay intact. Matching is case-insensitive across the
+Press `/` to type a query flush left in the header. The list narrows in
+place while the repo groups stay intact. Matching is case-insensitive across the
 agent session title, tmux session name, and git branch; a query that matches a
 repo or session name keeps that whole group visible. `Enter` keeps the query
 applied, `Esc` clears it, `Ctrl-u` clears the text without closing the input,

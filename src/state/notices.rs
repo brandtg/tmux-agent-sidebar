@@ -3,17 +3,14 @@ use std::time::{Duration, Instant};
 use super::AppState;
 use crate::cli::plugin_state::ClaudePluginStatus;
 
-/// Sub-state for the ⓘ notices popup, lifted out of [`AppState`] so its
-/// eight related fields (button column, missing-hook groups, plugin
+/// Sub-state for the notices sections of the header menu, lifted out of
+/// [`AppState`] so its related fields (missing-hook groups, plugin
 /// status, legacy hook flag, plugin notice, agent allow-list, copy
 /// targets, copy feedback) travel as a single unit.
 #[derive(Debug, Clone, Default)]
 pub struct NoticesState {
-    /// Column of the ⓘ button in the secondary header, or `None` when the
-    /// button is hidden. Used for click hit-testing.
-    pub button_col: Option<u16>,
     /// Missing hooks grouped per agent, shown in the "Missing hooks"
-    /// section of the popup.
+    /// section of the header menu.
     pub missing_hook_groups: Vec<NoticesMissingHookGroup>,
     /// Status of the `tmux-agent-sidebar` Claude Code plugin install
     /// (whether it is installed, and whether any tracked file in its

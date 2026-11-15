@@ -569,7 +569,6 @@ pub(super) fn window_header_row(
 mod tests {
     use super::*;
     use crate::group::PaneGitInfo;
-    use crate::state::GroupBy;
     use crate::tmux::{AgentType, PaneAttention, PaneInfo, PermissionMode, WorktreeMetadata};
     use crate::ui::icons::StatusIcons;
     use crate::ui::text::display_width;
