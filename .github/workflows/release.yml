@@ -19,6 +19,7 @@ on:
 
 permissions:
   contents: write
+  pull-requests: write
 
 jobs:
   # Dispatch path: bump the version and push the bump commit and the tag
