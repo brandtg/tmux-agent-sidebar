@@ -1,0 +1,431 @@
+#!/usr/bin/env python3
+
+"""Cut a release: bump the version, push a tag, and let GitHub build the binaries.
+
+With a bump argument (patch|minor|major), bumps Cargo.toml,
+.claude-plugin/plugin.json, and Cargo.lock via `make bump`, runs the CI
+checks (`make ci`), commits the bump, and pushes the branch. Then — with or
+without a bump — tags the release and pushes the tag. The Release workflow
+(.github/workflows/release.yml) builds the four platform binaries and
+publishes the release with them attached.
+
+By default the script then waits for the GitHub Actions run and prints the
+release URL; pass --no-watch to exit right after the tag is pushed.
+
+Fails if the working tree is dirty (the tag points at committed code, not
+your working directory — an uncommitted bump would silently release the
+wrong thing), if a release for the tag already exists, or if the tag exists
+anywhere but points at HEAD. A tag that already exists is resumed as long as
+it points at HEAD (e.g. a run that pushed the tag but failed to publish, or
+a bump that was already committed); if it points anywhere else, that is a
+hard failure. If the tag already exists, any bump argument is ignored and
+the release is resumed instead.
+
+With --no-bump, releases the version already in Cargo.toml without touching
+anything (the tree must be clean). Useful for re-cutting a version without
+a bump.
+
+Requires the gh CLI (https://cli.github.com) and make. Run from anywhere in
+the repo: scripts/create-release [patch|minor|major] [-y]
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import shutil
+import subprocess
+import sys
+import time
+import tomllib
+from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+WORKFLOW = "release.yml"
+WATCH_TIMEOUT = 30 * 60  # seconds; macOS runners can queue for a while
+POLL_INTERVAL = 15
+
+# The four assets the Release workflow builds and install-wizard.sh's
+# download-binary path fetches from releases/latest/download.
+ASSETS = (
+    "tmux-agent-sidebar-darwin-aarch64",
+    "tmux-agent-sidebar-darwin-x86_64",
+    "tmux-agent-sidebar-linux-x86_64",
+    "tmux-agent-sidebar-linux-aarch64",
+)
+
+BUMP_FILES = ("Cargo.toml", "Cargo.lock", ".claude-plugin/plugin.json")
+
+
+def fail(msg: str) -> int:
+    print(f"create-release FAILED: {msg}", file=sys.stderr)
+    return 1
+
+
+def run(cmd: list[str]) -> str:
+    """Run a command, returning its stripped stdout; abort on failure."""
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    if result.returncode != 0:
+        detail = result.stderr.strip() or result.stdout.strip()
+        raise SystemExit(f"create-release FAILED: {' '.join(cmd)}\n{detail}")
+    return result.stdout.strip()
+
+
+def probe(cmd: list[str]) -> subprocess.CompletedProcess[str]:
+    """Run a command without aborting, for existence checks."""
+    return subprocess.run(cmd, capture_output=True, text=True)
+
+
+def cargo_version() -> str:
+    with open(REPO_ROOT / "Cargo.toml", "rb") as f:
+        return tomllib.load(f)["package"]["version"]
+
+
+def plugin_version() -> str:
+    with open(REPO_ROOT / ".claude-plugin" / "plugin.json") as f:
+        return json.load(f)["version"]
+
+
+def bump_version(version: str, part: str) -> str:
+    major, minor, patch = (int(x) for x in version.split("."))
+    if part == "major":
+        return f"{major + 1}.0.0"
+    if part == "minor":
+        return f"{major}.{minor + 1}.0"
+    return f"{major}.{minor}.{patch + 1}"
+
+
+def local_tag_commit(tag: str) -> str | None:
+    """The commit a local tag points at, or None if the tag doesn't exist."""
+    result = probe(["git", "rev-parse", "-q", "--verify", f"refs/tags/{tag}"])
+    if result.returncode != 0:
+        return None
+    return run(["git", "rev-parse", f"{tag}^{{commit}}"])
+
+
+def remote_tag_commit(tag: str) -> str | None:
+    """The commit tag points at on origin, or None if it isn't there."""
+    remote = probe(["git", "ls-remote", "--tags", "origin"])
+    if remote.returncode != 0:
+        raise SystemExit(
+            f"create-release FAILED: cannot reach origin: {remote.stderr.strip()}"
+        )
+    for line in remote.stdout.splitlines():
+        sha, _, ref = line.partition("\t")
+        ref = ref.strip()
+        if ref == f"refs/tags/{tag}^{{}}":
+            return sha  # peeled commit of an annotated tag
+        if ref == f"refs/tags/{tag}":
+            return sha  # lightweight tag: the hash is the commit
+    return None
+
+
+def release_exists(repo: str, tag: str) -> bool:
+    return (
+        probe(["gh", "release", "view", tag, "--repo", repo, "--json", "name"]).returncode
+        == 0
+    )
+
+
+def workflow_state(repo: str) -> str | None:
+    """The Release workflow's enabled state, or None if it can't be read."""
+    result = probe(
+        [
+            "gh",
+            "api",
+            f"repos/{repo}/actions/workflows/{WORKFLOW}",
+            "--jq",
+            ".state",
+        ]
+    )
+    if result.returncode != 0:
+        return None
+    return result.stdout.strip() or None
+
+
+def confirm(prompt: str, assume_yes: bool) -> None:
+    if assume_yes:
+        return
+    try:
+        answer = input(f"{prompt} [y/N] ")
+    except EOFError:
+        raise SystemExit("create-release FAILED: aborted (no tty; pass --yes)")
+    if answer.strip().lower() not in ("y", "yes"):
+        raise SystemExit("create-release FAILED: aborted")
+
+
+def watch_build(repo: str, tag: str) -> int:
+    """Wait for the Release workflow run for tag. Returns 0 on success."""
+    print(f"waiting for the {WORKFLOW} build (up to {WATCH_TIMEOUT // 60} min)...")
+    deadline = time.monotonic() + WATCH_TIMEOUT
+    announced = False
+    while time.monotonic() < deadline:
+        run_row = None
+        result = probe(
+            [
+                "gh",
+                "run",
+                "list",
+                "--repo",
+                repo,
+                f"--workflow={WORKFLOW}",
+                "--limit",
+                "30",
+                "--json",
+                "databaseId,headBranch,status,conclusion,url",
+            ]
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            for row in json.loads(result.stdout):
+                if row.get("headBranch") == tag:
+                    run_row = row
+                    break
+        if run_row is not None:
+            if not announced:
+                print(f"  build: {run_row['url']}")
+                announced = True
+            if run_row["status"] == "completed":
+                if run_row.get("conclusion") == "success":
+                    return 0
+                print(
+                    f"create-release FAILED: build finished with"
+                    f" {run_row.get('conclusion')}",
+                    file=sys.stderr,
+                )
+                print(
+                    f"  logs: gh run view {run_row['databaseId']}"
+                    f" --repo {repo} --log-failed",
+                    file=sys.stderr,
+                )
+                return 1
+        time.sleep(POLL_INTERVAL)
+    print(
+        f"create-release FAILED: timed out waiting for the build to start or finish",
+        file=sys.stderr,
+    )
+    print(
+        f"  check: gh run list --repo {repo} --workflow={WORKFLOW}",
+        file=sys.stderr,
+    )
+    return 1
+
+
+def verify_release(repo: str, tag: str) -> int:
+    """Print the release URL and check all four binaries got attached."""
+    result = probe(
+        ["gh", "release", "view", tag, "--repo", repo, "--json", "url,assets"]
+    )
+    if result.returncode != 0:
+        print(
+            f"create-release FAILED: release {tag} is not visible yet;"
+            f" check the Actions run",
+            file=sys.stderr,
+        )
+        return 1
+    data = json.loads(result.stdout)
+    names = [a["name"] for a in data.get("assets", [])]
+    print(f"published: {data['url']}")
+    missing = [a for a in ASSETS if a not in names]
+    if missing:
+        print(
+            f"warning: missing assets: {', '.join(missing)}"
+            f" (install-wizard's download path needs all of them)",
+            file=sys.stderr,
+        )
+        return 1
+    print(f"  assets: {', '.join(names)}")
+    return 0
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(
+        description=(
+            "Bump the version, push a tag, and let the Release workflow build"
+            " the binaries (scripts/create-release -h for details)."
+        )
+    )
+    parser.add_argument(
+        "part", nargs="?", choices=("patch", "minor", "major"),
+        help="bump type; omit with --no-bump",
+    )
+    parser.add_argument(
+        "-y", "--yes", action="store_true", help="skip the confirmation prompt"
+    )
+    parser.add_argument(
+        "--no-bump",
+        action="store_true",
+        help="release the version already in Cargo.toml, no bump commit",
+    )
+    parser.add_argument(
+        "--no-checks", action="store_true", help="skip make ci before tagging"
+    )
+    parser.add_argument(
+        "--no-watch",
+        action="store_true",
+        help="exit after pushing the tag; don't wait for the build",
+    )
+    args = parser.parse_args()
+
+    if args.part and args.no_bump:
+        return fail("choose either a bump type or --no-bump, not both")
+
+    if shutil.which("gh") is None:
+        return fail("gh CLI not found on PATH (https://cli.github.com)")
+
+    os.chdir(REPO_ROOT)
+    repo = run(
+        ["gh", "repo", "view", "--json", "nameWithOwner", "--jq", ".nameWithOwner"]
+    )
+
+    branch = run(["git", "rev-parse", "--abbrev-ref", "HEAD"])
+    if branch == "HEAD":
+        return fail("detached HEAD; check out a branch first")
+
+    dirty = probe(["git", "status", "--porcelain", "--untracked-files=no"])
+    if dirty.returncode != 0:
+        return fail("not a git work tree")
+    if dirty.stdout.strip():
+        return fail(
+            "uncommitted changes: commit (or stash) them first"
+            " (the tag points at HEAD, not your working directory)"
+        )
+
+    default = probe(["git", "symbolic-ref", "--short", "refs/remotes/origin/HEAD"])
+    if default.returncode == 0 and branch != default.stdout.strip().removeprefix(
+        "origin/"
+    ):
+        print(f"warning: on branch {branch!r}, not the default branch", file=sys.stderr)
+
+    # Hard gate: a disabled workflow would swallow the tag push and the
+    # script would just time out later.
+    state = workflow_state(repo)
+    if state is not None and state != "active":
+        return fail(
+            f"the Release workflow is {state!r} on {repo}; enable it first:\n"
+            f"  gh workflow enable Release --repo {repo}\n"
+            f"  (or https://github.com/{repo}/actions/workflows/{WORKFLOW}\n"
+            f"   and click Enable workflow)"
+        )
+
+    version = cargo_version()
+    tag = f"v{version}"
+    head = run(["git", "rev-parse", "HEAD"])
+
+    # Resume semantics: if the tag already exists anywhere (local, origin, or
+    # a published release), skip the bump and resume as long as it points at
+    # HEAD. Covers a previous run that pushed the tag but failed later, and a
+    # bump that was already committed.
+    resume = (
+        local_tag_commit(tag) is not None
+        or remote_tag_commit(tag) is not None
+        or release_exists(repo, tag)
+    )
+    if resume:
+        if args.part:
+            print(f"tag {tag} already exists — ignoring the bump and resuming")
+
+    new_version = version
+    if not resume:
+        if args.part:
+            new_version = bump_version(version, args.part)
+        elif not args.no_bump:
+            parser.error(
+                "pass a bump type (patch|minor|major),"
+                " or --no-bump to release the version already in Cargo.toml"
+            )
+        tag = f"v{new_version}"
+
+    # Plan + confirm before anything is mutated.
+    if resume:
+        commit = local_tag_commit(tag)
+        print(f"release: {tag} (resume — tag already exists)")
+        if commit is not None and commit != head:
+            return fail(
+                f"local tag {tag} points at {commit[:7]}, not HEAD ({head[:7]});"
+                f" move or delete it first: git tag -d {tag}"
+            )
+        remote = remote_tag_commit(tag)
+        if remote is not None and remote != head:
+            return fail(
+                f"tag {tag} already exists on origin pointing at {remote[:7]},"
+                f" not HEAD ({head[:7]})"
+            )
+        if release_exists(repo, tag):
+            return fail(f"release {tag} already exists; nothing to do")
+        print(f"  tag:   {tag} at {head[:7]} (already exists, pointing at HEAD)")
+        confirm(f"Resume release {tag}?", args.yes)
+    else:
+        if args.part:
+            if local_tag_commit(tag) or remote_tag_commit(tag):
+                return fail(
+                    f"tag {tag} already exists but doesn't match Cargo.toml's"
+                    f" {version}; delete it first or release with --no-bump"
+                )
+            if release_exists(repo, tag):
+                return fail(f"release {tag} already exists; nothing to do")
+            print(
+                f"release: {tag} (bump: {args.part}, {version} -> {new_version})"
+            )
+            print(f"  bump:  make bump part={args.part}"
+                  + ("" if args.no_checks else " + make ci")
+                  + f", commit \"Bump version to {new_version}\"")
+        else:
+            print(f"release: {tag} (from Cargo.toml, no bump)")
+            print(f"  checks: make ci" if not args.no_checks else "  checks: skipped")
+        print(f"  tag:   {tag} on a new commit on {branch!r}")
+        print(f"  build: GitHub Actions ({WORKFLOW}) — 4 binaries attached")
+        print("  notes: changelog generated by the workflow")
+        confirm("Create and publish this release?", args.yes)
+
+    # Mutation phase.
+    if not resume and args.part:
+        print(f"bumping {version} -> {new_version}...")
+        run(["make", "bump", f"part={args.part}"])
+        bumped = cargo_version()
+        if bumped != new_version:
+            return fail(
+                f"make bump left Cargo.toml at {bumped}, expected {new_version}"
+            )
+        if plugin_version() != new_version:
+            return fail(
+                f"plugin.json is at {plugin_version()}, expected {new_version}"
+                " (tests/plugin_hooks_tests.rs enforces lockstep)"
+            )
+        if not args.no_checks:
+            print("running checks (make ci)...")
+            run(["make", "ci"])
+        run(["git", "add", *BUMP_FILES])
+        run(["git", "commit", "-m", f"Bump version to {new_version}"])
+        head = run(["git", "rev-parse", "HEAD"])
+        print(f"pushing {branch}...")
+        run(["git", "push", "origin", "HEAD"])
+    elif not resume and args.no_checks:
+        print("skipping checks (--no-checks)")
+    elif not resume:
+        print("running checks (make ci)...")
+        run(["make", "ci"])
+
+    if resume and remote_tag_commit(tag) is None:
+        print(f"pushing tag {tag}...")
+        run(["git", "push", "origin", tag])
+    elif not resume:
+        print(f"tagging {head[:7]} as {tag}...")
+        run(["git", "tag", tag])
+        print("pushing tag...")
+        run(["git", "push", "origin", tag])
+    else:
+        print(f"tag {tag} already on origin at {head[:7]}")
+
+    if args.no_watch:
+        print(f"tag pushed — the Release workflow will publish {tag}; check:")
+        print(f"  gh run list --repo {repo} --workflow={WORKFLOW}")
+        return 0
+
+    if watch_build(repo, tag) != 0:
+        return 1
+    return verify_release(repo, tag)
+
+
+if __name__ == "__main__":
+    sys.exit(main())
