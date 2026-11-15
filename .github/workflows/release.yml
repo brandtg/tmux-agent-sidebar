@@ -143,6 +143,11 @@ jobs:
           for i in $(seq 1 60); do
             state="$(gh pr view "$number" --repo "$GITHUB_REPOSITORY" --json state --jq .state)"
             [ "$state" = "MERGED" ] && break
+            # Retry quietly: a just-opened PR can fail the first merge with
+            # a transient "not mergeable yet".
+            if [ "$state" = "OPEN" ]; then
+              gh pr merge "$number" --repo "$GITHUB_REPOSITORY" --squash 2>/dev/null || true
+            fi
             sleep 15
           done
           if [ "$(gh pr view "$number" --repo "$GITHUB_REPOSITORY" --json state --jq .state)" != "MERGED" ]; then
