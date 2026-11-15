@@ -5,12 +5,15 @@ description: Use when bumping version, creating a release tag, or pushing a vers
 
 # Version Release
 
-Release mechanics are automated by scripts/create-release: it bumps
-Cargo.toml, .claude-plugin/plugin.json, and Cargo.lock in lockstep (via
-make bump), runs make ci, commits and pushes the bump, tags vX.Y.Z, pushes
-the tag, and waits for the GitHub Actions Release workflow to build the four
-platform binaries and publish the release. The agent's job is choosing the
-bump type; the script does the rest.
+Releases run through the Release workflow (.github/workflows/release.yml).
+scripts/create-release is the entry point: it dispatches the workflow with a
+part input, and the workflow does everything remotely — bumps Cargo.toml,
+.claude-plugin/plugin.json, and Cargo.lock in lockstep (make bump), runs
+make ci, pushes the bump commit and the vX.Y.Z tag, builds the four platform
+binaries, and publishes the release with them attached. Nothing happens
+locally: no commits, no tags, no clean tree required, and future branch
+protection on main won't block it (the workflow's own token pushes). The
+agent's job is choosing the bump type; the script does the rest.
 
 ## Workflow
 
@@ -26,8 +29,9 @@ bump type; the script does the rest.
      the user there is nothing to release.
 2. **Cut the release**: `scripts/create-release <patch|minor|major> -y`
    from anywhere in the repo. It prints the plan, asks for confirmation
-   unless -y, and finishes by printing the release URL and verifying all
-   four binary assets are attached.
+   unless -y, dispatches the workflow, waits for the run, and finishes by
+   printing the release URL and verifying all four binary assets are
+   attached.
 3. **Report the release URL** to the user. If the build fails, surface the
    cause from the logs command the script prints
    (`gh run view <id> --log-failed`).
@@ -53,18 +57,21 @@ Rules of thumb when classifying:
 ## Flags
 
 - `--no-bump` — release the version already in Cargo.toml without a bump
-  commit.
-- `--no-watch` — push the tag and exit; don't wait for the build.
-- `--no-checks` — skip make ci (avoid; CI runs the same checks).
+  commit (the workflow's `none` part).
+- `--no-watch` — dispatch and exit; don't wait for the build.
+- Direct alternative: `gh workflow run Release --ref main -f part=minor`.
 
 ## Notes
 
 - A partially-completed run resumes itself: if the tag already exists and
-  points at HEAD, the script skips the bump and continues the release. If
-  the tag points anywhere else, that is a hard failure.
+  points at the dispatch ref's HEAD, the workflow skips the bump and goes
+  straight to the build. A tag pointing anywhere else is a hard error.
 - .claude-plugin/plugin.json must stay in lockstep with Cargo.toml —
   tests/plugin_hooks_tests.rs enforces this (Claude Code uses the manifest's
-  version for update detection). The script bumps both via make bump.
-- The script refuses to run on a dirty tree, a disabled Release workflow, or
-  an already-published release; follow its printed instructions.
-- Tags use the `v` prefix (e.g., `v1.2.0`).
+  version for update detection). The workflow bumps both via make bump.
+- If main ever gets branch protection, allow github-actions[bot] to push
+  (or an exemption), since the bump commit and tag come from the workflow.
+- Tags use the `v` prefix (e.g., `v1.2.0`). Pushing a tag manually still
+  works: the workflow builds and publishes it without a bump.
+- make bump / make tag remain usable for local experiments; the release
+  path itself is the workflow.

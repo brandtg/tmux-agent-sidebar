@@ -4,12 +4,117 @@ on:
   push:
     tags:
       - "v*"
+  workflow_dispatch:
+    inputs:
+      part:
+        description: "SemVer component to bump (none = release the version already in Cargo.toml)"
+        type: choice
+        required: true
+        default: patch
+        options:
+          - patch
+          - minor
+          - major
+          - none
 
 permissions:
   contents: write
 
 jobs:
+  # Dispatch path: bump the version and push the bump commit and the tag
+  # from here, so cutting a release is one remote action with no local git
+  # state. The tag-push path skips this job entirely (a GITHUB_TOKEN tag
+  # push can't trigger another workflow, so bump and build share one run).
+  bump:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.plan.outputs.tag }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - id: plan
+        name: Plan the version
+        env:
+          PART: ${{ inputs.part }}
+        run: |
+          set -euo pipefail
+          current="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml)"
+          case "$PART" in
+            patch|minor|major)
+              new="$(awk -v v="$current" -v part="$PART" 'BEGIN {
+                split(v, a, ".")
+                if (part == "major")      { a[1]++; a[2] = 0; a[3] = 0 }
+                else if (part == "minor") { a[2]++; a[3] = 0 }
+                else                      { a[3]++ }
+                print a[1] "." a[2] "." a[3]
+              }')"
+              ;;
+            none)
+              new="$current"
+              ;;
+            *)
+              echo "::error::part must be patch, minor, major, or none (got '$PART')"
+              exit 1
+              ;;
+          esac
+          echo "tag=v$new" >> "$GITHUB_OUTPUT"
+          echo "release plan: $current -> $new (tag v$new)"
+
+      # Resume semantics: a tag that already exists and points at this ref's
+      # HEAD means a previous run already bumped and tagged; skip the
+      # mutations and go straight to the build. A tag pointing anywhere else
+      # is a conflict (delete it or bump past it).
+      - id: resume
+        name: Check for an existing tag
+        env:
+          TAG: ${{ steps.plan.outputs.tag }}
+        run: |
+          set -euo pipefail
+          sha="$(git ls-remote origin "refs/tags/$TAG" | awk -F'\t' -v t="refs/tags/$TAG" '$2 == t {s = $1} $2 == t "^{}" {s = $1} END {print s}')"
+          if [ -n "$sha" ] && [ "$sha" != "$GITHUB_SHA" ]; then
+            echo "::error::tag $TAG already exists on origin at ${sha:0:7}, not this ref's HEAD (${GITHUB_SHA:0:7})"
+            exit 1
+          fi
+          if [ -n "$sha" ]; then
+            echo "tag $TAG already exists at ${sha:0:7}; resuming the release"
+            echo "resume=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "resume=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Bump the version
+        if: steps.resume.outputs.resume != 'true' && inputs.part != 'none'
+        run: make bump part=${{ inputs.part }}
+
+      - name: Run checks
+        if: steps.resume.outputs.resume != 'true' && inputs.part != 'none'
+        run: make ci
+
+      - name: Commit and push the bump
+        if: steps.resume.outputs.resume != 'true' && inputs.part != 'none'
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Cargo.toml Cargo.lock .claude-plugin/plugin.json
+          git commit -m "Bump version to $(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml)"
+          git push origin "HEAD:$GITHUB_REF_NAME"
+
+      - name: Tag and push
+        if: steps.resume.outputs.resume != 'true'
+        env:
+          TAG: ${{ steps.plan.outputs.tag }}
+        run: |
+          set -euo pipefail
+          git tag "$TAG"
+          git push origin "$TAG"
+
   build:
+    needs: bump
+    if: ${{ needs.bump.result == 'success' || needs.bump.result == 'skipped' }}
     strategy:
       matrix:
         include:
@@ -30,6 +135,10 @@ jobs:
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Dispatch: the tag the bump job created pins the exact content
+          # even if the branch moves during the build. Tag push: that tag.
+          ref: ${{ needs.bump.outputs.tag && format('refs/tags/{0}', needs.bump.outputs.tag) || github.ref }}
 
       - name: Install Rust toolchain
         run: |
@@ -40,13 +149,13 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y gcc-aarch64-linux-gnu
-          echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc" >> $GITHUB_ENV
+          echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu" >> "$GITHUB_ENV"
 
       - name: Build
         run: cargo build --release --target ${{ matrix.target }}
 
       - name: Rename binary
-        run: cp target/${{ matrix.target }}/release/tmux-agent-sidebar ${{ matrix.asset }}
+        run: cp "target/${{ matrix.target }}/release/tmux-agent-sidebar" "${{ matrix.asset }}"
 
       - name: Upload artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -55,7 +164,8 @@ jobs:
           path: ${{ matrix.asset }}
 
   release:
-    needs: build
+    needs: [bump, build]
+    if: ${{ !cancelled() && needs.build.result == 'success' }}
     runs-on: ubuntu-latest
 
     steps:
@@ -69,25 +179,30 @@ jobs:
 
       - name: Generate changelog
         id: changelog
+        env:
+          # Dispatch: the tag the bump job pushed. Tag push: the pushed tag
+          # (bump is skipped, so its outputs are empty here).
+          RELEASE_REF: ${{ needs.bump.outputs.tag || github.ref_name }}
         run: |
           PREV_TAG=$(git tag --sort=-v:refname | sed -n '2p')
           # No prior tag → first release. This repo carries upstream's full
           # history, so anchor the changelog at the fork point instead of
           # listing every upstream commit too.
           : "${PREV_TAG:=fb11818}"
-          CHANGELOG=$(git log --pretty=format:"- %s (%h)" "${PREV_TAG}..${{ github.ref_name }}")
+          CHANGELOG=$(git log --pretty=format:"- %s (%h)" "${PREV_TAG}..${RELEASE_REF}")
           {
             echo "body<<EOF"
             echo "## What's Changed"
             echo ""
             echo "$CHANGELOG"
             echo ""
-            echo "**Full Changelog**: https://github.com/${{ github.repository }}/compare/${PREV_TAG}...${{ github.ref_name }}"
+            echo "**Full Changelog**: https://github.com/${{ github.repository }}/compare/${PREV_TAG}...${RELEASE_REF}"
             echo "EOF"
           } >> "$GITHUB_OUTPUT"
 
       - name: Create release
         uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
         with:
+          tag_name: ${{ needs.bump.outputs.tag || github.ref_name }}
           body: ${{ steps.changelog.outputs.body }}
           files: tmux-agent-sidebar-*
