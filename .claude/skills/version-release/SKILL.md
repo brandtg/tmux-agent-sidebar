@@ -64,13 +64,16 @@ Rules of thumb when classifying:
 ## Notes
 
 - A partially-completed run resumes itself: if the tag already exists and
-  points at the dispatch ref's HEAD, the workflow skips the bump and goes
-  straight to the build. A tag pointing anywhere else is a hard error.
+  points at the dispatch ref's HEAD, the workflow goes straight to the
+  build; if the base branch already carries the bumped version (the bump PR
+  merged but the tag never went up), it skips the bump and just tags.
 - .claude-plugin/plugin.json must stay in lockstep with Cargo.toml —
   tests/plugin_hooks_tests.rs enforces this (Claude Code uses the manifest's
   version for update detection). The workflow bumps both via make bump.
-- If main ever gets branch protection, allow github-actions[bot] to push
-  (or an exemption), since the bump commit and tag come from the workflow.
+- The bump lands through its own PR (release-bump/vX.Y.Z) so branch
+  protection on main needs no bypass; the workflow auto-merges it and waits
+  for a manual merge if it can't. This needs the repo setting
+  "Allow GitHub Actions to create and approve pull requests" (on).
 - Tags use the `v` prefix (e.g., `v1.2.0`). Pushing a tag manually still
   works: the workflow builds and publishes it without a bump.
 - make bump / make tag remain usable for local experiments; the release
