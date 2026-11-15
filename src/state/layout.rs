@@ -1,6 +1,5 @@
-use super::{AppState, Focus, RepoFilter, StatusFilter};
-use crate::tmux::{PaneAttention, PaneStatus};
-use crate::ui::text::display_width;
+use super::{AppState, Focus, RepoFilter};
+use crate::tmux::PaneAttention;
 
 #[derive(Debug, Clone)]
 pub struct RowTarget {
@@ -97,6 +96,11 @@ pub struct FrameLayout {
     /// X column of the repo filter button in the secondary header. `None`
     /// when the button is hidden. Used for click hit-testing.
     pub repo_button_col: Option<u16>,
+    /// Screen row of the chyron (event) row, when it is rendered. On a
+    /// one-row panel the toolbar takes the row and this is `None`.
+    pub chyron_row: Option<u16>,
+    /// Screen row of the merged toolbar (notices / search / repo).
+    pub toolbar_row: Option<u16>,
     /// Click regions for the `[+]` spawn button rendered at the right
     /// edge of each repo-group header. One entry per visible repo group.
     pub repo_spawn_targets: Vec<RepoSpawnTarget>,
@@ -168,17 +172,14 @@ impl AppState {
             let filtered_panes: Vec<_> = group
                 .panes
                 .iter()
-                .filter(|(pane, git)| {
-                    self.global.status_filter.matches(pane)
-                        && (group_matches_search || self.search_matches_pane(pane, git))
-                })
+                .filter(|(pane, git)| group_matches_search || self.search_matches_pane(pane, git))
                 .collect();
 
-            // The same window set and per-window status-filter rule as
-            // the renderer, so the target order mirrors the render
-            // order in `row_collector::collect` — the selection index is
-            // a position into `pane_row_targets`, and `row_index` counts
-            // rendered rows, so the two paths must agree on the order.
+            // The same window set as the renderer, so the target order
+            // mirrors the render order in `row_collector::collect` — the
+            // selection index is a position into `pane_row_targets`, and
+            // `row_index` counts rendered rows, so the two paths must
+            // agree on the order.
             let matched_windows: Vec<&crate::group::OtherWindow> = if self.global.show_windows
                 && let Some(windows) = self
                     .other_windows
@@ -187,11 +188,7 @@ impl AppState {
             {
                 windows
                     .iter()
-                    .filter(|window| {
-                        let runtime = self.pane_state(&window.pane_id);
-                        self.global.status_filter.matches_window(window, runtime)
-                            && (group_matches_search || self.search_matches_window(window))
-                    })
+                    .filter(|window| group_matches_search || self.search_matches_window(window))
                     .collect()
             } else {
                 Vec::new()
@@ -490,72 +487,30 @@ impl AppState {
         self.scrolls.panes.scroll(lines);
     }
 
-    /// Handle mouse click on the filter bar (row 0).
-    /// Determines which filter was clicked based on x coordinate.
-    /// Debounces rapid clicks to ignore phantom mouse events from tmux
-    /// pane resize/layout changes.
-    pub fn handle_filter_click(&mut self, col: u16) {
-        const DEBOUNCE_MS: u128 = 150;
-        let now = std::time::Instant::now();
-        if now
-            .duration_since(self.timers.last_filter_click)
-            .as_millis()
-            < DEBOUNCE_MS
-        {
+    /// Handle a mouse click on the chyron row (the panel's top row).
+    /// The event names a pane: the click selects that pane's row and
+    /// the render's auto-scroll brings it into view. It does not jump
+    /// into the pane — Enter/Right remain the explicit jump, matching
+    /// list-row clicks. A blank chyron (nothing has fired) is inert.
+    pub fn handle_chyron_click(&mut self) {
+        let Some(event) = self.chyron.current.clone() else {
             return;
-        }
-        self.timers.last_filter_click = now;
-
-        let (all, running, background, waiting, idle, error) = self.status_counts();
-        // Layout: " <icon>N  <icon>N  ..." — must mirror
-        // `ui::panes::filter_bar::render_filter_bar` exactly. Icons are
-        // user-configurable (`@sidebar_icon_*`) and may be wider than one
-        // column, so the clickable width of each item is derived from the
-        // same glyphs the renderer draws — assuming `icon(1)` made clicks
-        // land on the wrong filter whenever a custom icon was set.
-        let icons = &self.icons;
-        let item_width = |icon: &str, count: usize| display_width(icon) + count.to_string().len();
-        let mut x = 1usize; // leading space
-        let items: Vec<(StatusFilter, usize)> = vec![
-            (StatusFilter::All, item_width(icons.all_icon(), all)),
-            (
-                StatusFilter::Running,
-                item_width(icons.status_icon(&PaneStatus::Running), running),
-            ),
-            (
-                StatusFilter::Background,
-                item_width(icons.status_icon(&PaneStatus::Background), background),
-            ),
-            (
-                StatusFilter::Waiting,
-                item_width(icons.status_icon(&PaneStatus::Waiting), waiting),
-            ),
-            (
-                StatusFilter::Idle,
-                item_width(icons.status_icon(&PaneStatus::Idle), idle),
-            ),
-            (
-                StatusFilter::Error,
-                item_width(icons.status_icon(&PaneStatus::Error), error),
-            ),
-        ];
-        let col = col as usize;
-        for (i, (filter, width)) in items.iter().enumerate() {
-            if i > 0 {
-                x += 2; // "  " separator
-            }
-            if col >= x && col < x + width {
-                self.global.status_filter = *filter;
-                self.global.save_filter();
-                self.rebuild_row_targets();
-                return;
-            }
-            x += width;
+        };
+        if let Some(row_index) = self
+            .layout
+            .pane_row_targets
+            .iter()
+            .position(|target| target.pane_id == event.pane_id)
+        {
+            self.global.selected_pane_row = row_index;
+            self.focus_state.focus = Focus::Panes;
+            self.global.queue_cursor_save();
         }
     }
 
-    /// Handle mouse click on the secondary header row (row 1).
-    /// The repo filter button lives on the far right of this row.
+    /// Handle mouse click on the toolbar row (notices indicator left,
+    /// repo filter button right). The repo filter button lives on the
+    /// far right of this row.
     pub fn handle_secondary_header_click(&mut self, col: u16) {
         if self
             .notices
@@ -576,7 +531,8 @@ impl AppState {
 
     /// Handle mouse click in agents panel. Maps screen row to agent row
     /// via line_to_row (adjusted for scroll offset) and activates that pane.
-    /// Row 0 is the fixed filter bar, row 1+ maps to the scrollable agent list.
+    /// Row 0 is the chyron (event) row, row 1 the merged toolbar; both are
+    /// matched by the renderer-recorded rows, then the scrollable list maps.
     pub fn handle_mouse_click(&mut self, row: u16, col: u16) {
         if self.is_notices_popup_open() {
             if let Some(area) = self.notices_popup_area()
@@ -639,11 +595,17 @@ impl AppState {
             return;
         }
 
-        if row == 0 {
-            self.handle_filter_click(col);
+        // The chyron row and the toolbar row are the panel's two fixed
+        // header rows. Their screen rows come from the renderer; the
+        // defaults match the normal two-row layout for callers (tests)
+        // that have not rendered a frame yet.
+        let chyron_row = self.layout.chyron_row.unwrap_or(0);
+        let toolbar_row = self.layout.toolbar_row.unwrap_or(1);
+        if chyron_row == row {
+            self.handle_chyron_click();
             return;
         }
-        if row == 1 {
+        if toolbar_row == row {
             self.handle_secondary_header_click(col);
             return;
         }
@@ -745,7 +707,7 @@ impl AppState {
             return;
         }
 
-        let line_index = (row as usize - 2) + self.scrolls.panes.offset;
+        let line_index = row.saturating_sub(2) as usize + self.scrolls.panes.offset;
         if let Some(Some(agent_row)) = self.layout.line_to_row.get(line_index) {
             self.global.selected_pane_row = *agent_row;
             self.global.queue_cursor_save();

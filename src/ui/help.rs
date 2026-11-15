@@ -22,8 +22,6 @@ const HELP_SECTIONS: &[(&str, &[(&str, &str)])] = &[
             ("PgUp / PgDn", "Page the list"),
             ("a", "Next attention row"),
             ("/", "Search agents"),
-            ("h / l", "Status filter"),
-            ("Tab", "Cycle status filter"),
             ("[ / ]", "Prev / next group"),
             ("z", "Collapse / expand group (or click header)"),
             ("Z", "Collapse / expand all groups"),
@@ -201,8 +199,6 @@ mod tests {
         │ PgUp / PgDn      Page the list           │
         │ a                Next attention row      │
         │ /                Search agents           │
-        │ h / l            Status filter           │
-        │ Tab              Cycle status filter     │
         │ [ / ]            Prev / next group       │
         │ z                Collapse / expand group │
         │                  (or click header)       │
@@ -237,6 +233,8 @@ mod tests {
         │                                          │
         │                                          │
         │                                          │
+        │                                          │
+        │                                          │
         ╰──────────────────────────────────────────╯
         ");
     }
@@ -263,11 +261,11 @@ mod tests {
         │              row       │
         │ /            Search    │
         │              agents    │
-        │ h / l        Status    │
-        │              filter    │
-        │ Tab          Cycle     │
-        │              status    │
-        │              filter    │
+        │ [ / ]        Prev /    │
+        │              next group│
+        │ z            Collapse  │
+        │              / expand  │
+        │              group (or │
         ╰────────────────────────╯
         ");
     }

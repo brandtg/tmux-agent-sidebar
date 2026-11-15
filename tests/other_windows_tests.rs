@@ -3,7 +3,6 @@ mod test_helpers;
 
 use test_helpers::*;
 use tmux_agent_sidebar::group::{OtherWindow, PaneGitInfo};
-use tmux_agent_sidebar::state::StatusFilter;
 use tmux_agent_sidebar::tmux::{AgentType, PaneStatus, SessionInfo, WindowInfo, WindowStatus};
 
 fn other_window(pane_id: &str, name: &str, command: &str, status: WindowStatus) -> OtherWindow {
@@ -59,7 +58,6 @@ fn snapshot_other_windows_rendered() {
 
     let output = render_to_string(&mut state, 34, 40);
     insta::assert_snapshot!(output, @"
-     ≡3  ●1  ◎0  ◐0  ○2  ✕0
     ⓘ                              — ▾
     ▾ project
     ┃ ○ claude
@@ -131,7 +129,6 @@ fn snapshot_other_windows_with_args_rendered() {
 
     let output = render_to_string(&mut state, 34, 40);
     insta::assert_snapshot!(output, @"
-     ≡3  ●2  ◎0  ◐0  ○1  ✕0
     ⓘ                              — ▾
     ▾ project
     ┃ ○ claude
@@ -147,29 +144,10 @@ fn snapshot_other_windows_hidden_when_off() {
 
     let output = render_to_string(&mut state, 34, 40);
     insta::assert_snapshot!(output, @"
-     ≡1  ●0  ◎0  ◐0  ○1  ✕0
     ⓘ                              — ▾
     ▾ project
     ┃ ○ claude
         Waiting for prompt…
-    ");
-}
-
-#[test]
-fn snapshot_other_windows_visible_under_matching_status_filter() {
-    // Window panes participate in the status filters: the running task
-    // shows up under `running` (the "what's going on" view) while the
-    // nvim editor stays out — it has no agent status to match.
-    let mut state = state_with_windows(true);
-    state.global.status_filter = StatusFilter::Running;
-    state.rebuild_row_targets();
-
-    let output = render_to_string(&mut state, 34, 40);
-    insta::assert_snapshot!(output, @"
-     ≡3  ●1  ◎0  ◐0  ○2  ✕0
-    ⓘ                              — ▾
-    ▾ project
-      ▲ cargo
     ");
 }
 
@@ -360,21 +338,8 @@ fn window_task_finishes_and_flashes_until_focused() {
     );
     assert_eq!(runtime.window_finished.as_ref().unwrap().exit_code, None);
 
-    // The finished pane surfaces in the running tab…
-    state.global.status_filter = StatusFilter::Running;
-    state.rebuild_row_targets();
-    let running_rows: Vec<_> = state
-        .layout
-        .pane_row_targets
-        .iter()
-        .map(|t| (t.pane_id.as_str(), t.is_window))
-        .collect();
-    assert_eq!(running_rows, vec![("%10", true)]);
-
     // …until the pane gains focus, which consumes the flag. The flash
     // grace is expired by ageing the finish first.
-    state.global.status_filter = StatusFilter::All;
-    state.rebuild_row_targets();
     if let Some(finished) = state.pane_state_mut("%10").window_finished.as_mut() {
         finished.finished_at = finished.finished_at.saturating_sub(6);
     }
@@ -392,7 +357,7 @@ fn window_task_finishes_and_flashes_until_focused() {
 }
 
 #[test]
-fn window_task_nonzero_exit_is_failed_and_shows_in_error_tab() {
+fn window_task_nonzero_exit_records_the_exit_code() {
     let state = &mut tmux_agent_sidebar::state::AppState::new("%99".into());
     state.global.show_windows = true;
 
@@ -407,28 +372,6 @@ fn window_task_nonzero_exit_is_failed_and_shows_in_error_tab() {
     assert_eq!(finished.command, "cargo");
     assert_eq!(finished.exit_code, Some(1));
     assert_eq!(finished.finished_at, state.now);
-
-    state.rebuild_row_targets();
-    assert_eq!(
-        state.global.status_filter,
-        StatusFilter::All,
-        "sanity: all filter is preserved"
-    );
-
-    // Error tab shows the failed run with its pane id.
-    state.global.status_filter = StatusFilter::Error;
-    state.rebuild_row_targets();
-    let error_rows: Vec<&str> = state
-        .layout
-        .pane_row_targets
-        .iter()
-        .map(|t| t.pane_id.as_str())
-        .collect();
-    assert_eq!(error_rows, vec!["%10"]);
-
-    // The header counts it into error.
-    let (_, _, _, _, _, error) = state.status_counts();
-    assert_eq!(error, 1);
 }
 
 #[test]
@@ -581,17 +524,6 @@ fn window_pane_that_never_ran_a_command_is_idle_only() {
         runtime.is_none_or(|s| s.window_finished.is_none() && s.window_task_command.is_none()),
         "no task was ever tracked"
     );
-
-    state.global.status_filter = StatusFilter::Idle;
-    state.rebuild_row_targets();
-    let idle_rows: Vec<&str> = state
-        .layout
-        .pane_row_targets
-        .iter()
-        .map(|t| t.pane_id.as_str())
-        .collect();
-    // The idle agent pane (%1) matches too; the window pane rides along.
-    assert_eq!(idle_rows, vec!["%1", "%10"]);
 }
 
 #[test]

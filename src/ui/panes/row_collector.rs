@@ -5,7 +5,7 @@ use ratatui::{
 
 use super::SPAWN_BUTTON;
 use super::row;
-use crate::state::{AppState, Focus, StatusFilter};
+use crate::state::{AppState, Focus};
 use crate::tmux::{PaneAttention, PaneStatus};
 use crate::ui::text::{display_width, truncate_to_width};
 
@@ -26,7 +26,6 @@ pub(super) fn collect(state: &AppState, width: u16) -> CollectedRows {
     let theme = &state.theme;
 
     let mut collected = CollectedRows::default();
-    let filter = state.global.status_filter;
     // The pane the active bar names. `focused_pane_id` rules as before;
     // while the cursor hides on a non-agent pane and `w` keeps the
     // window rows hidden, the window's first agent stands in for it
@@ -75,17 +74,14 @@ pub(super) fn collect(state: &AppState, width: u16) -> CollectedRows {
         let filtered_panes: Vec<_> = group
             .panes
             .iter()
-            .filter(|(pane, git)| {
-                filter.matches(pane)
-                    && (group_matches_search || state.search_matches_pane(pane, git))
-            })
+            .filter(|(pane, git)| group_matches_search || state.search_matches_pane(pane, git))
             .collect();
 
         // A group with no matching agent panes is skipped entirely —
         // unless one of its non-agent window panes still matches the
-        // filter (a finished task under `running`, a failed run under
-        // `error`, an idle shell under `idle`), in which case the group
-        // header and window section render without agent rows.
+        // search (a finished task, a failed run, an idle shell), in
+        // which case the group header and window section render without
+        // agent rows.
         let matched_windows: Vec<&crate::group::OtherWindow> = if state.global.show_windows {
             let key = crate::group::group_window_key(state.global.group_by, group);
             state
@@ -95,9 +91,7 @@ pub(super) fn collect(state: &AppState, width: u16) -> CollectedRows {
                     windows
                         .iter()
                         .filter(|window| {
-                            let runtime = state.pane_state(&window.pane_id);
-                            filter.matches_window(window, runtime)
-                                && (group_matches_search || state.search_matches_window(window))
+                            group_matches_search || state.search_matches_window(window)
                         })
                         .collect()
                 })
@@ -169,11 +163,15 @@ pub(super) fn collect(state: &AppState, width: u16) -> CollectedRows {
                     done += 1;
                 }
             }
-            // Window rows add to the total and to `error` via the status
-            // filter's own match rule; they have no waiting analogue
-            // (`matches_window` never matches Waiting).
+            // Window rows add to the total and to `error` when their
+            // tracked task finished with a recorded non-zero exit code;
+            // they have no waiting analogue.
             for window in &matched_windows {
-                if StatusFilter::Error.matches_window(window, state.pane_state(&window.pane_id)) {
+                let finished_error = state
+                    .pane_state(&window.pane_id)
+                    .and_then(|s| s.window_finished.as_ref())
+                    .is_some_and(|f| f.exit_code.is_some_and(|code| code != 0));
+                if finished_error {
                     error += 1;
                 }
                 if window.attention == PaneAttention::Done {
@@ -458,7 +456,7 @@ pub(super) fn collect(state: &AppState, width: u16) -> CollectedRows {
 mod tests {
     use super::*;
     use crate::group::{PaneGitInfo, RepoGroup};
-    use crate::state::{AppState, GroupBy, StatusFilter};
+    use crate::state::{AppState, GroupBy};
     use crate::tmux::{
         AgentType, PaneAttention, PaneInfo, PaneStatus, PermissionMode, WorktreeMetadata,
     };
@@ -757,13 +755,6 @@ mod tests {
             badge_text(&state),
             "▸ backend (3 panes) · 1 waiting · 1 error",
             "nonzero status segments render in the badge"
-        );
-
-        state.global.status_filter = StatusFilter::Running;
-        assert_eq!(
-            badge_text(&state),
-            "▸ backend (1 pane)",
-            "the badge counts only rows the active filter keeps"
         );
     }
 
@@ -1141,15 +1132,16 @@ mod tests {
     #[test]
     fn collect_session_mode_window_headers_skip_fully_filtered_windows() {
         // The header emits lazily per window key, so a window whose only
-        // row fails the status filter leaves no (empty) header behind.
+        // row fails the search leaves no (empty) header behind.
         let mut state = AppState::new("%0".into());
         state.global.group_by = GroupBy::Session;
         state.global.session_windows = true;
         let mut visible = make_window_pane("%1", PaneStatus::Idle, "main", 0);
         visible.window_name = "api".into();
+        visible.tmux_session = "api".into();
         let mut filtered = make_window_pane("%2", PaneStatus::Running, "main", 1);
         filtered.window_name = "web".into();
-        state.global.status_filter = StatusFilter::Idle;
+        state.search.query = "api".into();
         state.repo_groups = vec![RepoGroup {
             name: "main".into(),
             has_focus: false,
@@ -1304,18 +1296,20 @@ mod tests {
     }
 
     #[test]
-    fn collect_skips_group_when_status_filter_excludes_all_panes() {
+    fn collect_skips_group_when_search_excludes_all_panes() {
         let mut state = AppState::new("%0".into());
-        // The group has only Running panes, so filter to Waiting to drop them all.
-        state.global.status_filter = StatusFilter::Waiting;
+        // A query that matches no row field drops the whole group.
+        state.search.query = "nomatch".into();
         state.repo_groups = vec![RepoGroup {
             name: "repo".into(),
             has_focus: false,
             panes: vec![(make_pane("%1", PaneStatus::Running), PaneGitInfo::default())],
         }];
         let collected = collect(&state, 40);
-        assert!(collected.lines.is_empty());
+        // The "no matches" line renders, but no group rows or targets.
         assert!(collected.pending_spawn.is_empty());
+        assert_eq!(collected.lines.len(), 1);
+        assert!(line_text(&collected.lines[0]).contains("no matches"));
     }
 
     #[test]

@@ -17,7 +17,6 @@ pub struct ColorTheme {
     /// is both flagged and active, the flag wins the gutter.
     pub flag: Color,
     pub border_inactive: Color,
-    pub status_all: Color,
     pub status_running: Color,
     pub status_waiting: Color,
     pub status_idle: Color,
@@ -77,7 +76,6 @@ impl Default for ColorTheme {
             // accent without colliding with any status color.
             flag: Color::Indexed(208),
             border_inactive: Color::Indexed(240),
-            status_all: Color::Indexed(111),
             status_running: Color::Indexed(114),
             status_waiting: Color::Indexed(221),
             status_idle: Color::Indexed(110),
@@ -146,7 +144,6 @@ impl ColorTheme {
         theme.accent = read(tmux::SIDEBAR_COLOR_ACCENT, theme.accent);
         theme.flag = read(tmux::SIDEBAR_COLOR_FLAG, theme.flag);
         theme.border_inactive = read(tmux::SIDEBAR_COLOR_BORDER, theme.border_inactive);
-        theme.status_all = read(tmux::SIDEBAR_COLOR_ALL, theme.status_all);
         theme.status_running = read(tmux::SIDEBAR_COLOR_RUNNING, theme.status_running);
         theme.status_waiting = read(tmux::SIDEBAR_COLOR_WAITING, theme.status_waiting);
         theme.status_idle = read(tmux::SIDEBAR_COLOR_IDLE, theme.status_idle);
@@ -228,6 +225,39 @@ impl ColorTheme {
     pub fn process_pulse_color(&self, spinner_frame: usize) -> Color {
         let idx = crate::PROCESS_PULSE[spinner_frame % crate::PROCESS_PULSE.len()];
         Color::Indexed(idx)
+    }
+
+    /// Chyron foreground for a fade frame: the event's hue walking from
+    /// its brightest step down toward the muted rest color. `frame` is
+    /// the zero-based fade frame (see `state::chyron::ChyronPhase`).
+    /// Mirrors [`Self::attention_color`]'s ramp indexing; the ramps are
+    /// static constants like `DONE_PULSE`, so the flash reads the same
+    /// on every terminal regardless of theme overrides.
+    pub fn chyron_color(&self, kind: crate::state::ChyronKind, frame: usize) -> Color {
+        let ramp = match kind {
+            crate::state::ChyronKind::Done => crate::CHYRON_DONE,
+            crate::state::ChyronKind::Waiting => crate::CHYRON_WAITING,
+            crate::state::ChyronKind::Failed => crate::CHYRON_FAILED,
+        };
+        let idx = ramp[frame.min(ramp.len() - 1)];
+        Color::Indexed(idx)
+    }
+
+    /// One-frame darker background tint of the chyron hue, applied only
+    /// during the flash frames. Dark steps only: the normal foreground
+    /// must stay readable on top of it, and a dark banner reads on both
+    /// dark and light terminals.
+    pub fn chyron_flash_bg(&self, kind: crate::state::ChyronKind) -> Color {
+        match kind {
+            crate::state::ChyronKind::Done => Color::Indexed(22),
+            crate::state::ChyronKind::Waiting => Color::Indexed(58),
+            crate::state::ChyronKind::Failed => Color::Indexed(52),
+        }
+    }
+
+    /// The event hue at full strength (flash-frame foreground).
+    pub fn chyron_flash_fg(&self, kind: crate::state::ChyronKind) -> Color {
+        self.chyron_color(kind, 0)
     }
 
     pub fn agent_color(&self, agent: &AgentType) -> Color {

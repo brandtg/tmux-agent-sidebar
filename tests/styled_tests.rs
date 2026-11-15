@@ -28,7 +28,7 @@ fn snapshot_selected_focused_styled() {
     // Styled snapshot locks in the selected row's ┃[fg:153,bg:239] marker
     // and the selection background spanning its content cells.
     insta::assert_snapshot!(render_to_styled_string(&mut state, 28, 10), @"
-     ≡[fg:111]1[fg:255]  ●[fg:245]0[fg:245]  ◎[fg:245]0[fg:245]  ◐[fg:245]0[fg:245]  ○[fg:245]1[fg:255]  ✕[fg:245]0[fg:245]
+
     ⓘ[fg:221]                        —[fg:252] ▾[fg:252]
     ▾[fg:153] [fg:153]p[fg:153]r[fg:153]o[fg:153]j[fg:153]e[fg:153]c[fg:153]t[fg:153]
     ┃[fg:153,bg:239] [bg:239]○[fg:110,bg:239] [fg:173,bg:239]c[fg:173,bg:239]l[fg:173,bg:239]a[fg:173,bg:239]u[fg:173,bg:239]d[fg:173,bg:239]e[fg:173,bg:239] [bg:239] [bg:239] [bg:239] [bg:239] [bg:239] [bg:239] [bg:239] [bg:239] [bg:239] [bg:239] [bg:239] [bg:239] [bg:239] [bg:239] [bg:239] [bg:239] [bg:239] [bg:239]
@@ -59,7 +59,7 @@ fn selection_marker_uses_accent_color_with_selection_bg() {
     //   1. the selected row begins with `┃[fg:153,bg:239]` (accent + selection bg)
     //   2. the selected row never contains the old frame `│`
     insta::assert_snapshot!(render_to_styled_string(&mut state, 28, 24), @"
-     ≡[fg:111]1[fg:255]  ●[fg:245]1[fg:255]  ◎[fg:245]0[fg:245]  ◐[fg:245]0[fg:245]  ○[fg:245]0[fg:245]  ✕[fg:245]0[fg:245]
+
     ⓘ[fg:221]                        —[fg:252] ▾[fg:252]
     ▾[fg:153] [fg:153]p[fg:153]r[fg:153]o[fg:153]j[fg:153]e[fg:153]c[fg:153]t[fg:153]
     ┃[fg:153,bg:239] [bg:239]●[fg:82,bg:239] [fg:173,bg:239]c[fg:173,bg:239]l[fg:173,bg:239]a[fg:173,bg:239]u[fg:173,bg:239]d[fg:173,bg:239]e[fg:173,bg:239] [bg:239] [bg:239] [bg:239] [bg:239] [bg:239] [bg:239] [bg:239] [bg:239] [bg:239] [bg:239] [bg:239] [bg:239] [bg:239] [bg:239] [bg:239] [bg:239] [bg:239] [bg:239]
@@ -88,7 +88,7 @@ fn selection_bg_covers_inner_padding() {
     // Styled snapshot locks in the selection background extending across the
     // inner padding immediately after the `┃` marker (` [bg:239]`).
     insta::assert_snapshot!(render_to_styled_string(&mut state, 28, 24), @"
-     ≡[fg:111]1[fg:255]  ●[fg:245]0[fg:245]  ◎[fg:245]0[fg:245]  ◐[fg:245]0[fg:245]  ○[fg:245]1[fg:255]  ✕[fg:245]0[fg:245]
+
     ⓘ[fg:221]                        —[fg:252] ▾[fg:252]
     ▾[fg:153] [fg:153]p[fg:153]r[fg:153]o[fg:153]j[fg:153]e[fg:153]c[fg:153]t[fg:153]
     ┃[fg:153,bg:239] [bg:239]○[fg:110,bg:239] [fg:173,bg:239]c[fg:173,bg:239]l[fg:173,bg:239]a[fg:173,bg:239]u[fg:173,bg:239]d[fg:173,bg:239]e[fg:173,bg:239] [bg:239] [bg:239] [bg:239] [bg:239] [bg:239] [bg:239] [bg:239] [bg:239] [bg:239] [bg:239] [bg:239] [bg:239] [bg:239] [bg:239] [bg:239] [bg:239] [bg:239] [bg:239]
@@ -116,7 +116,7 @@ fn no_selection_bg_when_not_selected() {
     // Styled snapshot locks in the absence of any selection background
     // (bg:239) while the sidebar is not focused.
     insta::assert_snapshot!(render_to_styled_string(&mut state, 28, 24), @"
-     ≡[fg:111]1[fg:255]  ●[fg:245]1[fg:255]  ◎[fg:245]0[fg:245]  ◐[fg:245]0[fg:245]  ○[fg:245]0[fg:245]  ✕[fg:245]0[fg:245]
+
     ⓘ[fg:221]                        —[fg:252] ▾[fg:252]
     ▾[fg:153] [fg:153]p[fg:153]r[fg:153]o[fg:153]j[fg:153]e[fg:153]c[fg:153]t[fg:153]
     ┃[fg:153] ●[fg:82] [fg:173]c[fg:173]l[fg:173]a[fg:173]u[fg:173]d[fg:173]e[fg:173]
@@ -158,7 +158,7 @@ fn snapshot_custom_theme_colors() {
     // Styled snapshot locks in the custom theme colors (accent fg:196,
     // agent_claude fg:226, status_idle fg:46).
     insta::assert_snapshot!(render_to_styled_string(&mut state, 28, 10), @"
-     ≡[fg:111]1[fg:255]  ●[fg:245]0[fg:245]  ◎[fg:245]0[fg:245]  ◐[fg:245]0[fg:245]  ○[fg:245]1[fg:255]  ✕[fg:245]0[fg:245]
+
     ⓘ[fg:221]                        —[fg:252] ▾[fg:252]
     ▾[fg:196] [fg:196]p[fg:196]r[fg:196]o[fg:196]j[fg:196]e[fg:196]c[fg:196]t[fg:196]
     ┃[fg:196] ○[fg:46] [fg:226]c[fg:226]l[fg:226]a[fg:226]u[fg:226]d[fg:226]e[fg:226]

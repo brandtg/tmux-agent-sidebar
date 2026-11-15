@@ -4,6 +4,7 @@ use std::time::Instant;
 use crate::ui::colors::ColorTheme;
 use crate::ui::icons::StatusIcons;
 
+mod chyron;
 mod filter;
 mod focus;
 mod global;
@@ -18,7 +19,8 @@ mod session;
 mod timers;
 mod todo;
 
-pub use filter::{RepoFilter, StatusFilter};
+pub use chyron::{ChyronEvent, ChyronKind, ChyronPhase, ChyronState};
+pub use filter::RepoFilter;
 pub use focus::{Focus, FocusState};
 pub use global::{GlobalState, GroupBy, TodoScope};
 pub use layout::{
@@ -97,6 +99,10 @@ pub struct AppState {
     /// sidebar instances: the query is transient, and broadcasting it on
     /// every keystroke would refresh every open sidebar.
     pub search: SearchState,
+    /// The top-row event channel: the most recent agent transition
+    /// (turn finished / waiting / failed), rendered with a flash →
+    /// fade → rest lifecycle. Transient like [`Self::search`].
+    pub chyron: ChyronState,
     /// The group that swallowed the cursor. When every row the cursor
     /// could sit on is hidden behind collapsed headers,
     /// `selected_group_name()` has nothing to resolve against
@@ -170,6 +176,7 @@ impl AppState {
             version_notice: None,
             global,
             search: SearchState::default(),
+            chyron: ChyronState::default(),
             collapsed_cursor_group: None,
             todos: TodoState::default(),
             sessions: SessionNamesState::default(),
@@ -211,12 +218,6 @@ mod tests {
         AgentType, PaneAttention, PaneInfo, PaneStatus, PermissionMode, WorktreeMetadata,
     };
     use std::fs;
-
-    /// Reset filter click debounce so the next `handle_filter_click` is not ignored.
-    fn reset_filter_debounce(state: &mut AppState) {
-        state.timers.last_filter_click =
-            std::time::Instant::now() - std::time::Duration::from_millis(200);
-    }
 
     fn test_pane(id: &str) -> PaneInfo {
         PaneInfo {
@@ -1034,76 +1035,30 @@ mod tests {
     }
 
     #[test]
-    fn rebuild_row_targets_respects_filter() {
+    fn rebuild_row_targets_clamps_cursor_when_list_shrinks() {
         let mut state = AppState::new("%99".into());
-        let mut p1 = test_pane("%1");
-        p1.status = PaneStatus::Running;
         let mut p2 = test_pane("%2");
-        p2.status = PaneStatus::Idle;
-        let mut p3 = test_pane("%3");
-        p3.status = PaneStatus::Running;
+        p2.tmux_session = "lib".into();
 
-        state.repo_groups = vec![RepoGroup {
-            name: "project".into(),
-            has_focus: true,
-            panes: vec![
-                (p1, PaneGitInfo::default()),
-                (p2, PaneGitInfo::default()),
-                (p3, PaneGitInfo::default()),
-            ],
-        }];
+        state.repo_groups = vec![
+            RepoGroup {
+                name: "app".into(),
+                has_focus: true,
+                panes: vec![(test_pane("%1"), PaneGitInfo::default())],
+            },
+            RepoGroup {
+                name: "lib".into(),
+                has_focus: true,
+                panes: vec![(p2, PaneGitInfo::default())],
+            },
+        ];
 
-        // All filter: all 3 panes
-        state.global.status_filter = StatusFilter::All;
+        // Select the last row in the two-group view.
         state.rebuild_row_targets();
-        assert_eq!(state.layout.pane_row_targets.len(), 3);
+        state.global.selected_pane_row = 1;
 
-        // Running filter: only 2 panes
-        state.global.status_filter = StatusFilter::Running;
-        state.rebuild_row_targets();
-        assert_eq!(state.layout.pane_row_targets.len(), 2);
-        assert_eq!(state.layout.pane_row_targets[0].pane_id, "%1");
-        assert_eq!(state.layout.pane_row_targets[1].pane_id, "%3");
-
-        // Idle filter: only 1 pane
-        state.global.status_filter = StatusFilter::Idle;
-        state.rebuild_row_targets();
-        assert_eq!(state.layout.pane_row_targets.len(), 1);
-        assert_eq!(state.layout.pane_row_targets[0].pane_id, "%2");
-
-        // Error filter: no panes
-        state.global.status_filter = StatusFilter::Error;
-        state.rebuild_row_targets();
-        assert!(state.layout.pane_row_targets.is_empty());
-    }
-
-    #[test]
-    fn rebuild_row_targets_clamps_cursor_on_filter_change() {
-        let mut state = AppState::new("%99".into());
-        let mut p1 = test_pane("%1");
-        p1.status = PaneStatus::Running;
-        let mut p2 = test_pane("%2");
-        p2.status = PaneStatus::Idle;
-        let mut p3 = test_pane("%3");
-        p3.status = PaneStatus::Idle;
-
-        state.repo_groups = vec![RepoGroup {
-            name: "project".into(),
-            has_focus: true,
-            panes: vec![
-                (p1, PaneGitInfo::default()),
-                (p2, PaneGitInfo::default()),
-                (p3, PaneGitInfo::default()),
-            ],
-        }];
-
-        // Select last agent in All view
-        state.global.status_filter = StatusFilter::All;
-        state.rebuild_row_targets();
-        state.global.selected_pane_row = 2;
-
-        // Switch to Running filter (only 1 pane) — cursor should clamp
-        state.global.status_filter = StatusFilter::Running;
+        // Narrow to "app" — the cursor has nowhere to sit and clamps.
+        state.global.repo_filter = RepoFilter::Repo("app".into());
         state.rebuild_row_targets();
         assert_eq!(state.global.selected_pane_row, 0);
         assert_eq!(state.layout.pane_row_targets[0].pane_id, "%1");
@@ -1179,28 +1134,46 @@ mod tests {
     }
 
     #[test]
-    fn mouse_click_on_filter_bar_changes_filter() {
+    fn mouse_click_on_chyron_selects_the_events_pane() {
+        let mut state = AppState::new("%99".into());
+        state.layout.pane_row_targets = vec![
+            RowTarget {
+                pane_id: "%1".into(),
+                is_window: false,
+            },
+            RowTarget {
+                pane_id: "%2".into(),
+                is_window: false,
+            },
+        ];
+        state.layout.line_to_row = vec![None, Some(0), Some(1)];
+        state.layout.chyron_row = Some(0);
+        state.chyron.current = Some(crate::state::ChyronEvent {
+            pane_id: "%2".into(),
+            kind: crate::state::ChyronKind::Done,
+            label: "codex-ui".into(),
+            shown_at: std::time::Instant::now(),
+        });
+        state.global.selected_pane_row = 0;
+
+        state.handle_mouse_click(0, 5);
+        assert_eq!(state.global.selected_pane_row, 1);
+        assert_eq!(state.focus_state.focus, Focus::Panes);
+    }
+
+    #[test]
+    fn mouse_click_on_blank_chyron_is_inert() {
         let mut state = AppState::new("%99".into());
         state.layout.pane_row_targets = vec![RowTarget {
             pane_id: "%1".into(),
             is_window: false,
         }];
         state.layout.line_to_row = vec![None, Some(0)];
+        state.layout.chyron_row = Some(0);
         state.global.selected_pane_row = 0;
-        state.global.status_filter = StatusFilter::All;
 
-        // Click on "All" (x=1..3) should keep All
-        reset_filter_debounce(&mut state);
-        state.handle_mouse_click(0, 1);
-        assert_eq!(state.global.status_filter, StatusFilter::All);
-
-        // Click on Running icon area (x=6..) should switch to Running
-        reset_filter_debounce(&mut state);
-        state.handle_mouse_click(0, 6);
-        assert_eq!(state.global.status_filter, StatusFilter::Running);
-
-        // agent selection unchanged
-        assert_eq!(state.global.selected_pane_row, 0);
+        state.handle_mouse_click(0, 5);
+        assert_eq!(state.global.selected_pane_row, 0, "no event, no selection");
     }
 
     #[test]
@@ -1330,202 +1303,6 @@ mod tests {
         assert_eq!(state.global.selected_pane_row, 0); // unchanged
     }
 
-    // ─── StatusFilter tests live in state/filter.rs ──────────────────
-
-    // ─── status_counts tests ─────────────────────────────────────────
-
-    #[test]
-    fn status_counts_empty() {
-        let state = AppState::new("%99".into());
-        assert_eq!(state.status_counts(), (0, 0, 0, 0, 0, 0));
-    }
-
-    #[test]
-    fn status_counts_mixed() {
-        let mut state = AppState::new("%99".into());
-        let mut p1 = test_pane("%1");
-        p1.status = PaneStatus::Running;
-        let mut p2 = test_pane("%2");
-        p2.status = PaneStatus::Background;
-        let mut p3 = test_pane("%3");
-        p3.status = PaneStatus::Idle;
-        let mut p4 = test_pane("%4");
-        p4.status = PaneStatus::Waiting;
-        let mut p5 = test_pane("%5");
-        p5.status = PaneStatus::Error;
-
-        state.repo_groups = vec![RepoGroup {
-            name: "project".into(),
-            has_focus: true,
-            panes: vec![
-                (p1, PaneGitInfo::default()),
-                (p2, PaneGitInfo::default()),
-                (p3, PaneGitInfo::default()),
-                (p4, PaneGitInfo::default()),
-                (p5, PaneGitInfo::default()),
-            ],
-        }];
-        // (all, running, background, waiting, idle, error)
-        assert_eq!(state.status_counts(), (5, 1, 1, 1, 1, 1));
-    }
-
-    // ─── handle_filter_click tests ───────────────────────────────────
-
-    #[test]
-    fn filter_click_all_positions() {
-        let mut state = AppState::new("%99".into());
-        // With 0 agents, counts are all 0, so layout: " All  ●0  ◎0  ◐0  ○0  ✕0"
-        //                                              0123456789...
-
-        // "All" at x=1..3
-        state.global.status_filter = StatusFilter::Running;
-        reset_filter_debounce(&mut state);
-        state.handle_filter_click(1);
-        assert_eq!(state.global.status_filter, StatusFilter::All);
-
-        reset_filter_debounce(&mut state);
-        state.handle_filter_click(3);
-        assert_eq!(state.global.status_filter, StatusFilter::All);
-
-        // "●0" at x=6..7
-        reset_filter_debounce(&mut state);
-        state.handle_filter_click(6);
-        assert_eq!(state.global.status_filter, StatusFilter::Running);
-
-        // "◎0" at x=10..11
-        reset_filter_debounce(&mut state);
-        state.handle_filter_click(10);
-        assert_eq!(state.global.status_filter, StatusFilter::Background);
-
-        // "◐0" at x=14..15
-        reset_filter_debounce(&mut state);
-        state.handle_filter_click(14);
-        assert_eq!(state.global.status_filter, StatusFilter::Waiting);
-
-        // "○0" at x=18..19
-        reset_filter_debounce(&mut state);
-        state.handle_filter_click(18);
-        assert_eq!(state.global.status_filter, StatusFilter::Idle);
-
-        // "✕0" at x=22..23
-        reset_filter_debounce(&mut state);
-        state.handle_filter_click(22);
-        assert_eq!(state.global.status_filter, StatusFilter::Error);
-    }
-
-    #[test]
-    fn filter_click_gap_does_nothing() {
-        let mut state = AppState::new("%99".into());
-        state.global.status_filter = StatusFilter::All;
-
-        // x=0 is leading space, x=4 and x=5 are separator
-        state.handle_filter_click(0);
-        assert_eq!(state.global.status_filter, StatusFilter::All);
-
-        state.handle_filter_click(4);
-        assert_eq!(state.global.status_filter, StatusFilter::All);
-
-        state.handle_filter_click(5);
-        assert_eq!(state.global.status_filter, StatusFilter::All);
-    }
-
-    #[test]
-    fn filter_click_debounce_ignores_rapid_clicks() {
-        let mut state = AppState::new("%99".into());
-        state.global.status_filter = StatusFilter::All;
-
-        // First click within debounce window should be ignored
-        // (AppState::new sets last_filter_click to now)
-        state.handle_filter_click(6); // would be Running
-        assert_eq!(state.global.status_filter, StatusFilter::All); // unchanged due to debounce
-
-        // After resetting debounce, click should work
-        reset_filter_debounce(&mut state);
-        state.handle_filter_click(6);
-        assert_eq!(state.global.status_filter, StatusFilter::Running);
-
-        // Immediate second click should be debounced
-        state.handle_filter_click(1); // would be All
-        assert_eq!(state.global.status_filter, StatusFilter::Running); // unchanged
-    }
-
-    #[test]
-    fn filter_click_with_large_counts() {
-        let mut state = AppState::new("%99".into());
-        // Add 10 running agents to shift positions
-        let panes: Vec<_> = (0..10)
-            .map(|i| {
-                let mut p = test_pane(&format!("%{i}"));
-                p.status = PaneStatus::Running;
-                (p, PaneGitInfo::default())
-            })
-            .collect();
-        state.repo_groups = vec![RepoGroup {
-            name: "project".into(),
-            has_focus: true,
-            panes,
-        }];
-        // Layout: " All  ●10  ◎0  ◐0  ○0  ✕0"
-        //          0123456789...
-        // "●10" at x=6..8 (icon + "10")
-        reset_filter_debounce(&mut state);
-        state.handle_filter_click(6);
-        assert_eq!(state.global.status_filter, StatusFilter::Running);
-        reset_filter_debounce(&mut state);
-        state.handle_filter_click(8);
-        assert_eq!(state.global.status_filter, StatusFilter::Running);
-
-        // "◎0" shifts to x=11..12
-        reset_filter_debounce(&mut state);
-        state.handle_filter_click(11);
-        assert_eq!(state.global.status_filter, StatusFilter::Background);
-
-        // "◐0" shifts to x=15..16
-        reset_filter_debounce(&mut state);
-        state.handle_filter_click(15);
-        assert_eq!(state.global.status_filter, StatusFilter::Waiting);
-    }
-
-    #[test]
-    fn filter_click_rebuilds_row_targets() {
-        let mut state = AppState::new("%99".into());
-        let mut p1 = test_pane("%1");
-        p1.status = PaneStatus::Running;
-        let mut p2 = test_pane("%2");
-        p2.status = PaneStatus::Idle;
-        let mut p3 = test_pane("%3");
-        p3.status = PaneStatus::Running;
-        state.repo_groups = vec![RepoGroup {
-            name: "project".into(),
-            has_focus: true,
-            panes: vec![
-                (p1, PaneGitInfo::default()),
-                (p2, PaneGitInfo::default()),
-                (p3, PaneGitInfo::default()),
-            ],
-        }];
-        state.global.status_filter = StatusFilter::All;
-        state.rebuild_row_targets();
-        assert_eq!(state.layout.pane_row_targets.len(), 3);
-
-        // Click Running filter — row_targets should update immediately
-        // Layout: " All  ●2  ◎0  ◐0  ○1  ✕0" → Running at x=6
-        reset_filter_debounce(&mut state);
-        state.handle_filter_click(6);
-        assert_eq!(state.global.status_filter, StatusFilter::Running);
-        assert_eq!(state.layout.pane_row_targets.len(), 2);
-        assert_eq!(state.layout.pane_row_targets[0].pane_id, "%1");
-        assert_eq!(state.layout.pane_row_targets[1].pane_id, "%3");
-
-        // Click Idle filter — row_targets should update again
-        // Layout: " All  ●2  ◎0  ◐0  ○1  ✕0" → Idle at x=18
-        reset_filter_debounce(&mut state);
-        state.handle_filter_click(18);
-        assert_eq!(state.global.status_filter, StatusFilter::Idle);
-        assert_eq!(state.layout.pane_row_targets.len(), 1);
-        assert_eq!(state.layout.pane_row_targets[0].pane_id, "%2");
-    }
-
     // ─── StatusFilter / RepoFilter pure tests live in state/filter.rs ─
 
     #[test]
@@ -1572,32 +1349,30 @@ mod tests {
     }
 
     #[test]
-    fn repo_filter_combined_with_status() {
+    fn repo_filter_search_and_windows_compose_in_rebuild() {
         let mut state = AppState::new("%99".into());
-        let mut idle_pane = test_pane("%3");
-        idle_pane.status = PaneStatus::Idle;
         state.repo_groups = vec![
             RepoGroup {
                 name: "app".into(),
                 has_focus: true,
                 panes: vec![
-                    (test_pane("%1"), PaneGitInfo::default()), // Running
-                    (idle_pane, PaneGitInfo::default()),       // Idle
+                    (test_pane("%1"), PaneGitInfo::default()),
+                    (test_pane("%3"), PaneGitInfo::default()),
                 ],
             },
             RepoGroup {
                 name: "lib".into(),
                 has_focus: false,
-                panes: vec![(test_pane("%2"), PaneGitInfo::default())], // Running
+                panes: vec![(test_pane("%2"), PaneGitInfo::default())],
             },
         ];
         state.global.repo_filter = RepoFilter::Repo("app".into());
-        state.global.status_filter = StatusFilter::Running;
         state.rebuild_row_targets();
 
-        // Only Running panes in "app" group
-        assert_eq!(state.layout.pane_row_targets.len(), 1);
+        // Only the "app" group's rows render.
+        assert_eq!(state.layout.pane_row_targets.len(), 2);
         assert_eq!(state.layout.pane_row_targets[0].pane_id, "%1");
+        assert_eq!(state.layout.pane_row_targets[1].pane_id, "%3");
     }
 
     #[test]
@@ -1631,38 +1406,5 @@ mod tests {
             },
         ];
         assert_eq!(state.repo_names(), vec!["All", "alpha", "beta"]);
-    }
-
-    #[test]
-    fn status_counts_respects_repo_filter() {
-        let mut state = AppState::new("%99".into());
-        let mut idle_pane = test_pane("%2");
-        idle_pane.status = PaneStatus::Idle;
-        state.repo_groups = vec![
-            RepoGroup {
-                name: "app".into(),
-                has_focus: true,
-                panes: vec![(test_pane("%1"), PaneGitInfo::default())], // Running
-            },
-            RepoGroup {
-                name: "lib".into(),
-                has_focus: false,
-                panes: vec![(idle_pane, PaneGitInfo::default())], // Idle
-            },
-        ];
-
-        // All repos: 2 total
-        state.global.repo_filter = RepoFilter::All;
-        let (all, running, _, _, idle, _) = state.status_counts();
-        assert_eq!(all, 2);
-        assert_eq!(running, 1);
-        assert_eq!(idle, 1);
-
-        // Filter to "app" only: 1 Running
-        state.global.repo_filter = RepoFilter::Repo("app".into());
-        let (all, running, _, _, idle, _) = state.status_counts();
-        assert_eq!(all, 1);
-        assert_eq!(running, 1);
-        assert_eq!(idle, 0);
     }
 }

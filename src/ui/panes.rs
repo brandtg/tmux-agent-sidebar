@@ -1,5 +1,5 @@
+mod chyron;
 mod click_targets;
-mod filter_bar;
 mod popups;
 mod row;
 mod row_collector;
@@ -51,8 +51,8 @@ fn anchor_below(area: Rect, anchor_y: u16, desired_width: u16, desired_height: u
 }
 
 struct PaneLayout {
-    filter_area: Rect,
-    secondary_area: Rect,
+    chyron_area: Rect,
+    toolbar_area: Rect,
     list_area: Rect,
     /// Bottom TODO panel; zero-height while hidden.
     todo_area: Rect,
@@ -62,23 +62,30 @@ impl PaneLayout {
     fn compute_with_todo(area: Rect, todo_height: u16) -> Self {
         // Never let the panel crowd out the two header rows.
         let todo_height = todo_height.min(area.height.saturating_sub(2));
-        let filter_area = Rect {
+        // Two header rows: the chyron (event channel) above the merged
+        // toolbar (notices / search / repo). On a one-row panel the
+        // toolbar wins the row — functional controls beat an
+        // informative line — and the chyron collapses to zero height.
+        let chyron_area = Rect {
             x: area.x,
             y: area.y,
             width: area.width,
-            height: 1.min(area.height),
+            height: if area.height >= 2 { 1 } else { 0 },
         };
-        let secondary_area = Rect {
+        let toolbar_area = Rect {
             x: area.x,
-            y: area.y + 1,
+            y: if area.height >= 2 { area.y + 1 } else { area.y },
             width: area.width,
-            height: 1.min(area.height.saturating_sub(1)),
+            height: 1.min(area.height),
         };
         let list_area = Rect {
             x: area.x,
-            y: area.y + 2,
+            y: area.y + chyron_area.height + toolbar_area.height,
             width: area.width,
-            height: area.height.saturating_sub(2).saturating_sub(todo_height),
+            height: area
+                .height
+                .saturating_sub(chyron_area.height + toolbar_area.height)
+                .saturating_sub(todo_height),
         };
         let todo_area = Rect {
             x: area.x,
@@ -87,8 +94,8 @@ impl PaneLayout {
             height: todo_height,
         };
         Self {
-            filter_area,
-            secondary_area,
+            chyron_area,
+            toolbar_area,
             list_area,
             todo_area,
         }
@@ -464,14 +471,14 @@ pub(super) fn render_repo_popup(frame: &mut Frame, state: &mut AppState, area: R
     }
 }
 
-fn render_filter_bar_into(frame: &mut Frame, state: &AppState, area: Rect) {
-    let line = filter_bar::render_filter_bar(state);
-    frame.render_widget(Paragraph::new(vec![line]), area);
+fn render_chyron_into(frame: &mut Frame, state: &AppState, area: Rect) {
+    if let Some(line) = chyron::render_chyron(state, area.width) {
+        frame.render_widget(Paragraph::new(vec![line]), area);
+    }
 }
 
-fn render_secondary_header_into(frame: &mut Frame, state: &mut AppState, area: Rect) {
-    let (line, notices_btn_col, repo_btn_col) =
-        filter_bar::render_secondary_header(state, area.width);
+fn render_toolbar_into(frame: &mut Frame, state: &mut AppState, area: Rect) {
+    let (line, notices_btn_col, repo_btn_col) = chyron::render_secondary_header(state, area.width);
     state.notices.button_col = notices_btn_col;
     state.layout.repo_button_col = repo_btn_col;
     frame.render_widget(Paragraph::new(vec![line]), area);
@@ -557,8 +564,10 @@ pub fn draw_agents(frame: &mut Frame, state: &mut AppState, area: Rect) {
     let todo_height = todo::panel_height(state, area, lines.len());
     let layout = PaneLayout::compute_with_todo(area, todo_height);
     state.layout.todo_area = layout.todo_area;
-    render_filter_bar_into(frame, state, layout.filter_area);
-    render_secondary_header_into(frame, state, layout.secondary_area);
+    state.layout.chyron_row = (layout.chyron_area.height > 0).then_some(layout.chyron_area.y);
+    state.layout.toolbar_row = (layout.toolbar_area.height > 0).then_some(layout.toolbar_area.y);
+    render_chyron_into(frame, state, layout.chyron_area);
+    render_toolbar_into(frame, state, layout.toolbar_area);
 
     state.layout.line_to_row = line_to_row;
     let scroll_offset = compute_scroll_offset(state, lines.len(), layout.list_area);
@@ -583,7 +592,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn pane_layout_splits_area_into_filter_secondary_list() {
+    fn pane_layout_splits_area_into_chyron_toolbar_list() {
         let area = Rect {
             x: 0,
             y: 0,
@@ -591,12 +600,12 @@ mod tests {
             height: 20,
         };
         let layout = PaneLayout::compute_with_todo(area, 0);
-        assert_eq!(layout.filter_area.x, 0);
-        assert_eq!(layout.filter_area.y, 0);
-        assert_eq!(layout.filter_area.width, 40);
-        assert_eq!(layout.filter_area.height, 1);
-        assert_eq!(layout.secondary_area.y, 1);
-        assert_eq!(layout.secondary_area.height, 1);
+        assert_eq!(layout.chyron_area.x, 0);
+        assert_eq!(layout.chyron_area.y, 0);
+        assert_eq!(layout.chyron_area.width, 40);
+        assert_eq!(layout.chyron_area.height, 1);
+        assert_eq!(layout.toolbar_area.y, 1);
+        assert_eq!(layout.toolbar_area.height, 1);
         assert_eq!(layout.list_area.y, 2);
         assert_eq!(layout.list_area.height, 18);
         assert_eq!(layout.list_area.width, 40);
@@ -604,7 +613,8 @@ mod tests {
 
     #[test]
     fn pane_layout_handles_tiny_area() {
-        // Only 1 row available — filter gets it, secondary and list collapse to 0.
+        // Only 1 row available — the toolbar (functional controls) wins
+        // the row and the chyron collapses to zero height.
         let area = Rect {
             x: 0,
             y: 0,
@@ -612,8 +622,9 @@ mod tests {
             height: 1,
         };
         let layout = PaneLayout::compute_with_todo(area, 0);
-        assert_eq!(layout.filter_area.height, 1);
-        assert_eq!(layout.secondary_area.height, 0);
+        assert_eq!(layout.chyron_area.height, 0);
+        assert_eq!(layout.toolbar_area.height, 1);
+        assert_eq!(layout.toolbar_area.y, 0);
         assert_eq!(layout.list_area.height, 0);
     }
 
@@ -626,8 +637,8 @@ mod tests {
             height: 0,
         };
         let layout = PaneLayout::compute_with_todo(area, 0);
-        assert_eq!(layout.filter_area.height, 0);
-        assert_eq!(layout.secondary_area.height, 0);
+        assert_eq!(layout.chyron_area.height, 0);
+        assert_eq!(layout.toolbar_area.height, 0);
         assert_eq!(layout.list_area.height, 0);
     }
 
@@ -657,8 +668,8 @@ mod tests {
             height: 5,
         };
         let layout = PaneLayout::compute_with_todo(area, 10);
-        assert_eq!(layout.filter_area.height, 1);
-        assert_eq!(layout.secondary_area.height, 1);
+        assert_eq!(layout.chyron_area.height, 1);
+        assert_eq!(layout.toolbar_area.height, 1);
         assert_eq!(layout.todo_area.height, 3);
         assert_eq!(layout.list_area.height, 0);
     }
@@ -672,10 +683,10 @@ mod tests {
             height: 15,
         };
         let layout = PaneLayout::compute_with_todo(area, 0);
-        assert_eq!(layout.filter_area.x, 5);
-        assert_eq!(layout.filter_area.y, 10);
-        assert_eq!(layout.secondary_area.x, 5);
-        assert_eq!(layout.secondary_area.y, 11);
+        assert_eq!(layout.chyron_area.x, 5);
+        assert_eq!(layout.chyron_area.y, 10);
+        assert_eq!(layout.toolbar_area.x, 5);
+        assert_eq!(layout.toolbar_area.y, 11);
         assert_eq!(layout.list_area.x, 5);
         assert_eq!(layout.list_area.y, 12);
         assert_eq!(layout.list_area.height, 13);

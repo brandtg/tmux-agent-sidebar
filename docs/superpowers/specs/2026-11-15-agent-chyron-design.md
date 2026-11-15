@@ -2,6 +2,17 @@
 
 > **Status:** draft, 2026-11-15. Branch `agent-chyron`.
 >
+> **Update (2026-11-15):** implemented as designed. Two deviations from
+> the letter of the draft, both simpler than what was written: (1) the
+> `primed` first-tick flag turned out to be unnecessary — the first
+> refresh diffs against an empty `repo_groups` baseline, so no
+> transition can exist yet; startup floods are impossible by
+> construction. (2) The label resolves live at render time (renames
+> stay current) with the fire-time title kept only as a fallback for
+> vanished panes; `tail_fit` keeps the trailing verb on narrow rows.
+> The old `@sidebar_color_all` / `@sidebar_icon_all` options died with
+> the bar's `≡` glyph and were removed alongside the filter options.
+>
 > Replaces the status filter bar in the agents panel's top row with a
 > one-line event channel: a transient, self-fading banner that names the
 > agent an event just happened to. The filter bar is deleted in the same
