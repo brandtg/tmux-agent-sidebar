@@ -88,6 +88,13 @@ Rendering rules:
 - Enter zooms the selected cell fullscreen (still a capture — read-only);
   Esc collapses back to the grid. Without zoom, truncated cells are dead
   ends; with it, the grid is a scanner.
+- Theme normalization: light-themed TUIs (opencode's pink panels,
+  claude's white input bar) arrive as explicit light backgrounds with
+  dark text — a clash on the dark canvas, and invisible text if the
+  background were simply dropped. Captures are normalized: light-themed
+  panes (majority explicit light background) lose all backgrounds and
+  get dark text lifted to light grey; dark-themed panes keep their
+  colors except per-cell light backgrounds.
 - Wide (CJK) characters: the existing parser advances one cell per char,
   so wide glyphs render slightly off. Known spike limitation; latin-first.
 

@@ -54,6 +54,18 @@ const DEFAULT_INTERVAL_MS: u64 = 500;
 const MIN_CELL_WIDTH: u16 = 40;
 const MIN_CELL_HEIGHT: u16 = 8;
 
+/// Backgrounds at or above this relative luminance count as "light" —
+/// a light-themed TUI drawing on the dark grid canvas. 0.6 keeps dark
+/// theme panels (236 and below) intact while catching the whole light
+/// pink/grey family (216-231, 244+).
+const LIGHT_BG_LUMINANCE: f32 = 0.6;
+/// Foregrounds below this luminance are "dark text" and get lifted when
+/// their background is stripped, or they would sit invisible on the dark
+/// canvas.
+const DARK_FG_LUMINANCE: f32 = 0.45;
+/// Foreground used for lifted dark text: light grey, readable on dark.
+const LIFTED_FG: u8 = 250;
+
 /// One agent pane in the grid: its metadata plus the last captured screen.
 struct OverviewPane {
     info: PaneInfo,
@@ -334,8 +346,108 @@ fn capture_grid(info: &PaneInfo, dims: Option<(u16, u16)>) -> Result<Vec<Vec<Sty
     // If the pane vanished between the listing and the capture, fall back
     // to a common size; the next tick corrects it.
     let (cols, rows) = dims.unwrap_or((80, 24));
-    Ok(ansi::parse_ansi(&bytes, cols, rows))
+    let mut grid = ansi::parse_ansi(&bytes, cols, rows);
+    normalize_captured_grid(&mut grid);
+    Ok(grid)
 }
+
+/// Strip light backgrounds and lift dark foregrounds so every captured
+/// cell reads on the dark grid canvas.
+///
+/// Agent TUIs bring their own themes: opencode's light-pink panels and
+/// claude's white input bar arrive as explicit light backgrounds with dark
+/// text — a pink-on-dark clash, and invisible text the moment the
+/// background is gone. Two rules:
+///
+/// - a pane that paints mostly explicit light backgrounds is a
+///   light-themed TUI: strip ALL of its backgrounds and lift dark or
+///   absent foregrounds to light grey (already-light fg keeps its hue);
+/// - otherwise strip only per-cell light backgrounds (claude's white
+///   input bar) and lift that cell's dark fg; dark-theme cells pass
+///   through untouched.
+fn normalize_captured_grid(grid: &mut [Vec<StyledCell>]) {
+    let light_pane = pane_is_light_theme(grid);
+    for row in grid.iter_mut() {
+        for cell in row.iter_mut() {
+            let Some(bg) = cell.bg else { continue };
+            let light_bg = indexed_luminance(bg) >= LIGHT_BG_LUMINANCE;
+            if !light_pane && !light_bg {
+                continue;
+            }
+            cell.bg = None;
+            let lift = match cell.fg {
+                None => true,
+                Some(fg) => indexed_luminance(fg) < DARK_FG_LUMINANCE,
+            };
+            if lift {
+                cell.fg = Some(LIFTED_FG);
+            }
+        }
+    }
+}
+
+/// True when most of a captured screen paints an explicit light background
+/// — the signature of a light-themed TUI whose dark text needs lifting
+/// onto the dark canvas.
+fn pane_is_light_theme(grid: &[Vec<StyledCell>]) -> bool {
+    let mut light = 0usize;
+    let mut explicit = 0usize;
+    for row in grid {
+        for cell in row {
+            if let Some(bg) = cell.bg {
+                explicit += 1;
+                if indexed_luminance(bg) >= LIGHT_BG_LUMINANCE {
+                    light += 1;
+                }
+            }
+        }
+    }
+    explicit > 0 && light * 2 > explicit
+}
+
+/// Relative luminance (0-1) of an xterm-256 palette index, from the
+/// palette's RGB decomposition: the 16 standard colors, the 6x6x6 cube
+/// (16-231), and the grayscale ramp (232-255).
+fn indexed_luminance(color: u8) -> f32 {
+    let (r, g, b) = match color {
+        0..=15 => {
+            let (r, g, b) = STANDARD_16[color as usize];
+            (r as f32, g as f32, b as f32)
+        }
+        16..=231 => {
+            let v = color as u16 - 16;
+            let level = |c: u16| -> f32 { ((c * 255) / 5) as f32 };
+            (level(v / 36), level((v / 6) % 6), level(v % 6))
+        }
+        _ => {
+            let v = (8 + 10 * (color as u16 - 232)) as f32;
+            (v, v, v)
+        }
+    };
+    // Rec. 709 luminance weights on a 0-255 scale.
+    (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255.0
+}
+
+/// The canonical 16 ANSI colors (VGA values; terminals vary slightly, but
+/// the luminance verdict — dark vs light — is stable).
+const STANDARD_16: [(u8, u8, u8); 16] = [
+    (0, 0, 0),
+    (128, 0, 0),
+    (0, 128, 0),
+    (128, 128, 0),
+    (0, 0, 128),
+    (128, 0, 128),
+    (0, 128, 128),
+    (192, 192, 192),
+    (128, 128, 128),
+    (255, 0, 0),
+    (0, 255, 0),
+    (255, 255, 0),
+    (0, 0, 255),
+    (255, 0, 255),
+    (0, 255, 255),
+    (255, 255, 255),
+];
 
 fn draw_grid(
     f: &mut Frame,
@@ -875,6 +987,75 @@ mod tests {
         │[codex] waiting for input             │
         └──────────────────────────────────────┘
         ");
+    }
+
+    #[test]
+    fn light_theme_pane_is_normalized_to_dark_canvas() {
+        // opencode-style: explicit light-pink background everywhere with
+        // near-black text, plus one darker panel — the whole pane is a
+        // light theme, so every background is stripped and dark text is
+        // lifted to light grey.
+        let mut grid = vec![vec![StyledCell::default(); 8]; 4];
+        for row in grid.iter_mut() {
+            for cell in row.iter_mut() {
+                cell.bg = Some(218);
+                cell.fg = Some(16);
+            }
+        }
+        grid[3][0].bg = Some(236);
+        grid[3][0].fg = Some(250);
+        normalize_captured_grid(&mut grid);
+        for row in grid.iter().flatten() {
+            assert_eq!(row.bg, None);
+            assert_eq!(row.fg, Some(250));
+        }
+    }
+
+    #[test]
+    fn dark_theme_pane_keeps_its_colors_but_strips_light_bars() {
+        // claude-style: dark panels with green text, plus a white input
+        // bar row with dark text. The dark theme passes through untouched;
+        // only the white bar is stripped and its text lifted.
+        let mut grid = vec![vec![StyledCell::default(); 8]; 4];
+        for row in grid.iter_mut() {
+            for cell in row.iter_mut() {
+                cell.bg = Some(236);
+                cell.fg = Some(114);
+            }
+        }
+        for cell in grid[3].iter_mut() {
+            cell.bg = Some(231);
+            cell.fg = Some(16);
+        }
+        normalize_captured_grid(&mut grid);
+        assert_eq!(grid[0][0].bg, Some(236));
+        assert_eq!(grid[0][0].fg, Some(114));
+        assert_eq!(grid[3][0].bg, None);
+        assert_eq!(grid[3][0].fg, Some(250));
+    }
+
+    #[test]
+    fn luminance_covers_the_256_palette() {
+        assert_eq!(indexed_luminance(0), 0.0);
+        assert!(indexed_luminance(15) > 0.9);
+        assert!(indexed_luminance(231) > 0.9);
+        // The grayscale ramp is monotonic and its upper end reads light.
+        assert!(indexed_luminance(240) > indexed_luminance(239));
+        assert!(indexed_luminance(255) > indexed_luminance(240));
+    }
+
+    #[test]
+    fn luminance_verdicts_match_the_screenshot_themes() {
+        // opencode's light pinks and claude's white input bar are light;
+        // claude's dark grey panels and the theme's inactive border (240
+        // = #585858) are not.
+        assert!(indexed_luminance(218) >= LIGHT_BG_LUMINANCE);
+        assert!(indexed_luminance(224) >= LIGHT_BG_LUMINANCE);
+        assert!(indexed_luminance(231) >= LIGHT_BG_LUMINANCE);
+        assert!(indexed_luminance(250) >= LIGHT_BG_LUMINANCE);
+        assert!(indexed_luminance(240) < LIGHT_BG_LUMINANCE);
+        assert!(indexed_luminance(236) < LIGHT_BG_LUMINANCE);
+        assert!(indexed_luminance(235) < LIGHT_BG_LUMINANCE);
     }
 
     #[test]
