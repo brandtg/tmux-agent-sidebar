@@ -77,6 +77,7 @@ impl AppState {
         sessions: Vec<SessionInfo>,
         other_panes: Vec<crate::tmux::OtherPane>,
         sidebar_window_panes: Vec<(String, bool, String)>,
+        fetched_at: std::time::Instant,
     ) {
         // First snapshot primes the anchor→git-info cache synchronously so
         // the very first frame groups by repo root. Later ticks consume
@@ -132,7 +133,7 @@ impl AppState {
         self.refresh_window_tasks(&other_panes);
         self.prune_pane_states_to_current_panes();
         self.rebuild_row_targets();
-        self.find_focused_pane_from(&sidebar_window_panes);
+        self.find_focused_pane_from(&sidebar_window_panes, fetched_at);
         self.mark_active_window_panes_seen();
         self.resolve_proxy_focus();
         self.window_has_no_other_panes =
@@ -481,6 +482,9 @@ impl AppState {
         // another sidebar instance changed it (one stat per tick).
         self.todos
             .refresh_if_changed(self.global.todo_hide_completed);
+        // Stamped before the spawn — same contract as the worker's
+        // `fetched_at` (see [`Self::apply_snapshot`]).
+        let fetched_at = std::time::Instant::now();
         let Some(snapshot) = tmux::query_session_snapshot(&self.tmux_pane) else {
             // A failed `list-panes` call is not evidence that no panes
             // exist. Applying an empty snapshot here would prune every
@@ -491,7 +495,7 @@ impl AppState {
             // and retry on the next tick.
             return self.focus_state.window_active;
         };
-        self.apply_snapshot(snapshot)
+        self.apply_snapshot(snapshot, fetched_at)
     }
 
     /// The apply half of [`Self::refresh`] for the async snapshot worker:
@@ -500,24 +504,41 @@ impl AppState {
     /// behind the subprocess); the parse is string work, safe to run
     /// where `AppState` lives. Returns whether the sidebar's window is
     /// the active tmux window.
-    pub fn apply_session_refresh(&mut self, all_panes_output: &str) -> bool {
+    pub fn apply_session_refresh(
+        &mut self,
+        all_panes_output: &str,
+        fetched_at: std::time::Instant,
+    ) -> bool {
         let snapshot = tmux::build_session_snapshot(all_panes_output, &self.tmux_pane);
-        self.apply_snapshot(snapshot)
+        self.apply_snapshot(snapshot, fetched_at)
     }
 
     /// Fold a parsed snapshot into state; the shared tail of
     /// [`Self::refresh`] and [`Self::apply_session_refresh`].
-    fn apply_snapshot(&mut self, snapshot: TmuxSnapshot) -> bool {
+    ///
+    /// `fetched_at` is when the listing was captured. Focus state is
+    /// written optimistically by the input path (a jump names its target
+    /// and drops the sidebar-focus flag the same frame); a listing that
+    /// was captured *before* that write is stale by definition and must
+    /// not touch focus state — otherwise the pre-jump world (the old
+    /// active pane, the sidebar still focused) replays for one snapshot
+    /// round-trip and the selection highlight visibly jumps back to the
+    /// row the user just left.
+    fn apply_snapshot(&mut self, snapshot: TmuxSnapshot, fetched_at: std::time::Instant) -> bool {
         // Inside a popup `TMUX_PANE` is the window's active pane at
         // popup-open time, not the sidebar itself, and the popup always
         // holds keyboard focus while open — so the snapshot's focus
         // report is not meaningful here. Reporting inactive would trip
         // the per-tick global-option reload in the event loop after two
         // ticks, so both are forced true in popup mode.
+        let focus_stale = self
+            .focus_state
+            .focus_written_at
+            .is_some_and(|written_at| fetched_at < written_at);
         if self.popup_mode {
             self.focus_state.sidebar_focused = true;
             self.focus_state.window_active = true;
-        } else {
+        } else if !focus_stale {
             self.focus_state.sidebar_focused = snapshot.sidebar_pane_active;
             self.focus_state.window_active = snapshot.sidebar_window_active;
         }
@@ -538,7 +559,7 @@ impl AppState {
         // `apply_session_snapshot`, and `sessions` is moved into it.
         let chyron_old = self.chyron_baseline();
         self.observe_chyron_transitions(&chyron_old, &sessions);
-        self.apply_session_snapshot(sessions, other_panes, sidebar_window_panes);
+        self.apply_session_snapshot(sessions, other_panes, sidebar_window_panes, fetched_at);
         self.mark_focused_pane_seen(window_active);
         // `apply_session_snapshot` rebuilds `repo_groups` from a fresh tmux
         // query, and every freshly parsed `PaneInfo` carries an empty
@@ -1704,7 +1725,12 @@ mod tests {
         assert_eq!(state.repo_groups[0].panes[0].0.session_name, "alpha");
 
         let next_sessions = test_session(vec![pane_with_session("%1", "sess-a")]);
-        state.apply_session_snapshot(next_sessions, Vec::new(), Vec::new());
+        state.apply_session_snapshot(
+            next_sessions,
+            Vec::new(),
+            Vec::new(),
+            std::time::Instant::now(),
+        );
 
         assert!(
             state.repo_groups[0].panes[0].0.session_name.is_empty(),
@@ -2111,6 +2137,70 @@ mod tests {
         assert!(!window_has_only_own_pane(&panes, "%9"));
     }
 
+    // ─── stale snapshot vs. optimistic focus writes ──────────────────
+
+    /// A listing captured before the jump (the pre-jump world: the old
+    /// agent active, the sidebar focused) landing after the optimistic
+    /// write must not rename the target — this is the selection
+    /// highlight visibly jumping back to the row the user just left.
+    #[test]
+    fn stale_snapshot_does_not_rename_the_jump_target() {
+        let mut state = AppState::new("%99".into());
+        let fetched_at = std::time::Instant::now();
+        state.focus_state.focused_pane_id = Some("%2".into());
+        state.focus_state.focus_written_at = Some(std::time::Instant::now());
+
+        state.apply_session_snapshot(
+            Vec::new(),
+            Vec::new(),
+            vec![("%1".into(), true, "/tmp".into())],
+            fetched_at,
+        );
+
+        assert_eq!(
+            state.focus_state.focused_pane_id.as_deref(),
+            Some("%2"),
+            "the pre-jump listing is older than the optimistic write"
+        );
+    }
+
+    #[test]
+    fn fresh_snapshot_still_renames_the_target_after_a_jump() {
+        let mut state = AppState::new("%99".into());
+        state.focus_state.focused_pane_id = Some("%1".into());
+        state.focus_state.focus_written_at = Some(std::time::Instant::now());
+        // The listing is captured after the write: it may (and must) rule.
+        let listing = vec![("%2".into(), true, "/tmp".into())];
+        state.find_focused_pane_from(&listing, std::time::Instant::now());
+
+        assert_eq!(state.focus_state.focused_pane_id.as_deref(), Some("%2"));
+    }
+
+    #[test]
+    fn stale_snapshot_does_not_resurrect_the_pre_jump_focus_flag() {
+        let mut state = AppState::new("%99".into());
+        let fetched_at = std::time::Instant::now();
+        // The jump dropped the flag and stamped the write; the stale
+        // listing still claims the sidebar pane is active.
+        state.focus_state.sidebar_focused = false;
+        state.focus_state.focus_written_at = Some(std::time::Instant::now());
+
+        let snapshot = TmuxSnapshot {
+            sessions: Vec::new(),
+            process_snapshot: None,
+            sidebar_pane_active: true,
+            sidebar_window_active: true,
+            sidebar_window_panes: vec![("%99".into(), true, "/tmp".into())],
+            other_panes: Vec::new(),
+        };
+        state.apply_snapshot(snapshot, fetched_at);
+
+        assert!(
+            !state.focus_state.sidebar_focused,
+            "the stale claim must not re-light the selection background"
+        );
+    }
+
     #[test]
     fn apply_session_snapshot_sets_stranded_flag_when_sidebar_is_last_pane() {
         let mut state = AppState::new("%99".into());
@@ -2123,6 +2213,7 @@ mod tests {
                 ("%99".to_string(), false, "/tmp".to_string()),
                 ("%1".to_string(), true, "/tmp".to_string()),
             ],
+            std::time::Instant::now(),
         );
         assert!(!state.window_has_no_other_panes);
 
@@ -2131,6 +2222,7 @@ mod tests {
             Vec::new(),
             Vec::new(),
             vec![("%99".to_string(), true, "/tmp".to_string())],
+            std::time::Instant::now(),
         );
         assert!(state.window_has_no_other_panes);
     }
@@ -2147,6 +2239,7 @@ mod tests {
             Vec::new(),
             Vec::new(),
             vec![("%99".to_string(), true, "/tmp".to_string())],
+            std::time::Instant::now(),
         );
 
         assert!(!state.window_has_no_other_panes);

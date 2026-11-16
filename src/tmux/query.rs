@@ -335,7 +335,15 @@ fn extract_sidebar_window_info(
         // Grouped sessions can repeat the same pane line; the values are
         // identical, so the first match wins.
         if pane_id == sidebar_pane && sidebar_window_id.is_none() {
-            sidebar_pane_active = pane_active;
+            // `pane_active` is window-scoped and PERSISTS: every window
+            // reports its last-selected pane as active even when the
+            // session's current window is elsewhere. "The user is in the
+            // sidebar" requires the pane to be its window's active pane
+            // AND that window to be the session's current one — otherwise
+            // a sidebar whose user jumped away keeps reporting focused
+            // and renders its selection background while nobody is
+            // looking at it.
+            sidebar_pane_active = pane_active && parts[session_line_field::WINDOW_ACTIVE] == "1";
             sidebar_window_active = parts[session_line_field::WINDOW_ACTIVE] == "1";
             sidebar_window_id = Some(window_id.to_string());
         }
@@ -2295,10 +2303,44 @@ mod tests {
     }
 
     #[test]
+    fn sidebar_pane_active_requires_its_window_to_be_current() {
+        // `pane_active` is window-scoped and persists: the sidebar pane
+        // of a background window still reports active=1 after the user
+        // jumped away. The focus claim must additionally require the
+        // window to be the session's current one, or the abandoned
+        // sidebar keeps rendering its selection background.
+        let line = |window: &str,
+                    window_active: &str,
+                    pane: &str,
+                    active: &str,
+                    role: &str,
+                    path: &str| {
+            format!(
+                "main|{window}|1|win|{window_active}|1|{active}|running||claude|@pane_name|{path}|zsh|{role}|{pane}|prompt|src|100|wait|{pane}|sub|cwd|default|wt|wtb|sid|0|bg|title|/launch|||"
+            )
+        };
+
+        // The user jumped to another window: the sidebar pane is still its
+        // window's last-active pane, but the window is not current.
+        let output = [line("@1", "0", "%99", "1", "sidebar", "/w")].join("\n");
+        let snapshot = build_session_snapshot(&output, "%99");
+        assert!(
+            !snapshot.sidebar_pane_active,
+            "a background window's sidebar pane is not focused"
+        );
+        assert!(!snapshot.sidebar_window_active);
+
+        // Back to current: same pane_active, but now the window is the
+        // session's active one — the user hopped into the sidebar.
+        let output = [line("@1", "1", "%99", "1", "sidebar", "/w")].join("\n");
+        let snapshot = build_session_snapshot(&output, "%99");
+        assert!(snapshot.sidebar_pane_active);
+    }
+
+    #[test]
     fn snapshot_missing_sidebar_pane_yields_empty_window_panes() {
         let line = "main|@1|1|win|1|1|1|running||claude|@pane_name|/agent|zsh||%1|prompt|src|100|wait|12|sub|cwd|default|wt|wtb|sid|0|bg|title|/launch|||";
         let snapshot = build_session_snapshot(line, "%99");
-
         assert!(!snapshot.sidebar_pane_active);
         assert!(!snapshot.sidebar_window_active);
         assert!(snapshot.sidebar_window_panes.is_empty());

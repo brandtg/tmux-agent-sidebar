@@ -21,6 +21,14 @@ pub struct FocusState {
     pub window_active: bool,
     pub focus: Focus,
     pub focused_pane_id: Option<String>,
+    /// When the input path last wrote focus state optimistically (a jump
+    /// naming its target, dropping the sidebar-focus flag). Snapshots
+    /// captured *before* this instant are stale and must not touch
+    /// `focused_pane_id` / `sidebar_focused` — the fold in
+    /// `apply_snapshot` compares this against the listing's fetch time.
+    /// Monotonic; left set after use, since a snapshot fetched later than
+    /// the write simply passes the comparison.
+    pub focus_written_at: Option<std::time::Instant>,
     /// Agent pane standing in for the user's cursor while it sits on a
     /// non-agent pane whose row is not rendered: the first agent sharing
     /// the cursor's window. Recomputed on every snapshot by
@@ -40,6 +48,7 @@ impl FocusState {
             window_active: false,
             focus: Focus::Panes,
             focused_pane_id: None,
+            focus_written_at: None,
             proxy_focused_pane_id: None,
             prev_focused_pane_id: None,
         }
@@ -80,7 +89,22 @@ impl AppState {
     /// pane has no agent running. When the sidebar has focus the list
     /// yields no active non-sidebar pane — preserve the previously focused
     /// pane so row data stays stable.
-    pub(crate) fn find_focused_pane_from(&mut self, panes: &[(String, bool, String)]) {
+    ///
+    /// `fetched_at` stamps the listing: a capture older than the last
+    /// optimistic focus write (see [`FocusState::focus_written_at`])
+    /// predates the jump and must not rename the target.
+    pub(crate) fn find_focused_pane_from(
+        &mut self,
+        panes: &[(String, bool, String)],
+        fetched_at: std::time::Instant,
+    ) {
+        if self
+            .focus_state
+            .focus_written_at
+            .is_some_and(|written_at| fetched_at < written_at)
+        {
+            return;
+        }
         if let Some((id, _)) = tmux::pick_active_pane(&self.tmux_pane, panes) {
             self.focus_state.focused_pane_id = Some(id);
         }
@@ -192,7 +216,27 @@ impl AppState {
         // left instead of the pane being activated.
         self.focus_state.focused_pane_id = Some(target_pane_id.clone());
         self.focus_state.proxy_focused_pane_id = None;
+        // The jump always moves tmux focus off the sidebar pane, so drop
+        // the focus flag the same frame instead of waiting for the next
+        // snapshot to report it. The selection background is gated on
+        // this flag: without the optimistic clear it lingers on the
+        // cursor row for the snapshot latency (hundreds of ms under
+        // hook-event load) — and during that window a signal-driven
+        // refresh can drag it to a different agent via the shared-cursor
+        // reload. Popup mode is excluded: its apply path forces the flag
+        // true (the popup holds keyboard focus) and its context
+        // selection already ran at setup.
+        if !self.popup_mode {
+            self.focus_state.sidebar_focused = false;
+        }
+        // Stamp AFTER select_pane returns: the tmux focus change only
+        // completes once those spawns do, and a listing captured while
+        // they were running still shows the pre-jump world (sidebar
+        // focused). Stamping before them would let such a listing pass
+        // the freshness check and flash the selection background back on
+        // for one snapshot round-trip.
         tmux::select_pane(&target_pane_id);
+        self.focus_state.focus_written_at = Some(std::time::Instant::now());
 
         // The jump may land on a window that has no sidebar of its own —
         // `@sidebar_auto_create off`, or one auto-hide closed while a
@@ -303,6 +347,7 @@ mod tests {
         assert!(!state.sidebar_focused);
         assert_eq!(state.focus, Focus::Panes);
         assert!(state.focused_pane_id.is_none());
+        assert!(state.focus_written_at.is_none());
         assert!(state.prev_focused_pane_id.is_none());
     }
 
@@ -430,6 +475,72 @@ mod tests {
         assert!(state.move_pane_selection(1));
         assert_eq!(state.global.selected_pane_row, 1);
         assert!(!state.move_pane_selection(5));
+    }
+
+    // ─── activate_selected_pane ──────────────────────────────────────
+
+    #[test]
+    fn activate_selected_pane_clears_sidebar_focus_the_same_frame() {
+        let _tmux_down = crate::tmux::test_fail_tmux::install();
+        let mut state = AppState::new("%99".into());
+        state.repo_groups = vec![RepoGroup {
+            name: "alpha".into(),
+            has_focus: true,
+            panes: vec![
+                (test_pane("%1"), PaneGitInfo::default()),
+                (test_pane("%2"), PaneGitInfo::default()),
+            ],
+        }];
+        state.layout.pane_row_targets = vec![
+            RowTarget {
+                pane_id: "%1".into(),
+                is_window: false,
+            },
+            RowTarget {
+                pane_id: "%2".into(),
+                is_window: false,
+            },
+        ];
+        state.global.selected_pane_row = 1;
+        state.focus_state.sidebar_focused = true;
+
+        state.activate_selected_pane();
+
+        assert_eq!(
+            state.focus_state.focused_pane_id.as_deref(),
+            Some("%2"),
+            "the jump still names the target pane optimistically"
+        );
+        assert!(
+            !state.focus_state.sidebar_focused,
+            "the jump moves tmux focus off the sidebar pane, so the flag \
+             must drop the same frame — the selection background is gated \
+             on it and would otherwise linger until the next snapshot"
+        );
+    }
+
+    #[test]
+    fn activate_selected_pane_keeps_the_forced_focus_flag_in_popup_mode() {
+        let _tmux_down = crate::tmux::test_fail_tmux::install();
+        let mut state = AppState::new("%99".into());
+        state.popup_mode = true;
+        state.repo_groups = vec![RepoGroup {
+            name: "alpha".into(),
+            has_focus: true,
+            panes: vec![(test_pane("%1"), PaneGitInfo::default())],
+        }];
+        state.layout.pane_row_targets = vec![RowTarget {
+            pane_id: "%1".into(),
+            is_window: false,
+        }];
+        state.global.selected_pane_row = 0;
+        // Popup mode forces the flag true on every apply; the jump path
+        // must not fight that.
+        state.focus_state.sidebar_focused = true;
+
+        state.activate_selected_pane();
+
+        assert!(state.focus_state.sidebar_focused);
     }
 
     // ─── toggle_selected_flag ────────────────────────────────────────

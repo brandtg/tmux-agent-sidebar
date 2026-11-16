@@ -405,11 +405,24 @@ impl GlobalState {
         .is_some()
     }
 
-    /// Load all global state from tmux variables.
-    /// Called at startup and on SIGUSR1 (pane focus change).
+    /// Load all global state from tmux variables, including the shared
+    /// cursor row. Startup-only: restores where the user last navigated.
+    /// The runtime fold must use
+    /// [`Self::apply_shared_options_without_cursor`] /
+    /// [`Self::reload_shared_options_without_cursor`] instead — see there.
     pub fn load_from_tmux(&mut self) {
         let opts = tmux::get_all_global_options();
         self.apply_all(&opts);
+    }
+
+    /// Runtime reload of the shared options straight from tmux — the
+    /// direct-spawn twin of the worker-fetched fold in
+    /// [`Self::apply_shared_options_without_cursor`], used when a window
+    /// regains visibility without a globals-bearing snapshot in hand.
+    /// Never adopts the shared cursor (see there for why).
+    pub fn reload_shared_options_without_cursor(&mut self) {
+        let opts = tmux::get_all_global_options();
+        self.apply_shared_options_without_cursor(&opts);
     }
 
     /// Parse `@sidebar_default_compact_view` into the landing compact
@@ -488,8 +501,31 @@ impl GlobalState {
     }
 
     /// Apply all global options from tmux (cursor, repo filter, etc.).
+    ///
+    /// The startup/full variant: the shared cursor row rides along so a
+    /// fresh sidebar lands where the user last navigated. The per-tick
+    /// snapshot fold must use
+    /// [`Self::apply_shared_options_without_cursor`] instead — at runtime
+    /// the cursor is owned by whoever holds focus, and an index written
+    /// by another window's sidebar is meaningless in this one's list.
     pub fn apply_all(&mut self, opts: &HashMap<String, String>) {
-        if let Some(cursor_str) = opts.get(tmux::SIDEBAR_CURSOR)
+        self.apply_options(opts, true);
+    }
+
+    /// Runtime variant of [`Self::apply_all`] used by the event loop's
+    /// snapshot fold: syncs every shared view setting but leaves the
+    /// cursor row alone. An unfocused sidebar zeroes its cursor right
+    /// after the fold (the re-anchor rule), and a focused one is being
+    /// navigated — adoption in either state is at best erased and at
+    /// worst drags the visible selection highlight onto an unrelated
+    /// agent while the focus flag is momentarily stale.
+    pub fn apply_shared_options_without_cursor(&mut self, opts: &HashMap<String, String>) {
+        self.apply_options(opts, false);
+    }
+
+    fn apply_options(&mut self, opts: &HashMap<String, String>, adopt_cursor: bool) {
+        if adopt_cursor
+            && let Some(cursor_str) = opts.get(tmux::SIDEBAR_CURSOR)
             && let Ok(n) = cursor_str.parse::<usize>()
             && n != self.last_saved_cursor
         {
@@ -629,6 +665,47 @@ mod tests {
     fn preview_lines_default_is_two() {
         assert_eq!(GlobalState::default().preview_lines, 2);
         assert_eq!(GlobalState::new(String::new()).preview_lines, 2);
+    }
+
+    #[test]
+    fn apply_all_adopts_the_shared_cursor() {
+        let mut state = GlobalState::default();
+        let mut opts = HashMap::new();
+        opts.insert(tmux::SIDEBAR_CURSOR.to_string(), "5".into());
+
+        state.apply_all(&opts);
+
+        assert_eq!(state.selected_pane_row, 5);
+        assert_eq!(state.last_saved_cursor, 5);
+    }
+
+    #[test]
+    fn apply_shared_options_without_cursor_leaves_the_cursor_row_alone() {
+        // The user is mid-navigation in this sidebar (cursor on row 2);
+        // another window's sidebar flushed its own row 5 to the shared
+        // option. The runtime fold must not drag the highlight there —
+        // an index is only meaningful in the list it was written against.
+        let mut state = GlobalState::default();
+        state.selected_pane_row = 2;
+        state.last_saved_cursor = 2;
+        let mut opts = HashMap::new();
+        opts.insert(tmux::SIDEBAR_CURSOR.to_string(), "5".into());
+        opts.insert(tmux::SIDEBAR_PREVIEW_LINES.to_string(), "7".into());
+
+        state.apply_shared_options_without_cursor(&opts);
+
+        assert_eq!(
+            state.selected_pane_row, 2,
+            "the foreign index must not move the local cursor"
+        );
+        assert_eq!(
+            state.last_saved_cursor, 2,
+            "the skipped adoption must not poison the echo guard"
+        );
+        assert_eq!(
+            state.preview_lines, 7,
+            "the other shared settings still fold through"
+        );
     }
 
     #[test]

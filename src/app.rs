@@ -151,7 +151,7 @@ pub fn run(
             snapshot_in_flight = false;
             let previous_sidebar_focused = state.focus_state.sidebar_focused;
             let is_window_active = match raw.panes_output {
-                Some(output) => state.apply_session_refresh(&output),
+                Some(output) => state.apply_session_refresh(&output, raw.fetched_at),
                 // A failed `list-panes` call is not evidence that no panes
                 // exist (the sync twin holds the same line): apply nothing,
                 // keep the last known-good snapshot, retry next tick.
@@ -212,18 +212,22 @@ pub fn run(
                 let _ = git_info_tx.send(paths);
             }
             needs_redraw = true;
-            // Reload shared global options (compact, filters, cursor) when
-            // the tick was signal-driven — the request asked the worker to
+            // Reload shared global options (compact, filters) when the
+            // tick was signal-driven — the request asked the worker to
             // fetch them, because a broadcast from another sidebar has to
             // land on *inactive* instances too (those are exactly the
             // stale ones) — and when an inactive window regains visibility
             // (≥2 inactive ticks) as the missed-signal safety net, falling
             // back to a direct load since no globals rode this snapshot.
+            // The shared cursor is deliberately NOT adopted here: an index
+            // written against another window's list is meaningless in this
+            // one, and while the sidebar is focused it would drag the
+            // visible selection highlight onto an unrelated agent.
             if raw.global_options.is_some() || (is_window_active && window_inactive_count >= 2) {
                 let previous_group_by = state.global.group_by;
                 match &raw.global_options {
-                    Some(opts) => state.global.apply_all(opts),
-                    None => state.global.load_from_tmux(),
+                    Some(opts) => state.global.apply_shared_options_without_cursor(opts),
+                    None => state.global.reload_shared_options_without_cursor(),
                 }
                 // Group names are mode-specific (repo names vs session
                 // names). A collapse set from the previous mode would
@@ -243,18 +247,18 @@ pub fn run(
                 state
                     .todos
                     .clamp_selection(state.global.todo_hide_completed);
-                // A window/pane switch reloads the shared cursor, which
-                // another window may have moved. Re-anchor this sidebar at
-                // the top so the switch shows every agent instead of
-                // auto-scrolling to the adopted row — but only while the
-                // sidebar pane is unfocused. Hook events from agents in
-                // this window ride the same SIGUSR1 (notify_sidebars_of_pane),
-                // and while the user is navigating the list the selection
-                // is theirs: resetting on every agent-state signal yanked
-                // the cursor back to the first row mid-navigation. Leaving
-                // the sidebar flips the focus flag, so the next signal
-                // re-anchors as before; arriving re-anchors through the
-                // context selection below.
+                // While the sidebar pane is unfocused the cursor row is
+                // not this instance's business: nobody is navigating the
+                // list, so re-anchor at the top instead of auto-scrolling
+                // to wherever navigation last left it. Hook events from
+                // agents in this window ride the same SIGUSR1
+                // (notify_sidebars_of_pane), and while the user is
+                // navigating the selection is theirs: resetting on every
+                // agent-state signal yanked the cursor back to the first
+                // row mid-navigation. Leaving the sidebar flips the focus
+                // flag (the jump clears it the same frame now), so the
+                // next signal re-anchors as before; arriving re-anchors
+                // through the context selection below.
                 if !state.focus_state.sidebar_focused {
                     // A search is a transient navigation aid scoped to the
                     // sidebar's focus: leaving the sidebar (a jump, a
