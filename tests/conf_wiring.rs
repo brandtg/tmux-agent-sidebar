@@ -117,25 +117,3 @@ fn sidebar_worktree_windows_is_seeded_to_off() {
         "agent-sidebar.conf must seed @sidebar_worktree_windows off"
     );
 }
-
-#[test]
-fn overview_grid_is_bound_with_the_pressing_client() {
-    // The overview popup is opened through the binary's `overview --popup`
-    // (dispatched in src/cli/mod.rs). The keybinding must pass
-    // `#{client_name}` at keypress time: a run-shell child has no current
-    // client of its own, and display-popup without -t would fail.
-    assert!(
-        CLI_DISPATCH.contains("\"overview\" => overview::cmd_overview(rest)"),
-        "src/cli/mod.rs no longer dispatches `overview`; update agent-sidebar.conf"
-    );
-    let lines = conf_lines_containing("overview --popup");
-    assert!(
-        lines.len() == 1 && lines[0].contains("##{client_name}"),
-        "agent-sidebar.conf must bind `overview --popup` exactly once, \
-         passing ##{{client_name}} at keypress time"
-    );
-    assert!(
-        CONF.contains("if -F '#{==:#{@sidebar_key_overview},}' 'set -g @sidebar_key_overview O'"),
-        "agent-sidebar.conf must seed @sidebar_key_overview to O"
-    );
-}

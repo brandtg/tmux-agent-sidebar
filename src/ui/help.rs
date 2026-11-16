@@ -31,6 +31,7 @@ const HELP_SECTIONS: &[(&str, &[(&str, &str)])] = &[
             ("x", "Remove spawn pane"),
             ("f", "Flag / unflag agent"),
             ("r", "Open repo menu"),
+            ("o", "Agent overview grid (popup)"),
         ],
     ),
     (

@@ -154,6 +154,38 @@ fn spawn_popup(client: Option<String>) -> Result<(), String> {
     }
 }
 
+/// Spawn the overview popup without blocking the caller: the sidebar TUI
+/// fires this on its `o` key, and a detached tmux client owns the popup's
+/// lifetime (reaped on a side thread). The popup is anchored to the
+/// sidebar's own window and pane — tmux does not set `TMUX_PANE` for popup
+/// children at all, so it is pinned explicitly (same pattern as the
+/// sidebar's own popup mode).
+pub(crate) fn spawn_overview_popup_detached() -> Result<(), String> {
+    let pane = std::env::var("TMUX_PANE").unwrap_or_default();
+    if pane.is_empty() {
+        return Err("TMUX_PANE not set".into());
+    }
+    let window = tmux::run_tmux(&["display-message", "-p", "-t", &pane, "#{window_id}"])
+        .ok_or("could not resolve the sidebar's window")?;
+    let window = window.trim().to_string();
+    let exe = std::env::current_exe().map_err(|e| format!("resolve current exe: {e}"))?;
+    let cwd = std::env::current_dir().map_err(|e| format!("resolve cwd: {e}"))?;
+    let mut child = Command::new("tmux")
+        .args(["display-popup", "-E", "-w", "100%", "-h", "100%", "-d"])
+        .arg(cwd)
+        .args(["-e", &format!("TMUX_PANE={pane}")])
+        .arg("-t")
+        .arg(window)
+        .arg(exe)
+        .arg("overview")
+        .spawn()
+        .map_err(|e| format!("spawn tmux display-popup: {e}"))?;
+    std::thread::spawn(move || {
+        let _ = child.wait();
+    });
+    Ok(())
+}
+
 fn run_tui(interval: Duration) -> io::Result<i32> {
     // One tmux spawn for the user's palette; the overview renders with the
     // same status/agent colors as the sidebar.

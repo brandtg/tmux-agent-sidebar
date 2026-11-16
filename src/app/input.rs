@@ -267,6 +267,14 @@ pub(super) fn handle_key_event(key: KeyEvent, state: &mut AppState) -> bool {
         KeyCode::Char('t') => {
             state.toggle_todo_panel();
         }
+        // Experimental agent overview grid in a fullscreen popup. The
+        // spawner is fire-and-forget: a detached tmux client owns the
+        // popup's lifetime so the sidebar's event loop never blocks.
+        KeyCode::Char('o') => {
+            if let Err(e) = crate::cli::spawn_overview_popup_detached() {
+                state.set_flash(format!("overview: {e}"));
+            }
+        }
         KeyCode::Char('?') => {
             state.toggle_help_popup();
         }

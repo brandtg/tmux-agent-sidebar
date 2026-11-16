@@ -186,9 +186,14 @@ target/release/tmux-agent-sidebar overview --popup
 tmux display-popup -E -w 100% -h 100% target/release/tmux-agent-sidebar overview
 ```
 
-With the plugin conf installed, `prefix + O` opens it from anywhere
-(configurable via `@sidebar_key_overview`; the binding targets the pressing
-client via `#{client_name}`).
+With the plugin installed, the sidebar TUI itself opens it: focus the
+sidebar and press `o` — a fullscreen popup of every agent pane, anchored
+to the sidebar's window. Quitting the grid (q / Esc) returns to the
+sidebar. From a plain shell the standalone invocation also works:
+
+```bash
+target/release/tmux-agent-sidebar overview --popup
+```
 
 Keys: nothing is selected until you move; arrows/tab (or j/k) select and
 move with wraparound, Enter zooms the selected cell fullscreen, Esc

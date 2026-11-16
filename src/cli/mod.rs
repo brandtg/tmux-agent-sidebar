@@ -10,6 +10,8 @@ mod spawn;
 mod todo;
 pub(crate) mod toggle;
 
+pub(crate) use overview::spawn_overview_popup_detached;
+
 use std::io::Read;
 
 use crate::tmux;
