@@ -305,7 +305,7 @@ fn tick_window(
         vec![make_pane(AgentType::Claude, PaneStatus::Idle)],
     )];
     state.global.repo_filter = tmux_agent_sidebar::state::RepoFilter::All;
-    state.apply_session_snapshot(sessions, vec![other], Vec::new());
+    state.apply_session_snapshot(sessions, vec![other], Vec::new(), std::time::Instant::now());
     state.rebuild_row_targets();
 }
 
@@ -578,7 +578,12 @@ fn window_task_clears_when_other_window_pane_focused() {
             panes: vec![make_pane(AgentType::Claude, PaneStatus::Idle)],
         }],
     }];
-    state.apply_session_snapshot(sessions.clone(), vec![other_active.clone()], Vec::new());
+    state.apply_session_snapshot(
+        sessions.clone(),
+        vec![other_active.clone()],
+        Vec::new(),
+        std::time::Instant::now(),
+    );
 
     // Still within grace: flag survives even while focused.
     state.mark_focused_pane_seen(false);
@@ -591,7 +596,12 @@ fn window_task_clears_when_other_window_pane_focused() {
 
     // Age past the grace (5 seconds)
     state.now += 6;
-    state.apply_session_snapshot(sessions, vec![other_active], Vec::new());
+    state.apply_session_snapshot(
+        sessions,
+        vec![other_active],
+        Vec::new(),
+        std::time::Instant::now(),
+    );
 
     assert!(
         state
@@ -652,7 +662,12 @@ fn window_task_in_unattached_session_does_not_clear() {
             panes: vec![make_pane(AgentType::Claude, PaneStatus::Idle)],
         }],
     }];
-    state.apply_session_snapshot(sessions, vec![other_unattached], Vec::new());
+    state.apply_session_snapshot(
+        sessions,
+        vec![other_unattached],
+        Vec::new(),
+        std::time::Instant::now(),
+    );
 
     assert!(
         state
@@ -710,7 +725,12 @@ fn window_task_clears_across_sessions_when_tmux_attention_is_none() {
             panes: vec![make_pane(AgentType::Claude, PaneStatus::Running)],
         }],
     }];
-    state.apply_session_snapshot(sessions, vec![other_cleared], Vec::new());
+    state.apply_session_snapshot(
+        sessions,
+        vec![other_cleared],
+        Vec::new(),
+        std::time::Instant::now(),
+    );
 
     assert!(
         state

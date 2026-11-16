@@ -21,6 +21,14 @@ pub struct FocusState {
     pub window_active: bool,
     pub focus: Focus,
     pub focused_pane_id: Option<String>,
+    /// When the input path last wrote focus state optimistically (a jump
+    /// naming its target, dropping the sidebar-focus flag). Snapshots
+    /// captured *before* this instant are stale and must not touch
+    /// `focused_pane_id` / `sidebar_focused` — the fold in
+    /// `apply_snapshot` compares this against the listing's fetch time.
+    /// Monotonic; left set after use, since a snapshot fetched later than
+    /// the write simply passes the comparison.
+    pub focus_written_at: Option<std::time::Instant>,
     /// Agent pane standing in for the user's cursor while it sits on a
     /// non-agent pane whose row is not rendered: the first agent sharing
     /// the cursor's window. Recomputed on every snapshot by
@@ -40,6 +48,7 @@ impl FocusState {
             window_active: false,
             focus: Focus::Panes,
             focused_pane_id: None,
+            focus_written_at: None,
             proxy_focused_pane_id: None,
             prev_focused_pane_id: None,
         }
@@ -80,7 +89,22 @@ impl AppState {
     /// pane has no agent running. When the sidebar has focus the list
     /// yields no active non-sidebar pane — preserve the previously focused
     /// pane so row data stays stable.
-    pub(crate) fn find_focused_pane_from(&mut self, panes: &[(String, bool, String)]) {
+    ///
+    /// `fetched_at` stamps the listing: a capture older than the last
+    /// optimistic focus write (see [`FocusState::focus_written_at`])
+    /// predates the jump and must not rename the target.
+    pub(crate) fn find_focused_pane_from(
+        &mut self,
+        panes: &[(String, bool, String)],
+        fetched_at: std::time::Instant,
+    ) {
+        if self
+            .focus_state
+            .focus_written_at
+            .is_some_and(|written_at| fetched_at < written_at)
+        {
+            return;
+        }
         if let Some((id, _)) = tmux::pick_active_pane(&self.tmux_pane, panes) {
             self.focus_state.focused_pane_id = Some(id);
         }
@@ -205,7 +229,14 @@ impl AppState {
         if !self.popup_mode {
             self.focus_state.sidebar_focused = false;
         }
+        // Stamp AFTER select_pane returns: the tmux focus change only
+        // completes once those spawns do, and a listing captured while
+        // they were running still shows the pre-jump world (sidebar
+        // focused). Stamping before them would let such a listing pass
+        // the freshness check and flash the selection background back on
+        // for one snapshot round-trip.
         tmux::select_pane(&target_pane_id);
+        self.focus_state.focus_written_at = Some(std::time::Instant::now());
 
         // The jump may land on a window that has no sidebar of its own —
         // `@sidebar_auto_create off`, or one auto-hide closed while a
@@ -316,6 +347,7 @@ mod tests {
         assert!(!state.sidebar_focused);
         assert_eq!(state.focus, Focus::Panes);
         assert!(state.focused_pane_id.is_none());
+        assert!(state.focus_written_at.is_none());
         assert!(state.prev_focused_pane_id.is_none());
     }
 

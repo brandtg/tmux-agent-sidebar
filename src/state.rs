@@ -876,7 +876,7 @@ mod tests {
         }];
 
         state.focus_state.sidebar_focused = true;
-        state.apply_session_snapshot(sessions, Vec::new(), Vec::new());
+        state.apply_session_snapshot(sessions, Vec::new(), Vec::new(), std::time::Instant::now());
 
         assert!(state.focus_state.sidebar_focused);
         assert_eq!(state.repo_groups.len(), 1);

@@ -151,7 +151,7 @@ pub fn run(
             snapshot_in_flight = false;
             let previous_sidebar_focused = state.focus_state.sidebar_focused;
             let is_window_active = match raw.panes_output {
-                Some(output) => state.apply_session_refresh(&output),
+                Some(output) => state.apply_session_refresh(&output, raw.fetched_at),
                 // A failed `list-panes` call is not evidence that no panes
                 // exist (the sync twin holds the same line): apply nothing,
                 // keep the last known-good snapshot, retry next tick.

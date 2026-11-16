@@ -79,9 +79,14 @@ pub(super) struct SnapshotRequest {
 /// `list-panes` spawn failed — the caller holds its last-known-good state
 /// and retries on the next tick (a failed call is not evidence that no
 /// panes exist).
+///
+/// `fetched_at` is stamped before the `list-panes` spawn: the fold on the
+/// render thread compares it against optimistic focus writes (a jump) and
+/// refuses to let an older-than-the-jump listing clobber the focus state.
 pub(super) struct SnapshotRaw {
     pub panes_output: Option<String>,
     pub global_options: Option<HashMap<String, String>>,
+    pub fetched_at: std::time::Instant,
 }
 
 /// Spawn the background threads (session-name polling, version notice
@@ -141,11 +146,16 @@ pub(super) fn snapshot_poll_loop(
     tx: &mpsc::Sender<SnapshotRaw>,
 ) {
     while let Ok(request) = rx.recv() {
+        // Stamped before the spawn: the listing reflects the server state
+        // as of when we asked, so anything fetched after an optimistic
+        // focus write may be applied, anything older may not.
+        let fetched_at = std::time::Instant::now();
         let panes_output = tmux::fetch_pane_listing();
         let global_options = request.include_globals.then(tmux::get_all_global_options);
         let _ = tx.send(SnapshotRaw {
             panes_output,
             global_options,
+            fetched_at,
         });
     }
 }
