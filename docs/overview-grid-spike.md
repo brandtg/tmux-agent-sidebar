@@ -146,6 +146,14 @@ and `cargo build --release`.
   basic 30-37/40-47 and bright 90-97/100-107 codes — i.e. the colors every
   agent TUI actually emits, in the HTML capture output too. Fixed with
   unit tests.
+- A second, worse parser bug surfaced from the live opencode pane: the
+  truecolor forms (`38;2;R;G;B` / `48;2;R;G;B`) were not consumed, so
+  their RGB components leaked back into the SGR stream — opencode's
+  muted-text color (38;2;110;106;134) turned its G component (106) into a
+  solid background-14 bar behind every muted line. The parser now
+  consumes the full parameter list and quantizes truecolor to the nearest
+  256-color entry, so opencode renders with its actual dark theme
+  (verified against a real capture: zero leaked backgrounds).
 - The first live look (9 real agent panes) proved the pipe but not the
   product: top-left crops showed stale history instead of current
   activity, status was invisible beyond a tiny icon, and truncated cells

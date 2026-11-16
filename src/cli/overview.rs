@@ -43,7 +43,7 @@ use ratatui::{
     widgets::{Block, Paragraph},
 };
 
-use crate::cli::capture::ansi::{self, StyledCell};
+use crate::cli::capture::ansi::{self, StyledCell, palette_rgb};
 use crate::cli::capture::tmux_probe::capture_pane;
 use crate::tmux::{self, AgentType, PaneInfo, PaneStatus};
 use crate::ui::colors::ColorTheme;
@@ -405,49 +405,12 @@ fn pane_is_light_theme(grid: &[Vec<StyledCell>]) -> bool {
     explicit > 0 && light * 2 > explicit
 }
 
-/// Relative luminance (0-1) of an xterm-256 palette index, from the
-/// palette's RGB decomposition: the 16 standard colors, the 6x6x6 cube
-/// (16-231), and the grayscale ramp (232-255).
+/// Relative luminance (0-1) of an xterm-256 palette index.
 fn indexed_luminance(color: u8) -> f32 {
-    let (r, g, b) = match color {
-        0..=15 => {
-            let (r, g, b) = STANDARD_16[color as usize];
-            (r as f32, g as f32, b as f32)
-        }
-        16..=231 => {
-            let v = color as u16 - 16;
-            let level = |c: u16| -> f32 { ((c * 255) / 5) as f32 };
-            (level(v / 36), level((v / 6) % 6), level(v % 6))
-        }
-        _ => {
-            let v = (8 + 10 * (color as u16 - 232)) as f32;
-            (v, v, v)
-        }
-    };
+    let (r, g, b) = palette_rgb(color);
     // Rec. 709 luminance weights on a 0-255 scale.
-    (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255.0
+    (0.2126 * r as f32 + 0.7152 * g as f32 + 0.0722 * b as f32) / 255.0
 }
-
-/// The canonical 16 ANSI colors (VGA values; terminals vary slightly, but
-/// the luminance verdict — dark vs light — is stable).
-const STANDARD_16: [(u8, u8, u8); 16] = [
-    (0, 0, 0),
-    (128, 0, 0),
-    (0, 128, 0),
-    (128, 128, 0),
-    (0, 0, 128),
-    (128, 0, 128),
-    (0, 128, 128),
-    (192, 192, 192),
-    (128, 128, 128),
-    (255, 0, 0),
-    (0, 255, 0),
-    (255, 255, 0),
-    (0, 0, 255),
-    (255, 0, 255),
-    (0, 255, 255),
-    (255, 255, 255),
-];
 
 fn draw_grid(
     f: &mut Frame,
