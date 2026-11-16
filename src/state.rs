@@ -20,8 +20,8 @@ mod timers;
 mod todo;
 
 pub use chyron::{
-    CHYRON_FADE_FRAMES, CHYRON_FLASH_FRAMES, CHYRON_FRAME, CHYRON_LINGER_FRAMES, ChyronEvent,
-    ChyronKind, ChyronPhase, ChyronState,
+    CHYRON_END_HOLD_FRAMES, CHYRON_FADE_FRAMES, CHYRON_FLASH_FRAMES, CHYRON_FRAME,
+    CHYRON_HOLD_FRAMES, CHYRON_LINGER_FRAMES, ChyronEvent, ChyronKind, ChyronPhase, ChyronState,
 };
 pub use filter::RepoFilter;
 pub use focus::{Focus, FocusState};

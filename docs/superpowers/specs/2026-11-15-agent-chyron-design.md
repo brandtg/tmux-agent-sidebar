@@ -27,6 +27,19 @@
 > The search input is now flush left. `l` keeps its vim "go into"
 > binding alongside `→`.
 >
+> **Update (2026-11-15, ticker):** two corrections from watching it
+> run. (1) The flash's dark background tint is gone — a same-hue block
+> under bright text vibrates and reads worse than the text alone, so
+> every phase is now plain colored text on the default background
+> (brightest step for the flash, the row-status hue for the rest).
+> (2) An overflowing banner now behaves like an actual chyron: after
+> the flash it holds the opening words ~1.6 s, ticks left one column
+> per 200 ms frame until the tail has been visible, pauses ~1 s, and
+> only then fades — the display window is content-sized
+> (`display_frames`) so the close can never preempt the scroll. The
+> banner pads to the full row, and the menu button keeps its corner
+> (visible and clickable) throughout.
+>
 > **Update (2026-11-15, linger):** the 1.6 s flash+fade was readable
 > only as a jolt — it caught the eye and vanished before the name
 > could be parsed. The lifecycle is now flash (600 ms, background tint

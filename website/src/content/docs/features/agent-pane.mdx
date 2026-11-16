@@ -22,12 +22,15 @@ the row names the event for a moment, then hands the row back.
   (amber)
 - `✕ <agent> failed` — the pane transitioned to error (red)
 
-Each event reads in three beats: a short bright flash with a
-background tint (the eye-catcher), then ~3 s of colored text — same
-hue, no background — so the name is actually readable, then a short
-fade and the toolbar returns. Focusing the pane the event has fired
-for ends the display immediately — nothing lingers over output you
-already read. Opening the `/` search or the menu dismisses the event
+Each event reads in beats: a short bright flash (the eye-catcher —
+colored text only, never a background block), then ~3 s of colored
+text in the same hue so the name is actually readable, then a short
+fade and the toolbar returns. A banner wider than the row becomes a
+ticker: it holds the opening words for a moment, scrolls horizontally
+at a slow, readable pace until the tail has been visible, pauses, and
+only then fades — the scroll always completes before the close.
+Focusing the pane the event has fired for ends the display
+immediately — nothing lingers over output you already read. Opening the `/` search or the menu dismisses the event
 outright. Clicking the banner selects that agent's row and scrolls it
 into view (the menu button in the corner keeps working throughout). A
 sidebar that opens mid-session shows nothing until its first event,

@@ -559,18 +559,21 @@ fn render_header_into(frame: &mut Frame, state: &mut AppState, area: Rect) {
             let banner_area = Rect::new(area.x, area.y, banner_w, area.height);
             frame.render_widget(Paragraph::new(vec![line]), banner_area);
         }
-        let flash_bg = state.chyron.flash_bg(state);
         let button_x = area.x + area.width.saturating_sub(button_w);
         let button_area = Rect::new(button_x, area.y, button_w, area.height);
-        let button_line = Line::from(chyron::menu_button_spans(state, flash_bg));
+        let button_line = Line::from(chyron::menu_button_spans(state));
         frame.render_widget(Paragraph::new(vec![button_line]), button_area);
         // Same contract as the toolbar branch: the click column is
         // width - button width. Written on chyron frames too so a
-        // first-frame banner still leaves the button clickable.
+        // first-frame banner still leaves the button clickable. The
+        // width feeds the ticker's display-window math (the scroll
+        // must finish before the close).
         state.layout.menu_button_col = Some(area.width.saturating_sub(button_w));
+        state.layout.header_width = Some(area.width);
     } else {
         let (line, menu_btn_col) = chyron::render_secondary_header(state, area.width);
         state.layout.menu_button_col = menu_btn_col;
+        state.layout.header_width = Some(area.width);
         frame.render_widget(Paragraph::new(vec![line]), area);
     }
 }

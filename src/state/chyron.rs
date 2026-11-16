@@ -3,11 +3,14 @@
 //! The list rows are a *state* channel — they show what is. The chyron
 //! is the *event* channel: when a pane's attention flag or status
 //! transitions, the row names the event in the event's color — a short
-//! bright flash with a background tint, then a ~3 s linger as plain
-//! colored text, then a short fade — and the toolbar takes the row
-//! back. Nothing else in the sidebar remembers "what just changed":
-//! attention flags clear on focus and statuses mutate silently, so
-//! once a moment has passed only the chyron can still name it.
+//! bright flash, then a readable stretch of plain colored text — and
+//! the toolbar takes the row back. A banner longer than the row
+//! becomes a ticker: it holds the opening words first, scrolls
+//! horizontally at a slow, readable pace, pauses on the tail, and only
+//! then fades. Nothing else in the sidebar remembers "what just
+//! changed": attention flags clear on focus and statuses mutate
+//! silently, so once a moment has passed only the chyron can still
+//! name it.
 //!
 //! Events are diffed per tick against the previous snapshot (see
 //! [`AppState::observe_chyron_transitions`]); rendering is a pure
@@ -22,19 +25,29 @@ use crate::tmux::{PaneAttention, PaneStatus};
 
 /// Frame duration of the chyron lifecycle. Matches the spinner tick in
 /// `app.rs`, which already redraws at this cadence — phases are counted
-/// in these frames so flash + linger + fade land on rendered frames.
+/// in these frames so flash + scroll + fade land on rendered frames.
 pub const CHYRON_FRAME: Duration = Duration::from_millis(200);
 
-/// Full-brightness frames (background tint + brightest foreground):
-/// the eye-catcher. Deliberately short — it says "look", not "read".
+/// Full-brightness frames: the eye-catcher. Deliberately short — it
+/// says "look", not "read". Brightest ramp step, no background: a
+/// same-hue tint under the text vibrates and reads worse than plain
+/// bright text on the terminal background.
 pub const CHYRON_FLASH_FRAMES: usize = 3;
-/// Colored-text frames after the flash: full event hue, no background.
-/// The readable part of the notification; long enough to actually
-/// parse the name (~3 s).
+/// Static frames after the flash when the banner fits the row: the
+/// readable part of the notification, ~3 s.
 pub const CHYRON_LINGER_FRAMES: usize = 15;
-/// Fade-out frames after the linger: the ramp walks down and the
-/// toolbar takes the row back.
+/// When the banner overflows, scrolling waits this long after the
+/// flash so the opening words are readable before the ticker starts.
+pub const CHYRON_HOLD_FRAMES: usize = 8;
+/// Pause with the banner's tail visible before the fade — the end of
+/// a scroll should not blink away the moment it arrives.
+pub const CHYRON_END_HOLD_FRAMES: usize = 5;
+/// Fade-out frames: the ramp walks down and the toolbar takes the row
+/// back.
 pub const CHYRON_FADE_FRAMES: usize = 4;
+/// Scroll speed: columns per frame. 200 ms per column is a slow,
+/// readable ticker.
+pub const CHYRON_SCROLL_COLS_PER_FRAME: usize = 1;
 
 /// Kind of agent event the chyron names.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -84,37 +97,78 @@ pub struct ChyronEvent {
 }
 
 impl ChyronEvent {
-    /// Which animation phase the event is in, from elapsed time alone.
-    /// Consumption (the pane being looked at / gone) is resolved by the
-    /// renderer against live pane state and forces [`ChyronPhase::Rest`].
-    pub fn phase(&self) -> ChyronPhase {
+    /// Which animation phase the event is in. The timeline depends on
+    /// the banner's width (`text_w`) against the row width it may
+    /// occupy (`avail_w`): a fitting banner holds static and reads,
+    /// an overflowing one turns into a ticker — the scroll always
+    /// completes before the fade (and thus the close) begins.
+    /// Consumption (the pane being looked at / gone) is resolved by
+    /// the renderer against live pane state and forces
+    /// [`ChyronPhase::Rest`].
+    pub fn phase(&self, text_w: usize, avail_w: usize) -> ChyronPhase {
         let frame = self.shown_at.elapsed().as_millis() / CHYRON_FRAME.as_millis();
         let frame = frame as usize;
+        let scrolls = text_w > avail_w;
+        let hold = if scrolls {
+            CHYRON_HOLD_FRAMES
+        } else {
+            CHYRON_LINGER_FRAMES
+        };
         if frame < CHYRON_FLASH_FRAMES {
-            return ChyronPhase::Flash { frame };
+            return ChyronPhase::Flash;
         }
-        let linger_frame = frame - CHYRON_FLASH_FRAMES;
-        if linger_frame < CHYRON_LINGER_FRAMES {
-            return ChyronPhase::Linger {
-                frame: linger_frame,
-            };
+        let f = frame - CHYRON_FLASH_FRAMES;
+        if f < hold {
+            return ChyronPhase::Hold;
         }
-        let fade_frame = linger_frame - CHYRON_LINGER_FRAMES;
-        if fade_frame < CHYRON_FADE_FRAMES {
-            return ChyronPhase::Fade { frame: fade_frame };
+        let mut f = f - hold;
+        if scrolls {
+            let scroll_frames = (text_w - avail_w).div_ceil(CHYRON_SCROLL_COLS_PER_FRAME);
+            if f < scroll_frames {
+                return ChyronPhase::Scroll {
+                    offset: f * CHYRON_SCROLL_COLS_PER_FRAME,
+                };
+            }
+            f -= scroll_frames;
+            if f < CHYRON_END_HOLD_FRAMES {
+                return ChyronPhase::EndHold;
+            }
+            f -= CHYRON_END_HOLD_FRAMES;
+        }
+        if f < CHYRON_FADE_FRAMES {
+            return ChyronPhase::Fade { frame: f };
         }
         ChyronPhase::Rest
     }
 }
 
+/// Total frames a banner of `text_w` columns stays visible in an
+/// `avail_w`-column row. The fade — and with it the close — only
+/// starts after the scroll has fully revealed the tail.
+pub fn display_frames(text_w: usize, avail_w: usize) -> usize {
+    if text_w <= avail_w {
+        CHYRON_FLASH_FRAMES + CHYRON_LINGER_FRAMES + CHYRON_FADE_FRAMES
+    } else {
+        CHYRON_FLASH_FRAMES
+            + CHYRON_HOLD_FRAMES
+            + (text_w - avail_w).div_ceil(CHYRON_SCROLL_COLS_PER_FRAME)
+            + CHYRON_END_HOLD_FRAMES
+            + CHYRON_FADE_FRAMES
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ChyronPhase {
-    /// Full-color frames with the dark background tint; the value is
-    /// the flash frame index.
-    Flash { frame: usize },
-    /// Colored-text frames (event hue, no background); the value is
-    /// the linger frame index.
-    Linger { frame: usize },
+    /// Brightest ramp step, no background: the eye-catcher.
+    Flash,
+    /// Static colored text — the whole show when the banner fits, the
+    /// pre-scroll delay when it overflows.
+    Hold,
+    /// Horizontal ticker; the value is the column offset the text is
+    /// shifted left by.
+    Scroll { offset: usize },
+    /// The tail is fully visible; brief pause before the fade.
+    EndHold,
     /// Ramp-down frames; the value is the fade frame index.
     Fade { frame: usize },
     /// Display over: the toolbar owns the row again.
@@ -160,36 +214,53 @@ impl ChyronState {
 
     /// Whether the chyron currently owns the header row. The single
     /// header row is shared with the toolbar: the chyron shows only
-    /// while an unconsumed event is inside its flash/linger/fade
-    /// window, and yields when the `/` input or the header menu is
-    /// open (opening either dismisses the event outright — this guard
-    /// covers any other path that opens them).
+    /// while an unconsumed event is inside its display window — which,
+    /// for an overflowing banner, lasts until the ticker has fully
+    /// revealed the tail — and yields when the `/` input or the header
+    /// menu is open (opening either dismisses the event outright —
+    /// this guard covers any other path that opens them).
     pub fn is_showing(&self, state: &AppState) -> bool {
-        let Some(event) = &self.current else {
+        let Some((text, _kind)) = self.banner(state) else {
             return false;
         };
         if state.search.is_active() || state.is_repo_popup_open() {
             return false;
         }
-        if self.is_consumed(state, event) {
-            return false;
-        }
-        !matches!(event.phase(), ChyronPhase::Rest)
+        let text_w = crate::ui::text::display_width(&text);
+        let avail_w = state.layout.header_width.unwrap_or(0) as usize;
+        let frame = self
+            .current
+            .as_ref()
+            .unwrap()
+            .shown_at
+            .elapsed()
+            .as_millis()
+            / CHYRON_FRAME.as_millis();
+        (frame as usize) < display_frames(text_w, avail_w)
     }
 
-    /// The flash frame's background tint, when the current event is in
-    /// its flash phase. The menu button rides on top of the banner and
-    /// tints its cells with this so it does not punch a hole in the
-    /// background.
-    pub fn flash_bg(&self, state: &AppState) -> Option<ratatui::style::Color> {
+    /// The banner text and its kind, when an unconsumed event exists.
+    /// Both the renderer and the display-window math build the line
+    /// through here so the width they agree on is the width that
+    /// renders.
+    pub fn banner(&self, state: &AppState) -> Option<(String, ChyronKind)> {
         let event = self.current.as_ref()?;
         if self.is_consumed(state, event) {
             return None;
         }
-        match event.phase() {
-            ChyronPhase::Flash { .. } => Some(state.theme.chyron_flash_bg(event.kind)),
-            _ => None,
+        if state.search.is_active() || state.is_repo_popup_open() {
+            return None;
         }
+        let glyph = match event.kind {
+            ChyronKind::Done => state.icons.done_icon(),
+            ChyronKind::Waiting => state.icons.status_icon(&PaneStatus::Waiting),
+            ChyronKind::Failed => state.icons.status_icon(&PaneStatus::Error),
+        };
+        let label = self.label(state, event);
+        Some((
+            format!("{} {} {}", glyph, label, event.kind.verb()),
+            event.kind,
+        ))
     }
 
     /// Display label for the event: the pane's current title when it
@@ -376,40 +447,99 @@ mod tests {
     // ─── phase timing ────────────────────────────────────────────────
 
     #[test]
-    fn phase_walks_flash_fade_rest_on_the_frame_grid() {
+    fn phase_walks_flash_hold_fade_rest_when_the_banner_fits() {
         let flash = ChyronEvent {
             pane_id: "%1".into(),
             kind: ChyronKind::Done,
             label: "fix-auth".into(),
             shown_at: Instant::now(),
         };
-        assert_eq!(
-            flash.phase(),
-            ChyronPhase::Flash { frame: 0 },
-            "the first frame is full color"
-        );
-        // Just past the flash window (3 frames = 600ms): linger —
-        // plain colored text, no background.
-        let lingering = ChyronEvent {
-            shown_at: Instant::now() - (CHYRON_FRAME * 3 + Duration::from_millis(10)),
+        assert_eq!(flash.phase(16, 40), ChyronPhase::Flash);
+        // Past the flash window (3 frames = 600ms): static hold.
+        let holding = ChyronEvent {
+            shown_at: Instant::now() - (CHYRON_FRAME * 3 + Duration::from_millis(100)),
+            ..flash.clone()
+        };
+        assert!(matches!(holding.phase(16, 40), ChyronPhase::Hold));
+        // Past flash + linger (3 + 15 frames): the fade.
+        let fading = ChyronEvent {
+            shown_at: Instant::now() - (CHYRON_FRAME * 18 + Duration::from_millis(100)),
             ..flash.clone()
         };
         assert!(matches!(
-            lingering.phase(),
-            ChyronPhase::Linger { frame: 0 }
+            fading.phase(16, 40),
+            ChyronPhase::Fade { frame: 0 }
         ));
-        // Past flash + linger (3 + 15 frames): the fade.
-        let fading = ChyronEvent {
-            shown_at: Instant::now() - (CHYRON_FRAME * 18 + Duration::from_millis(10)),
-            ..flash.clone()
-        };
-        assert!(matches!(fading.phase(), ChyronPhase::Fade { frame: 0 }));
         // Past flash + linger + fade (22 frames = 4.4s): rest.
         let rested = ChyronEvent {
-            shown_at: Instant::now() - (CHYRON_FRAME * 22),
+            shown_at: Instant::now() - (CHYRON_FRAME * 22 + Duration::from_millis(100)),
             ..flash
         };
-        assert_eq!(rested.phase(), ChyronPhase::Rest);
+        assert_eq!(rested.phase(16, 40), ChyronPhase::Rest);
+    }
+
+    #[test]
+    fn overflowing_banner_scrolls_to_the_tail_before_closing() {
+        let flash = ChyronEvent {
+            pane_id: "%1".into(),
+            kind: ChyronKind::Done,
+            label: "fix-auth".into(),
+            shown_at: Instant::now(),
+        };
+        // 16 columns of banner in a 10-column row: 6 columns to scroll.
+        let (text_w, avail_w) = (16, 10);
+
+        // Flash, then the shorter pre-scroll hold.
+        assert_eq!(flash.phase(text_w, avail_w), ChyronPhase::Flash);
+        let holding = ChyronEvent {
+            shown_at: Instant::now() - (CHYRON_FRAME * 4 + Duration::from_millis(50)),
+            ..flash.clone()
+        };
+        assert!(matches!(holding.phase(text_w, avail_w), ChyronPhase::Hold));
+
+        // The scroll: one column per frame, offsets 0..6.
+        let scrolling = ChyronEvent {
+            shown_at: Instant::now()
+                - (CHYRON_FRAME * (CHYRON_FLASH_FRAMES + CHYRON_HOLD_FRAMES + 1) as u32),
+            ..flash.clone()
+        };
+        assert_eq!(
+            scrolling.phase(text_w, avail_w),
+            ChyronPhase::Scroll { offset: 1 }
+        );
+
+        // The end hold shows the tail; only then the fade. Mid-frame
+        // offsets (+50ms) so a slow runner cannot shift the phase.
+        let end = CHYRON_FLASH_FRAMES + CHYRON_HOLD_FRAMES + 6;
+        let end_hold = ChyronEvent {
+            shown_at: Instant::now() - (CHYRON_FRAME * end as u32 + Duration::from_millis(50)),
+            ..flash.clone()
+        };
+        assert!(matches!(
+            end_hold.phase(text_w, avail_w),
+            ChyronPhase::EndHold
+        ));
+        let fading = ChyronEvent {
+            shown_at: Instant::now()
+                - (CHYRON_FRAME * (end + CHYRON_END_HOLD_FRAMES) as u32
+                    + Duration::from_millis(50)),
+            ..flash.clone()
+        };
+        assert!(matches!(
+            fading.phase(text_w, avail_w),
+            ChyronPhase::Fade { frame: 0 }
+        ));
+
+        // The display window covers the whole ticker; the close never
+        // preempts the scroll.
+        assert_eq!(
+            display_frames(text_w, avail_w),
+            CHYRON_FLASH_FRAMES
+                + CHYRON_HOLD_FRAMES
+                + 6
+                + CHYRON_END_HOLD_FRAMES
+                + CHYRON_FADE_FRAMES
+        );
     }
 
     // ─── transition diffing ──────────────────────────────────────────

@@ -6,78 +6,107 @@ use ratatui::{
 use crate::state::{AppState, ChyronKind, ChyronPhase, RepoFilter};
 use crate::tmux::PaneStatus;
 
-use crate::ui::text::display_width;
+use crate::ui::text::{display_width, truncate_to_width};
 
 /// Render the chyron: the most recent agent event, named in its own
-/// color and fading out. `None` means the toolbar owns the row — no
-/// event has fired, the fade has completed, or the event was consumed.
+/// color. `None` means the toolbar owns the row — no event has fired,
+/// the fade has completed, or the event was consumed.
 ///
 /// Consumption is resolved here against live pane state: a pane the
 /// user has looked at (attention flag cleared), one that left its event
 /// status, or one that vanished ends the display immediately — the
-/// remaining fade frames are skipped and the toolbar returns.
+/// remaining frames are skipped and the toolbar returns.
+///
+/// A banner wider than `width` scrolls: the text holds still through
+/// the flash and a short hold (the opening words stay readable), then
+/// ticks left one slow column at a time until the tail is visible,
+/// pauses, and only then fades. A fitting banner just holds.
 pub(super) fn render_chyron<'a>(state: &AppState, width: u16) -> Option<Line<'a>> {
-    let event = state.chyron.current.as_ref()?;
+    let (text, kind) = state.chyron.banner(state)?;
     let theme = &state.theme;
-    let icons = &state.icons;
 
-    let mut phase = event.phase();
-    if state.chyron.is_consumed(state, event) {
-        phase = ChyronPhase::Rest;
-    }
+    let text_w = display_width(&text);
+    let avail_w = width as usize;
+    let phase = state
+        .chyron
+        .current
+        .as_ref()
+        .unwrap()
+        .phase(text_w, avail_w);
     if phase == ChyronPhase::Rest {
         return None;
     }
 
-    let label = state.chyron.label(state, event);
-    let glyph = match event.kind {
-        ChyronKind::Done => icons.done_icon(),
-        // Waiting and Failed reuse the status glyphs the rows already
-        // teach the user to read; only Done needs its own (statuses
-        // have no "done" of their own — a done-but-unseen pane is
-        // still idle/running by status).
-        ChyronKind::Waiting => icons.status_icon(&PaneStatus::Waiting),
-        ChyronKind::Failed => icons.status_icon(&PaneStatus::Error),
-    };
-
-    let (fg, bg) = match phase {
-        ChyronPhase::Flash { .. } => (
-            theme.chyron_flash_fg(event.kind),
-            Some(theme.chyron_flash_bg(event.kind)),
-        ),
-        // Linger: plain colored text on the default background — the
-        // readable part of the notification, no eye-catcher.
-        ChyronPhase::Linger { .. } => (theme.chyron_linger_fg(event.kind), None),
-        ChyronPhase::Fade { frame } => (theme.chyron_color(event.kind, frame), None),
+    let fg = match phase {
+        ChyronPhase::Flash => theme.chyron_flash_fg(kind),
+        ChyronPhase::Hold | ChyronPhase::Scroll { .. } | ChyronPhase::EndHold => {
+            theme.chyron_linger_fg(kind)
+        }
+        ChyronPhase::Fade { frame } => theme.chyron_color(kind, frame),
         // Unreachable: rest (and consumed) return None above.
-        ChyronPhase::Rest => (theme.filter_inactive, None),
+        ChyronPhase::Rest => theme.filter_inactive,
     };
+    // Plain colored text on the default background throughout: a
+    // same-hue tint under the text vibrates and reads worse than the
+    // text alone.
+    let style = Style::default().fg(fg);
 
-    let mut style = Style::default().fg(fg);
-    if let Some(bg) = bg {
-        style = style.bg(bg);
+    let shown = match phase {
+        // The ticker and its end-hold show the scrolled window; the
+        // end-hold rests at the tail so it does not blink away the
+        // moment the scroll completes.
+        ChyronPhase::Scroll { offset } => scroll_window(&text, offset, avail_w),
+        ChyronPhase::EndHold => scroll_window(&text, text_w - avail_w, avail_w),
+        _ => {
+            // Pad to the row width so stale toolbar cells from the
+            // previous frame are overwritten.
+            let clipped = truncate_to_width(&text, avail_w);
+            format!(
+                "{}{}",
+                clipped,
+                " ".repeat(avail_w.saturating_sub(display_width(&clipped)))
+            )
+        }
+    };
+    Some(Line::from(Span::styled(shown, style)))
+}
+
+/// The column window of `text` starting at `offset`, `avail` columns
+/// wide. Wide (double-column) characters straddling either edge are
+/// dropped rather than clipped; the result is padded back out to
+/// `avail` columns so the row renders over any stale cells.
+fn scroll_window(text: &str, offset: usize, avail: usize) -> String {
+    use unicode_width::UnicodeWidthChar;
+    if avail == 0 {
+        return String::new();
     }
-
-    let text = format!("{} {} {}", glyph, label, event.kind.verb());
-    // Tail-fit: the verb is the payload's payoff, so truncation keeps
-    // the trailing end (and its ellipsis) rather than the head. The
-    // line then pads to the full row width so a background flash tints
-    // the whole row, not just the text cells.
-    let text = super::tail_fit(&text, width as usize);
-    let pad = width as usize - display_width(&text);
-    let text = format!("{}{}", text, " ".repeat(pad));
-    Some(Line::from(Span::styled(text, style)))
+    let mut out = String::new();
+    let mut col = 0usize;
+    for ch in text.chars() {
+        let w = ch.width().unwrap_or(0);
+        let start = col;
+        col += w;
+        if col <= offset {
+            continue;
+        }
+        if start >= offset + avail {
+            break;
+        }
+        if start < offset || col > offset + avail {
+            continue;
+        }
+        out.push(ch);
+        if display_width(&out) >= avail {
+            break;
+        }
+    }
+    let pad = avail.saturating_sub(display_width(&out));
+    format!("{}{}", out, " ".repeat(pad))
 }
 
 /// The merged menu button as its three columns: label (`ⓘ` when a
 /// notice exists, `—` otherwise), a space, and the dropdown arrow.
-/// `flash_bg` tints the cells to match a chyron flash frame so the
-/// button can ride on top of the banner without punching a hole in the
-/// background.
-pub(super) fn menu_button_spans<'a>(
-    state: &AppState,
-    flash_bg: Option<ratatui::style::Color>,
-) -> Vec<Span<'a>> {
+pub(super) fn menu_button_spans<'a>(state: &AppState) -> Vec<Span<'a>> {
     let theme = &state.theme;
 
     let has_info = crate::ui::notices::has_info(state);
@@ -95,13 +124,10 @@ pub(super) fn menu_button_spans<'a>(
         theme.text_muted
     };
 
-    let base = flash_bg
-        .map(|bg| Style::default().fg(theme.text_muted).bg(bg))
-        .unwrap_or_default();
     vec![
-        Span::styled(label, Style::default().fg(label_color).patch(base)),
-        Span::styled(" ", base),
-        Span::styled("▾", Style::default().fg(arrow_color).patch(base)),
+        Span::styled(label, Style::default().fg(label_color)),
+        Span::raw(" "),
+        Span::styled("▾", Style::default().fg(arrow_color)),
     ]
 }
 
@@ -142,7 +168,7 @@ pub(super) fn render_secondary_header<'a>(state: &AppState, width: u16) -> (Line
         spans.push(Span::raw(" ".repeat(gap)));
     }
 
-    spans.extend(menu_button_spans(state, None));
+    spans.extend(menu_button_spans(state));
 
     let button_col = (width as usize).saturating_sub(BUTTON_WIDTH) as u16;
     (Line::from(spans), Some(button_col))
@@ -237,26 +263,24 @@ mod tests {
         let state = state_with_event(done_event(), true);
         assert!(state.chyron.is_showing(&state));
         let line = render_chyron(&state, 40).expect("an event renders");
-        // The banner pads to the full row so the background flash
-        // tints edge to edge, not just the text cells.
+        // The banner pads to the full row so stale toolbar cells from
+        // the previous frame are overwritten.
         assert_eq!(
             line_text(&line),
             format!("✓ fix-auth done{}", " ".repeat(40 - 15))
         );
-        // Flash: bright event foreground on the dark green tint.
+        // Flash: brightest ramp step, no background - a same-hue tint
+        // under the text vibrates and reads worse than the text alone.
         let span = &line.spans[0];
         assert_eq!(
             span.style.fg,
             Some(state.theme.chyron_flash_fg(ChyronKind::Done))
         );
-        assert_eq!(
-            span.style.bg,
-            Some(state.theme.chyron_flash_bg(ChyronKind::Done))
-        );
+        assert_eq!(span.style.bg, None, "no background, ever");
     }
 
     #[test]
-    fn linger_frame_is_colored_text_without_background() {
+    fn hold_frame_is_colored_text_without_background() {
         let mut event = done_event();
         event.shown_at = Instant::now() - (crate::state::CHYRON_FRAME * 4);
         let state = state_with_event(event, true);
@@ -266,22 +290,64 @@ mod tests {
         assert_eq!(
             span.style.fg,
             Some(state.theme.chyron_linger_fg(ChyronKind::Done)),
-            "the linger reads in the event hue, one step below the flash"
+            "the hold reads in the event hue, one step below the flash"
         );
-        assert_eq!(
-            span.style.bg, None,
-            "no background during the linger - colored text only"
-        );
-        // The fade ramps from the step after the linger color.
+        assert_eq!(span.style.bg, None, "no background - colored text only");
+        // The fade ramps from the step after the hold color.
         let fade_color = state.theme.chyron_color(ChyronKind::Done, 0);
         assert_ne!(fade_color, state.theme.chyron_linger_fg(ChyronKind::Done));
+    }
+
+    #[test]
+    fn overflowing_banner_scrolls_slowly_after_a_hold() {
+        // "✓ a-very-long-session-name-that-will-not-fit done" is 45
+        // columns; in a 20-column row it must tick left after the
+        // flash + hold, one column per frame.
+        let mut event = done_event();
+        event.label = "a-very-long-session-name-that-will-not-fit".into();
+        let mut state = state_with_event(event, true);
+        state.repo_groups[0].panes[0].0.session_name =
+            "a-very-long-session-name-that-will-not-fit".into();
+
+        let text = "✓ a-very-long-session-name-that-will-not-fit done";
+        let text_w = display_width(text);
+        assert_eq!(text_w, 49);
+
+        // Flash + hold: the opening words sit still, head-clipped with
+        // an ellipsis marking the cut (no scroll yet).
+        let line = render_chyron(&state, 20).unwrap();
+        assert!(line_text(&line).starts_with("✓ a-very-long-s"));
+        assert!(line_text(&line).ends_with('…'));
+
+        // Land mid-frame (+50ms) so a slow test runner cannot shift
+        // the phase index across a 200ms boundary.
+        let frames_ago = |n: u32| {
+            Instant::now() - (crate::state::CHYRON_FRAME * n + std::time::Duration::from_millis(50))
+        };
+
+        // One hold frame in: the scroll has moved one column. The ✓ is
+        // three bytes but one column, so slice the ASCII tail and
+        // reason in columns.
+        let frames_in = crate::state::CHYRON_FLASH_FRAMES + crate::state::CHYRON_HOLD_FRAMES + 1;
+        state.chyron.current.as_mut().unwrap().shown_at = frames_ago(frames_in as u32);
+        let line = render_chyron(&state, 20).unwrap();
+        let ascii = &text["✓".len()..];
+        assert_eq!(line_text(&line), &ascii[..20]);
+
+        // Deep into the scroll: the tail is in view.
+        let tail_frame =
+            crate::state::CHYRON_FLASH_FRAMES + crate::state::CHYRON_HOLD_FRAMES + (text_w - 20);
+        state.chyron.current.as_mut().unwrap().shown_at = frames_ago(tail_frame as u32);
+        let line = render_chyron(&state, 20).unwrap();
+        assert_eq!(line_text(&line).trim_end(), &ascii[ascii.len() - 20..]);
     }
 
     #[test]
     fn rest_frame_renders_nothing_toolbar_owns_the_row() {
         let mut event = done_event();
         event.shown_at = Instant::now() - std::time::Duration::from_secs(5);
-        let state = state_with_event(event, true);
+        let mut state = state_with_event(event, true);
+        state.layout.header_width = Some(40);
         assert!(render_chyron(&state, 40).is_none());
         assert!(!state.chyron.is_showing(&state));
     }
@@ -317,24 +383,6 @@ mod tests {
         state.repo_groups[0].panes[0].0.status = crate::tmux::PaneStatus::Error;
         let line = render_chyron(&state, 40).unwrap();
         assert_eq!(line_text(&line).trim_end(), "✕ fix-auth failed");
-    }
-
-    #[test]
-    fn long_labels_truncate_to_the_row_width() {
-        let mut event = done_event();
-        event.label = "a-very-long-session-name-that-will-not-fit".into();
-        let mut state = state_with_event(event, true);
-        // The label resolves live from the pane's title.
-        state.repo_groups[0].panes[0].0.session_name =
-            "a-very-long-session-name-that-will-not-fit".into();
-        let line = render_chyron(&state, 20).unwrap();
-        let text = line_text(&line);
-        assert!(
-            display_width(&text) <= 20,
-            "chyron overflowed its width: {text:?}"
-        );
-        assert!(text.contains('…'), "truncation carries an ellipsis");
-        assert!(text.ends_with("done"), "the verb survives truncation");
     }
 
     // ─── suppression: search and the menu claim the row ─────────────

@@ -100,6 +100,10 @@ pub struct FrameLayout {
     /// while it overlays the toolbar). Defaults to 0 for callers that
     /// have not rendered a frame yet.
     pub toolbar_row: u16,
+    /// Width of the header row as of the last render. The chyron's
+    /// ticker math needs it (the display window depends on how much
+    /// room the banner has); `None` before the first frame.
+    pub header_width: Option<u16>,
     /// Click regions for the `[+]` spawn button rendered at the right
     /// edge of each repo-group header. One entry per visible repo group.
     pub repo_spawn_targets: Vec<RepoSpawnTarget>,

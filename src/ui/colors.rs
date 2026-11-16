@@ -257,18 +257,6 @@ impl ColorTheme {
         Color::Indexed(ramp[1])
     }
 
-    /// One-frame darker background tint of the chyron hue, applied only
-    /// during the flash frames. Dark steps only: the normal foreground
-    /// must stay readable on top of it, and a dark banner reads on both
-    /// dark and light terminals.
-    pub fn chyron_flash_bg(&self, kind: crate::state::ChyronKind) -> Color {
-        match kind {
-            crate::state::ChyronKind::Done => Color::Indexed(22),
-            crate::state::ChyronKind::Waiting => Color::Indexed(58),
-            crate::state::ChyronKind::Failed => Color::Indexed(52),
-        }
-    }
-
     /// The event hue at full strength (flash-frame foreground).
     pub fn chyron_flash_fg(&self, kind: crate::state::ChyronKind) -> Color {
         self.chyron_color(kind, 0)
