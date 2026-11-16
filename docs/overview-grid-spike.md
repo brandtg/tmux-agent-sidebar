@@ -186,6 +186,10 @@ target/release/tmux-agent-sidebar overview --popup
 tmux display-popup -E -w 100% -h 100% target/release/tmux-agent-sidebar overview
 ```
 
+With the plugin conf installed, `prefix + O` opens it from anywhere
+(configurable via `@sidebar_key_overview`; the binding targets the pressing
+client via `#{client_name}`).
+
 Keys: nothing is selected until you move; arrows/tab (or j/k) select and
 move with wraparound, Enter zooms the selected cell fullscreen, Esc
 collapses zoom (and quits from the grid), q quits.

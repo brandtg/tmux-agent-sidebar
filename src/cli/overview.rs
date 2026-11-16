@@ -77,11 +77,19 @@ struct OverviewPane {
 
 pub fn cmd_overview(args: &[String]) -> i32 {
     let mut popup = false;
+    let mut popup_client: Option<String> = None;
     let mut interval = Duration::from_millis(DEFAULT_INTERVAL_MS);
     let mut iter = args.iter();
     while let Some(arg) = iter.next() {
         match arg.as_str() {
             "--popup" => popup = true,
+            "--popup-client" => {
+                popup_client = Some(iter.next().map(|s| s.to_string()).unwrap_or_default());
+                if popup_client.as_deref() == Some("") {
+                    eprintln!("overview: --popup-client requires a client name");
+                    return 2;
+                }
+            }
             "--interval-ms" => match iter.next().and_then(|v| v.parse::<u64>().ok()) {
                 Some(ms) if ms >= 100 => interval = Duration::from_millis(ms),
                 _ => {
@@ -97,7 +105,7 @@ pub fn cmd_overview(args: &[String]) -> i32 {
     }
 
     if popup {
-        return match spawn_popup() {
+        return match spawn_popup(popup_client) {
             Ok(()) => 0,
             Err(e) => {
                 eprintln!("overview: {e}");
@@ -118,17 +126,25 @@ pub fn cmd_overview(args: &[String]) -> i32 {
 /// Open the overview in a fullscreen tmux popup. The popup runs this same
 /// binary's TUI mode; with `-E` the popup closes as soon as the TUI exits,
 /// so quitting with q/Esc tears the whole container down.
-fn spawn_popup() -> Result<(), String> {
-    if std::env::var("TMUX_PANE").unwrap_or_default().is_empty() {
+///
+/// `client` targets the popup at a specific tmux client — the keybinding
+/// passes `#{client_name}` at keypress time, because a run-shell child has
+/// no current client of its own. Without it, tmux resolves the client from
+/// `TMUX_PANE` (the manual `--popup` invocation from any pane shell).
+fn spawn_popup(client: Option<String>) -> Result<(), String> {
+    if client.is_none() && std::env::var("TMUX_PANE").unwrap_or_default().is_empty() {
         return Err("--popup must be run from inside tmux".into());
     }
     let exe = std::env::current_exe().map_err(|e| format!("resolve current exe: {e}"))?;
     let cwd = std::env::current_dir().map_err(|e| format!("resolve cwd: {e}"))?;
-    let status = Command::new("tmux")
-        .args(["display-popup", "-E", "-w", "100%", "-h", "100%", "-d"])
-        .arg(cwd)
-        .arg(exe)
-        .arg("overview")
+    let mut cmd = Command::new("tmux");
+    cmd.args(["display-popup", "-E", "-w", "100%", "-h", "100%", "-d"]);
+    cmd.arg(cwd);
+    if let Some(client) = client {
+        cmd.arg("-t").arg(client);
+    }
+    cmd.arg(exe).arg("overview");
+    let status = cmd
         .status()
         .map_err(|e| format!("spawn tmux display-popup: {e}"))?;
     if status.success() {
