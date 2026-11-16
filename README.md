@@ -54,6 +54,28 @@ Optional: to detect shell-task failures, source the exit-code snippet in `~/.zsh
 
 The full docs live in [website/src/content/docs](website/src/content/docs) — every feature and option, including the [agent pane breakdown](website/src/content/docs/features/agent-pane.mdx), [worktree lifecycle](website/src/content/docs/features/worktree.mdx), [keybindings](website/src/content/docs/reference/keybindings.md), and the [tmux options reference](website/src/content/docs/reference/tmux-options.md). All configuration is tmux options set in `~/.tmux.conf`.
 
+## Handing work to agents
+
+The TODO panel is a plain shared file, and the binary ships a matching subcommand — slash commands, hooks, and scripts can append to it, and every open sidebar picks the item up within about a second:
+
+```sh
+tmux-agent-sidebar todo add "review the auth refactor"   # append one item
+tmux-agent-sidebar todo list                             # 1. [ ] review the auth refactor
+tmux-agent-sidebar todo done 1
+```
+
+A Claude Code slash command at `~/.claude/commands/todo.md`:
+
+```markdown
+---
+description: Add a task to the sidebar TODO panel
+argument-hint: <task>
+---
+Run `tmux-agent-sidebar todo add "$ARGUMENTS"` to append it to the shared TODO panel.
+```
+
+`todo open <n>` reopens an item and `todo rm <n>` deletes one; the list lives at `~/.local/state/tmux-agent-sidebar/todos.txt` and stays hand-editable.
+
 ## Development
 
 ```sh
