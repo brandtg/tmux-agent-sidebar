@@ -584,10 +584,17 @@ impl AppState {
 
         // The single header row hosts the toolbar, or the chyron while
         // one is showing. Row defaults match the normal layout for
-        // callers (tests) that have not rendered a frame yet.
+        // callers (tests) that have not rendered a frame yet. Over the
+        // banner, the button's corner columns still route to the
+        // toolbar handler — the menu button never stops being
+        // clickable; anything else on the row selects the event's pane.
         let toolbar_row = self.layout.toolbar_row;
         if toolbar_row == row {
-            if self.chyron.is_showing(self) {
+            let over_button = self
+                .layout
+                .menu_button_col
+                .is_some_and(|menu_button_col| col >= menu_button_col);
+            if self.chyron.is_showing(self) && !over_button {
                 self.handle_chyron_click();
             } else {
                 self.handle_secondary_header_click(col);

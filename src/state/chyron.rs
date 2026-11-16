@@ -1,12 +1,13 @@
-//! The chyron: the agents panel's top-row event channel.
+//! The chyron: the agents panel's header-row event channel.
 //!
 //! The list rows are a *state* channel — they show what is. The chyron
 //! is the *event* channel: when a pane's attention flag or status
-//! transitions, the top row names the event in the event's color, fades
-//! over ~1.6s, then rests as dim text until the next event replaces it.
-//! Nothing else in the sidebar remembers "what just changed": attention
-//! flags clear on focus and statuses mutate silently, so once a moment
-//! has passed only the chyron can still name it.
+//! transitions, the row names the event in the event's color — a short
+//! bright flash with a background tint, then a ~3 s linger as plain
+//! colored text, then a short fade — and the toolbar takes the row
+//! back. Nothing else in the sidebar remembers "what just changed":
+//! attention flags clear on focus and statuses mutate silently, so
+//! once a moment has passed only the chyron can still name it.
 //!
 //! Events are diffed per tick against the previous snapshot (see
 //! [`AppState::observe_chyron_transitions`]); rendering is a pure
@@ -21,14 +22,19 @@ use crate::tmux::{PaneAttention, PaneStatus};
 
 /// Frame duration of the chyron lifecycle. Matches the spinner tick in
 /// `app.rs`, which already redraws at this cadence — phases are counted
-/// in these frames so flash + fade land on rendered frames.
+/// in these frames so flash + linger + fade land on rendered frames.
 pub const CHYRON_FRAME: Duration = Duration::from_millis(200);
 
-/// Full-brightness frames before the fade begins.
+/// Full-brightness frames (background tint + brightest foreground):
+/// the eye-catcher. Deliberately short — it says "look", not "read".
 pub const CHYRON_FLASH_FRAMES: usize = 3;
-/// Fade frames after the flash; the ramp index walks the rest of the
-/// way to the muted rest color.
-pub const CHYRON_FADE_FRAMES: usize = 5;
+/// Colored-text frames after the flash: full event hue, no background.
+/// The readable part of the notification; long enough to actually
+/// parse the name (~3 s).
+pub const CHYRON_LINGER_FRAMES: usize = 15;
+/// Fade-out frames after the linger: the ramp walks down and the
+/// toolbar takes the row back.
+pub const CHYRON_FADE_FRAMES: usize = 4;
 
 /// Kind of agent event the chyron names.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -87,7 +93,13 @@ impl ChyronEvent {
         if frame < CHYRON_FLASH_FRAMES {
             return ChyronPhase::Flash { frame };
         }
-        let fade_frame = frame - CHYRON_FLASH_FRAMES;
+        let linger_frame = frame - CHYRON_FLASH_FRAMES;
+        if linger_frame < CHYRON_LINGER_FRAMES {
+            return ChyronPhase::Linger {
+                frame: linger_frame,
+            };
+        }
+        let fade_frame = linger_frame - CHYRON_LINGER_FRAMES;
         if fade_frame < CHYRON_FADE_FRAMES {
             return ChyronPhase::Fade { frame: fade_frame };
         }
@@ -97,11 +109,15 @@ impl ChyronEvent {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ChyronPhase {
-    /// Full-color frames; the value is the flash frame index.
+    /// Full-color frames with the dark background tint; the value is
+    /// the flash frame index.
     Flash { frame: usize },
+    /// Colored-text frames (event hue, no background); the value is
+    /// the linger frame index.
+    Linger { frame: usize },
     /// Ramp-down frames; the value is the fade frame index.
     Fade { frame: usize },
-    /// Dim, static text until replaced.
+    /// Display over: the toolbar owns the row again.
     Rest,
 }
 
@@ -144,10 +160,10 @@ impl ChyronState {
 
     /// Whether the chyron currently owns the header row. The single
     /// header row is shared with the toolbar: the chyron shows only
-    /// while an unconsumed event is inside its flash/fade window, and
-    /// yields when the `/` input or the header menu is open (opening
-    /// either dismisses the event outright — this guard covers any
-    /// other path that opens them).
+    /// while an unconsumed event is inside its flash/linger/fade
+    /// window, and yields when the `/` input or the header menu is
+    /// open (opening either dismisses the event outright — this guard
+    /// covers any other path that opens them).
     pub fn is_showing(&self, state: &AppState) -> bool {
         let Some(event) = &self.current else {
             return false;
@@ -159,6 +175,21 @@ impl ChyronState {
             return false;
         }
         !matches!(event.phase(), ChyronPhase::Rest)
+    }
+
+    /// The flash frame's background tint, when the current event is in
+    /// its flash phase. The menu button rides on top of the banner and
+    /// tints its cells with this so it does not punch a hole in the
+    /// background.
+    pub fn flash_bg(&self, state: &AppState) -> Option<ratatui::style::Color> {
+        let event = self.current.as_ref()?;
+        if self.is_consumed(state, event) {
+            return None;
+        }
+        match event.phase() {
+            ChyronPhase::Flash { .. } => Some(state.theme.chyron_flash_bg(event.kind)),
+            _ => None,
+        }
     }
 
     /// Display label for the event: the pane's current title when it
@@ -357,15 +388,25 @@ mod tests {
             ChyronPhase::Flash { frame: 0 },
             "the first frame is full color"
         );
-        // Just past the flash window (3 frames = 600ms), mid-fade.
-        let fading = ChyronEvent {
+        // Just past the flash window (3 frames = 600ms): linger —
+        // plain colored text, no background.
+        let lingering = ChyronEvent {
             shown_at: Instant::now() - (CHYRON_FRAME * 3 + Duration::from_millis(10)),
             ..flash.clone()
         };
+        assert!(matches!(
+            lingering.phase(),
+            ChyronPhase::Linger { frame: 0 }
+        ));
+        // Past flash + linger (3 + 15 frames): the fade.
+        let fading = ChyronEvent {
+            shown_at: Instant::now() - (CHYRON_FRAME * 18 + Duration::from_millis(10)),
+            ..flash.clone()
+        };
         assert!(matches!(fading.phase(), ChyronPhase::Fade { frame: 0 }));
-        // Past flash + fade (8 frames = 1600ms): rest.
+        // Past flash + linger + fade (22 frames = 4.4s): rest.
         let rested = ChyronEvent {
-            shown_at: Instant::now() - (CHYRON_FRAME * 8),
+            shown_at: Instant::now() - (CHYRON_FRAME * 22),
             ..flash
         };
         assert_eq!(rested.phase(), ChyronPhase::Rest);

@@ -19,7 +19,10 @@ mod session;
 mod timers;
 mod todo;
 
-pub use chyron::{ChyronEvent, ChyronKind, ChyronPhase, ChyronState};
+pub use chyron::{
+    CHYRON_FADE_FRAMES, CHYRON_FLASH_FRAMES, CHYRON_FRAME, CHYRON_LINGER_FRAMES, ChyronEvent,
+    ChyronKind, ChyronPhase, ChyronState,
+};
 pub use filter::RepoFilter;
 pub use focus::{Focus, FocusState};
 pub use global::{GlobalState, GroupBy, TodoScope};
@@ -1167,6 +1170,46 @@ mod tests {
         state.handle_mouse_click(0, 5);
         assert_eq!(state.global.selected_pane_row, 1);
         assert_eq!(state.focus_state.focus, Focus::Panes);
+    }
+
+    #[test]
+    fn mouse_click_on_menu_button_over_the_banner_toggles_menu() {
+        // The banner leaves the button's corner columns live: a click
+        // there opens the menu (dismissing the event) instead of
+        // selecting the event's pane.
+        let mut state = AppState::new("%99".into());
+        let mut event_pane = test_pane("%1");
+        event_pane.attention = PaneAttention::Done;
+        state.repo_groups = vec![RepoGroup {
+            name: "app".into(),
+            has_focus: true,
+            panes: vec![(event_pane, PaneGitInfo::default())],
+        }];
+        state.layout.pane_row_targets = vec![RowTarget {
+            pane_id: "%1".into(),
+            is_window: false,
+        }];
+        state.layout.line_to_row = vec![None, Some(0)];
+        state.layout.toolbar_row = 0;
+        state.layout.menu_button_col = Some(37);
+        state.chyron.current = Some(crate::state::ChyronEvent {
+            pane_id: "%1".into(),
+            kind: crate::state::ChyronKind::Done,
+            label: "claude".into(),
+            shown_at: std::time::Instant::now(),
+        });
+        assert!(state.chyron.is_showing(&state));
+        state.global.selected_pane_row = 0;
+
+        // Click the banner body: selects the pane.
+        state.handle_mouse_click(0, 5);
+        assert_eq!(state.global.selected_pane_row, 0);
+
+        // Click the button corner: opens the menu, dismisses the event.
+        state.handle_mouse_click(0, 38);
+        assert!(state.is_repo_popup_open());
+        assert!(state.chyron.current.is_none());
+        assert_eq!(state.global.selected_pane_row, 0, "no selection change");
     }
 
     #[test]

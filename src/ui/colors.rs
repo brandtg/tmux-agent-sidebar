@@ -228,19 +228,33 @@ impl ColorTheme {
     }
 
     /// Chyron foreground for a fade frame: the event's hue walking from
-    /// its brightest step down toward the muted rest color. `frame` is
-    /// the zero-based fade frame (see `state::chyron::ChyronPhase`).
+    /// its linger step down toward the muted rest color. `frame` is the
+    /// zero-based fade frame (see `state::chyron::ChyronPhase`).
     /// Mirrors [`Self::attention_color`]'s ramp indexing; the ramps are
     /// static constants like `DONE_PULSE`, so the flash reads the same
-    /// on every terminal regardless of theme overrides.
+    /// on every terminal regardless of theme overrides. Ramp step 0 is
+    /// the flash foreground and step 1 the linger foreground, so the
+    /// fade starts at step 2.
     pub fn chyron_color(&self, kind: crate::state::ChyronKind, frame: usize) -> Color {
         let ramp = match kind {
             crate::state::ChyronKind::Done => crate::CHYRON_DONE,
             crate::state::ChyronKind::Waiting => crate::CHYRON_WAITING,
             crate::state::ChyronKind::Failed => crate::CHYRON_FAILED,
         };
-        let idx = ramp[frame.min(ramp.len() - 1)];
-        Color::Indexed(idx)
+        let idx = (2 + frame).min(ramp.len() - 1);
+        Color::Indexed(idx as u8)
+    }
+
+    /// Chyron foreground for the linger phase: the event hue one step
+    /// below the flash — the same family the row status icons read in,
+    /// plain text on the default background.
+    pub fn chyron_linger_fg(&self, kind: crate::state::ChyronKind) -> Color {
+        let ramp = match kind {
+            crate::state::ChyronKind::Done => crate::CHYRON_DONE,
+            crate::state::ChyronKind::Waiting => crate::CHYRON_WAITING,
+            crate::state::ChyronKind::Failed => crate::CHYRON_FAILED,
+        };
+        Color::Indexed(ramp[1])
     }
 
     /// One-frame darker background tint of the chyron hue, applied only

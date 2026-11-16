@@ -17,17 +17,21 @@ toolbar: when an agent's state changes in a way that wants your eye,
 the row names the event for a moment, then hands the row back.
 
 - `✓ <agent> done` — a turn finished and you have not looked at it yet
-  (green flash, fading over ~1.6 s)
+  (green)
 - `◐ <agent> waiting` — a hook wants you: permission prompt, question
   (amber)
 - `✕ <agent> failed` — the pane transitioned to error (red)
 
-The moment you focus the pane the event has fired for, the fade skips
-to its end and the toolbar returns — no banner lingering over output
-you already read. Opening the `/` search or the menu dismisses the
-event outright. Clicking the banner selects that agent's row and
-scrolls it into view. A sidebar that opens mid-session shows nothing
-until its first event, and a restart never replays old flags.
+Each event reads in three beats: a short bright flash with a
+background tint (the eye-catcher), then ~3 s of colored text — same
+hue, no background — so the name is actually readable, then a short
+fade and the toolbar returns. Focusing the pane the event has fired
+for ends the display immediately — nothing lingers over output you
+already read. Opening the `/` search or the menu dismisses the event
+outright. Clicking the banner selects that agent's row and scrolls it
+into view (the menu button in the corner keeps working throughout). A
+sidebar that opens mid-session shows nothing until its first event,
+and a restart never replays old flags.
 
 ### Menu (repo filter + notices)
 

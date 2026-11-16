@@ -33,14 +33,15 @@ pub const DONE_PULSE: &[u8] = &[22, 28, 34, 114, 34, 28];
 /// pinks and never drops toward dark orchid, which read as a flicker
 /// rather than a breathe.
 pub const PROCESS_PULSE: &[u8] = &[213, 207, 212, 218, 219, 218, 212, 207];
-/// One-shot decay ramps for the chyron row: when an agent event fires
-/// (turn finished / waiting on the user / failed), the row's foreground
-/// starts at the ramp's brightest step and walks down toward the muted
-/// rest color over the fade frames (see `state::chyron`). Unlike the
-/// breathe ramps above, these are indexed once per fade frame and then
-/// stop — a notification is transient, not a status. Same hot-to-pale
-/// personality as [`SPINNER_PULSE`], per hue.
-pub const CHYRON_DONE: &[u8] = &[157, 114, 78, 71, 65];
-pub const CHYRON_WAITING: &[u8] = &[215, 179, 143, 137, 130];
-pub const CHYRON_FAILED: &[u8] = &[210, 167, 131, 95, 88];
+/// One-shot ramps for the chyron row: when an agent event fires (turn
+/// finished / waiting on the user / failed), the row's foreground reads
+/// the ramp by phase (see `state::chyron`). Step 0 is the flash
+/// foreground — brightest, paired with the dark background tint; step 1
+/// is the linger foreground, plain colored text on the default
+/// background in the same hue family as the row status colors; the
+/// remaining steps are the fade-out. Same hot-to-pale personality as
+/// [`SPINNER_PULSE`], per hue.
+pub const CHYRON_DONE: &[u8] = &[157, 114, 78, 71, 65, 59];
+pub const CHYRON_WAITING: &[u8] = &[215, 179, 143, 137, 130, 124];
+pub const CHYRON_FAILED: &[u8] = &[210, 167, 131, 95, 88, 80];
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

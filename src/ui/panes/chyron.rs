@@ -45,6 +45,9 @@ pub(super) fn render_chyron<'a>(state: &AppState, width: u16) -> Option<Line<'a>
             theme.chyron_flash_fg(event.kind),
             Some(theme.chyron_flash_bg(event.kind)),
         ),
+        // Linger: plain colored text on the default background — the
+        // readable part of the notification, no eye-catcher.
+        ChyronPhase::Linger { .. } => (theme.chyron_linger_fg(event.kind), None),
         ChyronPhase::Fade { frame } => (theme.chyron_color(event.kind, frame), None),
         // Unreachable: rest (and consumed) return None above.
         ChyronPhase::Rest => (theme.filter_inactive, None),
@@ -57,27 +60,26 @@ pub(super) fn render_chyron<'a>(state: &AppState, width: u16) -> Option<Line<'a>
 
     let text = format!(" {} {} {}", glyph, label, event.kind.verb());
     // Tail-fit: the verb is the payload's payoff, so truncation keeps
-    // the trailing end (and its ellipsis) rather than the head.
-    Some(Line::from(Span::styled(
-        super::tail_fit(&text, width as usize),
-        style,
-    )))
+    // the trailing end (and its ellipsis) rather than the head. The
+    // line then pads to the full row width so a background flash tints
+    // the whole row, not just the text cells.
+    let text = super::tail_fit(&text, width as usize);
+    let pad = width as usize - display_width(&text);
+    let text = format!("{}{}", text, " ".repeat(pad));
+    Some(Line::from(Span::styled(text, style)))
 }
 
-/// Render the toolbar row: the `/` search input flush left, and the
-/// merged menu button right-aligned. This is the header's resting
-/// state — the chyron overlays the row only while an event is alive
-/// (see [`super::render_header_into`]).
-///
-/// The button merges the old notices indicator and repo selector into
-/// one target: `ⓘ ▾` when a notice exists (info glyph in the waiting
-/// color, top-right where alerts live), `— ▾` otherwise. Both labels
-/// are one column, so the button's width — and its click column — never
-/// moves.
-pub(super) fn render_secondary_header<'a>(state: &AppState, width: u16) -> (Line<'a>, Option<u16>) {
+/// The merged menu button as its three columns: label (`ⓘ` when a
+/// notice exists, `—` otherwise), a space, and the dropdown arrow.
+/// `flash_bg` tints the cells to match a chyron flash frame so the
+/// button can ride on top of the banner without punching a hole in the
+/// background.
+pub(super) fn menu_button_spans<'a>(
+    state: &AppState,
+    flash_bg: Option<ratatui::style::Color>,
+) -> Vec<Span<'a>> {
     let theme = &state.theme;
 
-    const BUTTON_WIDTH: usize = 3; // label + space + arrow
     let has_info = crate::ui::notices::has_info(state);
     let menu_open = state.is_repo_popup_open();
     let repo_filtered = !matches!(state.global.repo_filter, RepoFilter::All);
@@ -93,6 +95,21 @@ pub(super) fn render_secondary_header<'a>(state: &AppState, width: u16) -> (Line
         theme.text_muted
     };
 
+    let base = flash_bg
+        .map(|bg| Style::default().fg(theme.text_muted).bg(bg))
+        .unwrap_or_default();
+    vec![
+        Span::styled(label, Style::default().fg(label_color).patch(base)),
+        Span::styled(" ", base),
+        Span::styled("▾", Style::default().fg(arrow_color).patch(base)),
+    ]
+}
+
+/// Render the toolbar row: the `/` search input flush left, and the
+/// merged menu button right-aligned. This is the header's resting
+/// state — the chyron overlays the row only while an event is alive
+/// (see [`super::render_header_into`]).
+pub(super) fn render_secondary_header<'a>(state: &AppState, width: u16) -> (Line<'a>, Option<u16>) {
     let gap = (width as usize).saturating_sub(BUTTON_WIDTH);
     let mut spans: Vec<Span<'a>> = Vec::new();
 
@@ -109,26 +126,32 @@ pub(super) fn render_secondary_header<'a>(state: &AppState, width: u16) -> (Line
         let shown_width = display_width(&shown);
         let pad = gap.saturating_sub(shown_width + cursor_width);
         let style = if state.search.is_active() {
-            Style::default().fg(theme.accent)
+            Style::default().fg(state.theme.accent)
         } else {
-            Style::default().fg(theme.text_active)
+            Style::default().fg(state.theme.text_active)
         };
         spans.push(Span::styled(shown, style));
         if !cursor.is_empty() {
-            spans.push(Span::styled(cursor, Style::default().fg(theme.accent)));
+            spans.push(Span::styled(
+                cursor,
+                Style::default().fg(state.theme.accent),
+            ));
         }
         spans.push(Span::raw(" ".repeat(pad)));
     } else {
         spans.push(Span::raw(" ".repeat(gap)));
     }
 
-    spans.push(Span::styled(label, Style::default().fg(label_color)));
-    spans.push(Span::raw(" "));
-    spans.push(Span::styled("▾", Style::default().fg(arrow_color)));
+    spans.extend(menu_button_spans(state, None));
 
     let button_col = (width as usize).saturating_sub(BUTTON_WIDTH) as u16;
     (Line::from(spans), Some(button_col))
 }
+
+/// Width of the merged menu button: label + space + arrow, all single
+/// column. The banner leaves exactly this much room in the corner, and
+/// the button's click column is `width - BUTTON_WIDTH`.
+pub(super) const BUTTON_WIDTH: usize = 3;
 
 #[cfg(test)]
 mod tests {
@@ -214,8 +237,12 @@ mod tests {
         let state = state_with_event(done_event(), true);
         assert!(state.chyron.is_showing(&state));
         let line = render_chyron(&state, 40).expect("an event renders");
-        let text = line_text(&line);
-        assert_eq!(text, " ✓ fix-auth done");
+        // The banner pads to the full row so the background flash
+        // tints edge to edge, not just the text cells.
+        assert_eq!(
+            line_text(&line),
+            format!(" ✓ fix-auth done{}", " ".repeat(40 - 16))
+        );
         // Flash: bright event foreground on the dark green tint.
         let span = &line.spans[0];
         assert_eq!(
@@ -226,6 +253,28 @@ mod tests {
             span.style.bg,
             Some(state.theme.chyron_flash_bg(ChyronKind::Done))
         );
+    }
+
+    #[test]
+    fn linger_frame_is_colored_text_without_background() {
+        let mut event = done_event();
+        event.shown_at = Instant::now() - (crate::state::CHYRON_FRAME * 4);
+        let state = state_with_event(event, true);
+        assert!(state.chyron.is_showing(&state));
+        let line = render_chyron(&state, 40).expect("an event renders");
+        let span = &line.spans[0];
+        assert_eq!(
+            span.style.fg,
+            Some(state.theme.chyron_linger_fg(ChyronKind::Done)),
+            "the linger reads in the event hue, one step below the flash"
+        );
+        assert_eq!(
+            span.style.bg, None,
+            "no background during the linger - colored text only"
+        );
+        // The fade ramps from the step after the linger color.
+        let fade_color = state.theme.chyron_color(ChyronKind::Done, 0);
+        assert_ne!(fade_color, state.theme.chyron_linger_fg(ChyronKind::Done));
     }
 
     #[test]
@@ -260,14 +309,14 @@ mod tests {
         let mut state = state_with_event(done_event(), true);
         state.chyron.current.as_mut().unwrap().kind = ChyronKind::Waiting;
         let line = render_chyron(&state, 40).unwrap();
-        assert_eq!(line_text(&line), " ◐ fix-auth waiting");
+        assert_eq!(line_text(&line).trim_end(), " ◐ fix-auth waiting");
 
         // A failed event stays visible only while the pane is still in
         // error; mirror the live state the consumption check reads.
         state.chyron.current.as_mut().unwrap().kind = ChyronKind::Failed;
         state.repo_groups[0].panes[0].0.status = crate::tmux::PaneStatus::Error;
         let line = render_chyron(&state, 40).unwrap();
-        assert_eq!(line_text(&line), " ✕ fix-auth failed");
+        assert_eq!(line_text(&line).trim_end(), " ✕ fix-auth failed");
     }
 
     #[test]

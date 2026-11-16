@@ -549,9 +549,25 @@ fn render_header_into(frame: &mut Frame, state: &mut AppState, area: Rect) {
     // toolbar owns the row the rest of the time. Either way the row is
     // reserved, so the list never shifts.
     if state.chyron.is_showing(state) {
-        if let Some(line) = chyron::render_chyron(state, area.width) {
-            frame.render_widget(Paragraph::new(vec![line]), area);
+        // The banner leaves the button's corner free so the merged
+        // menu button stays visible — and clickable — over it.
+        let button_w = (chyron::BUTTON_WIDTH as u16).min(area.width);
+        let banner_w = area.width.saturating_sub(button_w);
+        if banner_w > 0
+            && let Some(line) = chyron::render_chyron(state, banner_w)
+        {
+            let banner_area = Rect::new(area.x, area.y, banner_w, area.height);
+            frame.render_widget(Paragraph::new(vec![line]), banner_area);
         }
+        let flash_bg = state.chyron.flash_bg(state);
+        let button_x = area.x + area.width.saturating_sub(button_w);
+        let button_area = Rect::new(button_x, area.y, button_w, area.height);
+        let button_line = Line::from(chyron::menu_button_spans(state, flash_bg));
+        frame.render_widget(Paragraph::new(vec![button_line]), button_area);
+        // Same contract as the toolbar branch: the click column is
+        // width - button width. Written on chyron frames too so a
+        // first-frame banner still leaves the button clickable.
+        state.layout.menu_button_col = Some(area.width.saturating_sub(button_w));
     } else {
         let (line, menu_btn_col) = chyron::render_secondary_header(state, area.width);
         state.layout.menu_button_col = menu_btn_col;

@@ -27,6 +27,18 @@
 > The search input is now flush left. `l` keeps its vim "go into"
 > binding alongside `→`.
 >
+> **Update (2026-11-15, linger):** the 1.6 s flash+fade was readable
+> only as a jolt — it caught the eye and vanished before the name
+> could be parsed. The lifecycle is now flash (600 ms, background tint
+> + brightest foreground) → linger (3 s, plain colored text in the
+> event hue, no background) → fade (800 ms) ≈ 4.4 s total. The ramps
+> encode the phases: step 0 is the flash foreground, step 1 the linger
+> foreground, the rest the fade. On the same pass the menu button
+> stays visible and clickable in the banner's corner (the banner
+> leaves its three columns free and tints its cells to match the
+> flash background), so a click there opens the menu — dismissing the
+> event — instead of selecting the pane.
+>
 > Replaces the status filter bar in the agents panel's top row with a
 > one-line event channel: a transient, self-fading banner that names the
 > agent an event just happened to. The filter bar is deleted in the same
