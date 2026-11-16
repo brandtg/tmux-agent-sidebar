@@ -2,12 +2,15 @@ pub mod capture;
 mod hook;
 mod label;
 pub(crate) mod notify_focus;
+mod overview;
 pub mod plugin_state;
 pub(crate) mod setup;
 pub(crate) mod shared_html;
 mod spawn;
 mod todo;
 pub(crate) mod toggle;
+
+pub(crate) use overview::spawn_overview_popup_detached;
 
 use std::io::Read;
 
@@ -29,6 +32,7 @@ pub fn run(args: &[String]) -> Option<i32> {
         "spawn" => spawn::cmd_spawn(rest),
         "todo" => todo::cmd_todo(rest),
         "capture" => capture::cmd_capture(rest),
+        "overview" => overview::cmd_overview(rest),
         "notify-focus" => notify_focus::cmd_notify_focus(rest),
         "--version" | "version" => {
             println!("{}", crate::VERSION);

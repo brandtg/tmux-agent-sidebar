@@ -549,16 +549,24 @@ fn render_header_into(frame: &mut Frame, state: &mut AppState, area: Rect) {
     // toolbar owns the row the rest of the time. Either way the row is
     // reserved, so the list never shifts.
     if state.chyron.is_showing(state) {
-        // The banner leaves the button's corner free so the merged
-        // menu button stays visible — and clickable — over it.
+        // The banner leaves the overview button's left columns and the
+        // menu button's corner free, so both stay visible — and
+        // clickable — over it.
         let button_w = (chyron::BUTTON_WIDTH as u16).min(area.width);
-        let banner_w = area.width.saturating_sub(button_w);
+        let overview_w = crate::state::OVERVIEW_BUTTON_WIDTH.min(area.width);
+        let banner_w = area
+            .width
+            .saturating_sub(button_w)
+            .saturating_sub(overview_w);
         if banner_w > 0
             && let Some(line) = chyron::render_chyron(state, banner_w)
         {
-            let banner_area = Rect::new(area.x, area.y, banner_w, area.height);
+            let banner_area = Rect::new(area.x + overview_w, area.y, banner_w, area.height);
             frame.render_widget(Paragraph::new(vec![line]), banner_area);
         }
+        let overview_area = Rect::new(area.x, area.y, overview_w, area.height);
+        let overview_line = Line::from(chyron::overview_button_spans(state));
+        frame.render_widget(Paragraph::new(vec![overview_line]), overview_area);
         let button_x = area.x + area.width.saturating_sub(button_w);
         let button_area = Rect::new(button_x, area.y, button_w, area.height);
         let button_line = Line::from(chyron::menu_button_spans(state));
