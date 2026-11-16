@@ -170,11 +170,9 @@ fn window_rows_participate_in_selection_targets() {
     // line up with the target order (the two are built by separate code
     // paths that have to agree).
     let mut seen = vec![false; targets.len()];
-    for mapping in &state.layout.line_to_row {
-        if let Some(row) = mapping {
-            assert!(*row < targets.len(), "line maps to an out-of-range row");
-            seen[*row] = true;
-        }
+    for row in state.layout.line_to_row.iter().flatten() {
+        assert!(*row < targets.len(), "line maps to an out-of-range row");
+        seen[*row] = true;
     }
     assert!(
         seen.iter().all(|&hit| hit),

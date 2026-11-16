@@ -224,8 +224,13 @@ mod tests {
 
     #[test]
     fn embedded_plugin_files_is_non_empty() {
+        // Bound through a typed local: clippy treats `is_empty` on the
+        // const directly as tautological (the length is statically known),
+        // but the guard must still fail loudly if the table is ever
+        // emptied.
+        let files: &[(&str, &str)] = EMBEDDED_PLUGIN_FILES;
         assert!(
-            !EMBEDDED_PLUGIN_FILES.is_empty(),
+            !files.is_empty(),
             "EMBEDDED_PLUGIN_FILES is empty — `cache_files_outdated` would \
              never flag a cache as stale, silently disabling the Stale notice"
         );
