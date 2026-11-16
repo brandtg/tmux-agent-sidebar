@@ -372,6 +372,11 @@ fn handle_todo_key(key: KeyEvent, state: &mut AppState) -> bool {
         }
         KeyCode::Char('e') => state.begin_todo_edit(),
         KeyCode::Char('a') => state.begin_todo_add(),
+        // Yank: the selected item's text (checkbox stripped) to the
+        // clipboard, flashing `copied` when a sink took it.
+        KeyCode::Char('y') => {
+            state.yank_todo_selected();
+        }
         KeyCode::Char('x') | KeyCode::Char('d') => state.delete_todo_selected(),
         KeyCode::Char('D') => state.clear_completed_todos(),
         KeyCode::Char('H') => state.toggle_todo_hide_completed(),
@@ -1241,6 +1246,22 @@ mod tests {
             Some(""),
             "nothing to edit, so Enter creates a task instead"
         );
+    }
+
+    #[test]
+    fn y_with_nothing_selected_is_inert() {
+        // No items → the yank returns before touching the clipboard and
+        // no `copied` flash is fabricated. (A populated-list yank would
+        // shell out to real tmux, so the success path is covered by the
+        // `record_todo_yank` policy tests in state/todo.rs instead.)
+        let mut state = state_with_three_panes();
+        handle_key_event(key(KeyCode::Char('t')), &mut state);
+
+        handle_key_event(key(KeyCode::Char('y')), &mut state);
+
+        assert!(state.flash.is_none(), "no selection, no feedback");
+        assert!(!state.quit_requested);
+        assert_eq!(state.todos.adding, None, "y must not open the add line");
     }
 
     #[test]

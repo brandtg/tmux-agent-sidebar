@@ -1,4 +1,4 @@
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use super::AppState;
 use crate::cli::plugin_state::ClaudePluginStatus;
@@ -170,21 +170,16 @@ impl AppState {
     }
 
     /// Copy the LLM setup prompt for the given agent (`claude` / `codex`)
-    /// to the clipboard surfaces reachable from inside tmux: `tmux
-    /// set-buffer -w` sets the tmux paste buffer and lets tmux itself
-    /// forward OSC 52 to the upstream terminal, and off-Linux builds
-    /// additionally write the OS clipboard via `arboard`. Returns true
-    /// only when at least one *verifiable* destination succeeded so the
-    /// caller can decide whether to show the `[copied]` feedback.
+    /// to the clipboard surfaces reachable from inside tmux — see
+    /// [`crate::clipboard`] for the policy (tmux `-w` delegation on all
+    /// platforms, `arboard` additionally off-Linux). Returns true only
+    /// when at least one destination succeeded so the caller can decide
+    /// whether to show the `[copied]` feedback.
     pub fn copy_notices_prompt(&mut self, agent: &str) -> bool {
         let Some(prompt) = crate::ui::notices::prompt_for_agent(agent) else {
             return false;
         };
-        let tmux_ok = copy_via_tmux_buffer(&prompt);
-        #[cfg(not(target_os = "linux"))]
-        let ok = tmux_ok || copy_via_os_clipboard(&prompt);
-        #[cfg(target_os = "linux")]
-        let ok = tmux_ok;
+        let ok = crate::clipboard::copy_to_clipboard(&prompt);
         self.record_notices_copy_result(agent, ok)
     }
 
@@ -197,41 +192,6 @@ impl AppState {
         }
         success
     }
-}
-
-/// Write `text` to the tmux paste buffer, asking tmux to also set the
-/// upstream terminal clipboard (`-w` makes **tmux** emit the OSC 52
-/// sequence to the client terminal). Writing an OSC 52 from inside a
-/// pane does not work: tmux parses the sequence, stores the payload in
-/// its own buffer, and never forwards it to the outer terminal, so an
-/// application-emitted escape is a silent no-op — the `-w` delegation is
-/// the only path that actually reaches Alacritty, kitty, iTerm2, etc.
-/// Falls back to plain `set-buffer` for tmux versions predating 3.2 that
-/// reject `-w`. Returns whether the paste buffer was set.
-fn copy_via_tmux_buffer(text: &str) -> bool {
-    let run_set_buffer = |args: &[&str]| {
-        let mut command = std::process::Command::new("tmux");
-        command.args(args);
-        crate::subprocess::run_with_timeout(&mut command, Duration::from_secs(3))
-            .map(|output| output.status.success())
-            .unwrap_or(false)
-    };
-    run_set_buffer(&["set-buffer", "-w", text]) || run_set_buffer(&["set-buffer", text])
-}
-
-/// Best-effort write to the OS clipboard via `arboard`. Only compiled
-/// off Linux: with the crate's `default-features = false` there is no
-/// Wayland data-control backend, so Linux builds use X11 exclusively —
-/// and an X11 selection owner must stay alive to serve paste requests.
-/// The `Clipboard` created here dies at the end of the call, taking the
-/// content with it (and the compositor's X11/Wayland bridge then wipes
-/// whatever the user had on their clipboard). tmux's `set-buffer -w`
-/// covers Linux correctly via `copy_via_tmux_buffer`.
-#[cfg(not(target_os = "linux"))]
-fn copy_via_os_clipboard(text: &str) -> bool {
-    arboard::Clipboard::new()
-        .and_then(|mut c| c.set_text(text.to_string()))
-        .is_ok()
 }
 
 /// Compute the per-agent missing-hook list shown in the notices popup.

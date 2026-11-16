@@ -2,6 +2,7 @@ pub mod activity;
 pub mod adapter;
 pub mod app;
 pub mod cli;
+pub(crate) mod clipboard;
 pub(crate) mod debug;
 pub mod desktop_notification;
 pub mod event;

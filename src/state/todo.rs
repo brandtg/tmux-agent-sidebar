@@ -684,6 +684,34 @@ impl AppState {
         self.todos.delete(index, self.global.todo_hide_completed);
     }
 
+    /// Copy the selected item's text (checkbox stripped — items never
+    /// carry it) to the clipboard. A no-op with no selection (empty
+    /// list, or a stale index after an external edit): nothing to copy,
+    /// no feedback. A successful copy flashes `copied`; every sink
+    /// failing stays silent, matching the notices popup's copy policy.
+    pub fn yank_todo_selected(&mut self) -> bool {
+        let Some(text) = self
+            .todos
+            .items
+            .get(self.todos.selected)
+            .map(|item| item.text.clone())
+        else {
+            return false;
+        };
+        self.record_todo_yank(crate::clipboard::copy_to_clipboard(&text))
+    }
+
+    /// Stamp the `copied` flash for a successful yank. Pure separation
+    /// from the I/O above so the feedback policy is unit-testable
+    /// without touching the real clipboard or tmux (same shape as
+    /// `record_notices_copy_result`).
+    fn record_todo_yank(&mut self, success: bool) -> bool {
+        if success {
+            self.set_flash("copied");
+        }
+        success
+    }
+
     /// Clear the completed section and offer the 4-second undo window
     /// through the flash banner.
     pub fn clear_completed_todos(&mut self) {
@@ -1746,6 +1774,33 @@ mod tests {
         state.delete_todo_selected();
         assert_eq!(state.todos.items.len(), 1);
         assert_eq!(state.todos.selected, 0);
+    }
+
+    // ─── y (yank to clipboard) ──────────────────────────────────────
+
+    #[test]
+    fn yank_on_an_empty_list_is_a_no_op() {
+        // No selection → no copy attempt, no feedback. The early return
+        // also keeps the test off the real clipboard/tmux path.
+        let mut state = state_with(vec![]);
+        assert!(!state.yank_todo_selected());
+        assert!(state.flash.is_none(), "nothing copied, nothing flashed");
+    }
+
+    #[test]
+    fn a_successful_yank_flashes_copied() {
+        let mut state = state_with(vec![]);
+        assert!(state.record_todo_yank(true));
+        assert_eq!(state.take_flash().as_deref(), Some("copied"));
+    }
+
+    #[test]
+    fn a_failed_yank_sets_no_flash() {
+        // Every clipboard sink failing must stay silent — a `[copied]`
+        // flash for a copy that never landed would be a lie.
+        let mut state = state_with(vec![]);
+        assert!(!state.record_todo_yank(false));
+        assert!(state.flash.is_none());
     }
 
     // ─── undo (delete / clear-completed) ────────────────────────────

@@ -1096,4 +1096,50 @@ mod tests {
         [✓] Send the invoice
         ");
     }
+
+    /// Render the panel plus the flash banner in draw order (the banner
+    /// rides the whole-sidebar bottom row, after the panel), so the
+    /// `copied` yank feedback can be locked in as a frame.
+    fn render_panel_with_flash(state: &mut AppState, width: u16, height: u16) -> String {
+        let area = Rect::new(0, 0, width, height);
+        let backend = TestBackend::new(width, height);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| {
+                render_todo_panel(frame, state, area);
+                crate::ui::panes::render_flash_banner_into(frame, state, area);
+            })
+            .unwrap();
+        let buf = terminal.backend().buffer().clone();
+        let area = buf.area;
+        let mut lines = Vec::new();
+        for y in area.y..area.y + area.height {
+            let mut line = String::new();
+            for x in area.x..area.x + area.width {
+                line.push_str(buf[(x, y)].symbol());
+            }
+            lines.push(line.trim_end().to_string());
+        }
+        lines.join("\n")
+    }
+
+    #[test]
+    fn yank_flashes_copied_on_the_bottom_row() {
+        // `y` under Todos focus copies the selected item's text and
+        // confirms with the existing flash banner on the sidebar's
+        // bottom row (accent, 4 s) — no new chrome.
+        let mut state = todo_state();
+        state.set_flash("copied");
+        let output = render_panel_with_flash(&mut state, 40, 8);
+        insta::assert_snapshot!(output, @"
+        ─ □ todos · 2/3─────────────────────────
+        [ ] Buy milk
+        [ ] Read the tmux changelog and try the
+            new paste behaviour
+        [✓] Send the invoice
+
+
+        copied
+        ");
+    }
 }
