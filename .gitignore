@@ -11,6 +11,7 @@
 tmux-client-*.log
 tmux-server-*.log
 .worktrees
+.opencode/worktrees
 /bin
 /target
 dist
