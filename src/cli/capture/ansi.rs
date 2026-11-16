@@ -106,6 +106,10 @@ impl Perform for State<'_> {
                 27 => self.style.reversed = false,
                 39 => self.style.fg = None,
                 49 => self.style.bg = None,
+                30..=37 => self.style.fg = Some((code - 30) as u8),
+                40..=47 => self.style.bg = Some((code - 40) as u8),
+                90..=97 => self.style.fg = Some((code - 90 + 8) as u8),
+                100..=107 => self.style.bg = Some((code - 100 + 8) as u8),
                 38 => {
                     if p.len() >= 3 && p[1] == 5 {
                         self.style.fg = Some(p[2] as u8);
@@ -131,5 +135,44 @@ impl Perform for State<'_> {
                 _ => {}
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_extended_fg_color() {
+        let grid = parse_ansi(b"\x1b[38;5;114mgreen", 8, 1);
+        assert_eq!(grid[0][0].fg, Some(114));
+    }
+
+    #[test]
+    fn parses_basic_and_bright_sgr_colors() {
+        let grid = parse_ansi(
+            b"\x1b[31mR\x1b[0m\x1b[94mB\x1b[0m\x1b[43mY\x1b[0m\x1b[104mZ",
+            8,
+            1,
+        );
+        assert_eq!(grid[0][0].fg, Some(1));
+        assert_eq!(grid[0][1].fg, Some(12));
+        assert_eq!(grid[0][2].bg, Some(3));
+        assert_eq!(grid[0][3].bg, Some(12));
+    }
+
+    #[test]
+    fn parses_bg_and_attributes() {
+        let grid = parse_ansi(b"\x1b[44;1;7mA", 4, 1);
+        assert_eq!(grid[0][0].bg, Some(4));
+        assert!(grid[0][0].bold);
+        assert!(grid[0][0].reversed);
+    }
+
+    #[test]
+    fn reset_clears_style_between_cells() {
+        let grid = parse_ansi(b"\x1b[31mA\x1b[0mB", 4, 1);
+        assert_eq!(grid[0][0].fg, Some(1));
+        assert_eq!(grid[0][1].fg, None);
     }
 }
