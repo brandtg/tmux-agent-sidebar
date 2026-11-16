@@ -30,8 +30,8 @@ use std::time::{Duration, Instant};
 
 use crossterm::{
     event::{
-        self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind, KeyModifiers,
-        MouseButton, MouseEventKind,
+        self, EnableMouseCapture, Event, KeyCode, KeyEventKind, KeyModifiers, MouseButton,
+        MouseEventKind,
     },
     execute,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
