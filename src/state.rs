@@ -27,8 +27,8 @@ pub use filter::RepoFilter;
 pub use focus::{Focus, FocusState};
 pub use global::{GlobalState, GroupBy, TodoScope};
 pub use layout::{
-    FrameLayout, GroupHeaderTarget, GroupStart, HyperlinkOverlay, RepoSpawnTarget, RowTarget,
-    SpawnRemoveTarget, TodoRowTarget,
+    FrameLayout, GroupHeaderTarget, GroupStart, HyperlinkOverlay, OVERVIEW_BUTTON_WIDTH,
+    RepoSpawnTarget, RowTarget, SpawnRemoveTarget, TodoRowTarget,
 };
 pub(crate) use notices::debug_forced_display;
 pub(crate) use notices::parse_enabled_agents;
@@ -1226,6 +1226,25 @@ mod tests {
 
         state.handle_mouse_click(0, 5);
         assert_eq!(state.global.selected_pane_row, 0, "no event, no selection");
+    }
+
+    #[test]
+    fn mouse_click_on_overview_glyph_spawns_the_grid() {
+        // The header row's first columns are the `▦` overview button in
+        // every state; clicking one routes to the overview spawner. The
+        // spawn cannot succeed under test (no tmux IPC), so the failure
+        // lands in the flash banner — proving the click reached the
+        // overview action instead of the chyron or toolbar handlers.
+        let mut state = AppState::new("%99".into());
+        state.layout.toolbar_row = 0;
+        state.handle_mouse_click(0, 0);
+        assert!(state.take_flash().is_some());
+
+        // A click past the button zone does not spawn anything.
+        let mut state = AppState::new("%99".into());
+        state.layout.toolbar_row = 0;
+        state.handle_mouse_click(0, 5);
+        assert!(state.take_flash().is_none());
     }
 
     #[test]

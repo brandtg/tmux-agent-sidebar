@@ -1,6 +1,12 @@
 use super::{AppState, Focus, RepoFilter};
 use crate::tmux::PaneAttention;
 
+/// Columns reserved at the header row's left edge for the `▦`
+/// overview-grid button. Rendered — and clickable — in every header
+/// state (toolbar, search input, chyron banner). See
+/// [`AppState::spawn_overview_popup`].
+pub const OVERVIEW_BUTTON_WIDTH: u16 = 2;
+
 #[derive(Debug, Clone)]
 pub struct RowTarget {
     pub pane_id: String,
@@ -525,6 +531,16 @@ impl AppState {
         }
     }
 
+    /// Open the experimental overview grid popup (the header row's `▦`
+    /// glyph and the sidebar's `o` key both land here). Fire-and-forget:
+    /// a detached tmux client owns the popup, and failures surface in
+    /// the flash banner.
+    pub fn spawn_overview_popup(&mut self) {
+        if let Err(e) = crate::cli::spawn_overview_popup_detached() {
+            self.set_flash(format!("overview: {e}"));
+        }
+    }
+
     /// Handle mouse click in agents panel. Maps screen row to agent row
     /// via line_to_row (adjusted for scroll offset) and activates that pane.
     /// Row 0 is the single header row: while the chyron shows it selects
@@ -588,17 +604,21 @@ impl AppState {
 
         // The single header row hosts the toolbar, or the chyron while
         // one is showing. Row defaults match the normal layout for
-        // callers (tests) that have not rendered a frame yet. Over the
-        // banner, the button's corner columns still route to the
-        // toolbar handler — the menu button never stops being
-        // clickable; anything else on the row selects the event's pane.
+        // callers (tests) that have not rendered a frame yet. The `▦`
+        // overview button owns the row's first columns in every state —
+        // clicking it opens the grid. Over the banner, the button's
+        // corner columns still route to the toolbar handler — the menu
+        // button never stops being clickable; anything else on the row
+        // selects the event's pane.
         let toolbar_row = self.layout.toolbar_row;
         if toolbar_row == row {
             let over_button = self
                 .layout
                 .menu_button_col
                 .is_some_and(|menu_button_col| col >= menu_button_col);
-            if self.chyron.is_showing(self) && !over_button {
+            if col < OVERVIEW_BUTTON_WIDTH {
+                self.spawn_overview_popup();
+            } else if self.chyron.is_showing(self) && !over_button {
                 self.handle_chyron_click();
             } else {
                 self.handle_secondary_header_click(col);
