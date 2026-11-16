@@ -58,7 +58,7 @@ pub(super) fn render_chyron<'a>(state: &AppState, width: u16) -> Option<Line<'a>
         style = style.bg(bg);
     }
 
-    let text = format!(" {} {} {}", glyph, label, event.kind.verb());
+    let text = format!("{} {} {}", glyph, label, event.kind.verb());
     // Tail-fit: the verb is the payload's payoff, so truncation keeps
     // the trailing end (and its ellipsis) rather than the head. The
     // line then pads to the full row width so a background flash tints
@@ -241,7 +241,7 @@ mod tests {
         // tints edge to edge, not just the text cells.
         assert_eq!(
             line_text(&line),
-            format!(" ✓ fix-auth done{}", " ".repeat(40 - 16))
+            format!("✓ fix-auth done{}", " ".repeat(40 - 15))
         );
         // Flash: bright event foreground on the dark green tint.
         let span = &line.spans[0];
@@ -309,14 +309,14 @@ mod tests {
         let mut state = state_with_event(done_event(), true);
         state.chyron.current.as_mut().unwrap().kind = ChyronKind::Waiting;
         let line = render_chyron(&state, 40).unwrap();
-        assert_eq!(line_text(&line).trim_end(), " ◐ fix-auth waiting");
+        assert_eq!(line_text(&line).trim_end(), "◐ fix-auth waiting");
 
         // A failed event stays visible only while the pane is still in
         // error; mirror the live state the consumption check reads.
         state.chyron.current.as_mut().unwrap().kind = ChyronKind::Failed;
         state.repo_groups[0].panes[0].0.status = crate::tmux::PaneStatus::Error;
         let line = render_chyron(&state, 40).unwrap();
-        assert_eq!(line_text(&line).trim_end(), " ✕ fix-auth failed");
+        assert_eq!(line_text(&line).trim_end(), "✕ fix-auth failed");
     }
 
     #[test]
