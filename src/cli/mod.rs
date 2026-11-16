@@ -6,6 +6,7 @@ pub mod plugin_state;
 pub(crate) mod setup;
 pub(crate) mod shared_html;
 mod spawn;
+mod todo;
 pub(crate) mod toggle;
 
 use std::io::Read;
@@ -26,6 +27,7 @@ pub fn run(args: &[String]) -> Option<i32> {
         "maintain-width" => toggle::cmd_maintain_width(rest),
         "set-status" => cmd_set_status(rest),
         "spawn" => spawn::cmd_spawn(rest),
+        "todo" => todo::cmd_todo(rest),
         "capture" => capture::cmd_capture(rest),
         "notify-focus" => notify_focus::cmd_notify_focus(rest),
         "--version" | "version" => {
