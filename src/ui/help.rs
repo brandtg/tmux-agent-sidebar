@@ -213,6 +213,8 @@ mod tests {
         │ x                Remove spawn pane       │
         │ f                Flag / unflag agent     │
         │ r                Open repo menu          │
+        │ o                Agent overview grid     │
+        │                  (popup)                 │
         │                                          │
         │ todos                                    │
         │ Enter / e        Edit the selected task  │
@@ -235,8 +237,6 @@ mod tests {
         │ w                List non-agent panes    │
         │ ?                Toggle this help        │
         │ q                Quit                    │
-        │                                          │
-        │                                          │
         │                                          │
         ╰──────────────────────────────────────────╯
         ");
