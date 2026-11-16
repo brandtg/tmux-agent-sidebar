@@ -279,7 +279,7 @@ fn run_tui(interval: Duration) -> io::Result<i32> {
                         if mouse.kind == MouseEventKind::Down(MouseButton::Left) =>
                     {
                         let size = terminal.size()?;
-                        if close_button_hit(mouse.row, mouse.column, size.width) {
+                        if header_close_hit(mouse.row, mouse.column, size.width) {
                             return Ok(0);
                         }
                     }
@@ -298,12 +298,17 @@ fn run_tui(interval: Duration) -> io::Result<i32> {
     result
 }
 
-/// The header row's last two columns are the `✕` close button, in both
-/// grid and zoom states. Row 0 only — clicks in the grid body are
-/// ignored for now.
-fn close_button_hit(row: u16, col: u16, width: u16) -> bool {
-    row == 0 && width >= 2 && col >= width - 2
+/// The header row's interactive zones: the last two columns are the `✕`
+/// close button, and the first [`COLLAPSE_BUTTON_WIDTH`] columns are the
+/// `«` collapse button — the same spot as the sidebar's own `☰`, so the
+/// trip back is where the trip in was. Both quit the popup.
+fn header_close_hit(row: u16, col: u16, width: u16) -> bool {
+    row == 0 && width >= 2 && (col < COLLAPSE_BUTTON_WIDTH || col >= width.saturating_sub(2))
 }
+
+/// Columns reserved at the header row's left edge for the `«` collapse
+/// button — mirroring the sidebar header's `☰` zone.
+const COLLAPSE_BUTTON_WIDTH: u16 = 3;
 
 /// Move the selection `delta` cells with wraparound, over the status-sorted
 /// pane list. Pane ids keep the selection anchored across refreshes.
@@ -634,6 +639,13 @@ fn header_line(
 ) -> Line<'static> {
     let muted = Style::default().fg(theme.border_inactive);
     let mut spans = Vec::new();
+    // The `«` collapse button leads the row — the same corner the
+    // sidebar's `☰` lives in, so opening and closing share muscle memory.
+    spans.push(Span::styled("«", muted));
+    spans.push(Span::styled(
+        " ".repeat(COLLAPSE_BUTTON_WIDTH as usize - 1),
+        muted,
+    ));
     for status in [
         PaneStatus::Waiting,
         PaneStatus::Error,
@@ -651,9 +663,9 @@ fn header_line(
         }
     }
     let hints = if zoomed {
-        "   esc grid · q quit"
+        "esc grid · q quit"
     } else {
-        "   tab move · enter zoom · q quit"
+        "tab move · enter zoom · q quit"
     };
     spans.push(Span::styled(hints, muted));
     // The close button owns the row's last two columns in every state —
@@ -945,7 +957,7 @@ mod tests {
             err: None,
         };
         insta::assert_snapshot!(render_frame(&[pane], None, 40, 10), @"
-         ●1   tab move · enter zoom · q quit   ✕
+        «   ●1tab move · enter zoom · q quit   ✕
         ┌ ● claude · project───────────────────┐
         │ Editing src/main.rs …                │
         │                                      │
@@ -980,7 +992,7 @@ mod tests {
         let mut panes = panes;
         sort_for_grid(&mut panes);
         insta::assert_snapshot!(render_frame(&panes, Some(0), 80, 12), @"
-         ◐1 ●1   tab move · enter zoom · q quit                                        ✕
+        «   ◐1 ●1tab move · enter zoom · q quit                                        ✕
         ┌ ◐ claude · project───────────────────┐┌ ● claude · project───────────────────┐
         │ Waiting · permission                 ││ Reviewing the diff …                 │
         │                                      ││                                      │
@@ -1003,7 +1015,7 @@ mod tests {
             err: Some("pane vanished".into()),
         };
         insta::assert_snapshot!(render_frame(&[pane], None, 40, 6), @"
-         ✕1   tab move · enter zoom · q quit   ✕
+        «   ✕1tab move · enter zoom · q quit   ✕
         ┌ ✕ hermes · project───────────────────┐
         │ Error · failed                       │
         │pane vanished                         │
@@ -1022,7 +1034,7 @@ mod tests {
             err: None,
         };
         insta::assert_snapshot!(render_zoom(&[pane], 0, 40, 12), @"
-         ●1   esc grid · q quit                ✕
+        «   ●1esc grid · q quit                ✕
         ┌ ● codex · project────────────────────┐
         │ Refactoring the export path …        │
         │                                      │
@@ -1115,18 +1127,24 @@ mod tests {
         };
         let line = header_line(&[pane], &ColorTheme::default(), false, 40);
         let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
-        assert!(text.starts_with(" ●1"), "counts lead the row: {text:?}");
+        assert!(
+            text.starts_with("«  "),
+            "collapse button leads the row: {text:?}"
+        );
         assert!(text.ends_with(" ✕"), "close button pins right: {text:?}");
         assert_eq!(
             unicode_width::UnicodeWidthStr::width(text.as_str()),
             40,
             "the row must not wrap: {text:?}"
         );
-        assert!(close_button_hit(0, 38, 40));
-        assert!(close_button_hit(0, 39, 40));
-        assert!(!close_button_hit(0, 37, 40));
-        assert!(!close_button_hit(1, 39, 40), "grid body clicks are inert");
-        assert!(!close_button_hit(0, 39, 1), "degenerate width is inert");
+        assert!(header_close_hit(0, 38, 40));
+        assert!(header_close_hit(0, 39, 40));
+        assert!(header_close_hit(0, 0, 40));
+        assert!(header_close_hit(0, 2, 40));
+        assert!(!header_close_hit(0, 37, 40));
+        assert!(!header_close_hit(0, 3, 40), "between the two buttons");
+        assert!(!header_close_hit(1, 39, 40), "grid body clicks are inert");
+        assert!(!header_close_hit(0, 39, 1), "degenerate width is inert");
     }
 
     #[test]
