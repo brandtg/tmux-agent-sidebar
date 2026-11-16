@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 use std::time::{Duration, Instant, SystemTime};
 
-use super::{AppState, Focus, TodoScope};
+use super::{AppState, Focus, PopupOpResult, TodoScope};
 use crate::todo::TodoItem;
 
 /// How long a delete / clear-completed stays undoable. Matches the
@@ -710,6 +710,69 @@ impl AppState {
             self.set_flash("copied");
         }
         success
+    }
+
+    /// `r` on the selected item: relaunch a recognized resume command
+    /// (`claude --resume <id>`, `codex resume <id>`, `opencode -s <id>`)
+    /// in a new window of the sidebar's own tmux session, at the
+    /// resolved cwd. Unrecognized items flash `not a resume command`
+    /// and stay untouched; recognized items are never modified either
+    /// way — the todo is a pointer, not a task.
+    pub fn resume_todo_selected(&mut self) {
+        let Some(item) = self.todos.items.get(self.todos.selected) else {
+            return;
+        };
+        let text = item.text.clone();
+        let Some(reference) = crate::park::recognize_resume(&text) else {
+            self.set_flash("not a resume command");
+            return;
+        };
+        let Some(session) = crate::tmux::pane_session_name(&self.tmux_pane) else {
+            self.set_flash("could not resolve tmux session");
+            return;
+        };
+        let agent = reference.agent.clone();
+        let id = reference.id.clone();
+        // Explicit `@ <path>` intent wins and needs no probe: resolve
+        // and launch inline like every other tmux write. Otherwise the
+        // whole resolve (parked sidecar, then the agent's own store)
+        // runs on the popup-op worker — a wedged sqlite probe must not
+        // stall the render loop.
+        if let Some(hint) = &reference.cwd_hint {
+            let home = std::env::var("HOME").ok();
+            match crate::park::expand_home(hint, home.as_deref()) {
+                // Both outcomes are banner text: `resumed <agent> <id8>`
+                // or the failure.
+                Some(cwd) => {
+                    self.flash_resume_result(crate::park::launch_with_cwd(
+                        &session, &cwd, &text, &agent, &id,
+                    ));
+                }
+                None => self.set_flash(crate::park::no_cwd_error(&id)),
+            }
+            return;
+        }
+        let dir = self.todos.dir.clone();
+        self.start_background_op(move || {
+            PopupOpResult::Resume(crate::park::resolve_and_launch(
+                &session,
+                &text,
+                dir.as_deref(),
+                &agent,
+                &id,
+            ))
+        });
+    }
+
+    /// Both resume outcomes are banner text — `resumed <agent> <id8>`
+    /// on success, the failure message otherwise — so one sink takes
+    /// them both. Used by the inline (hint) launch and by the worker
+    /// result's apply step.
+    pub(super) fn flash_resume_result(&mut self, result: Result<String, String>) {
+        self.set_flash(match result {
+            Ok(flash) => flash,
+            Err(err) => err,
+        });
     }
 
     /// Clear the completed section and offer the 4-second undo window
@@ -1801,6 +1864,90 @@ mod tests {
         let mut state = state_with(vec![]);
         assert!(!state.record_todo_yank(false));
         assert!(state.flash.is_none());
+    }
+
+    // ─── r (resume a recognized command) ─────────────────────────────
+
+    #[test]
+    fn resume_on_an_empty_list_is_a_no_op() {
+        let mut state = state_with(vec![]);
+        state.resume_todo_selected();
+        assert!(state.flash.is_none(), "no selection, no feedback");
+    }
+
+    #[test]
+    fn resume_on_an_unrecognized_item_flashes_and_stays_untouched() {
+        let mut state = state_with(vec![item("Buy milk", false), item("claude --plan", false)]);
+        state.todos.selected = 0;
+        state.resume_todo_selected();
+        assert_eq!(state.take_flash().as_deref(), Some("not a resume command"));
+        assert_eq!(
+            state.todos.items[0].text, "Buy milk",
+            "the item is never modified"
+        );
+
+        // A wrong id is a non-recognition too — no half-matches.
+        state.todos.selected = 1;
+        state.resume_todo_selected();
+        assert_eq!(state.take_flash().as_deref(), Some("not a resume command"));
+    }
+
+    #[test]
+    fn resume_never_edits_the_recognized_item() {
+        // The test build has no tmux IPC, so the flow stops at session
+        // resolution before dispatching; the contract under test is
+        // that the item itself is never touched.
+        let mut state = state_with(vec![item(
+            "claude --resume f4ac0121-58e7-4d9c-a5c6-e0db65c6c49e",
+            false,
+        )]);
+        state.resume_todo_selected();
+        assert!(state.flash.is_some());
+        assert_eq!(
+            state.todos.items[0].text,
+            "claude --resume f4ac0121-58e7-4d9c-a5c6-e0db65c6c49e"
+        );
+        assert!(!state.todos.items[0].done);
+    }
+
+    #[test]
+    fn a_resume_result_lands_in_the_flash_banner() {
+        let mut state = state_with(vec![item("x", false)]);
+        state.apply_popup_op_result(super::PopupOpResult::Resume(Ok(
+            "resumed claude f4ac0121".into()
+        )));
+        assert_eq!(
+            state.take_flash().as_deref(),
+            Some("resumed claude f4ac0121")
+        );
+
+        state.apply_popup_op_result(super::PopupOpResult::Resume(Err(
+            "no cwd for f4ac0121 — append \"@ /path\" or park the pane".into(),
+        )));
+        assert!(state.take_flash().unwrap().contains("no cwd"));
+    }
+
+    #[test]
+    fn a_resume_result_never_closes_a_popup() {
+        // The spawn modal must survive a resume result landing mid-op.
+        let mut state = state_with(vec![]);
+        state.popup = crate::state::PopupState::SpawnInput {
+            input: "task".into(),
+            target_repo: "repo-a".into(),
+            target_repo_root: "/tmp/repo-a".into(),
+            agent_idx: 0,
+            mode_idx: 0,
+            field: crate::state::SpawnField::Task,
+            anchor_y: None,
+            error: None,
+            working: Some("creating worktree…"),
+            area: None,
+        };
+        state.apply_popup_op_result(crate::state::PopupOpResult::Resume(Ok(
+            "resumed claude f4ac0121".into(),
+        )));
+        assert!(state.is_spawn_input_open());
+        assert_eq!(state.flash.as_ref().unwrap().0, "resumed claude f4ac0121");
     }
 
     // ─── undo (delete / clear-completed) ────────────────────────────

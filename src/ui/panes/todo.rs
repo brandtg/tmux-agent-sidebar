@@ -220,6 +220,12 @@ pub(super) fn render_todo_panel(frame: &mut Frame, state: &mut AppState, area: R
         } else {
             body_style
         };
+        // The resume glyph rides recognized rows: a dim `↻` marking
+        // that `r` will relaunch this item's command. It is a view over
+        // the item's text, never a state change — and it hides while
+        // the row is being edited, where the live buffer replaces the
+        // stored text the glyph describes.
+        let is_resume_row = !is_edited && crate::park::recognize_resume(&item.text).is_some();
         let checkbox_row_style = if is_edited {
             checkbox_style.bg(edit_wash)
         } else if is_selected {
@@ -281,12 +287,26 @@ pub(super) fn render_todo_panel(frame: &mut Frame, state: &mut AppState, area: R
             }
             let at_end = matches!(cursor, Some(p) if *p >= chunk.chars().count());
             let used = prefix_width + display_width(chunk) + usize::from(at_end);
+            // The glyph is right-aligned on the first line, and only
+            // when ` ↻` fits without shifting or clipping the text.
+            let glyph_here = is_resume_row && i == 0 && width >= used + 2;
             if (is_edited || is_selected) && used < width {
                 let bg = if is_edited { edit_wash } else { row_bg };
-                spans.push(Span::styled(
-                    " ".repeat(width - used),
-                    Style::default().bg(bg),
-                ));
+                let fill = if glyph_here {
+                    width - used - 1
+                } else {
+                    width - used
+                };
+                spans.push(Span::styled(" ".repeat(fill), Style::default().bg(bg)));
+                if glyph_here {
+                    spans.push(Span::styled(
+                        "↻",
+                        Style::default().fg(theme.text_inactive).bg(bg),
+                    ));
+                }
+            } else if glyph_here {
+                spans.push(Span::styled(" ".repeat(width - used - 1), Style::default()));
+                spans.push(Span::styled("↻", Style::default().fg(theme.text_inactive)));
             }
             lines.push(Line::from(spans));
         }
@@ -747,6 +767,58 @@ mod tests {
         state.focus_state.focus = Focus::Todos;
         let output = render_panel(&mut state, 40, 4);
         insta::assert_snapshot!(output, @"─ □ todos · 0/1─────────────────────────");
+    }
+
+    #[test]
+    fn recognized_resume_rows_carry_the_dim_glyph() {
+        // A resume-shaped item shows a dim `↻` right-aligned on its
+        // first line — a view over the text, done rows included — while
+        // plain items render exactly as before.
+        let mut state = AppState::new("%99".into());
+        state.todos.items = vec![
+            TodoItem {
+                text: "claude --resume f4ac0121-58e7-4d9c-a5c6-e0db65c6c49e".into(),
+                done: false,
+            },
+            TodoItem {
+                text: "Buy milk".into(),
+                done: false,
+            },
+            TodoItem {
+                text: "opencode -s ses_e1eb53dd9ffemw0k3treOa3PBO @ ~/Projects/w".into(),
+                done: true,
+            },
+        ];
+        state.todos.visible = true;
+        state.focus_state.focus = Focus::Todos;
+        state.todos.selected = 1;
+        let output = render_panel(&mut state, 72, 8);
+        insta::assert_snapshot!(output, @"
+        ─ □ todos · 2/3─────────────────────────────────────────────────────────
+        [ ] claude --resume f4ac0121-58e7-4d9c-a5c6-e0db65c6c49e               ↻
+        [ ] Buy milk
+        [✓] opencode -s ses_e1eb53dd9ffemw0k3treOa3PBO @ ~/Projects/w          ↻
+        ");
+    }
+
+    #[test]
+    fn the_glyph_rides_the_selection_wash_and_survives_an_edit() {
+        // Selected: the glyph keeps the selection bg. While the row is
+        // being edited the buffer replaces the stored text, so the
+        // glyph (which describes the stored text) stands down.
+        let mut state = AppState::new("%99".into());
+        state.todos.items = vec![TodoItem {
+            text: "codex resume 4e71c60a-de52".into(),
+            done: false,
+        }];
+        state.todos.visible = true;
+        state.focus_state.focus = Focus::Todos;
+        state.todos.selected = 0;
+        let output = render_panel_styled(&mut state, 40, 6);
+        insta::assert_snapshot!(output, @"
+        ─[fg:153,bold] [fg:153,bold]□[fg:153,bold] [fg:153,bold]t[fg:153,bold]o[fg:153,bold]d[fg:153,bold]o[fg:153,bold]s[fg:153,bold] [fg:153,bold]·[fg:153,bold] [fg:153,bold]1[fg:153,bold]/[fg:153,bold]1[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]
+        [[fg:153,bg:236] [fg:153,bg:236]][fg:153,bg:236] [fg:153,bg:236]c[fg:255,bg:236]o[fg:255,bg:236]d[fg:255,bg:236]e[fg:255,bg:236]x[fg:255,bg:236] [fg:255,bg:236]r[fg:255,bg:236]e[fg:255,bg:236]s[fg:255,bg:236]u[fg:255,bg:236]m[fg:255,bg:236]e[fg:255,bg:236] [fg:255,bg:236]4[fg:255,bg:236]e[fg:255,bg:236]7[fg:255,bg:236]1[fg:255,bg:236]c[fg:255,bg:236]6[fg:255,bg:236]0[fg:255,bg:236]a[fg:255,bg:236]-[fg:255,bg:236]d[fg:255,bg:236]e[fg:255,bg:236]5[fg:255,bg:236]2[fg:255,bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236]↻[fg:244,bg:236]
+        ");
     }
 
     #[test]

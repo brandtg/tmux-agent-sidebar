@@ -109,6 +109,9 @@ pub enum PopupOpResult {
     Spawn(Result<String, String>),
     /// `worktree::remove` finished.
     Remove(Result<(), String>),
+    /// A resume launch (`r` on a resume-shaped todo) finished: the
+    /// flash banner text on success, the failure text on error.
+    Resume(Result<String, String>),
 }
 
 impl PopupState {
@@ -514,10 +517,28 @@ impl AppState {
         });
     }
 
+    /// Hand a one-shot operation to a fresh worker thread with no popup
+    /// to park — the resume launch, which reports through the flash
+    /// banner instead of a modal. Same no-channel (unit-test build)
+    /// no-op policy as [`Self::start_popup_op`]: without the channel
+    /// nothing spawns, so tests never touch real tmux or agent stores.
+    pub(super) fn start_background_op(
+        &mut self,
+        op: impl FnOnce() -> PopupOpResult + Send + 'static,
+    ) {
+        let Some(tx) = self.popup_op_tx.clone() else {
+            return;
+        };
+        std::thread::spawn(move || {
+            let _ = tx.send(op());
+        });
+    }
+
     /// Apply a finished popup operation delivered by its worker thread.
     /// Success closes the popup exactly as the synchronous path did;
     /// failure returns the popup to its editable state with the error
-    /// surfaced inline. No-ops if the popup moved on meanwhile.
+    /// surfaced inline. No-ops if the popup moved on meanwhile. Resume
+    /// results carry no popup: both outcomes land in the flash banner.
     pub fn apply_popup_op_result(&mut self, result: PopupOpResult) {
         match result {
             PopupOpResult::Spawn(Ok(_)) => {
@@ -542,6 +563,7 @@ impl AppState {
                     *error = Some(e);
                 }
             }
+            PopupOpResult::Resume(result) => self.flash_resume_result(result),
         }
     }
 

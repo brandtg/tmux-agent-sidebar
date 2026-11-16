@@ -93,6 +93,15 @@ it in one tmux session and it opens in the others, so the same list stays in
 view as you jump between sessions. Set `@sidebar_todo_scope local` to keep the
 panel per sidebar instead; the item list stays shared either way.
 
+A todo whose text is a resume command — `claude --resume <id>`,
+`codex resume <id>`, or `opencode -s <id>` — is marked with a dim `↻`, and `r`
+relaunches it in a new window in the sidebar's tmux session. The working
+directory resolves from a trailing `@ <path>` suffix on the item
+(e.g. `[ ] claude --resume f4ac0121-… @ ~/Projects/wisy-cloud`), then from
+parked-session records, then from the agent's own session store; without a
+cwd the launch refuses rather than guessing. The launched command is rebuilt
+from the recognized id — the item's text is never executed.
+
 The keyboard flow follows Google Tasks: Enter opens the selected task for
 editing and a second Enter (or Enter in the new-task line) saves and lands on
 a fresh task, so a run of items is entered without leaving the keyboard;
@@ -109,6 +118,8 @@ Space completes; Esc backs out without creating anything.
 | `Enter` / `e`   | Edit the selected item's text; with no item selected, start a new one |
 | `Enter` (while editing or adding) | Save and start the next item; on an empty line, finish entry |
 | `Space`         | Toggle the selected item's checkbox                           |
+| `y`             | Copy the selected item's text to the clipboard                |
+| `r`             | Resume a resume-shaped item (`claude --resume <id>`, `codex resume <id>`, `opencode -s <id>`) in a new window |
 | `x` / `d`       | Delete the selected item                                      |
 | `D`             | Delete all completed items                                    |
 | `u` / `Ctrl-z`  | Undo the last delete / clear-completed (available for 4 s)    |

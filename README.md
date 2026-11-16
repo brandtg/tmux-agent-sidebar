@@ -76,6 +76,12 @@ Run `tmux-agent-sidebar todo add "$ARGUMENTS"` to append it to the shared TODO p
 
 `todo open <n>` reopens an item and `todo rm <n>` deletes one; the list lives at `~/.local/state/tmux-agent-sidebar/todos.txt` and stays hand-editable.
 
+Resume-shaped items are first-class: a todo whose text is a resume command — `claude --resume <id>`, `codex resume <id>`, or `opencode -s <id>` — gets a `↻` marker in the panel, and `r` relaunches it in a new tmux window at the resolved working directory (a trailing `@ <path>` suffix on the item, then parked-session records, then the agent's own session store). So an agent can hand you a follow-up session as a plain file line:
+
+```sh
+tmux-agent-sidebar todo add "claude --resume f4ac0121-58e7-4d9c-a5c6-e0db65c6c49e @ ~/Projects/wisy-cloud"
+```
+
 ## Development
 
 ```sh
