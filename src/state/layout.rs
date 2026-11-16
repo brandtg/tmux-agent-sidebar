@@ -1,11 +1,12 @@
 use super::{AppState, Focus, RepoFilter};
 use crate::tmux::PaneAttention;
 
-/// Columns reserved at the header row's left edge for the `▦`
-/// overview-grid button. Rendered — and clickable — in every header
-/// state (toolbar, search input, chyron banner). See
-/// [`AppState::spawn_overview_popup`].
-pub const OVERVIEW_BUTTON_WIDTH: u16 = 2;
+/// Columns reserved at the header row's left edge for the `☰`
+/// overview-grid button: the glyph itself is East-Asian-Wide (two cells
+/// per unicode-width) plus one trailing space. Rendered — and
+/// clickable — in every header state (toolbar, search input, chyron
+/// banner). See [`AppState::spawn_overview_popup`].
+pub const OVERVIEW_BUTTON_WIDTH: u16 = 3;
 
 #[derive(Debug, Clone)]
 pub struct RowTarget {
@@ -531,7 +532,7 @@ impl AppState {
         }
     }
 
-    /// Open the experimental overview grid popup (the header row's `▦`
+    /// Open the experimental overview grid popup (the header row's `☰`
     /// glyph and the sidebar's `o` key both land here). Fire-and-forget:
     /// a detached tmux client owns the popup, and failures surface in
     /// the flash banner.
@@ -604,7 +605,7 @@ impl AppState {
 
         // The single header row hosts the toolbar, or the chyron while
         // one is showing. Row defaults match the normal layout for
-        // callers (tests) that have not rendered a frame yet. The `▦`
+        // callers (tests) that have not rendered a frame yet. The `☰`
         // overview button owns the row's first columns in every state —
         // clicking it opens the grid. Over the banner, the button's
         // corner columns still route to the toolbar handler — the menu

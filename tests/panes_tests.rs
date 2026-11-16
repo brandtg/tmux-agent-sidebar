@@ -120,7 +120,7 @@ fn test_running_icon_blink_off() {
     state.spinner_frame = 0;
 
     insta::assert_snapshot!(render_to_string(&mut state, 28, 25), @"
-    ▦                        ⓘ ▾
+    ☰                        ⓘ ▾
     ▾ project
     ┃ ● claude
     ");
@@ -145,7 +145,7 @@ fn test_running_spinner_frame_advances() {
     state.spinner_frame = 3;
 
     insta::assert_snapshot!(render_to_string(&mut state, 28, 25), @"
-    ▦                        ⓘ ▾
+    ☰                        ⓘ ▾
     ▾ project
     ┃ ● claude
     ");
@@ -169,7 +169,7 @@ fn test_waiting_icon() {
     state.focus_state.sidebar_focused = false;
 
     insta::assert_snapshot!(render_to_string(&mut state, 28, 25), @"
-    ▦                        ⓘ ▾
+    ☰                        ⓘ ▾
     ▾ project
     ┃ ◐ claude
     ");
@@ -193,7 +193,7 @@ fn test_error_icon() {
     state.focus_state.sidebar_focused = false;
 
     insta::assert_snapshot!(render_to_string(&mut state, 28, 25), @"
-    ▦                        ⓘ ▾
+    ☰                        ⓘ ▾
     ▾ project
     ┃ ✕ claude
     ");
@@ -281,7 +281,7 @@ fn test_agents_auto_scroll_up_shows_group_header() {
     // The snapshot locks in that the `project` repo header is visible after
     // scrolling back up to the first agent.
     insta::assert_snapshot!(render_to_string(&mut state, 28, 5), @"
-    ▦                        ⓘ ▾
+    ☰                        ⓘ ▾
     ▾ project
       ○ claude
         Waiting for prompt…
@@ -464,7 +464,7 @@ fn repo_popup_renders_repo_names_when_open() {
     // The snapshot locks in that the popup lists the `All` entry plus both
     // repo names when opened.
     insta::assert_snapshot!(render_to_string(&mut state, 40, 30), @"
-    ▦                                    ⓘ ▾
+    ☰                                    ⓘ ▾
     ▾ frontend          ┌──────────────────┐
     ┃ ○ claude          │   Missing hooks  │
         Waiting for prom│     claude       │
@@ -512,7 +512,7 @@ fn repo_popup_highlights_selected_entry_with_background() {
     // Styled snapshot locks in that the `backend` row carries the selection
     // background (bg:239) on each cell of the entry.
     insta::assert_snapshot!(render_to_styled_string(&mut state, 40, 30), @"
-    ▦[fg:252]                                    ⓘ[fg:221] ▾[fg:255]
+    ☰[fg:252]                                    ⓘ[fg:221] ▾[fg:255]
     ▾[fg:153] [fg:153]f[fg:153]r[fg:153]o[fg:153]n[fg:153]t[fg:153]e[fg:153]n[fg:153]d[fg:153]          ┌[fg:153]─[fg:153]─[fg:153]─[fg:153]─[fg:153]─[fg:153]─[fg:153]─[fg:153]─[fg:153]─[fg:153]─[fg:153]─[fg:153]─[fg:153]─[fg:153]─[fg:153]─[fg:153]─[fg:153]─[fg:153]─[fg:153]┐[fg:153]
     ┃[fg:153] ○[fg:110] [fg:173]c[fg:173]l[fg:173]a[fg:173]u[fg:173]d[fg:173]e[fg:173]          │[fg:153] [fg:153] [fg:153] [fg:153]M[fg:153]i[fg:153]s[fg:153]s[fg:153]i[fg:153]n[fg:153]g[fg:153] [fg:153]h[fg:153]o[fg:153]o[fg:153]k[fg:153]s[fg:153] [fg:153] [fg:153]│[fg:153]
        [fg:255] [fg:255]W[fg:255]a[fg:255]i[fg:255]t[fg:255]i[fg:255]n[fg:255]g[fg:255] [fg:255]f[fg:255]o[fg:255]r[fg:255] [fg:255]p[fg:255]r[fg:255]o[fg:255]m[fg:255]│[fg:153] [fg:153,bold] [fg:153,bold] [fg:153,bold] [fg:153,bold] [fg:153,bold]c[fg:153,bold]l[fg:153,bold]a[fg:153,bold]u[fg:153,bold]d[fg:153,bold]e[fg:153,bold] [fg:153,bold] [fg:153,bold] [fg:153,bold] [fg:153,bold] [fg:153,bold] [fg:153,bold] [fg:153,bold]│[fg:153]
@@ -558,7 +558,7 @@ fn snapshot_compact_mode_renders_one_line_per_pane() {
     state.global.compact = true;
 
     insta::assert_snapshot!(render_to_string(&mut state, 28, 14), @"
-    ▦                        ⓘ ▾
+    ☰                        ⓘ ▾
     ▾ project
     ┃ ● fix-api             1m5s
       ○ docs +2
@@ -593,7 +593,7 @@ fn snapshot_compact_mode_multiple_repo_groups() {
     state.global.compact = true;
 
     insta::assert_snapshot!(render_to_string(&mut state, 28, 14), @"
-    ▦                        ⓘ ▾
+    ☰                        ⓘ ▾
     ▾ frontend
     ┃ ● alpha
     ▾ backend
@@ -638,7 +638,7 @@ fn snapshot_compact_mode_spawned_worktree_remove_marker() {
     state.global.compact = true;
 
     insta::assert_snapshot!(render_to_string(&mut state, 28, 14), @"
-    ▦                        ⓘ ▾
+    ☰                        ⓘ ▾
     ▾ project                  +
     ┃ ● fix-api + agent/fix-a… ×
     ");
@@ -681,7 +681,7 @@ fn snapshot_search_bar_filters_list_but_keeps_group() {
     state.rebuild_row_targets();
 
     insta::assert_snapshot!(render_to_string(&mut state, 40, 20), @"
-    ▦ /codex█                            ⓘ ▾
+    ☰  /codex█                           ⓘ ▾
     ▾ backend
       ○ codex-ui
         Waiting for prompt…
@@ -695,7 +695,7 @@ fn snapshot_collapsed_group_renders_header_only() {
     state.rebuild_row_targets();
 
     insta::assert_snapshot!(render_to_string(&mut state, 40, 20), @"
-    ▦                                    ⓘ ▾
+    ☰                                    ⓘ ▾
     ▸ backend (2 panes)
     ▾ frontend
       ○ frontend
@@ -718,7 +718,7 @@ fn snapshot_collapsed_group_badge_colors_status_segments() {
     state.rebuild_row_targets();
 
     insta::assert_snapshot!(render_to_styled_string(&mut state, 40, 20), @"
-    ▦[fg:252]                                    ⓘ[fg:221] ▾[fg:252]
+    ☰[fg:252]                                    ⓘ[fg:221] ▾[fg:252]
     ▸[fg:153] [fg:153]b[fg:153]a[fg:153]c[fg:153]k[fg:153]e[fg:153]…[fg:153] [fg:252]([fg:252]2[fg:252] [fg:252]p[fg:252]a[fg:252]n[fg:252]e[fg:252]s[fg:252])[fg:252] [fg:221]·[fg:221] [fg:221]1[fg:221] [fg:221]w[fg:221]a[fg:221]i[fg:221]t[fg:221]i[fg:221]n[fg:221]g[fg:221] [fg:167]·[fg:167] [fg:167]1[fg:167] [fg:167]e[fg:167]r[fg:167]r[fg:167]o[fg:167]r[fg:167]
     ");
 }
@@ -731,7 +731,7 @@ fn snapshot_search_no_matches_empty_state() {
     state.rebuild_row_targets();
 
     insta::assert_snapshot!(render_to_string(&mut state, 40, 20), @"
-    ▦ /zzz                               ⓘ ▾
+    ☰  /zzz                              ⓘ ▾
       no matches for zzz
     ");
 }

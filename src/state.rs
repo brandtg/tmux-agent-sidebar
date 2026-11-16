@@ -1230,7 +1230,7 @@ mod tests {
 
     #[test]
     fn mouse_click_on_overview_glyph_spawns_the_grid() {
-        // The header row's first columns are the `▦` overview button in
+        // The header row's first columns are the `☰` overview button in
         // every state; clicking one routes to the overview spawner. The
         // spawn cannot succeed under test (no tmux IPC), so the failure
         // lands in the flash banner — proving the click reached the

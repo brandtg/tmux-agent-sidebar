@@ -188,8 +188,11 @@ tmux display-popup -E -w 100% -h 100% target/release/tmux-agent-sidebar overview
 
 With the plugin installed, the sidebar TUI itself opens it: focus the
 sidebar and press `o` — a fullscreen popup of every agent pane, anchored
-to the sidebar's window. Quitting the grid (q / Esc) returns to the
-sidebar. From a plain shell the standalone invocation also works:
+to the sidebar's window. The `☰` button in the sidebar's header row
+(top-left corner) does the same for the mouse, and the grid's own header
+row carries a clickable `✕` at its right edge for closing it. Quitting
+the grid (q / Esc) returns to the sidebar. From a plain shell the
+standalone invocation also works:
 
 ```bash
 target/release/tmux-agent-sidebar overview --popup

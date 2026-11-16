@@ -140,7 +140,7 @@ pub(super) fn render_secondary_header<'a>(state: &AppState, width: u16) -> (Line
         .saturating_sub(crate::state::OVERVIEW_BUTTON_WIDTH as usize);
     let mut spans: Vec<Span<'a>> = Vec::new();
 
-    // The `▦` overview button owns the row's first columns in every
+    // The `☰` overview button owns the row's first columns in every
     // state; the search input and the banner start after it.
     spans.extend(overview_button_spans(state));
 
@@ -179,12 +179,12 @@ pub(super) fn render_secondary_header<'a>(state: &AppState, width: u16) -> (Line
     (Line::from(spans), Some(button_col))
 }
 
-/// The overview-grid button as its two columns: the `▦` glyph and a
+/// The overview-grid button as its two columns: the `☰` glyph and a
 /// trailing space. Rendered at the header row's left edge in every
 /// state (toolbar, search, chyron banner); clicks there open the grid.
 pub(super) fn overview_button_spans<'a>(state: &AppState) -> Vec<Span<'a>> {
     vec![
-        Span::styled("▦", Style::default().fg(state.theme.text_muted)),
+        Span::styled("☰", Style::default().fg(state.theme.text_muted)),
         Span::raw(" "),
     ]
 }
@@ -432,7 +432,7 @@ mod tests {
         let state = AppState::new(String::new());
         let (line, col) = render_secondary_header(&state, 30);
         let text = line_text(&line);
-        insta::assert_snapshot!(text, @"▦                          — ▾");
+        insta::assert_snapshot!(text, @"☰                         — ▾");
         // The button is the last three columns; its click column is
         // width - 3.
         assert_eq!(col, Some(27));
@@ -448,7 +448,7 @@ mod tests {
         });
         let (line, col) = render_secondary_header(&state, 30);
         let text = line_text(&line);
-        insta::assert_snapshot!(text, @"▦                          ⓘ ▾");
+        insta::assert_snapshot!(text, @"☰                         ⓘ ▾");
         // The label flip is one column wide either way: the click
         // column — and the button's position — does not move.
         assert_eq!(col, Some(27));
@@ -464,8 +464,8 @@ mod tests {
         state.search.active = true;
         let (line, col) = render_secondary_header(&state, 30);
         let text = line_text(&line);
-        insta::assert_snapshot!(text, @"▦ /codex█                  — ▾");
-        assert!(text.starts_with("▦ /codex█"), "no leading gutter: {text:?}");
+        insta::assert_snapshot!(text, @"☰ /codex█                 — ▾");
+        assert!(text.starts_with("☰ /codex█"), "no leading gutter: {text:?}");
         // The button column is unchanged by the input.
         assert_eq!(col, Some(27));
     }

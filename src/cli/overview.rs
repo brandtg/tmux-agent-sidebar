@@ -29,7 +29,10 @@ use std::process::Command;
 use std::time::{Duration, Instant};
 
 use crossterm::{
-    event::{self, Event, KeyCode, KeyEventKind, KeyModifiers},
+    event::{
+        self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind, KeyModifiers,
+        MouseButton, MouseEventKind,
+    },
     execute,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
@@ -192,7 +195,7 @@ fn run_tui(interval: Duration) -> io::Result<i32> {
     let theme = ColorTheme::from_tmux();
     enable_raw_mode()?;
     let result = (|| -> io::Result<i32> {
-        execute!(io::stdout(), EnterAlternateScreen)?;
+        execute!(io::stdout(), EnterAlternateScreen, EnableMouseCapture)?;
         let backend = CrosstermBackend::new(io::stdout());
         let mut terminal = Terminal::new(backend)?;
 
@@ -244,31 +247,41 @@ fn run_tui(interval: Duration) -> io::Result<i32> {
                 .checked_sub(last_refresh.elapsed())
                 .unwrap_or(Duration::from_millis(30))
                 .max(Duration::from_millis(30));
-            if event::poll(budget)?
-                && let Event::Key(key) = event::read()?
-                && key.kind == KeyEventKind::Press
-            {
-                match key.code {
-                    KeyCode::Char('q') => return Ok(0),
-                    KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                        return Ok(0);
+            if event::poll(budget)? {
+                match event::read()? {
+                    Event::Key(key) if key.kind == KeyEventKind::Press => {
+                        match key.code {
+                            KeyCode::Char('q') => return Ok(0),
+                            KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                                return Ok(0);
+                            }
+                            // Zoom collapses first; Esc only quits from the grid.
+                            KeyCode::Esc => {
+                                if zoomed.take().is_none() {
+                                    return Ok(0);
+                                }
+                            }
+                            KeyCode::Enter => {
+                                if let Some(idx) = selected_idx {
+                                    zoomed = Some(panes[idx].info.pane_id.clone());
+                                }
+                            }
+                            KeyCode::Right | KeyCode::Tab | KeyCode::Char('j') => {
+                                selected = step_selection(&panes, selected, 1);
+                            }
+                            KeyCode::Left | KeyCode::BackTab | KeyCode::Char('k') => {
+                                selected = step_selection(&panes, selected, -1);
+                            }
+                            _ => {}
+                        }
                     }
-                    // Zoom collapses first; Esc only quits from the grid.
-                    KeyCode::Esc => {
-                        if zoomed.take().is_none() {
+                    Event::Mouse(mouse)
+                        if mouse.kind == MouseEventKind::Down(MouseButton::Left) =>
+                    {
+                        let size = terminal.size()?;
+                        if close_button_hit(mouse.row, mouse.column, size.width) {
                             return Ok(0);
                         }
-                    }
-                    KeyCode::Enter => {
-                        if let Some(idx) = selected_idx {
-                            zoomed = Some(panes[idx].info.pane_id.clone());
-                        }
-                    }
-                    KeyCode::Right | KeyCode::Tab | KeyCode::Char('j') => {
-                        selected = step_selection(&panes, selected, 1);
-                    }
-                    KeyCode::Left | KeyCode::BackTab | KeyCode::Char('k') => {
-                        selected = step_selection(&panes, selected, -1);
                     }
                     _ => {}
                 }
@@ -277,8 +290,19 @@ fn run_tui(interval: Duration) -> io::Result<i32> {
     })();
 
     let _ = disable_raw_mode();
-    let _ = execute!(io::stdout(), LeaveAlternateScreen);
+    let _ = execute!(
+        io::stdout(),
+        LeaveAlternateScreen,
+        crossterm::event::DisableMouseCapture
+    );
     result
+}
+
+/// The header row's last two columns are the `✕` close button, in both
+/// grid and zoom states. Row 0 only — clicks in the grid body are
+/// ignored for now.
+fn close_button_hit(row: u16, col: u16, width: u16) -> bool {
+    row == 0 && width >= 2 && col >= width - 2
 }
 
 /// Move the selection `delta` cells with wraparound, over the status-sorted
@@ -491,7 +515,8 @@ fn draw_grid(
         .direction(Direction::Vertical)
         .constraints([Constraint::Length(1), Constraint::Fill(1)])
         .split(area);
-    let counts = header_line(panes, theme, false);
+    let width = area.width;
+    let counts = header_line(panes, theme, false, width);
     f.render_widget(Paragraph::new(counts), chunks[0]);
 
     let (cols, rows) = grid_dims(panes.len(), chunks[1]);
@@ -526,7 +551,8 @@ fn draw_zoomed(f: &mut Frame, panes: &[OverviewPane], idx: usize, theme: &ColorT
         .direction(Direction::Vertical)
         .constraints([Constraint::Length(1), Constraint::Fill(1)])
         .split(area);
-    let counts = header_line(panes, theme, true);
+    let width = area.width;
+    let counts = header_line(panes, theme, true, width);
     f.render_widget(Paragraph::new(counts), chunks[0]);
     draw_cell(f, chunks[1], &panes[idx], true, theme);
 }
@@ -598,8 +624,15 @@ fn draw_cell(f: &mut Frame, area: Rect, pane: &OverviewPane, selected: bool, the
 }
 
 /// Header row: per-status counts (only non-zero classes) so "does anything
-/// need me?" is one glance, plus the key hints on the same line.
-fn header_line(panes: &[OverviewPane], theme: &ColorTheme, zoomed: bool) -> Line<'static> {
+/// need me?" is one glance, plus the key hints and a clickable `✕` pinned
+/// to the last two columns for closing with the mouse.
+fn header_line(
+    panes: &[OverviewPane],
+    theme: &ColorTheme,
+    zoomed: bool,
+    width: u16,
+) -> Line<'static> {
+    let muted = Style::default().fg(theme.border_inactive);
     let mut spans = Vec::new();
     for status in [
         PaneStatus::Waiting,
@@ -622,10 +655,14 @@ fn header_line(panes: &[OverviewPane], theme: &ColorTheme, zoomed: bool) -> Line
     } else {
         "   tab move · enter zoom · q quit"
     };
-    spans.push(Span::styled(
-        hints,
-        Style::default().fg(theme.border_inactive),
-    ));
+    spans.push(Span::styled(hints, muted));
+    // The close button owns the row's last two columns in every state —
+    // the same contract the mouse handler uses for its hit zone.
+    let used: usize = spans.iter().map(|s| s.width()).sum();
+    let close_col = width.saturating_sub(2) as usize;
+    let pad = close_col.saturating_sub(used);
+    spans.push(Span::styled(" ".repeat(pad), muted));
+    spans.push(Span::styled(" ✕", muted));
     Line::from(spans)
 }
 
@@ -908,7 +945,7 @@ mod tests {
             err: None,
         };
         insta::assert_snapshot!(render_frame(&[pane], None, 40, 10), @"
-         ●1   tab move · enter zoom · q quit
+         ●1   tab move · enter zoom · q quit   ✕
         ┌ ● claude · project───────────────────┐
         │ Editing src/main.rs …                │
         │                                      │
@@ -943,7 +980,7 @@ mod tests {
         let mut panes = panes;
         sort_for_grid(&mut panes);
         insta::assert_snapshot!(render_frame(&panes, Some(0), 80, 12), @"
-         ◐1 ●1   tab move · enter zoom · q quit
+         ◐1 ●1   tab move · enter zoom · q quit                                        ✕
         ┌ ◐ claude · project───────────────────┐┌ ● claude · project───────────────────┐
         │ Waiting · permission                 ││ Reviewing the diff …                 │
         │                                      ││                                      │
@@ -966,7 +1003,7 @@ mod tests {
             err: Some("pane vanished".into()),
         };
         insta::assert_snapshot!(render_frame(&[pane], None, 40, 6), @"
-         ✕1   tab move · enter zoom · q quit
+         ✕1   tab move · enter zoom · q quit   ✕
         ┌ ✕ hermes · project───────────────────┐
         │ Error · failed                       │
         │pane vanished                         │
@@ -985,7 +1022,7 @@ mod tests {
             err: None,
         };
         insta::assert_snapshot!(render_zoom(&[pane], 0, 40, 12), @"
-         ●1   esc grid · q quit
+         ●1   esc grid · q quit                ✕
         ┌ ● codex · project────────────────────┐
         │ Refactoring the export path …        │
         │                                      │
@@ -1067,6 +1104,29 @@ mod tests {
         assert!(indexed_luminance(240) < LIGHT_BG_LUMINANCE);
         assert!(indexed_luminance(236) < LIGHT_BG_LUMINANCE);
         assert!(indexed_luminance(235) < LIGHT_BG_LUMINANCE);
+    }
+
+    #[test]
+    fn header_close_button_pins_to_the_last_two_columns() {
+        let pane = OverviewPane {
+            info: make_pane(AgentType::Claude, PaneStatus::Running, "%1"),
+            grid: None,
+            err: None,
+        };
+        let line = header_line(&[pane], &ColorTheme::default(), false, 40);
+        let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(text.starts_with(" ●1"), "counts lead the row: {text:?}");
+        assert!(text.ends_with(" ✕"), "close button pins right: {text:?}");
+        assert_eq!(
+            unicode_width::UnicodeWidthStr::width(text.as_str()),
+            40,
+            "the row must not wrap: {text:?}"
+        );
+        assert!(close_button_hit(0, 38, 40));
+        assert!(close_button_hit(0, 39, 40));
+        assert!(!close_button_hit(0, 37, 40));
+        assert!(!close_button_hit(1, 39, 40), "grid body clicks are inert");
+        assert!(!close_button_hit(0, 39, 1), "degenerate width is inert");
     }
 
     #[test]
