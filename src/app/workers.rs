@@ -69,8 +69,9 @@ pub(super) struct Workers {
 
 /// One snapshot refresh request. `include_globals` asks the worker to also
 /// fetch the shared global options (`show -g`) — set when the tick was
-/// driven by a hook-event signal, which is exactly when another sidebar may
-/// have broadcast a setting change.
+/// driven by a signal (another sidebar may have broadcast a setting
+/// change) and on the periodic resync interval, so convergence never
+/// depends on catching a single edge-triggered signal.
 pub(super) struct SnapshotRequest {
     pub include_globals: bool,
 }
@@ -80,11 +81,17 @@ pub(super) struct SnapshotRequest {
 /// and retries on the next tick (a failed call is not evidence that no
 /// panes exist).
 ///
+/// `globals_requested` echoes the request flag: the snapshot was *told*
+/// to carry shared options, so `global_options == None` means the
+/// `show -g` spawn failed — the event loop must reload directly rather
+/// than treat the empty absence as "nothing changed".
+///
 /// `fetched_at` is stamped before the `list-panes` spawn: the fold on the
 /// render thread compares it against optimistic focus writes (a jump) and
 /// refuses to let an older-than-the-jump listing clobber the focus state.
 pub(super) struct SnapshotRaw {
     pub panes_output: Option<String>,
+    pub globals_requested: bool,
     pub global_options: Option<HashMap<String, String>>,
     pub fetched_at: std::time::Instant,
 }
@@ -151,9 +158,13 @@ pub(super) fn snapshot_poll_loop(
         // focus write may be applied, anything older may not.
         let fetched_at = std::time::Instant::now();
         let panes_output = tmux::fetch_pane_listing();
-        let global_options = request.include_globals.then(tmux::get_all_global_options);
+        let global_options = request
+            .include_globals
+            .then(tmux::try_get_all_global_options)
+            .flatten();
         let _ = tx.send(SnapshotRaw {
             panes_output,
+            globals_requested: request.include_globals,
             global_options,
             fetched_at,
         });
