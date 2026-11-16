@@ -25,6 +25,16 @@ mod workers;
 /// signal is latched back onto `needs_refresh` until the gap elapses.
 const MIN_REFRESH_GAP: Duration = Duration::from_millis(150);
 
+/// How often the snapshot worker re-fetches the shared global options
+/// even when no signal asked it to. Signals are edge-triggered and can
+/// be lost, and a sidebar in an unviewed session never trips the
+/// window-inactive reload (its window stays `window_active` within its
+/// own session), so without this floor a missed signal would pin the
+/// sidebar to stale shared view state — group folds above all — until
+/// some agent in its own session happened to fire a hook. One extra
+/// `show -g` spawn per interval per sidebar.
+const GLOBALS_RESYNC_INTERVAL: Duration = Duration::from_secs(5);
+
 /// Run the TUI event loop. Returns when the loop exits — on a fatal I/O
 /// error, or when the user presses `q` (`state.quit_requested`), which
 /// tears down a popup via `display-popup -E` and closes the pane-mode
@@ -64,6 +74,7 @@ pub fn run(
 
     let mut last_refresh = std::time::Instant::now();
     let mut last_spinner = std::time::Instant::now();
+    let mut last_globals_sync = std::time::Instant::now();
     let refresh_interval = Duration::from_secs(1);
     let spinner_interval = Duration::from_millis(200);
     let mut needs_redraw = true;
@@ -89,22 +100,40 @@ pub fn run(
         // a spawn storm.
         let signal_pending = needs_refresh.swap(false, Ordering::Relaxed);
         let since_refresh = last_refresh.elapsed();
+        // Shared-option safety net: signals are edge-triggered and can be
+        // lost (a burst landing while a request is in flight, a transient
+        // `show -g` failure), and the window-inactive net below cannot
+        // fire for a sidebar in an unviewed *session* — its window is
+        // that session's active window, so `window_active` never reads
+        // false. Re-fetching the shared options on a fixed interval keeps
+        // every instance converging no matter which signal went missing.
+        let globals_due = last_globals_sync.elapsed() >= GLOBALS_RESYNC_INTERVAL;
         let refresh_due = (signal_pending && since_refresh >= MIN_REFRESH_GAP)
-            || since_refresh >= refresh_interval;
+            || since_refresh >= refresh_interval
+            || globals_due;
         if refresh_due && !snapshot_in_flight {
             state.refresh_now();
             state
                 .todos
                 .refresh_if_changed(state.global.todo_hide_completed);
             let request = workers::SnapshotRequest {
-                include_globals: signal_pending,
+                include_globals: signal_pending || globals_due,
             };
+            // Re-latch the signal whenever this iteration did not hand a
+            // request to the worker (send failure). Silently consuming it
+            // here was the bug that pinned a sidebar to stale folds: with
+            // no periodic globals fetch to fall back on, one dropped
+            // signal meant never syncing again.
             if snapshot_tx.send(request).is_ok() {
                 snapshot_in_flight = true;
+            } else if signal_pending {
+                needs_refresh.store(true, Ordering::Relaxed);
             }
             last_refresh = std::time::Instant::now();
         } else if signal_pending {
-            // Coalesced: latch the signal back so the next wake fires it.
+            // Coalesced (inside the minimum gap) or deferred (a request
+            // is still in flight): latch the signal back so the next
+            // wake fires it instead of dropping the only reload trigger.
             needs_refresh.store(true, Ordering::Relaxed);
         }
 
@@ -213,29 +242,39 @@ pub fn run(
             }
             needs_redraw = true;
             // Reload shared global options (compact, filters) when the
-            // tick was signal-driven — the request asked the worker to
-            // fetch them, because a broadcast from another sidebar has to
-            // land on *inactive* instances too (those are exactly the
-            // stale ones) — and when an inactive window regains visibility
-            // (≥2 inactive ticks) as the missed-signal safety net, falling
-            // back to a direct load since no globals rode this snapshot.
+            // tick was signal-driven or on the periodic resync — the
+            // request asked the worker to fetch them, because a broadcast
+            // from another sidebar has to land on *inactive* instances
+            // too (those are exactly the stale ones) — and when an
+            // inactive window regains visibility (≥2 inactive ticks) as
+            // the missed-signal safety net. When globals rode a failed
+            // `show -g` (`globals_requested` without a map) the reload
+            // runs directly instead of being silently skipped: the
+            // signal that asked for this sync must not die here.
             // The shared cursor is deliberately NOT adopted here: an index
             // written against another window's list is meaningless in this
             // one, and while the sidebar is focused it would drag the
             // visible selection highlight onto an unrelated agent.
-            if raw.global_options.is_some() || (is_window_active && window_inactive_count >= 2) {
+            if raw.globals_requested
+                || raw.global_options.is_some()
+                || (is_window_active && window_inactive_count >= 2)
+            {
                 let previous_group_by = state.global.group_by;
                 match &raw.global_options {
                     Some(opts) => state.global.apply_shared_options_without_cursor(opts),
                     None => state.global.reload_shared_options_without_cursor(),
                 }
+                last_globals_sync = std::time::Instant::now();
                 // Group names are mode-specific (repo names vs session
                 // names). A collapse set from the previous mode would
                 // otherwise hide an unrelated group that happens to share
                 // a name, so start the new mode fully expanded. The mode
-                // changer already persisted the cleared set.
+                // changer persists the cleared set when it toggles, but
+                // an instance that missed that broadcast would keep the
+                // previous mode's names in tmux and fold them back in on
+                // the next sync, so every observer writes the clear too.
                 if state.global.group_by != previous_group_by {
-                    state.global.collapsed_groups.clear();
+                    state.global.persist_cleared_collapsed_groups();
                     state.collapsed_cursor_group = None;
                 }
                 state.rebuild_row_targets();

@@ -217,12 +217,11 @@ pub(super) fn handle_key_event(key: KeyEvent, state: &mut AppState) -> bool {
         // waiting for the next tick.
         KeyCode::Char('s') => {
             state.global.toggle_group_by();
-            state.global.collapsed_groups.clear();
             // Names are mode-specific; drop the parked cursor group too
             // and persist the cleared set so every sidebar starts the
             // new mode fully expanded.
             state.collapsed_cursor_group = None;
-            state.global.save_collapsed_groups();
+            state.global.persist_cleared_collapsed_groups();
             state.refresh();
         }
         KeyCode::PageDown => page_scroll(state, 1),

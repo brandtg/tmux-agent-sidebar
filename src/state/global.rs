@@ -126,7 +126,7 @@ pub struct GlobalState {
     /// it in tmux.conf; there is no runtime toggle.
     pub group_by: GroupBy,
     /// Group names currently folded in the agents panel (`z`, a header
-    /// click, `M`). Persisted to `@sidebar_collapsed_groups` and synced
+    /// click, `Z`). Persisted to `@sidebar_collapsed_groups` and synced
     /// across open sidebars like the other shared options, so folds
     /// survive restarts and follow the user everywhere. Cleared when the
     /// grouping mode changes: the names are mode-specific, and a session
@@ -285,6 +285,20 @@ impl GlobalState {
             self.last_saved_collapsed_groups = Some(self.collapsed_groups.clone());
             self.broadcast_change();
         }
+    }
+
+    /// Clear the collapsed set locally *and* persist the cleared set to
+    /// the shared option. Used when the grouping mode changed and the
+    /// persisted names belong to the previous mode: every instance that
+    /// observes the change writes the clear, so the shared option matches
+    /// what everyone now displays and `last_saved_collapsed_groups`
+    /// stays an honest "did I write this?" marker. A purely local clear
+    /// would leave the echo guard comparing tmux's (stale-mode) value
+    /// against a set this sidebar no longer reconciles with, letting the
+    /// old names fold back in later.
+    pub fn persist_cleared_collapsed_groups(&mut self) {
+        self.collapsed_groups.clear();
+        self.save_collapsed_groups();
     }
 
     /// Flip compact mode and broadcast the new value to every open
@@ -619,6 +633,31 @@ fn parse_preview_lines(s: &str) -> Option<usize> {
 mod tests {
     use super::*;
     use std::collections::HashMap;
+
+    #[test]
+    fn persist_cleared_collapsed_groups_unfolds_locally() {
+        let mut global = GlobalState::new("%99".into());
+        let mut opts = HashMap::new();
+        opts.insert(
+            tmux::SIDEBAR_COLLAPSED_GROUPS.to_string(),
+            r#"["backend"]"#.to_string(),
+        );
+        global.apply_all(&opts);
+        assert!(global.collapsed_groups.contains("backend"));
+
+        // The tmux write cannot succeed under test (the IPC gate refuses
+        // every spawn), so this pins the local half of the contract: the
+        // fold is dropped, and a failed write must not touch the echo
+        // guard — the next sync still reverts to the shared value rather
+        // than silently claiming the clear.
+        global.persist_cleared_collapsed_groups();
+        assert!(global.collapsed_groups.is_empty());
+        assert_eq!(
+            global.last_saved_collapsed_groups.as_ref(),
+            Some(&["backend".to_string()].into_iter().collect()),
+            "a failed write leaves last_saved as the revert anchor"
+        );
+    }
 
     #[test]
     fn collapsed_groups_round_trip_through_the_shared_option() {

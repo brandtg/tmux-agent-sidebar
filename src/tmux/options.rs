@@ -331,16 +331,29 @@ pub fn sanitize_option_value(s: &str) -> String {
 
 /// Fetch all global tmux options in a single subprocess call.
 /// Returns a map of option name → value.
+///
+/// A failed call yields an empty map, indistinguishable from a server
+/// with no options set. Callers that must not lose a shared-state reload
+/// on a transient tmux failure (the snapshot worker) use
+/// [`try_get_all_global_options`] instead.
 pub fn get_all_global_options() -> std::collections::HashMap<String, String> {
+    try_get_all_global_options().unwrap_or_default()
+}
+
+/// [`get_all_global_options`] with an honest failure signal: `None`
+/// means the `show -g` spawn itself failed, not that no options exist.
+/// The event loop retries a failed signal-driven reload instead of
+/// silently applying an empty option set (which every guard would
+/// accept as "nothing changed").
+pub fn try_get_all_global_options() -> Option<std::collections::HashMap<String, String>> {
+    let output = run_tmux(&["show", "-g"])?;
     let mut map = std::collections::HashMap::new();
-    if let Some(output) = run_tmux(&["show", "-g"]) {
-        for line in output.lines() {
-            if let Some((key, value)) = parse_global_option_line(line) {
-                map.insert(key, value);
-            }
+    for line in output.lines() {
+        if let Some((key, value)) = parse_global_option_line(line) {
+            map.insert(key, value);
         }
     }
-    map
+    Some(map)
 }
 
 /// Parse one `tmux show -g` line into `(option, value)`.
