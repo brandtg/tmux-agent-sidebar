@@ -789,7 +789,7 @@ mod tests {
         assert!(process_matches_agent(
             &ProcessInfo {
                 comm: "/Users/greg-bran".to_string(),
-                args: "/Users/u/.hermes/tools/python-3.14.7/bin/python3 -I -c import os, sys\012sys.path.insert(0, '/Users/u/.hermes/hermes-agent')\012import hermes_cli".to_string(),
+                args: "/Users/u/.hermes/tools/python-3.14.7/bin/python3 -I -c import os, sys\nsys.path.insert(0, '/Users/u/.hermes/hermes-agent')\nimport hermes_cli".to_string(),
             },
             "hermes",
         ));

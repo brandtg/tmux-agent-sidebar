@@ -3,8 +3,7 @@ use ratatui::{
     text::{Line, Span},
 };
 
-use crate::state::{AppState, ChyronKind, ChyronPhase, RepoFilter};
-use crate::tmux::PaneStatus;
+use crate::state::{AppState, ChyronPhase, RepoFilter};
 
 use crate::ui::text::{display_width, truncate_to_width};
 
@@ -182,7 +181,7 @@ pub(super) const BUTTON_WIDTH: usize = 3;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::state::{ChyronEvent, ChyronState};
+    use crate::state::{ChyronEvent, ChyronKind, ChyronState};
     use crate::tmux::PaneAttention;
     use std::time::Instant;
 

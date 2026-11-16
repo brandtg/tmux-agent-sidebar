@@ -724,9 +724,11 @@ mod tests {
         // another window's sidebar flushed its own row 5 to the shared
         // option. The runtime fold must not drag the highlight there —
         // an index is only meaningful in the list it was written against.
-        let mut state = GlobalState::default();
-        state.selected_pane_row = 2;
-        state.last_saved_cursor = 2;
+        let mut state = GlobalState {
+            selected_pane_row: 2,
+            last_saved_cursor: 2,
+            ..Default::default()
+        };
         let mut opts = HashMap::new();
         opts.insert(tmux::SIDEBAR_CURSOR.to_string(), "5".into());
         opts.insert(tmux::SIDEBAR_PREVIEW_LINES.to_string(), "7".into());
