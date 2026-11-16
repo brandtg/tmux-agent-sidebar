@@ -17,3 +17,6 @@ tmux-server-*.log
 dist
 node_modules
 tmp
+
+# Nested agent worktrees (see .opencode/worktrees/)
+.opencode/worktrees/
