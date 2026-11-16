@@ -14,7 +14,7 @@
 //! and the agent's own store). The `p` write path and the Parked view
 //! land with parked sessions proper; the schema below is already final.
 
-use std::io::Read;
+use std::io::{BufRead, Read};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
@@ -307,9 +307,14 @@ pub(crate) fn probe_cwd(agent: &str, session_id: &str, home: &Path) -> Option<St
 /// `.sessionId` and read its `.cwd`. The `.key` files alongside are
 /// skipped by the extension check. Ids compare case-insensitively —
 /// the recognizer lowercases claude ids, the store may not.
+/// `sessions/` is pid-keyed and only holds *running* sessions, so the
+/// probe falls back to the transcript store (see
+/// [`claude_cwd_from_projects`]) for ended ones.
 fn claude_cwd(home: &Path, session_id: &str) -> Option<String> {
     let dir = home.join(".claude").join("sessions");
-    let entries = std::fs::read_dir(dir).ok()?;
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return claude_cwd_from_projects(home, session_id);
+    };
     for entry in entries.flatten() {
         let path = entry.path();
         if path.extension().and_then(|e| e.to_str()) != Some("json") {
@@ -330,6 +335,44 @@ fn claude_cwd(home: &Path, session_id: &str) -> Option<String> {
             && !cwd.is_empty()
         {
             return Some(cwd.to_string());
+        }
+    }
+    claude_cwd_from_projects(home, session_id)
+}
+
+/// How many transcript lines the projects-store fallback parses before
+/// giving up. The leading entries are session metadata (`last-prompt`,
+/// `mode`, `permission-mode`, …) without a cwd; the first message
+/// entries — which all carry `cwd` — follow within a few lines.
+const PROJECTS_SCAN_LINES: usize = 50;
+
+/// Claude fallback for ended sessions: the transcript store at
+/// `~/.claude/projects/<encoded-cwd>/<session-id>.jsonl` outlives the
+/// pid-keyed `sessions/` files, and its entries carry the session's
+/// exact `cwd` — no decoding of the dash-encoded directory name
+/// needed. A missing transcript (session from another machine, or
+/// pruned) is simply "no cwd".
+fn claude_cwd_from_projects(home: &Path, session_id: &str) -> Option<String> {
+    let projects = home.join(".claude").join("projects");
+    for entry in std::fs::read_dir(projects).ok()?.flatten() {
+        let transcript = entry.path().join(format!("{session_id}.jsonl"));
+        if !transcript.is_file() {
+            continue;
+        }
+        let file = std::fs::File::open(&transcript).ok()?;
+        for line in std::io::BufReader::new(file)
+            .lines()
+            .map_while(Result::ok)
+            .take(PROJECTS_SCAN_LINES)
+        {
+            let Ok(value) = serde_json::from_str::<serde_json::Value>(&line) else {
+                continue;
+            };
+            if let Some(cwd) = value.get("cwd").and_then(|v| v.as_str())
+                && !cwd.is_empty()
+            {
+                return Some(cwd.to_string());
+            }
         }
     }
     None
@@ -820,6 +863,85 @@ mod tests {
         assert_eq!(
             probe_cwd("claude", "aaaaaaaa-b474-4d9c-a5c6-e0db65c6c49e", tmp.path()).as_deref(),
             Some("/good")
+        );
+    }
+
+    #[test]
+    fn projects_store_recovers_ended_sessions() {
+        // sessions/ is pid-keyed and holds only running sessions; the
+        // transcript store survives the session ending. Its leading
+        // lines are metadata without a cwd — the probe must scan past
+        // them (real file shape: last-prompt, mode, permission-mode…).
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp
+            .path()
+            .join(".claude")
+            .join("projects")
+            .join("-home-greg-brandt-Projects-greg-wisy-ai-intel-eng");
+        std::fs::create_dir_all(&dir).unwrap();
+        let id = "dd331ab3-83c8-4c07-a44e-118b4dbdfb61";
+        std::fs::write(
+            dir.join(format!("{id}.jsonl")),
+            concat!(
+                r#"{"type":"last-prompt","leafUuid":"9eb110f2","sessionId":"dd331ab3-83c8-4c07-a44e-118b4dbdfb61"}"#,
+                "\n",
+                r#"{"type":"mode","mode":"normal","sessionId":"dd331ab3-83c8-4c07-a44e-118b4dbdfb61"}"#,
+                "\n",
+                r#"{"type":"permission-mode","permissionMode":"auto","sessionId":"dd331ab3-83c8-4c07-a44e-118b4dbdfb61"}"#,
+                "\n",
+                r#"{"parentUuid":null,"cwd":"/home/greg-brandt/Projects/greg-wisy-ai/intel-eng","sessionId":"dd331ab3-83c8-4c07-a44e-118b4dbdfb61"}"#,
+                "\n",
+            ),
+        )
+        .unwrap();
+        assert_eq!(
+            probe_cwd("claude", id, tmp.path()).as_deref(),
+            Some("/home/greg-brandt/Projects/greg-wisy-ai/intel-eng")
+        );
+    }
+
+    #[test]
+    fn the_live_sessions_store_wins_over_the_projects_store() {
+        let tmp = tempfile::tempdir().unwrap();
+        let sessions = tmp.path().join(".claude").join("sessions");
+        let projects = tmp
+            .path()
+            .join(".claude")
+            .join("projects")
+            .join("-home-u-stale");
+        std::fs::create_dir_all(&sessions).unwrap();
+        std::fs::create_dir_all(&projects).unwrap();
+        let id = "aaaaaaaa-b474-4d9c-a5c6-e0db65c6c49e";
+        std::fs::write(
+            sessions.join("1.json"),
+            format!(r#"{{"sessionId":"{id}","cwd":"/live"}}"#),
+        )
+        .unwrap();
+        std::fs::write(
+            projects.join(format!("{id}.jsonl")),
+            format!(r#"{{"cwd":"/stale","sessionId":"{id}"}}"#),
+        )
+        .unwrap();
+        assert_eq!(
+            probe_cwd("claude", id, tmp.path()).as_deref(),
+            Some("/live")
+        );
+    }
+
+    #[test]
+    fn projects_probe_without_a_transcript_is_none() {
+        let tmp = tempfile::tempdir().unwrap();
+        // A projects dir exists, but no transcript for this id.
+        std::fs::create_dir_all(
+            tmp.path()
+                .join(".claude")
+                .join("projects")
+                .join("-home-u-other"),
+        )
+        .unwrap();
+        assert_eq!(
+            probe_cwd("claude", "bbbbbbbb-b474-4d9c-a5c6-e0db65c6c49e", tmp.path()),
+            None
         );
     }
 
