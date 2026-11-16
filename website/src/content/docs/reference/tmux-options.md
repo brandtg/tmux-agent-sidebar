@@ -14,7 +14,6 @@ Most options must be set **before** loading the plugin in your `tmux.conf`. Colo
 | `@sidebar_width`                 | `15%`   | Width in columns or as a percentage                                                     |
 | `@sidebar_width_max`             | unset   | Upper bound on the resolved width, in columns — caps a percentage width on very wide screens, including window resizes while the sidebar is open. Unset or `0` means no cap |
 | `@sidebar_position`              | `left`  | Sidebar placement (`left` or `right`)                                                   |
-| `@sidebar_default_view`          | `all`   | Status filter view the sidebar lands on when it opens (`all`, `running`, `background`, `waiting`, `idle`, `error`). Filter changes still sync across open sidebars but are not restored on reopen |
 | `@sidebar_group_by`              | `repo`  | How the agents panel groups panes: `repo` buckets them by git repo root, `session` by tmux session name. With `w` (other windows) enabled, `session` turns the panel into an agent-forward session manager — sessions without agents list their plain windows too. Set the default here, or toggle it at runtime with `s` (shared across open sidebars) |
 | `@sidebar_session_windows`       | `off`   | Session-mode window level: when the panel is grouped by `session`, each window's rows render under a muted `index:name` header — the `Session > Window > agent|process` hierarchy (agents first, then the window's other panes). The header takes the accent color while a pane in that window holds the terminal. Set it in tmux.conf; there is no runtime toggle |
 | `@sidebar_worktree_windows`      | `off`   | Repo-mode window level: the worktree counterpart of `@sidebar_session_windows` — when the panel is grouped by `repo`, each window's rows render under a muted `index:name` header (the `Repo > Window > agent|process` hierarchy). The header takes the accent color while a pane in that window holds the terminal. Set it in tmux.conf; there is no runtime toggle |
@@ -41,16 +40,15 @@ Most options must be set **before** loading the plugin in your `tmux.conf`. Colo
 | `@agent-sidebar-branch-prefix`    | `agent/`    | Branch prefix for new worktrees                           |
 | `@agent-sidebar-worktree-dir`     | `.worktrees` | Repo-relative directory for sidebar-spawned worktrees; absolute paths and `..` are rejected |
 
-## Status and filter colors
+## Status colors
 
 | Option                            | Default         | What it paints                                                    |
 | --------------------------------- | --------------- | ----------------------------------------------------------------- |
-| `@sidebar_color_all`              | `111`&nbsp;(sky blue)| Selected "all" filter icon                                        |
-| `@sidebar_color_running`          | `114`&nbsp;(green)   | Selected running/background filter icon and running/background pane status |
-| `@sidebar_color_waiting`          | `221`&nbsp;(yellow)  | Selected waiting filter icon, waiting pane status, version banner |
-| `@sidebar_color_idle`             | `110`&nbsp;(soft blue) | Selected idle filter icon and idle pane status                  |
-| `@sidebar_color_error`            | `167`&nbsp;(soft red) | Selected error filter icon and error pane status                 |
-| `@sidebar_color_filter_inactive`  | `245`&nbsp;(mid gray) | Unselected status filter icons and zero counts                   |
+| `@sidebar_color_running`          | `114`&nbsp;(green)   | Running/background pane status and the done chyron flash           |
+| `@sidebar_color_waiting`          | `221`&nbsp;(yellow)  | Waiting pane status and the waiting chyron flash, version banner  |
+| `@sidebar_color_idle`             | `110`&nbsp;(soft blue) | Idle pane status                                                |
+| `@sidebar_color_error`            | `167`&nbsp;(soft red) | Error pane status and the failed chyron flash                    |
+| `@sidebar_color_filter_inactive`  | `245`&nbsp;(mid gray) | Resting chyron text and dimmed metadata                          |
 
 ## Structural colors
 
@@ -122,13 +120,13 @@ Per-icon options below always win over the preset.
 
 | Option                  | Default | Meaning                      |
 | ----------------------- | ------- | ---------------------------- |
-| `@sidebar_icon_all`     | `≡`     | Status filter bar "all" icon |
 | `@sidebar_icon_running`    | `●`     | Running status icon          |
 | `@sidebar_icon_background` | `◎`     | Background shell status icon |
 | `@sidebar_icon_waiting`    | `◐`     | Waiting status icon          |
 | `@sidebar_icon_idle`    | `○`     | Idle status icon             |
 | `@sidebar_icon_error`   | `✕`     | Error status icon            |
 | `@sidebar_icon_unknown` | `·`     | Unknown status icon          |
+| `@sidebar_icon_done`     | `✓`     | Chyron "done" event glyph    |
 
 ## Internal options
 

@@ -38,9 +38,11 @@ pub enum PopupState {
     Repo {
         selected: usize,
         area: Option<ratatui::layout::Rect>,
-    },
-    Notices {
-        area: Option<ratatui::layout::Rect>,
+        /// First inner row of the selectable repo list. Rows above it
+        /// are the notices section (click-to-copy, not selectable).
+        /// Written back by the renderer each frame; `0` keeps the old
+        /// list-only mapping when the renderer has not run yet.
+        repo_start: u16,
     },
     /// Modal text input shown when the user presses `n` (or clicks `+`)
     /// to spawn a new worktree. `target_repo` / `target_repo_root` pin
@@ -116,9 +118,9 @@ impl PopupState {
         }
     }
 
-    pub fn set_notices_area(&mut self, rect: Option<ratatui::layout::Rect>) {
-        if let Self::Notices { area } = self {
-            *area = rect;
+    pub fn set_repo_start(&mut self, start: u16) {
+        if let Self::Repo { repo_start, .. } = self {
+            *repo_start = start;
         }
     }
 
@@ -168,6 +170,13 @@ impl AppState {
         }
     }
 
+    pub fn repo_popup_repo_start(&self) -> u16 {
+        match &self.popup {
+            PopupState::Repo { repo_start, .. } => *repo_start,
+            _ => 0,
+        }
+    }
+
     pub fn toggle_repo_popup(&mut self) {
         if self.is_repo_popup_open() {
             self.close_repo_popup();
@@ -182,7 +191,11 @@ impl AppState {
         self.popup = PopupState::Repo {
             selected,
             area: None,
+            repo_start: 0,
         };
+        // Opening the menu claims the header row: a chyron mid-fade is
+        // dismissed rather than left to fight the dropdown for row 0.
+        self.chyron.current = None;
     }
 
     pub fn confirm_repo_popup(&mut self) {
@@ -202,33 +215,6 @@ impl AppState {
 
     pub fn close_repo_popup(&mut self) {
         self.popup = PopupState::None;
-    }
-
-    // ─── Notices popup ───────────────────────────────────────────────────
-
-    pub fn is_notices_popup_open(&self) -> bool {
-        matches!(self.popup, PopupState::Notices { .. })
-    }
-
-    pub fn notices_popup_area(&self) -> Option<ratatui::layout::Rect> {
-        match &self.popup {
-            PopupState::Notices { area } => *area,
-            _ => None,
-        }
-    }
-
-    pub fn toggle_notices_popup(&mut self) {
-        if self.is_notices_popup_open() {
-            self.close_notices_popup();
-        } else {
-            self.popup = PopupState::Notices { area: None };
-        }
-    }
-
-    pub fn close_notices_popup(&mut self) {
-        self.popup = PopupState::None;
-        self.notices.copy_targets.clear();
-        self.notices.copied_at = None;
     }
 
     // ─── Help popup (? key) ────────────────────────────────────────────
@@ -696,7 +682,7 @@ impl AppState {
 
 #[cfg(test)]
 mod tests {
-    use super::super::{NoticesCopyTarget, RepoFilter};
+    use super::super::RepoFilter;
     use super::*;
     use crate::group::{PaneGitInfo, RepoGroup};
     use crate::tmux::{
@@ -753,10 +739,10 @@ mod tests {
         let mut popup = PopupState::Repo {
             selected: 0,
             area: None,
+            repo_start: 0,
         };
         let rect = ratatui::layout::Rect::new(1, 2, 3, 4);
         popup.set_repo_area(Some(rect));
-        popup.set_notices_area(Some(rect));
         popup.set_spawn_input_area(Some(rect));
         popup.set_remove_confirm_area(Some(rect));
         match popup {
@@ -811,6 +797,7 @@ mod tests {
         state.popup = PopupState::Repo {
             selected: 2,
             area: None,
+            repo_start: 0,
         };
         state.confirm_repo_popup();
 
@@ -832,6 +819,7 @@ mod tests {
         state.popup = PopupState::Repo {
             selected: 0,
             area: None,
+            repo_start: 0,
         };
         state.confirm_repo_popup();
 
@@ -844,6 +832,7 @@ mod tests {
         state.popup = PopupState::Repo {
             selected: 5,
             area: Some(ratatui::layout::Rect::new(0, 0, 10, 5)),
+            repo_start: 0,
         };
         assert!(state.is_repo_popup_open());
         state.close_repo_popup();
@@ -863,44 +852,15 @@ mod tests {
     #[test]
     fn set_repo_popup_selected_noop_when_other_variant() {
         let mut state = AppState::new("%99".into());
-        state.popup = PopupState::Notices { area: None };
+        state.popup = PopupState::Help {
+            area: None,
+            scroll: 0,
+            content: 0,
+            viewport: 0,
+        };
         state.set_repo_popup_selected(9);
-        // Repo accessor returns default when not in Repo variant.
+        // Repo accessor returns default when not in the Repo variant.
         assert_eq!(state.repo_popup_selected(), 0);
-    }
-
-    // ─── Notices popup ───────────────────────────────────────────────
-
-    #[test]
-    fn toggle_notices_popup_opens_then_closes() {
-        let mut state = AppState::new("%99".into());
-        state.toggle_notices_popup();
-        assert!(state.is_notices_popup_open());
-        state.toggle_notices_popup();
-        assert!(!state.is_notices_popup_open());
-    }
-
-    #[test]
-    fn close_notices_popup_clears_copy_state() {
-        let mut state = AppState::new("%99".into());
-        state.popup = PopupState::Notices { area: None };
-        state.notices.copy_targets = vec![NoticesCopyTarget {
-            area: ratatui::layout::Rect::new(0, 0, 5, 1),
-            agent: "claude".into(),
-        }];
-        state.notices.copied_at = Some(("claude".into(), std::time::Instant::now()));
-
-        state.close_notices_popup();
-
-        assert!(!state.is_notices_popup_open());
-        assert!(state.notices.copy_targets.is_empty());
-        assert!(state.notices.copied_at.is_none());
-    }
-
-    #[test]
-    fn notices_popup_area_none_when_closed() {
-        let state = AppState::new("%99".into());
-        assert!(state.notices_popup_area().is_none());
     }
 
     // ─── Help popup ────────────────────────────────────────────────
@@ -917,10 +877,14 @@ mod tests {
     #[test]
     fn close_help_popup_only_closes_the_help_popup() {
         let mut state = AppState::new("%99".into());
-        state.popup = PopupState::Notices { area: None };
+        state.popup = PopupState::Repo {
+            selected: 0,
+            area: None,
+            repo_start: 0,
+        };
         state.close_help_popup();
         assert!(
-            matches!(state.popup, PopupState::Notices { .. }),
+            matches!(state.popup, PopupState::Repo { .. }),
             "a different popup must not be touched"
         );
 
@@ -999,10 +963,14 @@ mod tests {
     #[test]
     fn close_spawn_input_noop_when_not_open() {
         let mut state = AppState::new("%99".into());
-        state.popup = PopupState::Notices { area: None };
+        state.popup = PopupState::Repo {
+            selected: 0,
+            area: None,
+            repo_start: 0,
+        };
         state.close_spawn_input();
         // The other popup must not be touched.
-        assert!(matches!(state.popup, PopupState::Notices { .. }));
+        assert!(matches!(state.popup, PopupState::Repo { .. }));
     }
 
     #[test]
@@ -1267,11 +1235,15 @@ mod tests {
         // through input today — keys are swallowed while working — the
         // application must not resurrect or mutate the wrong popup).
         let mut state = AppState::new("%99".into());
-        state.popup = PopupState::Notices { area: None };
+        state.popup = PopupState::Repo {
+            selected: 0,
+            area: None,
+            repo_start: 0,
+        };
         state.apply_popup_op_result(PopupOpResult::Spawn(Err("boom".into())));
-        assert!(matches!(state.popup, PopupState::Notices { .. }));
+        assert!(matches!(state.popup, PopupState::Repo { .. }));
         state.apply_popup_op_result(PopupOpResult::Spawn(Ok("agent/task".into())));
-        assert!(matches!(state.popup, PopupState::Notices { .. }));
+        assert!(matches!(state.popup, PopupState::Repo { .. }));
     }
 
     // ─── Remove confirm popup ────────────────────────────────────────
@@ -1303,9 +1275,13 @@ mod tests {
         // without touching state. We verify nothing blew up and the popup
         // variant is preserved.
         let mut state = AppState::new("%99".into());
-        state.popup = PopupState::Notices { area: None };
+        state.popup = PopupState::Repo {
+            selected: 0,
+            area: None,
+            repo_start: 0,
+        };
         state.confirm_remove(crate::worktree::RemoveMode::WindowOnly);
-        assert!(matches!(state.popup, PopupState::Notices { .. }));
+        assert!(matches!(state.popup, PopupState::Repo { .. }));
     }
 
     #[test]

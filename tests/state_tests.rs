@@ -4,7 +4,7 @@ mod test_helpers;
 use test_helpers::*;
 use tmux_agent_sidebar::group::{PaneGitInfo, RepoGroup};
 use tmux_agent_sidebar::state::{
-    AppState, Focus, GlobalState, GroupBy, PopupState, RepoFilter, RowTarget, StatusFilter,
+    AppState, Focus, GlobalState, GroupBy, PopupState, RepoFilter, RowTarget,
 };
 use tmux_agent_sidebar::tmux::{
     self, AgentType, PaneAttention, PaneInfo, PaneStatus, SessionInfo, WindowInfo, WorktreeMetadata,
@@ -202,7 +202,7 @@ fn test_line_to_row_with_version_banner() {
 }
 
 #[test]
-fn test_secondary_header_click_on_i_opens_notices_popup_even_without_missing_hooks() {
+fn test_secondary_header_click_on_menu_button_opens_menu() {
     let pane = make_pane(AgentType::Claude, PaneStatus::Idle);
     let mut state = make_state(vec![SessionInfo {
         session_name: "main".into(),
@@ -215,9 +215,9 @@ fn test_secondary_header_click_on_i_opens_notices_popup_even_without_missing_hoo
         }],
     }]);
     state.repo_groups = vec![make_repo_group("project", vec![pane])];
-    // make_state() seeds a missing hook group for general-purpose
-    // tests; clear it here so the test actually exercises the
-    // version-notice-only path described in the test name.
+    // The merged menu button replaces the old ⓘ indicator and repo
+    // selector; a version notice flips the label to ⓘ but the click
+    // behavior is one and the same.
     state.notices.missing_hook_groups.clear();
     state.version_notice = Some(tmux_agent_sidebar::version::UpdateNotice {
         local_version: "0.2.6".into(),
@@ -226,10 +226,15 @@ fn test_secondary_header_click_on_i_opens_notices_popup_even_without_missing_hoo
     state.rebuild_row_targets();
     let _ = render_to_string(&mut state, 28, 10);
 
-    state.handle_mouse_click(1, 0);
+    // The renderer wrote back the button column; click its label.
+    let col = state
+        .layout
+        .menu_button_col
+        .expect("renderer recorded the button");
+    state.handle_mouse_click(0, col);
     assert!(
-        state.is_notices_popup_open(),
-        "i should stay clickable even when there are no missing hooks"
+        state.is_repo_popup_open(),
+        "the menu button opens the merged dropdown"
     );
 }
 
@@ -327,51 +332,13 @@ fn test_move_pane_selection_return_value() {
 // ─── State: global sync → rebuild consistency Tests ─────────────
 
 #[test]
-fn test_filter_change_rebuilds_row_targets() {
-    use tmux_agent_sidebar::state::StatusFilter;
-
-    let running_pane = PaneInfo {
-        pane_id: "%1".into(),
-        status: PaneStatus::Running,
-        ..make_pane(AgentType::Claude, PaneStatus::Running)
-    };
-    let idle_pane = PaneInfo {
-        pane_id: "%2".into(),
-        status: PaneStatus::Idle,
-        ..make_pane(AgentType::Claude, PaneStatus::Idle)
-    };
-    let mut state = make_state(vec![]);
-    state.repo_groups = vec![make_repo_group("project", vec![running_pane, idle_pane])];
-
-    // All filter shows both
-    state.global.status_filter = StatusFilter::All;
-    state.rebuild_row_targets();
-    assert_eq!(state.layout.pane_row_targets.len(), 2);
-
-    // Simulates sync_global_state setting filter to Running
-    state.global.status_filter = StatusFilter::Running;
-    state.rebuild_row_targets();
-    assert_eq!(state.layout.pane_row_targets.len(), 1);
-    assert_eq!(state.layout.pane_row_targets[0].pane_id, "%1");
-
-    // Simulates sync_global_state setting filter to Idle
-    state.global.status_filter = StatusFilter::Idle;
-    state.rebuild_row_targets();
-    assert_eq!(state.layout.pane_row_targets.len(), 1);
-    assert_eq!(state.layout.pane_row_targets[0].pane_id, "%2");
-}
-
-#[test]
 fn test_cursor_sync_clamped_by_rebuild() {
-    use tmux_agent_sidebar::state::StatusFilter;
-
     let pane = make_pane(AgentType::Claude, PaneStatus::Running);
     let mut state = make_state(vec![]);
     state.repo_groups = vec![make_repo_group("project", vec![pane])];
 
     // Simulates sync_global_state setting cursor beyond bounds
     state.global.selected_pane_row = 5;
-    state.global.status_filter = StatusFilter::All;
     state.rebuild_row_targets();
     // Should be clamped to last valid index
     assert_eq!(state.global.selected_pane_row, 0);
@@ -391,31 +358,6 @@ fn make_global() -> GlobalState {
 }
 
 // ─── apply_all (full sync: startup + SIGUSR1) tests ─────────────────
-
-#[test]
-fn full_sync_ignores_tmux_filter_matching_last_saved() {
-    let mut g = make_global();
-    g.status_filter = StatusFilter::Running;
-
-    let opts = make_opts(&[(tmux::SIDEBAR_FILTER, "all")]);
-    g.apply_all(&opts);
-
-    assert_eq!(
-        g.status_filter,
-        StatusFilter::Running,
-        "local filter change should not be overwritten when tmux matches last_saved"
-    );
-}
-
-#[test]
-fn full_sync_applies_filter_from_tmux() {
-    let mut g = make_global();
-
-    let opts = make_opts(&[(tmux::SIDEBAR_FILTER, "waiting")]);
-    g.apply_all(&opts);
-
-    assert_eq!(g.status_filter, StatusFilter::Waiting);
-}
 
 #[test]
 fn full_sync_applies_cursor_from_tmux() {
@@ -454,55 +396,25 @@ fn full_sync_applies_repo_filter_from_tmux() {
 #[test]
 fn full_sync_empty_opts_changes_nothing() {
     let mut g = make_global();
-    g.status_filter = StatusFilter::Running;
     g.repo_filter = RepoFilter::Repo("app".into());
     g.selected_pane_row = 2;
 
     g.apply_all(&std::collections::HashMap::new());
 
-    assert_eq!(g.status_filter, StatusFilter::Running);
     assert_eq!(g.repo_filter, RepoFilter::Repo("app".into()));
     assert_eq!(g.selected_pane_row, 2);
 }
 
 #[test]
-fn full_sync_applies_error_filter_from_tmux() {
-    let mut g = make_global();
-
-    let opts = make_opts(&[(tmux::SIDEBAR_FILTER, "error")]);
-    g.apply_all(&opts);
-
-    assert_eq!(g.status_filter, StatusFilter::Error);
-}
-
-#[test]
-fn full_sync_invalid_filter_defaults_to_all() {
-    let mut g = make_global();
-    g.status_filter = StatusFilter::Running;
-
-    // "garbage" parses as All, All == last_saved → no change
-    let opts = make_opts(&[(tmux::SIDEBAR_FILTER, "garbage")]);
-    g.apply_all(&opts);
-
-    assert_eq!(
-        g.status_filter,
-        StatusFilter::Running,
-        "invalid filter string parsed as All should match last_saved and not overwrite"
-    );
-}
-
-#[test]
-fn full_sync_applies_all_three_from_tmux() {
+fn full_sync_applies_cursor_and_repo_filter_from_tmux() {
     let mut g = make_global();
 
     let opts = make_opts(&[
-        (tmux::SIDEBAR_FILTER, "error"),
         (tmux::SIDEBAR_CURSOR, "7"),
         (tmux::SIDEBAR_REPO_FILTER, "my-app"),
     ]);
     g.apply_all(&opts);
 
-    assert_eq!(g.status_filter, StatusFilter::Error);
     assert_eq!(g.selected_pane_row, 7);
     assert_eq!(g.repo_filter, RepoFilter::Repo("my-app".into()));
 }
@@ -510,76 +422,48 @@ fn full_sync_applies_all_three_from_tmux() {
 // ─── last_saved guard tests (protects against save failure revert) ───
 
 #[test]
-fn sync_does_not_revert_filter_after_save_failure() {
-    // The original bug scenario:
-    // 1. Startup: tmux has "error", sidebar adopts it
-    // 2. User changes filter to Running, but save_filter fails
-    // 3. Next sync should NOT overwrite Running back to Error
-    //    because last_saved_filter == Error == tmux value → no change
+fn full_sync_does_not_revert_repo_filter_after_save_failure() {
+    // The last_saved guard (now on the repo filter, the status filter's
+    // successor) keeps a failed write from being clobbered by sync.
     let mut g = make_global();
 
-    // Step 1: startup sync adopts "error" from tmux
-    g.apply_all(&make_opts(&[(tmux::SIDEBAR_FILTER, "error")]));
-    assert_eq!(g.status_filter, StatusFilter::Error);
+    // Startup: adopt "my-app"
+    g.apply_all(&make_opts(&[(tmux::SIDEBAR_REPO_FILTER, "my-app")]));
+    assert_eq!(g.repo_filter, RepoFilter::Repo("my-app".into()));
 
-    // Step 2: user changes filter locally, save_filter fails
-    // (last_saved_filter stays Error)
-    g.status_filter = StatusFilter::Running;
+    // User changes the repo filter locally, the save fails
+    // (last_saved_repo_filter stays "my-app")
+    g.repo_filter = RepoFilter::Repo("other".into());
 
-    // Step 3: next sync reads tmux "error", but last_saved is also Error → equal → no change
-    g.apply_all(&make_opts(&[(tmux::SIDEBAR_FILTER, "error")]));
-
-    assert_eq!(
-        g.status_filter,
-        StatusFilter::Running,
-        "sync must not revert filter when save failed — the original bug scenario"
-    );
-}
-
-#[test]
-fn full_sync_does_not_revert_filter_after_save_failure() {
-    // Same as the periodic version, but for SIGUSR1 (apply_all).
-    // apply_all has last_saved guard so it should also be safe.
-    let mut g = make_global();
-
-    // Startup: adopt "error"
-    g.apply_all(&make_opts(&[(tmux::SIDEBAR_FILTER, "error")]));
-    assert_eq!(g.status_filter, StatusFilter::Error);
-
-    // User changes filter locally, save_filter fails
-    // (last_saved_filter stays Error)
-    g.status_filter = StatusFilter::Running;
-
-    // SIGUSR1 triggers apply_all: tmux still has "error",
-    // but last_saved is also Error → equal → no overwrite
-    g.apply_all(&make_opts(&[(tmux::SIDEBAR_FILTER, "error")]));
+    // Refocus sync: tmux still has "my-app", last_saved matches → no change
+    g.apply_all(&make_opts(&[(tmux::SIDEBAR_REPO_FILTER, "my-app")]));
 
     assert_eq!(
-        g.status_filter,
-        StatusFilter::Running,
-        "full sync must not revert filter when save failed"
+        g.repo_filter,
+        RepoFilter::Repo("other".into()),
+        "full sync must not revert the repo filter when save failed"
     );
 }
 
 #[test]
 fn full_sync_picks_up_change_from_another_instance() {
-    // Simulates: this instance saved "running", another instance later
-    // saved "waiting". SIGUSR1 should pick up "waiting".
+    // Simulates: this instance saved "my-app", another instance later
+    // saved "lib". SIGUSR1 should pick up "lib".
     let mut g = make_global();
 
     // Startup: this instance starts with default (All)
-    g.apply_all(&make_opts(&[(tmux::SIDEBAR_FILTER, "running")]));
-    assert_eq!(g.status_filter, StatusFilter::Running);
-    // last_saved_filter is now Running
+    g.apply_all(&make_opts(&[(tmux::SIDEBAR_REPO_FILTER, "my-app")]));
+    assert_eq!(g.repo_filter, RepoFilter::Repo("my-app".into()));
+    // last_saved_repo_filter is now "my-app"
 
-    // Another instance changes filter to Waiting (writes to tmux)
+    // Another instance changes the repo filter (writes to tmux)
     // This instance's SIGUSR1 fires:
-    g.apply_all(&make_opts(&[(tmux::SIDEBAR_FILTER, "waiting")]));
+    g.apply_all(&make_opts(&[(tmux::SIDEBAR_REPO_FILTER, "lib")]));
 
     assert_eq!(
-        g.status_filter,
-        StatusFilter::Waiting,
-        "SIGUSR1 should pick up filter changed by another instance"
+        g.repo_filter,
+        RepoFilter::Repo("lib".into()),
+        "SIGUSR1 should pick up the repo filter changed by another instance"
     );
 }
 
@@ -609,37 +493,38 @@ fn full_sync_picks_up_cursor_from_another_instance() {
 #[test]
 fn global_state_stable_during_task_completion() {
     // Task completes in the active window — window stays active,
-    // so load_from_tmux is never called. Filter stays as user set it.
+    // so load_from_tmux is never called. Shared state stays as set.
     let mut g = make_global();
 
-    g.apply_all(&make_opts(&[(tmux::SIDEBAR_FILTER, "running")]));
-    g.status_filter = StatusFilter::Idle;
+    g.apply_all(&make_opts(&[(tmux::SIDEBAR_REPO_FILTER, "my-app")]));
 
-    // No apply_all called during task completion (window still active).
+    // No apply_all called during task completion (window still active);
+    // a local change holds until the next sync.
+    g.repo_filter = RepoFilter::Repo("other".into());
     assert_eq!(
-        g.status_filter,
-        StatusFilter::Idle,
-        "filter must not change during task completion (window stayed active)"
+        g.repo_filter,
+        RepoFilter::Repo("other".into()),
+        "shared options must not change during task completion (window stayed active)"
     );
 }
 
 #[test]
 fn window_switch_syncs_after_debounce() {
     // Simulates: user leaves this window (inactive for 2+ cycles),
-    // another instance changes filter, user returns → sync fires.
+    // another instance changes a shared option, user returns → sync fires.
     let mut g = make_global();
 
-    g.apply_all(&make_opts(&[(tmux::SIDEBAR_FILTER, "running")]));
-    assert_eq!(g.status_filter, StatusFilter::Running);
+    g.apply_all(&make_opts(&[(tmux::SIDEBAR_REPO_FILTER, "my-app")]));
+    assert_eq!(g.repo_filter, RepoFilter::Repo("my-app".into()));
 
     // User returns to this window after being away.
     // Debounce passed (inactive_count >= 2) → apply_all called.
-    g.apply_all(&make_opts(&[(tmux::SIDEBAR_FILTER, "waiting")]));
+    g.apply_all(&make_opts(&[(tmux::SIDEBAR_REPO_FILTER, "lib")]));
 
     assert_eq!(
-        g.status_filter,
-        StatusFilter::Waiting,
-        "window activation after debounce should sync filter"
+        g.repo_filter,
+        RepoFilter::Repo("lib".into()),
+        "window activation after debounce should sync shared options"
     );
 }
 
@@ -652,126 +537,30 @@ fn window_active_flicker_does_not_trigger_sync() {
     // main loop determines debounce threshold was met.
     let mut g = make_global();
 
-    g.apply_all(&make_opts(&[(tmux::SIDEBAR_FILTER, "running")]));
-    g.status_filter = StatusFilter::Idle;
+    g.apply_all(&make_opts(&[(tmux::SIDEBAR_REPO_FILTER, "my-app")]));
+    g.repo_filter = RepoFilter::Repo("other".into());
 
     // Flicker: only 1 cycle of inactive (count=1 < threshold=2).
     // Main loop would NOT call apply_all. State stays local.
     assert_eq!(
-        g.status_filter,
-        StatusFilter::Idle,
+        g.repo_filter,
+        RepoFilter::Repo("other".into()),
         "1-cycle flicker must not trigger sync"
     );
 }
 
 #[test]
 fn window_activation_syncs_all_fields() {
-    // Window activation triggers full sync of filter, cursor, and repo filter.
+    // Window activation triggers a full sync of cursor and repo filter.
     let mut g = make_global();
 
     g.apply_all(&make_opts(&[
-        (tmux::SIDEBAR_FILTER, "idle"),
         (tmux::SIDEBAR_CURSOR, "4"),
         (tmux::SIDEBAR_REPO_FILTER, "my-app"),
     ]));
 
-    assert_eq!(g.status_filter, StatusFilter::Idle);
     assert_eq!(g.selected_pane_row, 4);
     assert_eq!(g.repo_filter, RepoFilter::Repo("my-app".into()));
-}
-
-// ─── default view (startup landing filter) tests ────────────────────
-// At startup the sidebar lands on `@sidebar_default_view` instead of the
-// last-used `@sidebar_filter`, which may have been set by another window's
-// sidebar long ago. The override runs after apply_all and must not break
-// the refocus/cross-instance sync that reads `@sidebar_filter` afterwards.
-
-#[test]
-fn default_view_unset_lands_on_first_view_not_persisted_filter() {
-    let mut g = make_global();
-
-    // Startup sync adopts the stale persisted filter...
-    let opts = make_opts(&[(tmux::SIDEBAR_FILTER, "error")]);
-    g.apply_all(&opts);
-    assert_eq!(g.status_filter, StatusFilter::Error);
-
-    // ...then the default-view override lands on All (the first view).
-    g.apply_default_view(&std::collections::HashMap::new());
-    assert_eq!(
-        g.status_filter,
-        StatusFilter::All,
-        "a new sidebar must land on the first view, not the persisted filter"
-    );
-
-    // Refocus reload reads the same stale tmux value — last_saved_filter
-    // points at it, so the default view survives.
-    g.apply_all(&opts);
-    assert_eq!(
-        g.status_filter,
-        StatusFilter::All,
-        "refocus reload must not restore the stale persisted filter"
-    );
-}
-
-#[test]
-fn default_view_configured_lands_on_that_view() {
-    let mut g = make_global();
-
-    let opts = make_opts(&[
-        (tmux::SIDEBAR_FILTER, "error"),
-        (tmux::SIDEBAR_DEFAULT_VIEW, "waiting"),
-    ]);
-    g.apply_all(&opts);
-    g.apply_default_view(&opts);
-
-    assert_eq!(g.status_filter, StatusFilter::Waiting);
-
-    // Refocus reload keeps the configured default view.
-    let persisted = make_opts(&[(tmux::SIDEBAR_FILTER, "error")]);
-    g.apply_all(&persisted);
-    assert_eq!(g.status_filter, StatusFilter::Waiting);
-}
-
-#[test]
-fn default_view_unknown_value_falls_back_to_all() {
-    let mut g = make_global();
-    g.apply_all(&make_opts(&[(tmux::SIDEBAR_FILTER, "error")]));
-
-    let opts = make_opts(&[(tmux::SIDEBAR_DEFAULT_VIEW, "bogus")]);
-    g.apply_default_view(&opts);
-
-    assert_eq!(g.status_filter, StatusFilter::All);
-}
-
-#[test]
-fn default_view_is_case_insensitive() {
-    let mut g = make_global();
-
-    let opts = make_opts(&[(tmux::SIDEBAR_DEFAULT_VIEW, "  Running ")]);
-    g.apply_default_view(&opts);
-
-    assert_eq!(g.status_filter, StatusFilter::Running);
-}
-
-#[test]
-fn default_view_does_not_break_cross_instance_sync() {
-    let mut g = make_global();
-
-    // Startup: stale persisted "running", default view All.
-    let opts = make_opts(&[(tmux::SIDEBAR_FILTER, "running")]);
-    g.apply_all(&opts);
-    g.apply_default_view(&opts);
-    assert_eq!(g.status_filter, StatusFilter::All);
-
-    // Another open sidebar switches to Waiting and writes tmux; this
-    // instance's refocus reload must still pick that up.
-    g.apply_all(&make_opts(&[(tmux::SIDEBAR_FILTER, "waiting")]));
-
-    assert_eq!(
-        g.status_filter,
-        StatusFilter::Waiting,
-        "filter changes from other sidebars must still sync in after the default-view override"
-    );
 }
 
 // ─── compact mode tests ─────────────────────────────────────────────

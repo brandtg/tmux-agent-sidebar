@@ -532,6 +532,12 @@ impl AppState {
         self.sweep_dead_bg_shells_if_due(&mut sessions, &mut process_snapshot);
         self.queue_port_scan_if_due(&sessions);
         self.queue_approval_scan_if_due(&sessions);
+        // Chyron diff: capture the pre-refresh pane conditions and
+        // compare them against the fresh parse before either side is
+        // consumed — `repo_groups` (the old state) is replaced inside
+        // `apply_session_snapshot`, and `sessions` is moved into it.
+        let chyron_old = self.chyron_baseline();
+        self.observe_chyron_transitions(&chyron_old, &sessions);
         self.apply_session_snapshot(sessions, other_panes, sidebar_window_panes);
         self.mark_focused_pane_seen(window_active);
         // `apply_session_snapshot` rebuilds `repo_groups` from a fresh tmux

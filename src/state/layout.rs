@@ -1,6 +1,5 @@
-use super::{AppState, Focus, RepoFilter, StatusFilter};
-use crate::tmux::{PaneAttention, PaneStatus};
-use crate::ui::text::display_width;
+use super::{AppState, Focus, RepoFilter};
+use crate::tmux::PaneAttention;
 
 #[derive(Debug, Clone)]
 pub struct RowTarget {
@@ -94,9 +93,17 @@ pub struct FrameLayout {
     /// `pane_row_targets`. `None` for header/blank lines that should not
     /// route clicks to a pane.
     pub line_to_row: Vec<Option<usize>>,
-    /// X column of the repo filter button in the secondary header. `None`
-    /// when the button is hidden. Used for click hit-testing.
-    pub repo_button_col: Option<u16>,
+    /// X column of the merged menu button in the header row. `None`
+    /// before the first render. Used for click hit-testing.
+    pub menu_button_col: Option<u16>,
+    /// Screen row of the single header row (toolbar, or the chyron
+    /// while it overlays the toolbar). Defaults to 0 for callers that
+    /// have not rendered a frame yet.
+    pub toolbar_row: u16,
+    /// Width of the header row as of the last render. The chyron's
+    /// ticker math needs it (the display window depends on how much
+    /// room the banner has); `None` before the first frame.
+    pub header_width: Option<u16>,
     /// Click regions for the `[+]` spawn button rendered at the right
     /// edge of each repo-group header. One entry per visible repo group.
     pub repo_spawn_targets: Vec<RepoSpawnTarget>,
@@ -168,17 +175,14 @@ impl AppState {
             let filtered_panes: Vec<_> = group
                 .panes
                 .iter()
-                .filter(|(pane, git)| {
-                    self.global.status_filter.matches(pane)
-                        && (group_matches_search || self.search_matches_pane(pane, git))
-                })
+                .filter(|(pane, git)| group_matches_search || self.search_matches_pane(pane, git))
                 .collect();
 
-            // The same window set and per-window status-filter rule as
-            // the renderer, so the target order mirrors the render
-            // order in `row_collector::collect` — the selection index is
-            // a position into `pane_row_targets`, and `row_index` counts
-            // rendered rows, so the two paths must agree on the order.
+            // The same window set as the renderer, so the target order
+            // mirrors the render order in `row_collector::collect` — the
+            // selection index is a position into `pane_row_targets`, and
+            // `row_index` counts rendered rows, so the two paths must
+            // agree on the order.
             let matched_windows: Vec<&crate::group::OtherWindow> = if self.global.show_windows
                 && let Some(windows) = self
                     .other_windows
@@ -187,11 +191,7 @@ impl AppState {
             {
                 windows
                     .iter()
-                    .filter(|window| {
-                        let runtime = self.pane_state(&window.pane_id);
-                        self.global.status_filter.matches_window(window, runtime)
-                            && (group_matches_search || self.search_matches_window(window))
-                    })
+                    .filter(|window| group_matches_search || self.search_matches_window(window))
                     .collect()
             } else {
                 Vec::new()
@@ -490,85 +490,36 @@ impl AppState {
         self.scrolls.panes.scroll(lines);
     }
 
-    /// Handle mouse click on the filter bar (row 0).
-    /// Determines which filter was clicked based on x coordinate.
-    /// Debounces rapid clicks to ignore phantom mouse events from tmux
-    /// pane resize/layout changes.
-    pub fn handle_filter_click(&mut self, col: u16) {
-        const DEBOUNCE_MS: u128 = 150;
-        let now = std::time::Instant::now();
-        if now
-            .duration_since(self.timers.last_filter_click)
-            .as_millis()
-            < DEBOUNCE_MS
-        {
+    /// Handle a mouse click on the chyron row (the panel's top row).
+    /// The event names a pane: the click selects that pane's row and
+    /// the render's auto-scroll brings it into view. It does not jump
+    /// into the pane — Enter/Right remain the explicit jump, matching
+    /// list-row clicks. A blank chyron (nothing has fired) is inert.
+    pub fn handle_chyron_click(&mut self) {
+        let Some(event) = self.chyron.current.clone() else {
             return;
-        }
-        self.timers.last_filter_click = now;
-
-        let (all, running, background, waiting, idle, error) = self.status_counts();
-        // Layout: " <icon>N  <icon>N  ..." — must mirror
-        // `ui::panes::filter_bar::render_filter_bar` exactly. Icons are
-        // user-configurable (`@sidebar_icon_*`) and may be wider than one
-        // column, so the clickable width of each item is derived from the
-        // same glyphs the renderer draws — assuming `icon(1)` made clicks
-        // land on the wrong filter whenever a custom icon was set.
-        let icons = &self.icons;
-        let item_width = |icon: &str, count: usize| display_width(icon) + count.to_string().len();
-        let mut x = 1usize; // leading space
-        let items: Vec<(StatusFilter, usize)> = vec![
-            (StatusFilter::All, item_width(icons.all_icon(), all)),
-            (
-                StatusFilter::Running,
-                item_width(icons.status_icon(&PaneStatus::Running), running),
-            ),
-            (
-                StatusFilter::Background,
-                item_width(icons.status_icon(&PaneStatus::Background), background),
-            ),
-            (
-                StatusFilter::Waiting,
-                item_width(icons.status_icon(&PaneStatus::Waiting), waiting),
-            ),
-            (
-                StatusFilter::Idle,
-                item_width(icons.status_icon(&PaneStatus::Idle), idle),
-            ),
-            (
-                StatusFilter::Error,
-                item_width(icons.status_icon(&PaneStatus::Error), error),
-            ),
-        ];
-        let col = col as usize;
-        for (i, (filter, width)) in items.iter().enumerate() {
-            if i > 0 {
-                x += 2; // "  " separator
-            }
-            if col >= x && col < x + width {
-                self.global.status_filter = *filter;
-                self.global.save_filter();
-                self.rebuild_row_targets();
-                return;
-            }
-            x += width;
+        };
+        if let Some(row_index) = self
+            .layout
+            .pane_row_targets
+            .iter()
+            .position(|target| target.pane_id == event.pane_id)
+        {
+            self.global.selected_pane_row = row_index;
+            self.focus_state.focus = Focus::Panes;
+            self.global.queue_cursor_save();
         }
     }
 
-    /// Handle mouse click on the secondary header row (row 1).
-    /// The repo filter button lives on the far right of this row.
+    /// Handle a mouse click on the toolbar row. The merged menu button
+    /// (`— ▾` / `ⓘ ▾`) is the row's only click target on the right edge;
+    /// while the chyron shows, the whole row selects the event's pane
+    /// instead (see [`Self::handle_mouse_click`]).
     pub fn handle_secondary_header_click(&mut self, col: u16) {
         if self
-            .notices
-            .button_col
-            .is_some_and(|notices_col| col == notices_col)
-        {
-            self.toggle_notices_popup();
-            return;
-        }
-        if self
             .layout
-            .repo_button_col
-            .is_some_and(|repo_button_col| col >= repo_button_col)
+            .menu_button_col
+            .is_some_and(|menu_button_col| col >= menu_button_col)
         {
             self.toggle_repo_popup();
         }
@@ -576,34 +527,30 @@ impl AppState {
 
     /// Handle mouse click in agents panel. Maps screen row to agent row
     /// via line_to_row (adjusted for scroll offset) and activates that pane.
-    /// Row 0 is the fixed filter bar, row 1+ maps to the scrollable agent list.
+    /// Row 0 is the single header row: while the chyron shows it selects
+    /// the event's pane, otherwise it routes toolbar clicks (the merged
+    /// menu button). Rows below map into the scrollable list.
     pub fn handle_mouse_click(&mut self, row: u16, col: u16) {
-        if self.is_notices_popup_open() {
-            if let Some(area) = self.notices_popup_area()
-                && point_in_rect(row, col, area)
-            {
-                if let Some(agent) = self.notices_copy_target_at(row, col).map(str::to_string) {
-                    self.copy_notices_prompt(&agent);
-                }
-                return;
-            }
-            self.close_notices_popup();
-            return;
-        }
         if self.is_repo_popup_open() {
             if let Some(area) = self.repo_popup_area()
                 && point_in_rect(row, col, area)
             {
-                // Skip clicks on the popup chrome (top border / title row).
-                // Without this guard `saturating_sub(1)` collapses a click on
-                // the title row into `item_index == 0`, switching the filter
-                // to the first repo the moment the user reaches for the
-                // popup.
+                // Skip clicks on the popup chrome (top border). Rows in
+                // the notices section are click-to-copy via the copy
+                // targets; rows in the repo list select + confirm.
+                if let Some(agent) = self.notices_copy_target_at(row, col).map(str::to_string) {
+                    self.copy_notices_prompt(&agent);
+                    return;
+                }
                 if row > area.y {
-                    let item_index = (row - area.y - 1) as usize;
-                    if item_index < self.repo_names().len() {
-                        self.set_repo_popup_selected(item_index);
-                        self.confirm_repo_popup();
+                    let repo_start = self.repo_popup_repo_start() as usize;
+                    let inner_row = (row - area.y - 1) as usize;
+                    if inner_row >= repo_start {
+                        let item_index = inner_row - repo_start;
+                        if item_index < self.repo_names().len() {
+                            self.set_repo_popup_selected(item_index);
+                            self.confirm_repo_popup();
+                        }
                     }
                 }
                 return;
@@ -639,12 +586,23 @@ impl AppState {
             return;
         }
 
-        if row == 0 {
-            self.handle_filter_click(col);
-            return;
-        }
-        if row == 1 {
-            self.handle_secondary_header_click(col);
+        // The single header row hosts the toolbar, or the chyron while
+        // one is showing. Row defaults match the normal layout for
+        // callers (tests) that have not rendered a frame yet. Over the
+        // banner, the button's corner columns still route to the
+        // toolbar handler — the menu button never stops being
+        // clickable; anything else on the row selects the event's pane.
+        let toolbar_row = self.layout.toolbar_row;
+        if toolbar_row == row {
+            let over_button = self
+                .layout
+                .menu_button_col
+                .is_some_and(|menu_button_col| col >= menu_button_col);
+            if self.chyron.is_showing(self) && !over_button {
+                self.handle_chyron_click();
+            } else {
+                self.handle_secondary_header_click(col);
+            }
             return;
         }
 
@@ -745,7 +703,8 @@ impl AppState {
             return;
         }
 
-        let line_index = (row as usize - 2) + self.scrolls.panes.offset;
+        // The list starts below the single header row.
+        let line_index = row.saturating_sub(1) as usize + self.scrolls.panes.offset;
         if let Some(Some(agent_row)) = self.layout.line_to_row.get(line_index) {
             self.global.selected_pane_row = *agent_row;
             self.global.queue_cursor_save();

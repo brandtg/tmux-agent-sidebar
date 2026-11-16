@@ -10,29 +10,46 @@ import agentPane from '../../../assets/captures/agent-pane-focus.png';
 
 The sidebar renders one row per agent pane across all tmux sessions and windows. Each row is packed with live metadata pulled from the agent's hooks and from tmux itself.
 
-## Filter bar
+## Chyron (header overlay)
 
-The top row of the sidebar filters the agent list by status. Each entry is an icon + live count; selecting one hides rows whose status doesn't match.
+The single header row is an event channel that shares space with the
+toolbar: when an agent's state changes in a way that wants your eye,
+the row names the event for a moment, then hands the row back.
 
-### Status filter
+- `✓ <agent> done` — a turn finished and you have not looked at it yet
+  (green)
+- `◐ <agent> waiting` — a hook wants you: permission prompt, question
+  (amber)
+- `✕ <agent> failed` — the pane transitioned to error (red)
 
-- `≡N` — all panes
-- `●N` — running
-- `◎N` — background shell running
-- `◐N` — waiting
-- `○N` — idle
-- `✕N` — error
+Each event reads in beats: a short bright flash (the eye-catcher —
+colored text only, never a background block), then ~3 s of colored
+text in the same hue so the name is actually readable, then a short
+fade and the toolbar returns. A banner wider than the row becomes a
+ticker: it holds the opening words for a moment, scrolls horizontally
+at a slow, readable pace until the tail has been visible, pauses, and
+only then fades — the scroll always completes before the close.
+Focusing the pane the event has fired for ends the display
+immediately — nothing lingers over output you already read. Opening the `/` search or the menu dismisses the event
+outright. Clicking the banner selects that agent's row and scrolls it
+into view (the menu button in the corner keeps working throughout). A
+sidebar that opens mid-session shows nothing until its first event,
+and a restart never replays old flags.
 
-Cycle with `h` / `l` (or `←` / `→`), or click an entry. `Tab` advances through the filter one step at a time.
+### Menu (repo filter + notices)
 
-### Repo filter
-
-Below the status row, a repo selector (`▾`) narrows the list to a single repository. Open it with `r` or by clicking the arrow; `—` means no repo filter is active.
+The header's right edge is one button: `— ▾` normally, `ⓘ ▾` when a
+notice exists (top-right, where alerts live). Opening it with `r` or a
+click drops a menu with the notices sections — new version,
+`Plugin / claude`, missing hooks with per-agent `[copy]` / `[prompt]`
+buttons — above a `Repos` section listing the repo filter. With no
+notice, the menu is just the repo list. `j` / `k` and `Enter` navigate
+the repo list; the notice rows are click-to-copy.
 
 ### Search
 
-Press `/` to type a query in the secondary header. The list narrows in place
-while the repo groups stay intact. Matching is case-insensitive across the
+Press `/` to type a query flush left in the header. The list narrows in
+place while the repo groups stay intact. Matching is case-insensitive across the
 agent session title, tmux session name, and git branch; a query that matches a
 repo or session name keeps that whole group visible. `Enter` keeps the query
 applied, `Esc` clears it, `Ctrl-u` clears the text without closing the input,
@@ -43,10 +60,10 @@ query, so leaving the sidebar always returns the list to its unfiltered state.
 
 `a` cycles to the next row that needs attention, `g` / `G` jump to the top and
 bottom, and `[` / `]` jump between group headers. `z` collapses the selected
-group to a single header line (its counts drop out of the filter bar) and `Z`
-expands every collapsed group. `s` toggles grouping between repository and tmux
-session; the choice is written to `@sidebar_group_by` and shared by every open
-sidebar.
+group to a single header line (its waiting / error segments collapse into the
+badge) and `Z` expands every collapsed group. `s` toggles grouping between
+repository and tmux session; the choice is written to `@sidebar_group_by` and
+shared by every open sidebar.
 
 ## Row elements
 

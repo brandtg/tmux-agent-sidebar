@@ -35,12 +35,6 @@ pub(super) fn handle_event(ev: Event, state: &mut AppState) -> bool {
 /// unit tests can drive the keyboard path without constructing a real
 /// terminal handle.
 pub(super) fn handle_key_event(key: KeyEvent, state: &mut AppState) -> bool {
-    if state.is_notices_popup_open() {
-        if key.code == KeyCode::Esc {
-            state.close_notices_popup();
-        }
-        return true;
-    }
     if state.is_help_open() {
         match key.code {
             KeyCode::Esc | KeyCode::Char('?') => state.close_help_popup(),
@@ -143,8 +137,6 @@ pub(super) fn handle_key_event(key: KeyEvent, state: &mut AppState) -> bool {
             KeyCode::Enter => state.finish_search(),
             KeyCode::Backspace => state.search_pop_char(),
             // Navigate the filtered list without leaving the input line.
-            // Use the raw selection move (not `pane_nav_up`), which would
-            // hand focus back to the status row at the top of the list.
             KeyCode::Up => {
                 state.move_pane_selection(-1);
             }
@@ -167,13 +159,9 @@ pub(super) fn handle_key_event(key: KeyEvent, state: &mut AppState) -> bool {
 
     match key.code {
         KeyCode::Esc => {
-            // Esc cancels an applied search first; only when the list is
-            // unfiltered does it fall back to returning focus from the
-            // status row.
+            // Esc cancels an applied search; with no query it is inert.
             if state.search.has_query() {
                 state.cancel_search();
-            } else if state.focus_state.focus == Focus::Filter {
-                state.focus_state.focus = Focus::Panes;
             }
         }
         KeyCode::Char('/') => state.open_search(),
@@ -239,26 +227,15 @@ pub(super) fn handle_key_event(key: KeyEvent, state: &mut AppState) -> bool {
         }
         KeyCode::PageDown => page_scroll(state, 1),
         KeyCode::PageUp => page_scroll(state, -1),
-        KeyCode::Char('h') | KeyCode::Left => {
-            if state.focus_state.focus == Focus::Filter {
-                state.global.status_filter = state.global.status_filter.prev();
-                state.global.save_filter();
-                state.rebuild_row_targets();
-            }
-        }
         KeyCode::Char('l') | KeyCode::Right => {
-            if state.focus_state.focus == Focus::Filter {
-                state.global.status_filter = state.global.status_filter.next();
-                state.global.save_filter();
-                state.rebuild_row_targets();
-            } else if state.focus_state.focus == Focus::Panes {
-                // "Go into" the agent: Right (and its vim pair `l`) mirrors
-                // Enter's jump-to-pane from the agent list.
+            if state.focus_state.focus == Focus::Panes {
+                // "Go into" the agent: Right (and its vim pair `l`)
+                // mirrors Enter's jump-to-pane from the agent list.
                 state.activate_selected_pane();
             }
         }
         KeyCode::Char('r') => {
-            if state.focus_state.focus == Focus::Filter {
+            if state.focus_state.focus == Focus::Panes {
                 state.toggle_repo_popup();
             }
         }
@@ -298,11 +275,6 @@ pub(super) fn handle_key_event(key: KeyEvent, state: &mut AppState) -> bool {
             if state.focus_state.focus == Focus::Panes {
                 state.activate_selected_pane();
             }
-        }
-        KeyCode::Tab => {
-            state.global.status_filter = state.global.status_filter.next();
-            state.global.save_filter();
-            state.rebuild_row_targets();
         }
         _ => {}
     }
@@ -419,9 +391,6 @@ fn handle_todo_key(key: KeyEvent, state: &mut AppState) -> bool {
 
 fn pane_nav_down(state: &mut AppState) {
     match state.focus_state.focus {
-        Focus::Filter => {
-            state.focus_state.focus = Focus::Panes;
-        }
         Focus::Panes => {
             // A fully-folded list has no rows to move through and no
             // bottom to fall off: keep the focus instead of dropping
@@ -443,32 +412,24 @@ fn pane_nav_down(state: &mut AppState) {
 
 /// PageUp/PageDown: a viewport-sized jump in whatever has focus. The
 /// agent list moves the selection (the render's auto-scroll keeps it in
-/// view, so the viewport follows). No-op from the filter row, where h/l
-/// own horizontal movement.
+/// view, so the viewport follows). No-op from the TODO panel, which has
+/// its own page arms.
 fn page_scroll(state: &mut AppState, direction: isize) {
-    match state.focus_state.focus {
-        Focus::Panes => {
-            if state.page_pane_selection(direction) {
-                state.global.queue_cursor_save();
-            }
-        }
-        Focus::Filter | Focus::Todos => {}
+    if state.focus_state.focus == Focus::Panes && state.page_pane_selection(direction) {
+        state.global.queue_cursor_save();
     }
 }
 
 fn pane_nav_up(state: &mut AppState) {
     match state.focus_state.focus {
-        Focus::Filter => {}
         Focus::Panes => {
-            // Same empty-list rule as the downward walk: a fully-folded
-            // list has no top to leave through the filter bar with.
+            // A fully-folded list has no rows to move through and no
+            // top to reach: the selection clamps and stays put.
             if state.layout.pane_row_targets.is_empty() {
                 return;
             }
             if state.move_pane_selection(-1) {
                 state.global.queue_cursor_save();
-            } else {
-                state.focus_state.focus = Focus::Filter;
             }
         }
         Focus::Todos => {}
@@ -705,7 +666,7 @@ mod tests {
         for _ in 0..5 {
             handle_key_event(key(KeyCode::Char('k')), &mut state);
         }
-        assert_eq!(state.focus_state.focus, Focus::Filter, "all the way up");
+        assert_eq!(state.focus_state.focus, Focus::Panes, "all the way up");
         for _ in 0..5 {
             handle_key_event(key(KeyCode::Char('j')), &mut state);
         }
@@ -1894,10 +1855,10 @@ mod tests {
     }
 
     #[test]
-    fn f_does_not_fire_under_filter_focus() {
+    fn f_does_not_fire_under_todos_focus() {
         let _guard = test_mock::install();
         let mut state = state_with_one_pane();
-        state.focus_state.focus = Focus::Filter;
+        state.focus_state.focus = Focus::Todos;
 
         handle_key_event(key(KeyCode::Char('f')), &mut state);
         assert!(!state.pane_by_id("%1").unwrap().flagged);

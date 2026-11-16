@@ -3,7 +3,7 @@ use std::time::Instant;
 
 use crate::tmux;
 
-use super::filter::{RepoFilter, StatusFilter};
+use super::filter::RepoFilter;
 
 /// Default agent message preview line cap (used until tmux.conf says
 /// otherwise). Two lines keep the panel compact; `@sidebar_preview_lines`
@@ -93,7 +93,6 @@ impl TodoScope {
 /// Synced from tmux at startup, on pane focus change (SIGUSR1), and
 /// whenever another sidebar broadcasts a shared-option change.
 pub struct GlobalState {
-    pub status_filter: StatusFilter,
     pub selected_pane_row: usize,
     pub repo_filter: RepoFilter,
     /// Compact one-line-per-pane rendering. Toggleable at runtime with
@@ -159,8 +158,6 @@ pub struct GlobalState {
     /// Pane id of the sidebar instance owning this state. Used to skip
     /// self-signaling when broadcasting shared-option changes.
     owner_pane: String,
-    /// Last filter value successfully written to tmux.
-    last_saved_filter: StatusFilter,
     /// Last cursor value successfully written to tmux.
     last_saved_cursor: usize,
     /// Last repo filter value successfully written to tmux.
@@ -180,7 +177,6 @@ impl Default for GlobalState {
 impl GlobalState {
     pub fn new(owner_pane: String) -> Self {
         Self {
-            status_filter: StatusFilter::All,
             selected_pane_row: 0,
             repo_filter: RepoFilter::All,
             compact: false,
@@ -198,7 +194,6 @@ impl GlobalState {
             worktree_titles: false,
             preview_lines: DEFAULT_PREVIEW_LINES,
             owner_pane,
-            last_saved_filter: StatusFilter::All,
             last_saved_cursor: 0,
             last_saved_repo_filter: RepoFilter::All,
             last_saved_collapsed_groups: None,
@@ -215,24 +210,6 @@ impl GlobalState {
     /// focus-change reload keeps them converging cheaply.
     fn broadcast_change(&self) {
         tmux::broadcast_refresh(&self.owner_pane);
-    }
-
-    /// Save filter to tmux global variable, then broadcast the change to
-    /// every other open sidebar.
-    /// Only updates `last_saved_filter` on success so that a failed write
-    /// does not cause sync to overwrite the user's choice.
-    pub fn save_filter(&mut self) {
-        if tmux::run_tmux(&[
-            "set",
-            "-g",
-            tmux::SIDEBAR_FILTER,
-            self.status_filter.as_str(),
-        ])
-        .is_some()
-        {
-            self.last_saved_filter = self.status_filter;
-            self.broadcast_change();
-        }
     }
 
     /// Save cursor position to tmux global variable. Returns `true` when
@@ -435,16 +412,6 @@ impl GlobalState {
         self.apply_all(&opts);
     }
 
-    /// Parse `@sidebar_default_view` into the status filter a newly opened
-    /// sidebar lands on. Accepts the same labels as [`StatusFilter::as_str`],
-    /// case-insensitively; unset or unrecognized values fall back to `all`,
-    /// the first view.
-    pub fn default_view_from_options(opts: &HashMap<String, String>) -> StatusFilter {
-        opts.get(tmux::SIDEBAR_DEFAULT_VIEW)
-            .map(|s| StatusFilter::from_label(s.trim().to_ascii_lowercase().as_str()))
-            .unwrap_or(StatusFilter::All)
-    }
-
     /// Parse `@sidebar_default_compact_view` into the landing compact
     /// mode for a newly opened sidebar. Accepts `on`/`true`/`1`
     /// (case-insensitive); unset or any other value means `off`.
@@ -485,22 +452,19 @@ impl GlobalState {
             .unwrap_or(false)
     }
 
-    /// Land on the configured default view instead of the last-used
-    /// filter/compact values.
+    /// Land on the configured defaults instead of restoring whatever a
+    /// previous sidebar persisted.
     ///
-    /// `@sidebar_filter` persists the most recent value across sidebar
-    /// instances, so a freshly opened sidebar would otherwise resume
-    /// whatever some other window set earlier — a random-looking landing
-    /// state. Called once at startup, after `load_from_tmux`.
+    /// A freshly opened sidebar must not resume a value some other
+    /// window set earlier — a random-looking landing state. Called once
+    /// at startup, after `load_from_tmux`.
     ///
-    /// Only `status_filter` is overridden unconditionally. For `compact`
-    /// the landing default applies only while no live `@sidebar_compact`
-    /// value exists: once any sidebar has toggled, the shared value wins
-    /// so every sidebar renders the same density. The defaults are never
-    /// written back to tmux here — opening a sidebar must not yank the
-    /// view out from under already-open ones.
+    /// For `compact` the landing default applies only while no live
+    /// `@sidebar_compact` value exists: once any sidebar has toggled,
+    /// the shared value wins so every sidebar renders the same density.
+    /// The defaults are never written back to tmux here — opening a
+    /// sidebar must not yank the view out from under already-open ones.
     pub fn apply_default_view(&mut self, opts: &HashMap<String, String>) {
-        self.status_filter = Self::default_view_from_options(opts);
         if !opts.contains_key(tmux::SIDEBAR_COMPACT) {
             self.compact = Self::default_compact_view_from_options(opts);
         }
@@ -523,15 +487,8 @@ impl GlobalState {
         self.apply_default_view(&opts);
     }
 
-    /// Apply all global options from tmux (filter, cursor, repo filter).
+    /// Apply all global options from tmux (cursor, repo filter, etc.).
     pub fn apply_all(&mut self, opts: &HashMap<String, String>) {
-        if let Some(filter_str) = opts.get(tmux::SIDEBAR_FILTER) {
-            let tmux_filter = StatusFilter::from_label(filter_str);
-            if tmux_filter != self.last_saved_filter {
-                self.status_filter = tmux_filter;
-                self.last_saved_filter = tmux_filter;
-            }
-        }
         if let Some(cursor_str) = opts.get(tmux::SIDEBAR_CURSOR)
             && let Ok(n) = cursor_str.parse::<usize>()
             && n != self.last_saved_cursor
@@ -604,9 +561,10 @@ impl GlobalState {
             && Some(&names) != self.last_saved_collapsed_groups.as_ref()
         {
             // A set this sidebar itself just wrote equals its
-            // `last_saved` copy and is skipped, matching the filter
-            // echo-guard above; anything else (another sidebar's fold,
-            // a restored value at startup) is adopted wholesale.
+            // `last_saved` copy and is skipped (the same echo-guard
+            // pattern `last_saved_cursor` uses); anything else (another
+            // sidebar's fold, a restored value at startup) is adopted
+            // wholesale.
             self.collapsed_groups = names.clone();
             self.last_saved_collapsed_groups = Some(names);
         }

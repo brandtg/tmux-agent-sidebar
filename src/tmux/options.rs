@@ -131,24 +131,19 @@ pub const SIDEBAR_WIDTH: &str = "@sidebar_width";
 /// cap. Parsed by `cli::toggle::sidebar_width_cells`.
 pub const SIDEBAR_WIDTH_MAX: &str = "@sidebar_width_max";
 pub const SIDEBAR_POSITION: &str = "@sidebar_position";
-pub const SIDEBAR_FILTER: &str = "@sidebar_filter";
-/// Status filter view a newly opened sidebar lands on (`all` / `running` /
-/// `background` / `waiting` / `idle` / `error`). Read once at startup;
-/// unset or unrecognized values fall back to `all`.
-pub const SIDEBAR_DEFAULT_VIEW: &str = "@sidebar_default_view";
 pub const SIDEBAR_CURSOR: &str = "@sidebar_cursor";
 pub const SIDEBAR_REPO_FILTER: &str = "@sidebar_repo_filter";
 /// Group names currently folded in the agents panel, stored as a JSON
 /// array of strings (group names may contain almost anything, so a
 /// plain separator would round-trip badly). Written whenever a sidebar
 /// folds or unfolds a group (`z`, a header click, `M`, `Z`) and synced
-/// across sidebars like [`SIDEBAR_FILTER`], so the folds survive
+/// across sidebars like [`SIDEBAR_REPO_FILTER`], so the folds survive
 /// restarts and follow the user to every other sidebar. Cleared when
 /// the grouping mode changes: names are mode-specific.
 pub const SIDEBAR_COLLAPSED_GROUPS: &str = "@sidebar_collapsed_groups";
 /// Live compact-view flag (`1`/`0`). Written whenever a sidebar toggles
 /// compact mode so every open sidebar instance renders the same density.
-/// Synced across sidebars like [`SIDEBAR_FILTER`] but deliberately not
+/// Synced across sidebars like [`SIDEBAR_REPO_FILTER`] but deliberately not
 /// restored on reopen — a new sidebar lands on
 /// [`SIDEBAR_DEFAULT_COMPACT_VIEW`] instead.
 pub const SIDEBAR_COMPACT: &str = "@sidebar_compact";
@@ -264,7 +259,6 @@ pub const SIDEBAR_MODE: &str = "@sidebar_mode";
 /// window-create time; only consulted while [`SIDEBAR_MODE`] is unset.
 pub const SIDEBAR_AUTO_CREATE: &str = "@sidebar_auto_create";
 pub const SIDEBAR_COLOR_BORDER: &str = "@sidebar_color_border";
-pub const SIDEBAR_COLOR_ALL: &str = "@sidebar_color_all";
 pub const SIDEBAR_COLOR_RUNNING: &str = "@sidebar_color_running";
 pub const SIDEBAR_COLOR_WAITING: &str = "@sidebar_color_waiting";
 pub const SIDEBAR_COLOR_IDLE: &str = "@sidebar_color_idle";
@@ -303,13 +297,16 @@ pub const SIDEBAR_COLOR_SECTION_TITLE: &str = "@sidebar_color_section_title";
 pub const SIDEBAR_COLOR_ACTIVITY_TIMESTAMP: &str = "@sidebar_color_activity_timestamp";
 
 pub const SIDEBAR_ICON_SET: &str = "@sidebar_icon_set";
-pub const SIDEBAR_ICON_ALL: &str = "@sidebar_icon_all";
 pub const SIDEBAR_ICON_RUNNING: &str = "@sidebar_icon_running";
 pub const SIDEBAR_ICON_BACKGROUND: &str = "@sidebar_icon_background";
 pub const SIDEBAR_ICON_WAITING: &str = "@sidebar_icon_waiting";
 pub const SIDEBAR_ICON_IDLE: &str = "@sidebar_icon_idle";
 pub const SIDEBAR_ICON_ERROR: &str = "@sidebar_icon_error";
 pub const SIDEBAR_ICON_UNKNOWN: &str = "@sidebar_icon_unknown";
+/// Glyph the chyron row uses for a finished-turn event (the status
+/// icons have no "done" of their own: a done-but-unseen pane is still
+/// idle/running by status). Same override pattern as the status icons.
+pub const SIDEBAR_ICON_DONE: &str = "@sidebar_icon_done";
 
 pub fn get_option(name: &str) -> Option<String> {
     run_tmux(&["show", "-gv", name])

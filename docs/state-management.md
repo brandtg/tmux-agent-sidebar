@@ -8,10 +8,7 @@ Every piece of state belongs to one of three scopes: **Global** (shared across a
 
 Stored in `GlobalState`. Written to tmux on change, with the cursor save
 debounced briefly so selection changes do not block redraw/input handling;
-reloaded on SIGUSR1. At startup — and only at startup — `status_filter` is
-overridden by `@sidebar_default_view` (default `all`) so a newly opened
-sidebar lands on a deterministic view instead of the last value some other
-window persisted. `compact` follows the live `@sidebar_compact` value so
+reloaded on SIGUSR1. `compact` follows the live `@sidebar_compact` value so
 every sidebar renders the same density; `@sidebar_default_compact_view`
 (default `off`) only seeds the mode while no live value exists yet, i.e.
 before the first `c` toggle on a fresh tmux server.
@@ -41,7 +38,6 @@ first row applies as usual.
 
 | Field | Tmux Variable | Update Trigger | Description |
 |-------|--------------|----------------|-------------|
-| `status_filter` | `@sidebar_filter` | User input (left/right key) | Active status filter (All/Running/Background/Waiting/Idle/Error); startup landing view comes from `@sidebar_default_view` |
 | `selected_pane_row` | `@sidebar_cursor` | User input (j/k key); tmux write flushed after a short debounce | Cursor position in agent list; re-anchored to the first row on a window/pane (focus-change) reload, or to the row of the pre-focus context pane when the sidebar itself gains focus |
 | `repo_filter` | `@sidebar_repo_filter` | User input (repo popup) | Repository filter (All or specific repo) |
 | `compact` | `@sidebar_compact` | User input (`c` key) | Compact one-line-per-pane rendering; the live value is shared by all open sidebars, and `@sidebar_default_compact_view` seeds it only before the first toggle |
@@ -217,9 +213,14 @@ TUI main loop (app::run in app.rs; submodules app/{setup,workers,input,render})
 ## Key Types
 
 ```rust
-enum Focus { Filter, Panes }
-enum StatusFilter { All, Running, Background, Waiting, Idle, Error }
+enum Focus { Panes, Todos }
 enum RepoFilter { All, Repo(String) }
+
+/// Top-row event channel (see docs/superpowers/specs/
+/// 2026-11-15-agent-chyron-design.md). Event-driven, per tick.
+struct ChyronState { current: Option<ChyronEvent> }
+struct ChyronEvent { pane_id: String, kind: ChyronKind, label: String, shown_at: Instant }
+enum ChyronKind { Done, Waiting, Failed }
 enum PaneStatus { Running, Background, Waiting, Idle, Error, Unknown }
 enum AgentType { Claude, Codex, OpenCode, Unknown }
 enum PermissionMode { Default, Plan, AcceptEdits, Auto, DontAsk, BypassPermissions, Defer }

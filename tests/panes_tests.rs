@@ -3,7 +3,7 @@ mod test_helpers;
 
 use test_helpers::*;
 use tmux_agent_sidebar::group::{PaneGitInfo, RepoGroup};
-use tmux_agent_sidebar::state::{AppState, Focus, StatusFilter};
+use tmux_agent_sidebar::state::{AppState, Focus};
 use tmux_agent_sidebar::tmux::{AgentType, PaneInfo, PaneStatus, SessionInfo, WindowInfo};
 use tmux_agent_sidebar::ui::colors::ColorTheme;
 use tmux_agent_sidebar::ui::icons::StatusIcons;
@@ -120,8 +120,7 @@ fn test_running_icon_blink_off() {
     state.spinner_frame = 0;
 
     insta::assert_snapshot!(render_to_string(&mut state, 28, 25), @"
-     ≡1  ●1  ◎0  ◐0  ○0  ✕0
-    ⓘ                        — ▾
+                             ⓘ ▾
     ▾ project
     ┃ ● claude
     ");
@@ -146,8 +145,7 @@ fn test_running_spinner_frame_advances() {
     state.spinner_frame = 3;
 
     insta::assert_snapshot!(render_to_string(&mut state, 28, 25), @"
-     ≡1  ●1  ◎0  ◐0  ○0  ✕0
-    ⓘ                        — ▾
+                             ⓘ ▾
     ▾ project
     ┃ ● claude
     ");
@@ -171,8 +169,7 @@ fn test_waiting_icon() {
     state.focus_state.sidebar_focused = false;
 
     insta::assert_snapshot!(render_to_string(&mut state, 28, 25), @"
-     ≡1  ●0  ◎0  ◐1  ○0  ✕0
-    ⓘ                        — ▾
+                             ⓘ ▾
     ▾ project
     ┃ ◐ claude
     ");
@@ -196,8 +193,7 @@ fn test_error_icon() {
     state.focus_state.sidebar_focused = false;
 
     insta::assert_snapshot!(render_to_string(&mut state, 28, 25), @"
-     ≡1  ●0  ◎0  ◐0  ○0  ✕1
-    ⓘ                        — ▾
+                             ⓘ ▾
     ▾ project
     ┃ ✕ claude
     ");
@@ -285,11 +281,11 @@ fn test_agents_auto_scroll_up_shows_group_header() {
     // The snapshot locks in that the `project` repo header is visible after
     // scrolling back up to the first agent.
     insta::assert_snapshot!(render_to_string(&mut state, 28, 5), @"
-     ≡8  ●0  ◎0  ◐0  ○8  ✕0
-    ⓘ                        — ▾
+                             ⓘ ▾
     ▾ project
       ○ claude
         Waiting for prompt…
+    ┃ ○ claude
     ");
 }
 
@@ -386,9 +382,9 @@ fn test_focus_gain_selects_context_agent_and_scrolls_it_into_view() {
 
 #[test]
 fn test_empty_view_clamps_scroll_and_resets_cursor() {
-    // Switching to a status view with no matching agents must not keep a
-    // stale offset (which renders blank) or a stale cursor (which the next
-    // view would auto-scroll to).
+    // A view with no matching agents (repo filter) must not keep a
+    // stale offset (which renders blank) or a stale cursor (which the
+    // next view would auto-scroll to).
     let mut panes = Vec::new();
     for i in 0..8 {
         let mut pane = make_pane(AgentType::Claude, PaneStatus::Idle);
@@ -413,13 +409,22 @@ fn test_empty_view_clamps_scroll_and_resets_cursor() {
 
     state.global.selected_pane_row = 7;
     let _ = render_to_string(&mut state, 28, 5);
-    assert!(state.scrolls.panes.offset > 0, "scrolled down in All view");
+    assert!(
+        state.scrolls.panes.offset > 0,
+        "scrolled down in the full view"
+    );
 
-    state.global.status_filter = StatusFilter::Error;
+    // Empty the view via a search that matches no row field (a repo
+    // filter for a nonexistent name would be reset by rebuild, not
+    // left dangling).
+    state.search.query = "no-such-agent".into();
     state.rebuild_row_targets();
     let _ = render_to_string(&mut state, 28, 5);
 
-    assert_eq!(state.scrolls.panes.total_lines, 0);
+    assert_eq!(
+        state.scrolls.panes.total_lines, 1,
+        "only the empty-state line renders"
+    );
     assert_eq!(
         state.scrolls.panes.offset, 0,
         "empty view must not keep a stale offset"
@@ -451,6 +456,7 @@ fn repo_popup_renders_repo_names_when_open() {
     ];
     state.rebuild_row_targets();
     state.popup = tmux_agent_sidebar::state::PopupState::Repo {
+        repo_start: 0,
         selected: 0,
         area: None,
     };
@@ -458,15 +464,17 @@ fn repo_popup_renders_repo_names_when_open() {
     // The snapshot locks in that the popup lists the `All` entry plus both
     // repo names when opened.
     insta::assert_snapshot!(render_to_string(&mut state, 40, 30), @"
-     ≡2  ●0  ◎0  ◐0  ○2  ✕0
-    ⓘ                                    — ▾
-    ▾ frontend                  ┌──────────┐
-    ┃ ○ claude                  │ All      │
-        Waiting for prompt…     │ frontend │
-                                │ backend  │
-    ▾ backend                   └──────────┘
-    ┃ ○ claude
-        Waiting for prompt…
+                                         ⓘ ▾
+    ▾ frontend          ┌──────────────────┐
+    ┃ ○ claude          │   Missing hooks  │
+        Waiting for prom│     claude       │
+                        │     - Stop       │
+    ▾ backend           │                  │
+    ┃ ○ claude          │ Repos            │
+        Waiting for prom│ All              │
+                        │ frontend         │
+                        │ backend          │
+                        └──────────────────┘
     ");
     // The popup area is required for click hit-testing and is non-visual
     // state, so it stays as a direct assertion.
@@ -496,6 +504,7 @@ fn repo_popup_highlights_selected_entry_with_background() {
     state.rebuild_row_targets();
     state.focus_state.sidebar_focused = false; // surface raw colors instead of REVERSED
     state.popup = tmux_agent_sidebar::state::PopupState::Repo {
+        repo_start: 0,
         selected: 2, // "backend" (0=All, 1=frontend, 2=backend)
         area: None,
     };
@@ -503,15 +512,17 @@ fn repo_popup_highlights_selected_entry_with_background() {
     // Styled snapshot locks in that the `backend` row carries the selection
     // background (bg:239) on each cell of the entry.
     insta::assert_snapshot!(render_to_styled_string(&mut state, 40, 30), @"
-     ≡[fg:111]2[fg:255]  ●[fg:245]0[fg:245]  ◎[fg:245]0[fg:245]  ◐[fg:245]0[fg:245]  ○[fg:245]2[fg:255]  ✕[fg:245]0[fg:245]
-    ⓘ[fg:221]                                    —[fg:255] ▾[fg:255]
-    ▾[fg:153] [fg:153]f[fg:153]r[fg:153]o[fg:153]n[fg:153]t[fg:153]e[fg:153]n[fg:153]d[fg:153]                  ┌[fg:153]─[fg:153]─[fg:153]─[fg:153]─[fg:153]─[fg:153]─[fg:153]─[fg:153]─[fg:153]─[fg:153]─[fg:153]┐[fg:153]
-    ┃[fg:153] ○[fg:110] [fg:173]c[fg:173]l[fg:173]a[fg:173]u[fg:173]d[fg:173]e[fg:173]                  │[fg:153] [fg:255]A[fg:255]l[fg:255]l[fg:255] [fg:255] [fg:255] [fg:255] [fg:255] [fg:255] [fg:255]│[fg:153]
-       [fg:255] [fg:255]W[fg:255]a[fg:255]i[fg:255]t[fg:255]i[fg:255]n[fg:255]g[fg:255] [fg:255]f[fg:255]o[fg:255]r[fg:255] [fg:255]p[fg:255]r[fg:255]o[fg:255]m[fg:255]p[fg:255]t[fg:255]…[fg:255]     │[fg:153] [fg:252]f[fg:252]r[fg:252]o[fg:252]n[fg:252]t[fg:252]e[fg:252]n[fg:252]d[fg:252] [fg:252]│[fg:153]
-                                │[fg:153] [fg:255,bg:239]b[fg:255,bg:239]a[fg:255,bg:239]c[fg:255,bg:239]k[fg:255,bg:239]e[fg:255,bg:239]n[fg:255,bg:239]d[fg:255,bg:239] [fg:255,bg:239] [fg:255,bg:239]│[fg:153]
-    ▾[fg:153] [fg:153]b[fg:153]a[fg:153]c[fg:153]k[fg:153]e[fg:153]n[fg:153]d[fg:153]                   └[fg:153]─[fg:153]─[fg:153]─[fg:153]─[fg:153]─[fg:153]─[fg:153]─[fg:153]─[fg:153]─[fg:153]─[fg:153]┘[fg:153]
-    ┃[fg:153] ○[fg:110] [fg:173]c[fg:173]l[fg:173]a[fg:173]u[fg:173]d[fg:173]e[fg:173]
-       [fg:255] [fg:255]W[fg:255]a[fg:255]i[fg:255]t[fg:255]i[fg:255]n[fg:255]g[fg:255] [fg:255]f[fg:255]o[fg:255]r[fg:255] [fg:255]p[fg:255]r[fg:255]o[fg:255]m[fg:255]p[fg:255]t[fg:255]…[fg:255]
+                                         ⓘ[fg:221] ▾[fg:255]
+    ▾[fg:153] [fg:153]f[fg:153]r[fg:153]o[fg:153]n[fg:153]t[fg:153]e[fg:153]n[fg:153]d[fg:153]          ┌[fg:153]─[fg:153]─[fg:153]─[fg:153]─[fg:153]─[fg:153]─[fg:153]─[fg:153]─[fg:153]─[fg:153]─[fg:153]─[fg:153]─[fg:153]─[fg:153]─[fg:153]─[fg:153]─[fg:153]─[fg:153]─[fg:153]┐[fg:153]
+    ┃[fg:153] ○[fg:110] [fg:173]c[fg:173]l[fg:173]a[fg:173]u[fg:173]d[fg:173]e[fg:173]          │[fg:153] [fg:153] [fg:153] [fg:153]M[fg:153]i[fg:153]s[fg:153]s[fg:153]i[fg:153]n[fg:153]g[fg:153] [fg:153]h[fg:153]o[fg:153]o[fg:153]k[fg:153]s[fg:153] [fg:153] [fg:153]│[fg:153]
+       [fg:255] [fg:255]W[fg:255]a[fg:255]i[fg:255]t[fg:255]i[fg:255]n[fg:255]g[fg:255] [fg:255]f[fg:255]o[fg:255]r[fg:255] [fg:255]p[fg:255]r[fg:255]o[fg:255]m[fg:255]│[fg:153] [fg:153,bold] [fg:153,bold] [fg:153,bold] [fg:153,bold] [fg:153,bold]c[fg:153,bold]l[fg:153,bold]a[fg:153,bold]u[fg:153,bold]d[fg:153,bold]e[fg:153,bold] [fg:153,bold] [fg:153,bold] [fg:153,bold] [fg:153,bold] [fg:153,bold] [fg:153,bold] [fg:153,bold]│[fg:153]
+                        │[fg:153] [fg:252] [fg:252] [fg:252] [fg:252] [fg:252]-[fg:252] [fg:252]S[fg:252]t[fg:252]o[fg:252]p[fg:252] [fg:252] [fg:252] [fg:252] [fg:252] [fg:252] [fg:252] [fg:252]│[fg:153]
+    ▾[fg:153] [fg:153]b[fg:153]a[fg:153]c[fg:153]k[fg:153]e[fg:153]n[fg:153]d[fg:153]           │[fg:153]                  │[fg:153]
+    ┃[fg:153] ○[fg:110] [fg:173]c[fg:173]l[fg:173]a[fg:173]u[fg:173]d[fg:173]e[fg:173]          │[fg:153] [fg:153]R[fg:153]e[fg:153]p[fg:153]o[fg:153]s[fg:153]            │[fg:153]
+       [fg:255] [fg:255]W[fg:255]a[fg:255]i[fg:255]t[fg:255]i[fg:255]n[fg:255]g[fg:255] [fg:255]f[fg:255]o[fg:255]r[fg:255] [fg:255]p[fg:255]r[fg:255]o[fg:255]m[fg:255]│[fg:153] [fg:255]A[fg:255]l[fg:255]l[fg:255] [fg:255] [fg:255] [fg:255] [fg:255] [fg:255] [fg:255] [fg:255] [fg:255] [fg:255] [fg:255] [fg:255] [fg:255] [fg:255] [fg:255]│[fg:153]
+                        │[fg:153] [fg:252]f[fg:252]r[fg:252]o[fg:252]n[fg:252]t[fg:252]e[fg:252]n[fg:252]d[fg:252] [fg:252] [fg:252] [fg:252] [fg:252] [fg:252] [fg:252] [fg:252] [fg:252] [fg:252]│[fg:153]
+                        │[fg:153] [fg:255,bg:239]b[fg:255,bg:239]a[fg:255,bg:239]c[fg:255,bg:239]k[fg:255,bg:239]e[fg:255,bg:239]n[fg:255,bg:239]d[fg:255,bg:239] [fg:255,bg:239] [fg:255,bg:239] [fg:255,bg:239] [fg:255,bg:239] [fg:255,bg:239] [fg:255,bg:239] [fg:255,bg:239] [fg:255,bg:239] [fg:255,bg:239] [fg:255,bg:239]│[fg:153]
+                        └[fg:153]─[fg:153]─[fg:153]─[fg:153]─[fg:153]─[fg:153]─[fg:153]─[fg:153]─[fg:153]─[fg:153]─[fg:153]─[fg:153]─[fg:153]─[fg:153]─[fg:153]─[fg:153]─[fg:153]─[fg:153]─[fg:153]┘[fg:153]
     ");
 }
 
@@ -547,8 +558,7 @@ fn snapshot_compact_mode_renders_one_line_per_pane() {
     state.global.compact = true;
 
     insta::assert_snapshot!(render_to_string(&mut state, 28, 14), @"
-     ≡2  ●1  ◎0  ◐0  ○1  ✕0
-    ⓘ                        — ▾
+                             ⓘ ▾
     ▾ project
     ┃ ● fix-api             1m5s
       ○ docs +2
@@ -583,8 +593,7 @@ fn snapshot_compact_mode_multiple_repo_groups() {
     state.global.compact = true;
 
     insta::assert_snapshot!(render_to_string(&mut state, 28, 14), @"
-     ≡2  ●2  ◎0  ◐0  ○0  ✕0
-    ⓘ                        — ▾
+                             ⓘ ▾
     ▾ frontend
     ┃ ● alpha
     ▾ backend
@@ -629,8 +638,7 @@ fn snapshot_compact_mode_spawned_worktree_remove_marker() {
     state.global.compact = true;
 
     insta::assert_snapshot!(render_to_string(&mut state, 28, 14), @"
-     ≡1  ●1  ◎0  ◐0  ○0  ✕0
-    ⓘ                        — ▾
+                             ⓘ ▾
     ▾ project                  +
     ┃ ● fix-api + agent/fix-a… ×
     ");
@@ -673,8 +681,7 @@ fn snapshot_search_bar_filters_list_but_keeps_group() {
     state.rebuild_row_targets();
 
     insta::assert_snapshot!(render_to_string(&mut state, 40, 20), @"
-     ≡1  ●0  ◎0  ◐0  ○1  ✕0
-    ⓘ /codex█                            — ▾
+    /codex█                              ⓘ ▾
     ▾ backend
       ○ codex-ui
         Waiting for prompt…
@@ -688,8 +695,7 @@ fn snapshot_collapsed_group_renders_header_only() {
     state.rebuild_row_targets();
 
     insta::assert_snapshot!(render_to_string(&mut state, 40, 20), @"
-     ≡1  ●0  ◎0  ◐0  ○1  ✕0
-    ⓘ                                    — ▾
+                                         ⓘ ▾
     ▸ backend (2 panes)
     ▾ frontend
       ○ frontend
@@ -712,8 +718,7 @@ fn snapshot_collapsed_group_badge_colors_status_segments() {
     state.rebuild_row_targets();
 
     insta::assert_snapshot!(render_to_styled_string(&mut state, 40, 20), @"
-     ≡[fg:111]0[fg:245]  ●[fg:245]0[fg:245]  ◎[fg:245]0[fg:245]  ◐[fg:245]0[fg:245]  ○[fg:245]0[fg:245]  ✕[fg:245]0[fg:245]
-    ⓘ[fg:221]                                    —[fg:252] ▾[fg:252]
+                                         ⓘ[fg:221] ▾[fg:252]
     ▸[fg:153] [fg:153]b[fg:153]a[fg:153]c[fg:153]k[fg:153]e[fg:153]…[fg:153] [fg:252]([fg:252]2[fg:252] [fg:252]p[fg:252]a[fg:252]n[fg:252]e[fg:252]s[fg:252])[fg:252] [fg:221]·[fg:221] [fg:221]1[fg:221] [fg:221]w[fg:221]a[fg:221]i[fg:221]t[fg:221]i[fg:221]n[fg:221]g[fg:221] [fg:167]·[fg:167] [fg:167]1[fg:167] [fg:167]e[fg:167]r[fg:167]r[fg:167]o[fg:167]r[fg:167]
     ");
 }
@@ -726,8 +731,7 @@ fn snapshot_search_no_matches_empty_state() {
     state.rebuild_row_targets();
 
     insta::assert_snapshot!(render_to_string(&mut state, 40, 20), @"
-     ≡0  ●0  ◎0  ◐0  ○0  ✕0
-    ⓘ /zzz                               — ▾
+    /zzz                                 ⓘ ▾
       no matches for zzz
     ");
 }

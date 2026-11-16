@@ -1,5 +1,5 @@
+mod chyron;
 mod click_targets;
-mod filter_bar;
 mod popups;
 mod row;
 mod row_collector;
@@ -51,8 +51,7 @@ fn anchor_below(area: Rect, anchor_y: u16, desired_width: u16, desired_height: u
 }
 
 struct PaneLayout {
-    filter_area: Rect,
-    secondary_area: Rect,
+    header_area: Rect,
     list_area: Rect,
     /// Bottom TODO panel; zero-height while hidden.
     todo_area: Rect,
@@ -60,25 +59,25 @@ struct PaneLayout {
 
 impl PaneLayout {
     fn compute_with_todo(area: Rect, todo_height: u16) -> Self {
-        // Never let the panel crowd out the two header rows.
-        let todo_height = todo_height.min(area.height.saturating_sub(2));
-        let filter_area = Rect {
+        // Never let the panel crowd out the header row.
+        let todo_height = todo_height.min(area.height.saturating_sub(1));
+        // One header row: the toolbar, or the chyron while it overlays
+        // the toolbar. The row is always reserved so neither state
+        // shifts the list.
+        let header_area = Rect {
             x: area.x,
             y: area.y,
             width: area.width,
             height: 1.min(area.height),
         };
-        let secondary_area = Rect {
-            x: area.x,
-            y: area.y + 1,
-            width: area.width,
-            height: 1.min(area.height.saturating_sub(1)),
-        };
         let list_area = Rect {
             x: area.x,
-            y: area.y + 2,
+            y: area.y + header_area.height,
             width: area.width,
-            height: area.height.saturating_sub(2).saturating_sub(todo_height),
+            height: area
+                .height
+                .saturating_sub(header_area.height)
+                .saturating_sub(todo_height),
         };
         let todo_area = Rect {
             x: area.x,
@@ -87,8 +86,7 @@ impl PaneLayout {
             height: todo_height,
         };
         Self {
-            filter_area,
-            secondary_area,
+            header_area,
             list_area,
             todo_area,
         }
@@ -396,25 +394,64 @@ pub(super) fn render_remove_confirm_popup(frame: &mut Frame, state: &mut AppStat
 }
 
 pub(super) fn render_repo_popup(frame: &mut Frame, state: &mut AppState, area: Rect) {
-    let theme = &state.theme;
+    // Copy the palette out first: the copy-target write-back below
+    // needs `&mut state` while the styles still reference the theme.
+    let theme = state.theme.clone();
     let repos = state.repo_names();
     if repos.is_empty() {
         return;
     }
 
+    // The menu merges the old standalone notices popup (version /
+    // plugin / missing-hooks, with click-to-copy prompt slots) above the
+    // repo list. When no notice exists the menu is just the repo list,
+    // as before.
+    let show_notices = crate::ui::notices::has_info(state);
+    let repo_header = show_notices;
     let max_name_len = repos.iter().map(|r| display_width(r)).max().unwrap_or(3);
-    // Width: padding(1 left + 1 right) + name + borders(2). The floor of
-    // 10 keeps tiny lists readable, but the `.min(area.width)` must apply
-    // LAST — on a narrow sidebar a `.max(10)` applied after the min would
-    // push the popup wider than its own pane (the same clamp-order bug
-    // `center_popup`/`anchor_below` already guard against).
-    let popup_width = (max_name_len + 4).max(10).min(area.width as usize) as u16;
-    let popup_height = (repos.len() as u16 + 2).min(area.height.saturating_sub(2)); // +2 for borders
 
-    // Right-aligned, below the 2-row header
+    // Width: padding(1 left + 1 right) + widest content + borders(2).
+    // The floor of 12 keeps tiny menus readable, but the
+    // `.min(area.width)` must apply LAST — on a narrow sidebar a `.max`
+    // applied after the min would push the popup wider than its own
+    // pane (the same clamp-order bug `center_popup`/`anchor_below`
+    // already guard against).
+    let max_inner = area.width.saturating_sub(4) as usize;
+    let (notices_widest, notices_count) = if show_notices {
+        crate::ui::notices::section_metrics(state, max_inner)
+    } else {
+        (0, 0)
+    };
+    let content_widest = max_name_len
+        .max(if repo_header {
+            display_width("Repos")
+        } else {
+            0
+        })
+        .max(notices_widest);
+    let popup_width = (content_widest + 4).max(12).min(area.width as usize) as u16;
+
+    // Height: section lines + a blank separator + optional "Repos"
+    // header + one row per repo + borders(2), anchored below the single
+    // header row and clamped to the space that remains.
+    let repo_start_row = if show_notices {
+        notices_count + 1 + 1
+    } else {
+        0
+    };
+    let inner_rows = repo_start_row + repos.len();
+    let height_budget = area.height.saturating_sub(1);
+    let popup_height = ((inner_rows as u16) + 2).max(3).min(height_budget);
+
+    if popup_height < 3 || popup_width < 2 {
+        state.popup.set_repo_area(None);
+        state.notices.copy_targets.clear();
+        return;
+    }
+
+    // Right-aligned, below the header row.
     let popup_x = area.x + area.width.saturating_sub(popup_width);
-    let popup_y = area.y + 2;
-
+    let popup_y = area.y + 1;
     let popup_rect = Rect::new(popup_x, popup_y, popup_width, popup_height);
     state.popup.set_repo_area(Some(popup_rect));
 
@@ -427,8 +464,51 @@ pub(super) fn render_repo_popup(frame: &mut Frame, state: &mut AppState, area: R
     frame.render_widget(block, popup_rect);
 
     let inner_width = inner.width as usize;
+
+    // Notices section first: same content the old popup rendered, with
+    // its copy slots materialized at the menu's absolute coords. Rows
+    // the popup's height clips must not keep live click targets.
+    let mut row = 0usize;
+    if show_notices {
+        let (notices_lines, slots) = crate::ui::notices::section_lines(state, inner_width);
+        for line in &notices_lines {
+            if row >= inner.height as usize {
+                break;
+            }
+            let line_rect = Rect::new(inner.x, inner.y + row as u16, inner.width, 1);
+            frame.render_widget(Paragraph::new(vec![line.clone()]), line_rect);
+            row += 1;
+        }
+        crate::ui::notices::materialize_copy_targets(state, &slots, inner, 0);
+        // Blank separator between the sections.
+        if row < inner.height as usize {
+            row += 1;
+        }
+    } else {
+        state.notices.copy_targets.clear();
+    }
+
+    if repo_header && row < inner.height as usize {
+        let line_rect = Rect::new(inner.x, inner.y + row as u16, inner.width, 1);
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                format!(
+                    " {}",
+                    truncate_to_width("Repos", inner_width.saturating_sub(1))
+                ),
+                Style::default().fg(theme.accent),
+            ))),
+            line_rect,
+        );
+        row += 1;
+    }
+
+    // The repo list: selection index maps to `repo_start_row + i`.
+    let repo_start = row as u16;
+    state.popup.set_repo_start(repo_start);
+    let visible_repo_rows = inner.height.saturating_sub(repo_start);
     for (i, name) in repos.iter().enumerate() {
-        if i >= inner.height as usize {
+        if i >= visible_repo_rows as usize {
             break;
         }
 
@@ -453,7 +533,7 @@ pub(super) fn render_repo_popup(frame: &mut Frame, state: &mut AppState, area: R
             Style::default().fg(theme.text_muted)
         };
 
-        let line_rect = Rect::new(inner.x, inner.y + i as u16, inner.width, 1);
+        let line_rect = Rect::new(inner.x, inner.y + repo_start + i as u16, inner.width, 1);
         frame.render_widget(
             Paragraph::new(Line::from(Span::styled(
                 format!("{}{}", text, padding),
@@ -464,17 +544,38 @@ pub(super) fn render_repo_popup(frame: &mut Frame, state: &mut AppState, area: R
     }
 }
 
-fn render_filter_bar_into(frame: &mut Frame, state: &AppState, area: Rect) {
-    let line = filter_bar::render_filter_bar(state);
-    frame.render_widget(Paragraph::new(vec![line]), area);
-}
-
-fn render_secondary_header_into(frame: &mut Frame, state: &mut AppState, area: Rect) {
-    let (line, notices_btn_col, repo_btn_col) =
-        filter_bar::render_secondary_header(state, area.width);
-    state.notices.button_col = notices_btn_col;
-    state.layout.repo_button_col = repo_btn_col;
-    frame.render_widget(Paragraph::new(vec![line]), area);
+fn render_header_into(frame: &mut Frame, state: &mut AppState, area: Rect) {
+    // The chyron overlays the toolbar while an event is alive; the
+    // toolbar owns the row the rest of the time. Either way the row is
+    // reserved, so the list never shifts.
+    if state.chyron.is_showing(state) {
+        // The banner leaves the button's corner free so the merged
+        // menu button stays visible — and clickable — over it.
+        let button_w = (chyron::BUTTON_WIDTH as u16).min(area.width);
+        let banner_w = area.width.saturating_sub(button_w);
+        if banner_w > 0
+            && let Some(line) = chyron::render_chyron(state, banner_w)
+        {
+            let banner_area = Rect::new(area.x, area.y, banner_w, area.height);
+            frame.render_widget(Paragraph::new(vec![line]), banner_area);
+        }
+        let button_x = area.x + area.width.saturating_sub(button_w);
+        let button_area = Rect::new(button_x, area.y, button_w, area.height);
+        let button_line = Line::from(chyron::menu_button_spans(state));
+        frame.render_widget(Paragraph::new(vec![button_line]), button_area);
+        // Same contract as the toolbar branch: the click column is
+        // width - button width. Written on chyron frames too so a
+        // first-frame banner still leaves the button clickable. The
+        // width feeds the ticker's display-window math (the scroll
+        // must finish before the close).
+        state.layout.menu_button_col = Some(area.width.saturating_sub(button_w));
+        state.layout.header_width = Some(area.width);
+    } else {
+        let (line, menu_btn_col) = chyron::render_secondary_header(state, area.width);
+        state.layout.menu_button_col = menu_btn_col;
+        state.layout.header_width = Some(area.width);
+        frame.render_widget(Paragraph::new(vec![line]), area);
+    }
 }
 
 fn compute_scroll_offset(state: &mut AppState, total_lines: usize, list_area: Rect) -> usize {
@@ -557,8 +658,8 @@ pub fn draw_agents(frame: &mut Frame, state: &mut AppState, area: Rect) {
     let todo_height = todo::panel_height(state, area, lines.len());
     let layout = PaneLayout::compute_with_todo(area, todo_height);
     state.layout.todo_area = layout.todo_area;
-    render_filter_bar_into(frame, state, layout.filter_area);
-    render_secondary_header_into(frame, state, layout.secondary_area);
+    state.layout.toolbar_row = layout.header_area.y;
+    render_header_into(frame, state, layout.header_area);
 
     state.layout.line_to_row = line_to_row;
     let scroll_offset = compute_scroll_offset(state, lines.len(), layout.list_area);
@@ -583,7 +684,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn pane_layout_splits_area_into_filter_secondary_list() {
+    fn pane_layout_splits_area_into_header_and_list() {
         let area = Rect {
             x: 0,
             y: 0,
@@ -591,20 +692,18 @@ mod tests {
             height: 20,
         };
         let layout = PaneLayout::compute_with_todo(area, 0);
-        assert_eq!(layout.filter_area.x, 0);
-        assert_eq!(layout.filter_area.y, 0);
-        assert_eq!(layout.filter_area.width, 40);
-        assert_eq!(layout.filter_area.height, 1);
-        assert_eq!(layout.secondary_area.y, 1);
-        assert_eq!(layout.secondary_area.height, 1);
-        assert_eq!(layout.list_area.y, 2);
-        assert_eq!(layout.list_area.height, 18);
+        assert_eq!(layout.header_area.x, 0);
+        assert_eq!(layout.header_area.y, 0);
+        assert_eq!(layout.header_area.width, 40);
+        assert_eq!(layout.header_area.height, 1);
+        assert_eq!(layout.list_area.y, 1);
+        assert_eq!(layout.list_area.height, 19);
         assert_eq!(layout.list_area.width, 40);
     }
 
     #[test]
     fn pane_layout_handles_tiny_area() {
-        // Only 1 row available — filter gets it, secondary and list collapse to 0.
+        // Only 1 row available — the header takes it, the list collapses.
         let area = Rect {
             x: 0,
             y: 0,
@@ -612,8 +711,7 @@ mod tests {
             height: 1,
         };
         let layout = PaneLayout::compute_with_todo(area, 0);
-        assert_eq!(layout.filter_area.height, 1);
-        assert_eq!(layout.secondary_area.height, 0);
+        assert_eq!(layout.header_area.height, 1);
         assert_eq!(layout.list_area.height, 0);
     }
 
@@ -626,8 +724,7 @@ mod tests {
             height: 0,
         };
         let layout = PaneLayout::compute_with_todo(area, 0);
-        assert_eq!(layout.filter_area.height, 0);
-        assert_eq!(layout.secondary_area.height, 0);
+        assert_eq!(layout.header_area.height, 0);
         assert_eq!(layout.list_area.height, 0);
     }
 
@@ -640,15 +737,15 @@ mod tests {
             height: 20,
         };
         let layout = PaneLayout::compute_with_todo(area, 6);
-        assert_eq!(layout.list_area.y, 2);
-        assert_eq!(layout.list_area.height, 12);
+        assert_eq!(layout.list_area.y, 1);
+        assert_eq!(layout.list_area.height, 13);
         assert_eq!(layout.todo_area.y, 14);
         assert_eq!(layout.todo_area.height, 6);
     }
 
     #[test]
     fn pane_layout_clamps_todo_panel_to_header_space() {
-        // A panel taller than the pane leaves the two header rows intact
+        // A panel taller than the pane leaves the header row intact
         // and collapses the list to zero.
         let area = Rect {
             x: 0,
@@ -657,9 +754,8 @@ mod tests {
             height: 5,
         };
         let layout = PaneLayout::compute_with_todo(area, 10);
-        assert_eq!(layout.filter_area.height, 1);
-        assert_eq!(layout.secondary_area.height, 1);
-        assert_eq!(layout.todo_area.height, 3);
+        assert_eq!(layout.header_area.height, 1);
+        assert_eq!(layout.todo_area.height, 4);
         assert_eq!(layout.list_area.height, 0);
     }
 
@@ -672,13 +768,11 @@ mod tests {
             height: 15,
         };
         let layout = PaneLayout::compute_with_todo(area, 0);
-        assert_eq!(layout.filter_area.x, 5);
-        assert_eq!(layout.filter_area.y, 10);
-        assert_eq!(layout.secondary_area.x, 5);
-        assert_eq!(layout.secondary_area.y, 11);
+        assert_eq!(layout.header_area.x, 5);
+        assert_eq!(layout.header_area.y, 10);
         assert_eq!(layout.list_area.x, 5);
-        assert_eq!(layout.list_area.y, 12);
-        assert_eq!(layout.list_area.height, 13);
+        assert_eq!(layout.list_area.y, 11);
+        assert_eq!(layout.list_area.height, 14);
     }
 
     #[test]

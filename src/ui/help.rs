@@ -22,8 +22,6 @@ const HELP_SECTIONS: &[(&str, &[(&str, &str)])] = &[
             ("PgUp / PgDn", "Page the list"),
             ("a", "Next attention row"),
             ("/", "Search agents"),
-            ("h / l", "Status filter"),
-            ("Tab", "Cycle status filter"),
             ("[ / ]", "Prev / next group"),
             ("z", "Collapse / expand group (or click header)"),
             ("Z", "Collapse / expand all groups"),
@@ -32,7 +30,7 @@ const HELP_SECTIONS: &[(&str, &[(&str, &str)])] = &[
             ("n", "Spawn worktree + agent"),
             ("x", "Remove spawn pane"),
             ("f", "Flag / unflag agent"),
-            ("r", "Open repo filter"),
+            ("r", "Open repo menu"),
         ],
     ),
     (
@@ -201,8 +199,6 @@ mod tests {
         │ PgUp / PgDn      Page the list           │
         │ a                Next attention row      │
         │ /                Search agents           │
-        │ h / l            Status filter           │
-        │ Tab              Cycle status filter     │
         │ [ / ]            Prev / next group       │
         │ z                Collapse / expand group │
         │                  (or click header)       │
@@ -213,7 +209,7 @@ mod tests {
         │ n                Spawn worktree + agent  │
         │ x                Remove spawn pane       │
         │ f                Flag / unflag agent     │
-        │ r                Open repo filter        │
+        │ r                Open repo menu          │
         │                                          │
         │ todos                                    │
         │ Enter / e        Edit the selected task  │
@@ -234,6 +230,8 @@ mod tests {
         │ w                List non-agent panes    │
         │ ?                Toggle this help        │
         │ q                Quit                    │
+        │                                          │
+        │                                          │
         │                                          │
         │                                          │
         │                                          │
@@ -263,11 +261,11 @@ mod tests {
         │              row       │
         │ /            Search    │
         │              agents    │
-        │ h / l        Status    │
-        │              filter    │
-        │ Tab          Cycle     │
-        │              status    │
-        │              filter    │
+        │ [ / ]        Prev /    │
+        │              next group│
+        │ z            Collapse  │
+        │              / expand  │
+        │              group (or │
         ╰────────────────────────╯
         ");
     }

@@ -19,8 +19,8 @@ pub(super) fn init_state(tmux_pane: String) -> AppState {
     // window-active/focused semantics so the compact viewport stays readable.
     state.popup_mode = std::env::var("SIDEBAR_POPUP").as_deref() == Ok("1");
     state.global.load_from_tmux();
-    // A new sidebar lands on `@sidebar_default_view` rather than the last
-    // filter some other window persisted; see GlobalState::apply_default_view.
+    // Landing defaults (`@sidebar_default_*`) apply only to values no
+    // live tmux option carries yet; see GlobalState::apply_default_view.
     state.global.apply_default_view_from_tmux();
     // Load the shared manual TODO list. Every sidebar instance reads the
     // same file; `None` (no usable $HOME / $XDG_STATE_HOME) keeps it in
