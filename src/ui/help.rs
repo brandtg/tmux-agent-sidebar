@@ -41,6 +41,7 @@ const HELP_SECTIONS: &[(&str, &[(&str, &str)])] = &[
             ("a", "New task (insert mode)"),
             ("Space", "Complete / uncomplete"),
             ("y", "Copy the selected task"),
+            ("r", "Launch resume command"),
             ("Ctrl-↓ / Ctrl-j", "Move task down"),
             ("Ctrl-↑ / Ctrl-k", "Move task up"),
             ("d / x", "Delete the selected task"),
@@ -218,6 +219,7 @@ mod tests {
         │ a                New task (insert mode)  │
         │ Space            Complete / uncomplete   │
         │ y                Copy the selected task  │
+        │ r                Launch resume command   │
         │ Ctrl-↓ / Ctrl-j  Move task down          │
         │ Ctrl-↑ / Ctrl-k  Move task up            │
         │ d / x            Delete the selected task│
@@ -232,7 +234,6 @@ mod tests {
         │ w                List non-agent panes    │
         │ ?                Toggle this help        │
         │ q                Quit                    │
-        │                                          │
         │                                          │
         │                                          │
         │                                          │

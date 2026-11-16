@@ -84,11 +84,12 @@ pub struct AppState {
     /// Current popup state. At most one popup is open at a time; the enum
     /// variant encodes both which popup is open and its per-popup data.
     pub popup: PopupState,
-    /// Sender for popup-driven worktree operations (spawn/remove). The
-    /// event loop wires it before the first frame; results come back on
-    /// its receiver and are applied via
-    /// [`AppState::apply_popup_op_result`]. `None` in unit-test builds,
-    /// where dispatch is a no-op so no real git/tmux side effects fire.
+    /// Sender for popup-driven worktree operations (spawn/remove) and
+    /// popup-free worker ops (resume launches). The event loop wires it
+    /// before the first frame; results come back on its receiver and
+    /// are applied via [`AppState::apply_popup_op_result`]. `None` in
+    /// unit-test builds, where dispatch is a no-op so no real git/tmux
+    /// side effects fire.
     pub popup_op_tx: Option<std::sync::mpsc::Sender<PopupOpResult>>,
     /// All fields related to the ⓘ notices button and its popup — the button
     /// click region, cached hook/plugin diagnostics, per-agent copy targets,

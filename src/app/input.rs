@@ -377,6 +377,13 @@ fn handle_todo_key(key: KeyEvent, state: &mut AppState) -> bool {
         KeyCode::Char('y') => {
             state.yank_todo_selected();
         }
+        // Resume: relaunch a recognized resume command (`claude
+        // --resume …`, `codex resume …`, `opencode -s …`) in a new
+        // window of this tmux session. Unrecognized items flash and
+        // stay untouched — the `↻` glyph marks the rows that act.
+        KeyCode::Char('r') => {
+            state.resume_todo_selected();
+        }
         KeyCode::Char('x') | KeyCode::Char('d') => state.delete_todo_selected(),
         KeyCode::Char('D') => state.clear_completed_todos(),
         KeyCode::Char('H') => state.toggle_todo_hide_completed(),
@@ -1262,6 +1269,24 @@ mod tests {
         assert!(state.flash.is_none(), "no selection, no feedback");
         assert!(!state.quit_requested);
         assert_eq!(state.todos.adding, None, "y must not open the add line");
+    }
+
+    #[test]
+    fn r_on_an_unrecognized_todo_flashes_not_a_resume_command() {
+        let mut state = todo_fixture();
+        handle_key_event(key(KeyCode::Char('t')), &mut state);
+
+        handle_key_event(key(KeyCode::Char('r')), &mut state);
+
+        assert_eq!(state.take_flash().as_deref(), Some("not a resume command"));
+        assert!(state.todos.editing.is_none(), "r must not open the editor");
+    }
+
+    #[test]
+    fn r_still_opens_the_repo_menu_under_panes_focus() {
+        let mut state = state_with_three_panes();
+        handle_key_event(key(KeyCode::Char('r')), &mut state);
+        assert!(state.is_repo_popup_open());
     }
 
     #[test]
