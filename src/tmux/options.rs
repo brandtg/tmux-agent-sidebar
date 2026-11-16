@@ -358,21 +358,52 @@ pub fn try_get_all_global_options() -> Option<std::collections::HashMap<String, 
 
 /// Parse one `tmux show -g` line into `(option, value)`.
 ///
-/// tmux quotes string values and escapes embedded quotes/backslashes:
-/// `@repo "\"quoted\" value"`. The old `trim_matches('"')` stripped only
-/// the outer quotes and left `\"` in place, so a repo path containing a
-/// double quote did not round-trip and could reset the repo filter.
+/// tmux renders string option values shell-safely, and the wrapper it
+/// picks depends on the value and the tmux version:
+///
+/// - plain values come back bare (`@sidebar_group_by session`);
+/// - whitespace-carrying values are double-quoted with embedded `"`
+///   backslash-escaped (`"has \"double\" quotes"`);
+/// - values that need quoting but carry no whitespace may come back
+///   single-quoted (tmux ≥ 3.8: `@sidebar_collapsed_groups '["s1","s2"]'`).
+///
+/// Backslashes are doubled in every style (`a\b` → `a\\b`), and `$`,
+/// `` ` ``, `'`, `"`, and tab can all appear backslash-escaped. The old
+/// parser only stripped double quotes, so on tmux ≥ 3.8 a JSON fold set
+/// arrived as the literal string `'["s1","s2"]'`, `serde_json` rejected
+/// it, and — since every sidebar reads the shared options through this
+/// parser — `@sidebar_collapsed_groups` never synced: each sidebar kept
+/// its own fold set while the shared option silently moved on.
 fn parse_global_option_line(line: &str) -> Option<(String, String)> {
     let (key, raw_value) = line.split_once(' ')?;
     Some((key.to_string(), unquote_tmux_value(raw_value.trim_start())))
 }
 
+/// Decode a `show -g` value token: strip whichever quote style tmux
+/// chose and resolve its backslash escapes. The escape set is decoded
+/// identically inside and outside quotes — tmux doubles backslashes
+/// unconditionally and escapes `"`, `'`, `$`, `` ` ``, and tab — and an
+/// unknown `\x` is kept verbatim so nothing is silently eaten.
 fn unquote_tmux_value(raw: &str) -> String {
-    let raw = raw.trim();
-    if raw.len() < 2 || !raw.starts_with('"') || !raw.ends_with('"') {
-        return raw.to_string();
-    }
-    let inner = &raw[1..raw.len() - 1];
+    // A wrapping quote pair is unambiguous: tmux escapes a literal
+    // leading quote (`"` arrives as `\"`, `'` as `\'`), so a token that
+    // both starts and ends with the same quote character is always a
+    // wrapper — and `''` is the empty value.
+    let inner = if raw.len() >= 2 {
+        let open = raw.as_bytes()[0];
+        let close = *raw.as_bytes().last().unwrap();
+        if open == close && (open == b'"' || open == b'\'') {
+            &raw[1..raw.len() - 1]
+        } else {
+            raw
+        }
+    } else {
+        raw
+    };
+    decode_tmux_escapes(inner)
+}
+
+fn decode_tmux_escapes(inner: &str) -> String {
     let mut value = String::with_capacity(inner.len());
     let mut chars = inner.chars();
     while let Some(c) = chars.next() {
@@ -382,7 +413,11 @@ fn unquote_tmux_value(raw: &str) -> String {
         }
         match chars.next() {
             Some('"') => value.push('"'),
+            Some('\'') => value.push('\''),
             Some('\\') => value.push('\\'),
+            Some('$') => value.push('$'),
+            Some('`') => value.push('`'),
+            Some('t') => value.push('\t'),
             Some(other) => {
                 value.push('\\');
                 value.push(other);
@@ -602,6 +637,7 @@ mod tests {
 
     #[test]
     fn parse_global_option_line_unquotes_escaped_values() {
+        // Legacy double-quoted shape (older tmux): inner `"` escaped.
         assert_eq!(
             parse_global_option_line("@repo \"\\\"quoted\\\" value\""),
             Some(("@repo".into(), "\"quoted\" value".into()))
@@ -618,11 +654,93 @@ mod tests {
     }
 
     #[test]
+    fn parse_global_option_line_decodes_tmux38_quoting() {
+        // Every line below is captured verbatim from `tmux show -g` on
+        // tmux 3.8, which shell-escapes values and may single-quote
+        // them. The fold set rides the single-quoted shape, which the
+        // old double-quote-only parser left intact — so JSON parsing
+        // failed on every reader and collapsed groups never synced.
+        assert_eq!(
+            parse_global_option_line("@sidebar_collapsed_groups '[\"s1\",\"s2\"]'"),
+            Some(("@sidebar_collapsed_groups".into(), "[\"s1\",\"s2\"]".into()))
+        );
+        // `word`, `two words`, `has "double" quotes`, `it's`, `a\b`
+        assert_eq!(
+            parse_global_option_line("@t_plain word"),
+            Some(("@t_plain".into(), "word".into()))
+        );
+        assert_eq!(
+            parse_global_option_line("@t_space \"two words\""),
+            Some(("@t_space".into(), "two words".into()))
+        );
+        assert_eq!(
+            parse_global_option_line("@t_dquote \"has \\\"double\\\" quotes\""),
+            Some(("@t_dquote".into(), "has \"double\" quotes".into()))
+        );
+        assert_eq!(
+            parse_global_option_line("@t_squote \"it's single\""),
+            Some(("@t_squote".into(), "it's single".into()))
+        );
+        assert_eq!(
+            parse_global_option_line("@t_backslash a\\\\b"),
+            Some(("@t_backslash".into(), "a\\b".into()))
+        );
+        // Empty values come back as `''`.
+        assert_eq!(
+            parse_global_option_line("@t_empty ''"),
+            Some(("@t_empty".into(), "".into()))
+        );
+        // `$` and backtick are backslash-escaped inside double quotes;
+        // tab is escaped as `\t`.
+        assert_eq!(
+            parse_global_option_line("@t5 \"dollar \\$HOME \\`tick\\`\""),
+            Some(("@t5".into(), "dollar $HOME `tick`".into()))
+        );
+        assert_eq!(
+            parse_global_option_line("@t4 tab\\tinside"),
+            Some(("@t4".into(), "tab\tinside".into()))
+        );
+        // A lone quote character is emitted backslash-escaped, unwrapped.
+        assert_eq!(
+            parse_global_option_line("@t13 \\'"),
+            Some(("@t13".into(), "'".into()))
+        );
+        assert_eq!(
+            parse_global_option_line("@t12 \\\""),
+            Some(("@t12".into(), "\"".into()))
+        );
+        // A single-quoted group name survives a double-quoted fold set.
+        assert_eq!(
+            parse_global_option_line("@t11 \"[\\\"it's\\\"]\""),
+            Some(("@t11".into(), "[\"it's\"]".into()))
+        );
+    }
+
+    #[test]
     fn quoted_global_option_round_trips_through_parser() {
         // The exact shape tmux emits for a value containing a double quote.
         let parsed =
             parse_global_option_line("@sidebar_repo_filter \"\\\"weird\\\" repo\"").unwrap();
         assert_eq!(parsed.1, "\"weird\" repo");
+    }
+
+    #[test]
+    fn fold_set_round_trips_through_the_show_g_parser() {
+        // The exact value the sidebar writes for a folded group, as tmux
+        // 3.8 renders it in `show -g` output — the shape that regressed
+        // the fold sync.
+        let parsed =
+            parse_global_option_line("@sidebar_collapsed_groups '[\"⎇ fix (repo)\",\"backend\"]'")
+                .unwrap();
+        let names: std::collections::HashSet<String> =
+            serde_json::from_str(&parsed.1).expect("the decoded value must be valid JSON");
+        assert_eq!(
+            names,
+            ["⎇ fix (repo)", "backend"]
+                .map(str::to_string)
+                .into_iter()
+                .collect()
+        );
     }
 
     #[test]
