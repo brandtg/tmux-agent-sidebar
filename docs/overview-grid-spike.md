@@ -171,8 +171,9 @@ target/release/tmux-agent-sidebar overview --popup
 tmux display-popup -E -w 100% -h 100% target/release/tmux-agent-sidebar overview
 ```
 
-Keys: arrows/tab (or j/k) move the selection, Enter zooms the selected
-cell fullscreen, Esc collapses zoom (and quits from the grid), q quits.
+Keys: nothing is selected until you move; arrows/tab (or j/k) select and
+move with wraparound, Enter zooms the selected cell fullscreen, Esc
+collapses zoom (and quits from the grid), q quits.
 Refresh interval defaults to 500ms (`--interval-ms N` to change).
 
 ## Open questions

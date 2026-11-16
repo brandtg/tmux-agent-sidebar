@@ -152,13 +152,14 @@ fn run_tui(interval: Duration) -> io::Result<i32> {
                 if let Some(next) = refresh_panes() {
                     panes = next;
                 }
-                // Keep the selection on its pane; fall back to the first
-                // cell when it vanished.
-                let still_there = selected
+                // A selection whose pane vanished clears entirely: the
+                // grid starts with nobody selected, and a selection only
+                // exists once the user moves.
+                if selected
                     .as_ref()
-                    .is_some_and(|id| panes.iter().any(|p| &p.info.pane_id == id));
-                if !still_there {
-                    selected = panes.first().map(|p| p.info.pane_id.clone());
+                    .is_some_and(|id| !panes.iter().any(|p| &p.info.pane_id == id))
+                {
+                    selected = None;
                 }
                 if let Some(id) = zoomed.clone()
                     && !panes.iter().any(|p| p.info.pane_id == id)
@@ -370,7 +371,6 @@ fn draw_grid(
     let counts = header_line(panes, theme, false);
     f.render_widget(Paragraph::new(counts), chunks[0]);
 
-    let selected = selected_idx.unwrap_or(0);
     let (cols, rows) = grid_dims(panes.len(), chunks[1]);
     let row_rects = Layout::default()
         .direction(Direction::Vertical)
@@ -386,7 +386,7 @@ fn draw_grid(
             if idx >= panes.len() {
                 return;
             }
-            draw_cell(f, *cell_area, &panes[idx], idx == selected, theme);
+            draw_cell(f, *cell_area, &panes[idx], selected_idx == Some(idx), theme);
             idx += 1;
         }
     }
@@ -434,7 +434,12 @@ fn draw_cell(f: &mut Frame, area: Rect, pane: &OverviewPane, selected: bool, the
         PaneStatus::Running | PaneStatus::Background => Style::default().fg(status_color),
     };
     if selected {
-        border = border.add_modifier(Modifier::BOLD);
+        // The selection must be unmistakable at grid scale: the theme's
+        // accent color, not a bolder status border — bold on the grey idle
+        // border was indistinguishable from unselected.
+        border = Style::default()
+            .fg(theme.accent)
+            .add_modifier(Modifier::BOLD);
     }
     let block = Block::bordered()
         .title(title_line(&pane.info, theme))
@@ -880,5 +885,85 @@ mod tests {
 
         no agent panes
         ");
+    }
+
+    #[test]
+    fn selected_cell_border_uses_accent_color() {
+        // Selection must be a different color, not a bolder status border:
+        // bold on the grey idle border was indistinguishable.
+        let theme = ColorTheme::default();
+        let panes = vec![
+            OverviewPane {
+                info: make_pane(AgentType::Claude, PaneStatus::Running, "%1"),
+                grid: None,
+                err: None,
+            },
+            OverviewPane {
+                info: make_pane(AgentType::Codex, PaneStatus::Idle, "%2"),
+                grid: None,
+                err: None,
+            },
+        ];
+        // Selected: the first cell's left border is the accent color, bold.
+        let buf = render_grid_buffer(&panes, Some(0), 80, 12);
+        assert_eq!(buf[(0, 2)].fg, theme.accent);
+        assert!(buf[(0, 2)].modifier.contains(Modifier::BOLD));
+        // The unselected idle cell next to it keeps the grey border, so
+        // the two can never look alike.
+        assert_eq!(buf[(40, 2)].fg, theme.border_inactive);
+        // Unselected running cells keep the status color, distinct from
+        // the accent.
+        let buf_unselected = render_grid_buffer(&panes, None, 80, 12);
+        assert_eq!(buf_unselected[(0, 2)].fg, theme.status_running);
+        assert_ne!(buf_unselected[(0, 2)].fg, theme.accent);
+    }
+
+    fn render_grid_buffer(
+        panes: &[OverviewPane],
+        selected_idx: Option<usize>,
+        w: u16,
+        h: u16,
+    ) -> Buffer {
+        let theme = ColorTheme::default();
+        let backend = TestBackend::new(w, h);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|f| draw_grid(f, panes, selected_idx, &theme))
+            .unwrap();
+        terminal.backend().buffer().clone()
+    }
+
+    #[test]
+    fn no_cell_is_selected_until_the_user_moves() {
+        let theme = ColorTheme::default();
+        let panes = vec![
+            OverviewPane {
+                info: make_pane(AgentType::Claude, PaneStatus::Running, "%1"),
+                grid: None,
+                err: None,
+            },
+            OverviewPane {
+                info: make_pane(AgentType::Codex, PaneStatus::Idle, "%2"),
+                grid: None,
+                err: None,
+            },
+        ];
+        let backend = TestBackend::new(80, 12);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|f| draw_grid(f, &panes, None, &theme))
+            .unwrap();
+        let buf = terminal.backend().buffer().clone();
+        // Border columns of both cells (the grid area starts below the
+        // header row): none may carry the accent while nothing is selected.
+        for y in 1..12 {
+            for x in [0u16, 39, 40, 79] {
+                assert_ne!(
+                    buf[(x, y)].fg,
+                    theme.accent,
+                    "accent border at {x},{y} — nothing is selected by default"
+                );
+            }
+        }
     }
 }
