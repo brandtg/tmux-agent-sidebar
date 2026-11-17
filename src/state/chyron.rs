@@ -220,12 +220,17 @@ impl ChyronState {
     /// menu is open (opening either dismisses the event outright —
     /// this guard covers any other path that opens them).
     pub fn is_showing(&self, state: &AppState) -> bool {
-        let Some((text, _kind)) = self.banner(state) else {
-            return false;
-        };
-        if state.search.is_active() || state.is_repo_popup_open() {
-            return false;
-        }
+        self.visible_banner(state).is_some()
+    }
+
+    /// [`Self::banner`] restricted to the event's display window: the
+    /// returned banner is the one this frame renders — `None` when the
+    /// toolbar owns the row. The render path builds the line once through
+    /// here; the old render called `is_showing` and then rebuilt the same
+    /// banner for the actual drawing, twice per frame while scrolling
+    /// (audit 2026-11-16 J6).
+    pub fn visible_banner(&self, state: &AppState) -> Option<(String, ChyronKind)> {
+        let (text, kind) = self.banner(state)?;
         let text_w = crate::ui::text::display_width(&text);
         let avail_w = state.layout.header_width.unwrap_or(0) as usize;
         let frame = self
@@ -236,7 +241,10 @@ impl ChyronState {
             .elapsed()
             .as_millis()
             / CHYRON_FRAME.as_millis();
-        (frame as usize) < display_frames(text_w, avail_w)
+        if (frame as usize) >= display_frames(text_w, avail_w) {
+            return None;
+        }
+        Some((text, kind))
     }
 
     /// The banner text and its kind, when an unconsumed event exists.

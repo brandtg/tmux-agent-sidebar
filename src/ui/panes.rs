@@ -548,7 +548,7 @@ fn render_header_into(frame: &mut Frame, state: &mut AppState, area: Rect) {
     // The chyron overlays the toolbar while an event is alive; the
     // toolbar owns the row the rest of the time. Either way the row is
     // reserved, so the list never shifts.
-    if state.chyron.is_showing(state) {
+    if let Some((banner_text, banner_kind)) = state.chyron.visible_banner(state) {
         // The banner leaves the overview button's left columns and the
         // menu button's corner free, so both stay visible — and
         // clickable — over it.
@@ -559,7 +559,7 @@ fn render_header_into(frame: &mut Frame, state: &mut AppState, area: Rect) {
             .saturating_sub(button_w)
             .saturating_sub(overview_w);
         if banner_w > 0
-            && let Some(line) = chyron::render_chyron(state, banner_w)
+            && let Some(line) = chyron::render_chyron(state, &banner_text, banner_kind, banner_w)
         {
             let banner_area = Rect::new(area.x + overview_w, area.y, banner_w, area.height);
             frame.render_widget(Paragraph::new(vec![line]), banner_area);
