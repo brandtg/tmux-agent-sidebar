@@ -89,6 +89,51 @@ pub(crate) fn open_append_private(path: &Path) -> io::Result<std::fs::File> {
         .open(path)
 }
 
+/// Exclusive flock on an open file; false if the lock could not be
+/// taken (callers fail open — an unlocked write is only the pre-lock
+/// race, while a skipped write would strand state).
+pub(crate) fn lock_exclusive(file: &std::fs::File) -> bool {
+    use std::os::fd::AsRawFd;
+    unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) == 0 }
+}
+
+/// Lockfile path for one pane's `scope`-scoped writers across
+/// independent hook processes (`%` → `_`, user runtime dir). Never
+/// unlinked: removing a flock target while another process waits on the
+/// old inode reopens the race the lock exists to prevent.
+pub(crate) fn pane_lock_path(scope: &str, pane: &str) -> PathBuf {
+    let encoded = pane.replace('%', "_");
+    runtime_dir().join(format!("tmux-agent-{scope}-{encoded}.lock"))
+}
+
+/// Run `f` while holding the pane's `scope` lock. The lock is released
+/// when the fd drops at the end of this function.
+///
+/// Fail-open, like every flock user here: if the lockfile cannot be
+/// opened or flocked, proceed unlocked — a skipped critical section
+/// would strand state, while an unlocked run is only the pre-lock race.
+pub(crate) fn with_pane_lock<T>(scope: &str, pane: &str, f: impl FnOnce() -> T) -> T {
+    let path = pane_lock_path(scope, pane);
+    match open_read_write_private(&path) {
+        Ok(file) => {
+            if !lock_exclusive(&file) {
+                crate::debug::log(&format!(
+                    "paths: flock failed on {} for pane {pane}; proceeding unlocked",
+                    path.display()
+                ));
+            }
+            f()
+        }
+        Err(err) => {
+            crate::debug::log(&format!(
+                "paths: failed to open {} for pane {pane} ({err}); proceeding unlocked",
+                path.display()
+            ));
+            f()
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -152,5 +197,48 @@ mod tests {
         }
         assert_eq!(fs::read_to_string(&path).unwrap(), "one\ntwo\n");
         fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn with_pane_lock_excludes_concurrent_holders() {
+        // The per-pane lock serializes read-modify-writes across
+        // independent hook processes (subagent list, session binding +
+        // title, notification stamp, bg cmd/pid pair). Prove mutual
+        // exclusion of the shared helper with real threads: at most one
+        // thread may be inside the critical section at any moment.
+        let pane = "%LOCK_RACE";
+        let lock = pane_lock_path("paths_test", pane);
+        let _ = fs::remove_file(&lock);
+
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let inside = Arc::new(AtomicUsize::new(0));
+        let max_inside = Arc::new(AtomicUsize::new(0));
+        let handles: Vec<_> = (0..8)
+            .map(|_| {
+                let inside = inside.clone();
+                let max_inside = max_inside.clone();
+                std::thread::spawn(move || {
+                    for _ in 0..25 {
+                        with_pane_lock("paths_test", pane, || {
+                            let now = inside.fetch_add(1, Ordering::SeqCst) + 1;
+                            max_inside.fetch_max(now, Ordering::SeqCst);
+                            std::thread::sleep(std::time::Duration::from_micros(200));
+                            inside.fetch_sub(1, Ordering::SeqCst);
+                        });
+                    }
+                })
+            })
+            .collect();
+        for handle in handles {
+            handle.join().unwrap();
+        }
+
+        assert_eq!(
+            max_inside.load(Ordering::SeqCst),
+            1,
+            "flock must exclude concurrent holders of the same pane lock"
+        );
+        fs::remove_file(&lock).ok();
     }
 }

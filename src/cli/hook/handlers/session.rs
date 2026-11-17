@@ -69,22 +69,41 @@ pub(in crate::cli::hook) fn on_session_title(
     let Some(sid) = session_id.filter(|sid| !sid.is_empty()) else {
         return 0;
     };
-    // Accept when the pane already tracks this session, or when no
-    // session has claimed the pane yet — the shim emits the title and the
-    // location-setting events as two unordered spawns, so the title may
-    // land before `@pane_session_id` exists. A title belonging to a
-    // DIFFERENT session than the tracked one is dropped; the pane switch
-    // path (`sync_pane_location`) clears the stale option when it writes
-    // the new id, and the next `session.updated` delivers the new title.
-    let tracked = tmux::get_pane_option_value(pane, tmux::PANE_SESSION_ID);
-    if !tracked.is_empty() && tracked != sid {
-        return 0;
-    }
-    if title.is_empty() {
-        tmux::unset_pane_option(pane, tmux::PANE_SESSION_TITLE);
-    } else {
-        tmux::set_pane_option(pane, tmux::PANE_SESSION_TITLE, title);
-    }
+    // Serialize the tracked-session check and the write with the
+    // binding read-modify-write in `sync_pane_location` (same per-pane
+    // flock): both read `@pane_session_id` and write identity state,
+    // and without the lock a location write could land between this
+    // event's check and its write — the title of a session the pane
+    // just switched away from would outlive it (audit 2026-11-16,
+    // unguarded session-title get-check-set).
+    super::subagent::with_subagent_lock(pane, || {
+        // Accept when the pane already tracks this session, or when no
+        // session has claimed the pane yet — the shim emits the title and
+        // the location-setting events as two unordered spawns, so the
+        // title may land before `@pane_session_id` exists. A title
+        // belonging to a DIFFERENT session than the tracked one is
+        // dropped; the pane switch path (`sync_pane_location`) clears the
+        // stale option when it writes the new id, and the next
+        // `session.updated` delivers the new title.
+        let tracked = tmux::get_pane_option_value(pane, tmux::PANE_SESSION_ID);
+        if !tracked.is_empty() && tracked != sid {
+            return;
+        }
+        // A bridge-guessed route must not stamp its title on an unbound
+        // pane either: the title is identity state, and the pane may
+        // belong to another live session. `TMUX_AGENT_SIDEBAR_BIND_SESSION=0`
+        // marks the resolution as a guess — the same gate that suppresses
+        // the binding write suppresses the title. Once the pane is bound
+        // to this session the write is unconditional again.
+        if tracked.is_empty() && !super::super::context::session_bind_allowed() {
+            return;
+        }
+        if title.is_empty() {
+            tmux::unset_pane_option(pane, tmux::PANE_SESSION_TITLE);
+        } else {
+            tmux::set_pane_option(pane, tmux::PANE_SESSION_TITLE, title);
+        }
+    });
     0
 }
 
@@ -597,6 +616,86 @@ mod tests {
             tmux::test_mock::get(pane, tmux::PANE_SESSION_TITLE).as_deref(),
             Some("New session")
         );
+    }
+
+    #[test]
+    fn on_session_title_guessed_route_does_not_claim_an_unbound_pane() {
+        // A bridge-guessed resolution (TMUX_AGENT_SIDEBAR_BIND_SESSION=0)
+        // must not stamp its title on a pane no session has claimed: the
+        // title is identity state, and the pane may belong to another
+        // live session — the CLI-side complement of the bridge's
+        // committed-guess doctrine (audit 2026-11-16). Once the pane is
+        // bound to this session the write is unconditional again.
+        let _guard = tmux::test_mock::install();
+        let pane = "%TITLE_GUESS";
+
+        unsafe { std::env::set_var("TMUX_AGENT_SIDEBAR_BIND_SESSION", "0") };
+        let exit = on_session_title(pane, "some other session's title", Some("ses-1"));
+        unsafe { std::env::remove_var("TMUX_AGENT_SIDEBAR_BIND_SESSION") };
+
+        assert_eq!(exit, 0);
+        assert!(
+            !tmux::test_mock::contains(pane, tmux::PANE_SESSION_TITLE),
+            "a guessed route must not title an unbound pane"
+        );
+
+        // Bound to this session: the title is written regardless.
+        tmux::test_mock::set(pane, tmux::PANE_SESSION_ID, "ses-1");
+        unsafe { std::env::set_var("TMUX_AGENT_SIDEBAR_BIND_SESSION", "0") };
+        let exit = on_session_title(pane, "Bound title", Some("ses-1"));
+        unsafe { std::env::remove_var("TMUX_AGENT_SIDEBAR_BIND_SESSION") };
+
+        assert_eq!(exit, 0);
+        assert_eq!(
+            tmux::test_mock::get(pane, tmux::PANE_SESSION_TITLE).as_deref(),
+            Some("Bound title")
+        );
+    }
+
+    #[test]
+    fn on_session_title_waits_for_the_identity_lock() {
+        // The title's tracked-session check and write hold the same
+        // per-pane flock as the session-binding read-modify-write: a
+        // location write racing in between the check and the write used
+        // to leave a foreign title on a freshly re-bound pane (audit
+        // 2026-11-16). Hold the lock from a helper thread — the title
+        // must block until it is released, and only then write.
+        //
+        // The helper touches nothing but the lockfile — the tmux mock is
+        // thread-local, so every pane-option access stays on this thread.
+        let _guard = tmux::test_mock::install();
+        let pane = "%TITLE_LOCKED";
+        let lock = crate::paths::pane_lock_path("subagent", pane);
+        let _ = fs::remove_file(&lock);
+
+        let (locked_tx, locked_rx) = std::sync::mpsc::channel();
+        let lock_for_helper = lock.clone();
+        let helper = std::thread::spawn(move || {
+            let file = fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .create(true)
+                .truncate(false)
+                .open(&lock_for_helper)
+                .unwrap();
+            assert!(crate::paths::lock_exclusive(&file));
+            locked_tx.send(()).unwrap();
+            // Hold long enough that an unlocked check+write would finish
+            // entirely inside this window.
+            std::thread::sleep(std::time::Duration::from_millis(300));
+            // fd drops here, releasing the flock.
+        });
+
+        locked_rx.recv().unwrap();
+        let exit = on_session_title(pane, "serialized title", Some("ses-1"));
+        helper.join().unwrap();
+
+        assert_eq!(exit, 0);
+        assert_eq!(
+            tmux::test_mock::get(pane, tmux::PANE_SESSION_TITLE).as_deref(),
+            Some("serialized title")
+        );
+        fs::remove_file(&lock).ok();
     }
 
     #[test]

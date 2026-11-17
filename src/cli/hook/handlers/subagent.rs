@@ -1,50 +1,20 @@
-use std::path::PathBuf;
-
-use crate::paths;
 use crate::tmux;
 
-use super::super::activity::lock_exclusive;
 use super::super::context::remove_subagent;
 
-/// Per-pane lockfile serializing `@pane_subagents` writers across
-/// independent hook processes. Same naming scheme as the activity log
-/// (`%` → `_`, user runtime dir). Never unlinked: removing a flock
-/// target while another process waits on the old inode reopens the
-/// race the lock exists to prevent.
-fn subagent_lock_path(pane: &str) -> PathBuf {
-    let encoded = pane.replace('%', "_");
-    paths::runtime_dir().join(format!("tmux-agent-subagent-{encoded}.lock"))
-}
-
-/// Run `f` while holding the pane's subagent lock. Fail-open: if the
-/// lockfile cannot be opened or flocked, proceed unlocked — a skipped
-/// write would strand the subagent guard, while an unlocked write is
-/// only the pre-fix race. The lock is released when the fd drops at
-/// the end of this function.
+/// Run `f` while holding the pane's subagent lock. Fail-open (see
+/// `paths::with_pane_lock`): if the lockfile cannot be opened or
+/// flocked, proceed unlocked — a skipped write would strand the
+/// subagent guard, while an unlocked write is only the pre-fix race.
 ///
 /// Held by both subagent-list writers (`on_subagent_start` /
-/// `on_subagent_stop`) and by `on_stop`'s stale-list clear, so a stop's
-/// read-modify-write cannot resurrect children an interleaved clear just
-/// removed (and vice versa).
+/// `on_subagent_stop`), by `on_stop`'s stale-list clear, by the
+/// session-binding read-modify-write in `sync_pane_location` and by
+/// `on_session_title`'s check+write, so identity writers on one pane
+/// cannot interleave their read-modify-writes across independent hook
+/// processes (audit 2026-11-16: unguarded session-title get-check-set).
 pub(in crate::cli::hook) fn with_subagent_lock<T>(pane: &str, f: impl FnOnce() -> T) -> T {
-    match paths::open_read_write_private(&subagent_lock_path(pane)) {
-        Ok(file) => {
-            if !lock_exclusive(&file) {
-                crate::debug::log(&format!(
-                    "subagent: flock failed on {} for pane {pane}; proceeding unlocked",
-                    subagent_lock_path(pane).display()
-                ));
-            }
-            f()
-        }
-        Err(err) => {
-            crate::debug::log(&format!(
-                "subagent: failed to open {} for pane {pane} ({err}); proceeding unlocked",
-                subagent_lock_path(pane).display()
-            ));
-            f()
-        }
-    }
+    crate::paths::with_pane_lock("subagent", pane, f)
 }
 
 pub(in crate::cli::hook) fn on_subagent_start(
@@ -118,6 +88,7 @@ mod tests {
     use super::super::run::on_stop;
     use super::super::session::on_session_end;
     use super::*;
+    use crate::cli::hook::activity::lock_exclusive;
     use crate::cli::hook::context::PENDING_SESSION_END;
     use crate::desktop_notification;
     use std::fs;
@@ -146,7 +117,7 @@ mod tests {
             tmux::test_mock::get(pane, tmux::PANE_SUBAGENTS).as_deref(),
             Some(",Explore:sub-1,Plan:sub-2")
         );
-        fs::remove_file(subagent_lock_path(pane)).ok();
+        fs::remove_file(crate::paths::pane_lock_path("subagent", pane)).ok();
     }
 
     #[test]
@@ -158,7 +129,7 @@ mod tests {
         // section at any moment, even though every iteration sleeps
         // while holding it.
         let pane = "%SUB_LOCK_RACE";
-        let lock = subagent_lock_path(pane);
+        let lock = crate::paths::pane_lock_path("subagent", pane);
         let _ = fs::remove_file(&lock);
 
         use std::sync::Arc;
@@ -209,7 +180,7 @@ mod tests {
         let _guard = tmux::test_mock::install();
         let pane = "%STOP_LOCKED";
         tmux::test_mock::set(pane, tmux::PANE_SUBAGENTS, ",Explore:sub-1,Plan:sub-2");
-        let lock = subagent_lock_path(pane);
+        let lock = crate::paths::pane_lock_path("subagent", pane);
         let _ = fs::remove_file(&lock);
 
         let (locked_tx, locked_rx) = std::sync::mpsc::channel();
@@ -274,7 +245,7 @@ mod tests {
             !tmux::test_mock::contains(pane, tmux::PANE_SUBAGENTS),
             "drained list must be unset"
         );
-        fs::remove_file(subagent_lock_path(pane)).ok();
+        fs::remove_file(crate::paths::pane_lock_path("subagent", pane)).ok();
     }
 
     #[test]
@@ -305,7 +276,7 @@ mod tests {
             Some("idle"),
             "the last child finishing must drop the pane out of background"
         );
-        fs::remove_file(subagent_lock_path(pane)).ok();
+        fs::remove_file(crate::paths::pane_lock_path("subagent", pane)).ok();
     }
 
     #[test]
@@ -323,7 +294,7 @@ mod tests {
             Some("background"),
             "a live bg shell still owns the background status"
         );
-        fs::remove_file(subagent_lock_path(pane)).ok();
+        fs::remove_file(crate::paths::pane_lock_path("subagent", pane)).ok();
     }
 
     #[test]
@@ -340,7 +311,7 @@ mod tests {
             Some("running"),
             "the downgrade is scoped to the children-live background state"
         );
-        fs::remove_file(subagent_lock_path(pane)).ok();
+        fs::remove_file(crate::paths::pane_lock_path("subagent", pane)).ok();
     }
 
     // ─── subagent-guarded SessionEnd regression test ────────────────
@@ -389,6 +360,6 @@ mod tests {
         assert!(log_path.exists());
 
         fs::remove_file(&log_path).ok();
-        fs::remove_file(subagent_lock_path(pane)).ok();
+        fs::remove_file(crate::paths::pane_lock_path("subagent", pane)).ok();
     }
 }

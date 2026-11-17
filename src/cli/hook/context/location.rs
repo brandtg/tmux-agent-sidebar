@@ -116,7 +116,7 @@ pub(in crate::cli::hook) fn sync_launch_anchor(
 /// `TMUX_AGENT_SIDEBAR_BIND_SESSION=0` and the binding write is skipped.
 /// Every other agent and in-pane setups never set the variable and keep
 /// the unconditional write.
-fn session_bind_allowed() -> bool {
+pub(in crate::cli::hook) fn session_bind_allowed() -> bool {
     match std::env::var("TMUX_AGENT_SIDEBAR_BIND_SESSION") {
         Ok(value) => value != "0",
         Err(_) => true,
@@ -145,8 +145,16 @@ pub(in crate::cli::hook) fn sync_pane_location(
     //
     // A bridge-guessed pane must not have its session identity rewritten:
     // the binding is what later events route by (see session_bind_allowed).
+    // The read-modify-write of `@pane_session_id` / `@pane_session_title`
+    // holds the same per-pane flock as `on_session_title`'s check+write,
+    // so the two identity writers on one pane cannot interleave their
+    // check and write across independent hook processes (audit
+    // 2026-11-16: unguarded session-title get-check-set).
     let mut writes: Vec<tmux::PaneOptionWrite> = Vec::new();
-    if session_bind_allowed() {
+    crate::cli::hook::handlers::with_subagent_lock(pane, || {
+        if !session_bind_allowed() {
+            return;
+        }
         match session_id.as_deref() {
             Some(sid) if !sid.is_empty() => {
                 // Pane switched sessions: drop the previous session's title so
@@ -172,7 +180,7 @@ pub(in crate::cli::hook) fn sync_pane_location(
                 });
             }
         }
-    }
+    });
     if !cwd.is_empty() {
         let effective_cwd = resolve_cwd(cwd, worktree);
         writes.push(tmux::PaneOptionWrite::Set {
