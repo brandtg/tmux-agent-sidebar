@@ -67,6 +67,54 @@ pub(crate) fn classify_task_progress(
     }
 }
 
+/// Debounce inactive→dismiss transitions to avoid flicker.
+///
+/// The agent status can briefly drop to idle during normal operation
+/// (e.g. when Claude Code processes a system prompt or between tool
+/// calls). Without a grace period, the 1-second refresh cycle can catch
+/// that transient idle state and immediately hide the task progress bar,
+/// causing a visible flicker. Each pane's first inactive tick starts a
+/// timer; only after [`INACTIVE_GRACE_SECS`] has elapsed does an
+/// unfinished bar get dismissed, and returning to Running/Waiting resets
+/// the timer.
+///
+/// `progress == None` means no cached progress (the empty-log case —
+/// identical to what `classify_task_progress` sees for an empty parse).
+pub(crate) fn classify_progress_with_grace(
+    progress: Option<&TaskProgress>,
+    agent_active: bool,
+    inactive_since: Option<u64>,
+    dismissed_total: Option<usize>,
+    now: u64,
+) -> TaskProgressDecision {
+    const INACTIVE_GRACE_SECS: u64 = 3;
+
+    let grace_active = !agent_active;
+    let grace_expired = grace_active
+        .then(|| inactive_since.unwrap_or(now))
+        .is_some_and(|since| now.saturating_sub(since) >= INACTIVE_GRACE_SECS);
+    let empty = progress.is_none_or(|p| p.is_empty());
+    if grace_expired && !empty && !progress.is_some_and(|p| p.all_completed()) {
+        return TaskProgressDecision::Dismiss {
+            total: progress.map(|p| p.total()).unwrap_or(0),
+        };
+    }
+    match progress {
+        Some(p) => classify_task_progress(p, dismissed_total),
+        None => TaskProgressDecision::Clear,
+    }
+}
+
+/// The next `inactive_since` stamp for one tick: armed when the agent is
+/// idle (first inactive tick starts the clock), cleared when active.
+fn grace_inactive_since(agent_active: bool, inactive_since: Option<u64>, now: u64) -> Option<u64> {
+    if agent_active {
+        None
+    } else {
+        Some(inactive_since.unwrap_or(now))
+    }
+}
+
 impl AppState {
     pub(crate) fn refresh_now(&mut self) {
         self.now = crate::time::now_epoch_secs();
@@ -749,26 +797,62 @@ impl AppState {
             for (pane, _) in &group.panes {
                 let prior_state = self.pane_state(&pane.pane_id).cloned().unwrap_or_default();
                 let current_mtime = activity::log_mtime(&pane.pane_id);
-                // Skip the (full-file) re-parse when the activity log
-                // hasn't been touched since the last tick AND the pane
-                // is still active. We must still re-evaluate the
-                // inactive-grace path while the agent is idle so that a
-                // long-stalled progress bar gets dismissed even if the
-                // log file itself stops changing.
                 let agent_active = pane.status.is_active();
                 let log_unchanged =
                     current_mtime.is_some() && current_mtime == prior_state.task_progress_log_mtime;
-                if log_unchanged && agent_active {
-                    // Just refresh the mtime bookkeeping so we don't
-                    // accidentally drop the cache on a future iteration
-                    // where current_mtime suddenly becomes None (e.g.
-                    // /tmp clean-up). All other prior_state fields
-                    // remain authoritative.
+                if log_unchanged {
+                    // The mtime is unchanged, so re-reading the file would
+                    // parse to exactly what the previous tick parsed —
+                    // skip the (full-file) re-read and decide from the
+                    // cache. The inactive-grace path still fires below: a
+                    // long-stalled bar is dismissed on the timer even
+                    // though the log itself stops changing. Previously
+                    // only *active* panes skipped the re-read, so every
+                    // idle agent re-read and re-parsed its whole (capped)
+                    // log every tick — file I/O × N idle panes × 1/s for
+                    // no new information (audit 2026-11-16 J6).
+                    let decision = match prior_state.task_progress.as_ref() {
+                        // The cached progress is authoritative for an
+                        // unchanged file: run the grace/classify decision
+                        // against it.
+                        Some(_) => classify_progress_with_grace(
+                            prior_state.task_progress.as_ref(),
+                            agent_active,
+                            prior_state.inactive_since,
+                            prior_state.task_dismissed_total,
+                            self.now,
+                        ),
+                        // No cached progress means the previous tick
+                        // cleared or dismissed the bar. An unchanged file
+                        // cannot change that outcome: a re-parse returns
+                        // Clear for an empty log, Skip for an
+                        // already-dismissed completed log, or re-Dismiss
+                        // under an expired grace timer — every branch
+                        // leaves progress `None` and the dismissal record
+                        // intact, so keep the bookkeeping as-is.
+                        None => TaskProgressDecision::Skip,
+                    };
+                    let next_progress = match decision {
+                        TaskProgressDecision::Clear => None,
+                        TaskProgressDecision::Show | TaskProgressDecision::Skip => {
+                            prior_state.task_progress.clone()
+                        }
+                        TaskProgressDecision::Dismiss { .. } => None,
+                    };
+                    let next_dismissed_total = match decision {
+                        TaskProgressDecision::Clear | TaskProgressDecision::Show => None,
+                        TaskProgressDecision::Dismiss { total } => Some(total),
+                        TaskProgressDecision::Skip => prior_state.task_dismissed_total,
+                    };
                     updates.push(PaneTaskUpdate {
                         pane_id: pane.pane_id.clone(),
-                        progress: prior_state.task_progress.clone(),
-                        dismissed_total: prior_state.task_dismissed_total,
-                        inactive_since: None,
+                        progress: next_progress,
+                        dismissed_total: next_dismissed_total,
+                        inactive_since: grace_inactive_since(
+                            agent_active,
+                            prior_state.inactive_since,
+                            self.now,
+                        ),
                         log_mtime: current_mtime,
                     });
                     continue;
@@ -777,35 +861,13 @@ impl AppState {
                 // so that TaskCreate entries aren't lost when subagents flood the log
                 let entries = activity::read_activity_log(&pane.pane_id, 0);
                 let progress = activity::parse_task_progress(&entries);
-                // Debounce inactive→dismiss transition to avoid flicker.
-                //
-                // The agent status can briefly drop to idle during normal operation
-                // (e.g. when Claude Code processes a system prompt or between tool
-                // calls). Without a grace period, the 1-second refresh cycle can
-                // catch that transient idle state and immediately hide the task
-                // progress bar, causing a visible flicker.
-                //
-                // We track when each pane first appeared inactive and only dismiss
-                // after INACTIVE_GRACE_SECS have elapsed. If the agent returns to
-                // Running/Waiting within that window, the timer is reset.
-                const INACTIVE_GRACE_SECS: u64 = 3;
-
-                let next_inactive_since = if !agent_active {
-                    Some(prior_state.inactive_since.unwrap_or(self.now))
-                } else {
-                    None
-                };
-                let grace_expired = next_inactive_since
-                    .is_some_and(|since| self.now.saturating_sub(since) >= INACTIVE_GRACE_SECS);
-
-                let decision = if grace_expired && !progress.is_empty() && !progress.all_completed()
-                {
-                    TaskProgressDecision::Dismiss {
-                        total: progress.total(),
-                    }
-                } else {
-                    classify_task_progress(&progress, prior_state.task_dismissed_total)
-                };
+                let decision = classify_progress_with_grace(
+                    Some(&progress),
+                    agent_active,
+                    prior_state.inactive_since,
+                    prior_state.task_dismissed_total,
+                    self.now,
+                );
                 let next_progress = match decision {
                     TaskProgressDecision::Clear => None,
                     TaskProgressDecision::Show => Some(progress),
@@ -821,7 +883,11 @@ impl AppState {
                     pane_id: pane.pane_id.clone(),
                     progress: next_progress,
                     dismissed_total: next_dismissed_total,
-                    inactive_since: next_inactive_since,
+                    inactive_since: grace_inactive_since(
+                        agent_active,
+                        prior_state.inactive_since,
+                        self.now,
+                    ),
                     log_mtime: current_mtime,
                 });
             }

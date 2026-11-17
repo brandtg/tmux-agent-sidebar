@@ -532,6 +532,38 @@ mod tests {
     }
 
     #[test]
+    fn refresh_task_progress_keeps_dismissal_across_unchanged_ticks_when_idle() {
+        // Audit 2026-11-16 J6: an idle pane whose log never changes skips
+        // the full-file re-read, and the dismissal record must survive
+        // those cache-only ticks (the active-pane variant is pinned by
+        // `skips_already_dismissed_completed_tasks`).
+        let mut state = AppState::new("%99".into());
+        let pane_id = "%221".to_string();
+        let mut pane = test_pane(&pane_id);
+        pane.status = PaneStatus::Idle;
+        state.repo_groups = vec![RepoGroup {
+            name: "test".into(),
+            has_focus: true,
+            panes: vec![(pane, PaneGitInfo::default())],
+        }];
+        let log_path = write_activity_log(
+            &pane_id,
+            "10:00|TaskCreate|#1 A\n10:01|TaskUpdate|completed #1\n",
+        );
+
+        state.now = 100;
+        state.refresh_task_progress();
+        assert_eq!(state.pane_task_dismissed_total(&pane_id), Some(1));
+        assert!(state.pane_task_progress(&pane_id).is_none());
+
+        state.now = 105;
+        state.refresh_task_progress();
+        assert_eq!(state.pane_task_dismissed_total(&pane_id), Some(1));
+        assert!(state.pane_task_progress(&pane_id).is_none());
+        fs::remove_file(&log_path).ok();
+    }
+
+    #[test]
     fn refresh_task_progress_drops_dismissals_for_inactive_panes() {
         let mut state = AppState::new("%99".into());
         let pane_id = "%206".to_string();
