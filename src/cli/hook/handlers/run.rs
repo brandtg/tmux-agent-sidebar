@@ -15,6 +15,7 @@ use super::super::notifications::{
     task_completed_fingerprint,
 };
 use super::status_priority::resolve_stop_status;
+use super::subagent::with_subagent_lock;
 
 pub(in crate::cli::hook) fn on_user_prompt_submit(
     pane: &str,
@@ -149,11 +150,21 @@ pub(in crate::cli::hook) fn on_stop(
     // non-empty list is therefore live work, not stale state — keep it
     // and let the final `subagent_stop` drain it (dropping the pane back
     // to idle), so the pane doesn't flash idle while children run.
-    let subagents = tmux::get_pane_option_value(pane, tmux::PANE_SUBAGENTS);
-    let children_live = ctx.agent == crate::tmux::HERMES_AGENT && !subagents.is_empty();
-    if !children_live {
-        tmux::unset_pane_option(pane, tmux::PANE_SUBAGENTS);
-    }
+    //
+    // The read+unset holds the same per-pane flock as the subagent start/
+    // stop paths: a concurrent SubagentStop does a read-modify-write on
+    // this list, and an unlocked unset landing between its read and its
+    // rewrite resurrects the removed children — stranding
+    // `pane_writes_allowed` and tripping the SessionEnd subagent guard
+    // until the next parent Stop re-clears.
+    let children_live = with_subagent_lock(pane, || {
+        let subagents = tmux::get_pane_option_value(pane, tmux::PANE_SUBAGENTS);
+        let children_live = ctx.agent == crate::tmux::HERMES_AGENT && !subagents.is_empty();
+        if !children_live {
+            tmux::unset_pane_option(pane, tmux::PANE_SUBAGENTS);
+        }
+        children_live
+    });
     let bg_work_live = bg_shell_live || children_live;
     if bg_work_live {
         tmux::unset_pane_option(pane, tmux::PANE_WAIT_REASON);
