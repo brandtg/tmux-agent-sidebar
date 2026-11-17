@@ -152,6 +152,14 @@ pub struct AppState {
     /// tears the popup down when the process exits, and the pane-mode
     /// sidebar pane closes with the process.
     pub quit_requested: bool,
+    /// Set by key handlers that changed a grouping-affecting value and
+    /// want the next snapshot fetched immediately instead of waiting for
+    /// the periodic tick. The event loop fires a snapshot request for it
+    /// and clears it — the apply lands one loop iteration later, off the
+    /// input thread (the `s` regroup used to run the whole sync refresh —
+    /// `list-panes` *and* the process `ps` — inline on the keypress, the
+    /// worst single-keystroke stall in the app; audit 2026-11-16 J5).
+    pub snapshot_now: bool,
 }
 
 impl AppState {
@@ -187,6 +195,7 @@ impl AppState {
             popup_mode: false,
             window_has_no_other_panes: false,
             quit_requested: false,
+            snapshot_now: false,
         }
     }
 

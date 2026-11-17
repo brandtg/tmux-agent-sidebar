@@ -212,9 +212,13 @@ pub(super) fn handle_key_event(key: KeyEvent, state: &mut AppState) -> bool {
             }
         }
         // Grouping is a shared view setting, like `c` / `w`: write the
-        // tmux global and let every open sidebar reload it. Re-query the
-        // snapshot here so this sidebar regroups immediately instead of
-        // waiting for the next tick.
+        // tmux global and let every open sidebar reload it. The fresh
+        // snapshot is requested from the event loop (see
+        // `AppState::snapshot_now`) so this sidebar regroups one loop
+        // iteration later instead of on this keypress — the old inline
+        // `refresh()` blocked the input thread on `list-panes` *and* the
+        // process snapshot's `ps`, the worst single-keystroke stall in
+        // the app (audit 2026-11-16 J5).
         KeyCode::Char('s') => {
             state.global.toggle_group_by();
             // Names are mode-specific; drop the parked cursor group too
@@ -222,7 +226,7 @@ pub(super) fn handle_key_event(key: KeyEvent, state: &mut AppState) -> bool {
             // new mode fully expanded.
             state.collapsed_cursor_group = None;
             state.global.persist_cleared_collapsed_groups();
-            state.refresh();
+            state.snapshot_now = true;
         }
         KeyCode::PageDown => page_scroll(state, 1),
         KeyCode::PageUp => page_scroll(state, -1),

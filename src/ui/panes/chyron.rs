@@ -63,12 +63,12 @@ pub(super) fn render_chyron<'a>(
         // The ticker and its end-hold show the scrolled window; the
         // end-hold rests at the tail so it does not blink away the
         // moment the scroll completes.
-        ChyronPhase::Scroll { offset } => scroll_window(&text, offset, avail_w),
-        ChyronPhase::EndHold => scroll_window(&text, text_w - avail_w, avail_w),
+        ChyronPhase::Scroll { offset } => scroll_window(text, offset, avail_w),
+        ChyronPhase::EndHold => scroll_window(text, text_w - avail_w, avail_w),
         _ => {
             // Pad to the row width so stale toolbar cells from the
             // previous frame are overwritten.
-            let clipped = truncate_to_width(&text, avail_w);
+            let clipped = truncate_to_width(text, avail_w);
             format!(
                 "{}{}",
                 clipped,
