@@ -388,35 +388,39 @@ impl AppState {
         if len == 0 {
             return false;
         }
+        // One lookup map instead of per-row scans: window rows resolved
+        // their attention by linearly sweeping every `other_windows`
+        // entry for *each* candidate row — O(rows × windows) per
+        // keypress (audit 2026-11-16 J6). Pane rows were already a
+        // single pane-state hit.
+        let window_attention: std::collections::HashMap<&str, PaneAttention> = self
+            .other_windows
+            .values()
+            .flat_map(|windows| windows.iter())
+            .map(|window| (window.pane_id.as_str(), window.attention))
+            .collect();
         let current = self.global.selected_pane_row.min(len - 1);
         for offset in 1..len {
             let index = (current + offset) % len;
-            if self.row_attention(index) != PaneAttention::None {
+            let Some(target) = self.layout.pane_row_targets.get(index) else {
+                continue;
+            };
+            let attention = if target.is_window {
+                window_attention
+                    .get(target.pane_id.as_str())
+                    .copied()
+                    .unwrap_or(PaneAttention::None)
+            } else {
+                self.pane_by_id(&target.pane_id)
+                    .map(|pane| pane.attention)
+                    .unwrap_or(PaneAttention::None)
+            };
+            if attention != PaneAttention::None {
                 self.global.selected_pane_row = index;
                 return true;
             }
         }
         false
-    }
-
-    /// Attention flag behind a rendered row. Window rows keep their flag
-    /// on `OtherWindow`, agent rows on `PaneInfo`.
-    fn row_attention(&self, index: usize) -> PaneAttention {
-        let Some(target) = self.layout.pane_row_targets.get(index) else {
-            return PaneAttention::None;
-        };
-        if target.is_window {
-            self.other_windows
-                .values()
-                .flat_map(|windows| windows.iter())
-                .find(|window| window.pane_id == target.pane_id)
-                .map(|window| window.attention)
-                .unwrap_or(PaneAttention::None)
-        } else {
-            self.pane_by_id(&target.pane_id)
-                .map(|pane| pane.attention)
-                .unwrap_or(PaneAttention::None)
-        }
     }
 
     /// Fold or unfold every group from one key: with every visible group
