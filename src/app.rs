@@ -287,22 +287,21 @@ pub fn run(
                     .todos
                     .clamp_selection(state.global.todo_hide_completed);
                 // While the sidebar pane is unfocused nobody is navigating
-                // the list: park the scroll at the top and end the search.
-                // The cursor row is deliberately left alone — it is the
-                // user's last selection, and erasing it to row 0 on every
-                // agent-state signal made the highlight (and Enter) land
-                // on a different agent after they returned. The parked
-                // cursor renders nothing while unfocused (the highlight is
-                // focus-gated), the auto-scroll only follows it while
-                // focused, and the context selection below reconciles it
-                // on arrival.
+                // the list, so a search — a transient navigation aid
+                // scoped to the sidebar's focus — ends here, and the next
+                // arrival shows the full list instead of a stale filter.
+                // The cursor row and the scroll offset are deliberately
+                // left alone: the user's last selection and viewport are
+                // what they expect to come back to. The highlight is
+                // focus-gated (a preserved cursor renders nothing while
+                // unfocused), the auto-scroll only follows the selection
+                // while focused, and the context selection below
+                // reconciles the cursor on arrival. Parking the offset at
+                // the top here used to make the viewport jump back down
+                // to the preserved cursor on refocus when the context
+                // pane was unknown (audit 2026-11-16).
                 if !state.focus_state.sidebar_focused {
-                    // A search is a transient navigation aid scoped to the
-                    // sidebar's focus: leaving the sidebar (a jump, a
-                    // manual pane switch) ends it, so returning shows the
-                    // full list instead of a stale filter.
                     state.cancel_search();
-                    state.reset_pane_scroll();
                 }
             }
             if sidebar_gained_focus {
@@ -311,13 +310,11 @@ pub fn run(
                 // observed it; the periodic tick is the safety net for a
                 // missed signal. Runs after `rebuild_row_targets` so the
                 // row index matches the filtered list this frame renders,
-                // and `compute_scroll_offset` brings the row into view.
-                // When the context pane is unknown or filtered out, the
-                // fallback only parks the scroll: the cursor stays on the
-                // user's last selection instead of jumping to row 0.
-                if !state.select_focused_context_row() {
-                    state.reset_pane_scroll();
-                }
+                // and `compute_scroll_offset` keeps the row in view. When
+                // the context pane is unknown or filtered out, the cursor
+                // and viewport simply stay where the user left them —
+                // never reset to row 0, never scrolled.
+                state.select_focused_context_row();
             }
             if is_window_active {
                 window_inactive_count = 0;
