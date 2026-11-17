@@ -30,23 +30,31 @@ fn maintain_width_is_dispatched_by_the_binary() {
 }
 
 #[test]
-fn maintain_width_is_registered_for_both_resize_events() {
-    // Both events carry the same idempotent command; the registrations
-    // must stay inside `if-shell` guards (window-layout-changed needs
-    // tmux 3.2+, and an unguarded `set-hook` would error while sourcing
-    // on older servers).
+fn maintain_width_is_registered_for_client_and_layout_events() {
+    // All four events carry the same idempotent command, forwarding the
+    // triggering client's width as the second argument; the
+    // window-layout-changed / client-resized registrations must stay
+    // inside `if-shell` guards (window-layout-changed needs tmux 3.2+,
+    // and an unguarded `set-hook` would error while sourcing on older
+    // servers). client-session-changed and after-select-window exist in
+    // every supported tmux and are registered unguarded.
     //
     // The quoting is load-bearing: at fire time tmux re-parses the stored
     // command, so the `\"` span must stay open across `maintain-width` and
-    // close only after `#{window_id}` — that way `run-shell` receives the
-    // whole invocation as ONE argument. Closing the span after the binary
-    // (`\"#{@agent_sidebar_bin}\"`) splits the hook into separate
+    // close only after `#{client_width}` — that way `run-shell` receives
+    // the whole invocation as ONE argument. Closing the span after the
+    // binary (`\"#{@agent_sidebar_bin}\"`) splits the hook into separate
     // arguments; tmux's run-shell then executes argv[0] (the bare binary,
     // headless TUI) which exits 1 on every layout change.
     let mut per_hook: BTreeMap<&str, Vec<&'static str>> = BTreeMap::new();
-    for hook in ["window-layout-changed", "client-resized"] {
+    for (hook, guarded) in [
+        ("window-layout-changed", true),
+        ("client-resized", true),
+        ("client-session-changed", false),
+        ("after-select-window", false),
+    ] {
         let needle = format!(
-            "set-hook -ga {hook} \"run-shell -b \\\"#{{@agent_sidebar_bin}} maintain-width #{{window_id}}\\\"\""
+            "set-hook -ga {hook} \"run-shell -b \\\"#{{@agent_sidebar_bin}} maintain-width #{{window_id}} #{{client_width}}\\\"\""
         );
         let lines = conf_lines_containing(&needle);
         assert_eq!(
@@ -55,12 +63,20 @@ fn maintain_width_is_registered_for_both_resize_events() {
             "expected exactly one {hook} registration for maintain-width, found {}: {lines:?}",
             lines.len()
         );
-        assert!(
-            lines[0].trim_start().starts_with("if-shell"),
-            "{hook} maintain-width registration must stay guarded by an \
-             if-shell tmux version check so sourcing never errors on \
-             tmux < 3.2"
-        );
+        if guarded {
+            assert!(
+                lines[0].trim_start().starts_with("if-shell"),
+                "{hook} maintain-width registration must stay guarded by an \
+                 if-shell tmux version check so sourcing never errors on \
+                 tmux < 3.2"
+            );
+        } else {
+            assert!(
+                !lines[0].trim_start().starts_with("if-shell"),
+                "{hook} exists in every supported tmux; no version guard \
+                 expected on its maintain-width registration"
+            );
+        }
         per_hook.insert(hook, lines);
     }
 }
@@ -69,7 +85,12 @@ fn maintain_width_is_registered_for_both_resize_events() {
 fn maintain_width_registrations_have_matching_dedup_lines() {
     // The dedup block removes exactly our entries before re-registering;
     // a missing line means duplicate hooks accumulate on every reload.
-    for hook in ["window-layout-changed", "client-resized"] {
+    for hook in [
+        "window-layout-changed",
+        "client-resized",
+        "client-session-changed",
+        "after-select-window",
+    ] {
         let needle = format!(
             "show-hooks -g {hook} | awk \"/@agent_sidebar_bin/ && /maintain-width/ {{ print \\$1 }}\""
         );
