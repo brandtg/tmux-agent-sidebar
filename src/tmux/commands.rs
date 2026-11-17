@@ -185,17 +185,25 @@ pub fn kill_window(window_id: &str) -> Result<(), String> {
 }
 
 pub fn select_pane(pane_id: &str) {
-    // Find the session containing this pane and switch to it first
-    let session_id = display_message(pane_id, "#{session_id}");
+    // One probe returns both targets (the audit's J2: this jump path
+    // paid two `display-message` spawns here plus three more below),
+    // and the three state changes chain into a single tmux client
+    // process via tmux's `;` separator — one round trip instead of
+    // five serial ones, in the same order.
+    let probe = display_message(pane_id, "#{session_id}|#{window_id}");
+    let (session_id, window_id) = match probe.split_once('|') {
+        Some((session_id, window_id)) => (session_id, window_id),
+        None => ("", ""),
+    };
+    let mut argv: Vec<&str> = Vec::new();
     if !session_id.is_empty() {
-        let _ = run_tmux(&["switch-client", "-t", &session_id]);
+        argv.extend(["switch-client", "-t", session_id, ";"]);
     }
-    // Then switch to the correct window
-    let window_id = display_message(pane_id, "#{window_id}");
     if !window_id.is_empty() {
-        let _ = run_tmux(&["select-window", "-t", &window_id]);
+        argv.extend(["select-window", "-t", window_id, ";"]);
     }
-    let _ = run_tmux(&["select-pane", "-t", pane_id]);
+    argv.extend(["select-pane", "-t", pane_id]);
+    let _ = run_tmux(&argv);
 }
 
 /// Test-only seam that makes every `run_tmux` call fail for the current

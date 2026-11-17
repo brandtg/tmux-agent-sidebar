@@ -248,7 +248,18 @@ impl AppState {
         // popup threshold, so this never spawns where the user keeps an
         // editor or a test run unless the mode says so. create-only is a
         // no-op when that window already has a sidebar.
-        let window_id = tmux::display_message(&target_pane_id, "#{window_id}");
+        // One pane-targeted probe replaces four serial `display-message`
+        // spawns (audit 2026-11-16 J2). Format expansion from a pane
+        // resolves window-scoped variables — the same mechanism
+        // `read_spawn_markers` depends on for window-scope markers — and
+        // `splitn(4)` keeps a `|` inside a cwd intact as part of the
+        // path field.
+        let probe = tmux::display_message(
+            &target_pane_id,
+            "#{window_id}|#{window_width}|#{@sidebar_popup_max_width}|#{pane_current_path}",
+        );
+        let mut fields = probe.splitn(4, '|');
+        let window_id = fields.next().unwrap_or("").to_string();
         if window_id.is_empty() {
             return;
         }
@@ -259,21 +270,14 @@ impl AppState {
         // latest active one, and `window-size latest` resizes to it), so
         // a desktop jump into a session a phone was driving summons
         // normally while a genuinely narrow arrival does not.
-        let width: u32 = tmux::display_message(&window_id, "#{window_width}")
-            .parse()
-            .unwrap_or(0);
-        let threshold = popup_max_width_from_setting(&tmux::display_message(
-            &window_id,
-            &format!("#{{{}}}", tmux::SIDEBAR_POPUP_MAX_WIDTH),
-        ));
+        let width: u32 = fields.next().unwrap_or("").parse().unwrap_or(0);
+        let threshold = popup_max_width_from_setting(fields.next().unwrap_or(""));
         if threshold > 0 && width > 0 && width < threshold {
             return;
         }
-        let pane_path = tmux::display_message(&target_pane_id, "#{pane_current_path}");
-        let pane_path = if pane_path.is_empty() {
-            "~".to_string()
-        } else {
-            pane_path
+        let pane_path = match fields.next() {
+            Some(path) if !path.is_empty() => path.to_string(),
+            _ => "~".to_string(),
         };
         crate::cli::toggle::cmd_toggle(&["--create-only".to_string(), window_id, pane_path]);
     }

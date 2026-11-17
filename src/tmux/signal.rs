@@ -12,12 +12,21 @@
 //! recycled pid would otherwise receive SIGUSR1 — whose default
 //! disposition is terminate.
 
+use std::time::Duration;
+
 /// Exe basename for the identity check on Linux (`/proc/<pid>/exe`).
 const EXE_STEM: &str = "tmux-agent-sidebar";
 /// Process-name stem for the fallback check. `ps -o comm` truncates at
 /// 15 characters on both Linux and macOS, so the full binary name never
 /// fits — match the longest unambiguous prefix instead.
 const COMM_STEM: &str = "tmux-agent-side";
+
+/// Deadline for the fallback `ps` probe; the /proc path above is a pure
+/// readlink, but on platforms without /proc (or for dead pids) this spawn
+/// must never hang the caller — `broadcast_refresh` runs on the UI thread
+/// when a shared-option toggle is pressed (audit 2026-11-16 J3: the bare
+/// `.output()` had no timeout at all).
+const PS_PROBE_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// Whether `pid` still refers to a running sidebar binary.
 ///
@@ -31,10 +40,9 @@ pub(crate) fn is_sidebar_process(pid: u32) -> bool {
             .and_then(|n| n.to_str())
             .is_some_and(|name| name.starts_with(EXE_STEM));
     }
-    let Ok(output) = std::process::Command::new("ps")
-        .args(["-p", &pid.to_string(), "-o", "comm="])
-        .output()
-    else {
+    let mut command = std::process::Command::new("ps");
+    command.args(["-p", &pid.to_string(), "-o", "comm="]);
+    let Ok(output) = crate::subprocess::run_with_timeout(&mut command, PS_PROBE_TIMEOUT) else {
         return false;
     };
     if !output.status.success() {

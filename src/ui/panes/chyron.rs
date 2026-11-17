@@ -20,11 +20,20 @@ use crate::ui::text::{display_width, truncate_to_width};
 /// the flash and a short hold (the opening words stay readable), then
 /// ticks left one slow column at a time until the tail is visible,
 /// pauses, and only then fades. A fitting banner just holds.
-pub(super) fn render_chyron<'a>(state: &AppState, width: u16) -> Option<Line<'a>> {
-    let (text, kind) = state.chyron.banner(state)?;
+///
+/// `text`/`kind` come prebuilt from [`crate::state::ChyronState::
+/// visible_banner`] — the caller already built the banner to decide the
+/// row belongs to the chyron, so rebuilding it here would double the
+/// per-frame cost (audit 2026-11-16 J6).
+pub(super) fn render_chyron<'a>(
+    state: &AppState,
+    text: &str,
+    kind: crate::state::ChyronKind,
+    width: u16,
+) -> Option<Line<'a>> {
     let theme = &state.theme;
 
-    let text_w = display_width(&text);
+    let text_w = display_width(text);
     let avail_w = width as usize;
     let phase = state
         .chyron
@@ -54,12 +63,12 @@ pub(super) fn render_chyron<'a>(state: &AppState, width: u16) -> Option<Line<'a>
         // The ticker and its end-hold show the scrolled window; the
         // end-hold rests at the tail so it does not blink away the
         // moment the scroll completes.
-        ChyronPhase::Scroll { offset } => scroll_window(&text, offset, avail_w),
-        ChyronPhase::EndHold => scroll_window(&text, text_w - avail_w, avail_w),
+        ChyronPhase::Scroll { offset } => scroll_window(text, offset, avail_w),
+        ChyronPhase::EndHold => scroll_window(text, text_w - avail_w, avail_w),
         _ => {
             // Pad to the row width so stale toolbar cells from the
             // previous frame are overwritten.
-            let clipped = truncate_to_width(&text, avail_w);
+            let clipped = truncate_to_width(text, avail_w);
             format!(
                 "{}{}",
                 clipped,
@@ -264,12 +273,19 @@ mod tests {
             .collect()
     }
 
+    /// Test twin of the production call: the banner is built first and
+    /// passed into `render_chyron`, exactly as `render_header_into` does.
+    fn render_chyron_from_state<'a>(state: &AppState, width: u16) -> Option<Line<'a>> {
+        let (text, kind) = state.chyron.banner(state)?;
+        render_chyron(state, &text, kind, width)
+    }
+
     // ─── chyron render ───────────────────────────────────────────────
 
     #[test]
     fn nothing_renders_when_no_event_has_ever_fired() {
         let state = AppState::new("%99".into());
-        assert!(render_chyron(&state, 40).is_none());
+        assert!(render_chyron_from_state(&state, 40).is_none());
         assert!(!state.chyron.is_showing(&state));
     }
 
@@ -277,7 +293,7 @@ mod tests {
     fn flash_frame_names_glyph_agent_and_verb() {
         let state = state_with_event(done_event(), true);
         assert!(state.chyron.is_showing(&state));
-        let line = render_chyron(&state, 40).expect("an event renders");
+        let line = render_chyron_from_state(&state, 40).expect("an event renders");
         // The banner pads to the full row so stale toolbar cells from
         // the previous frame are overwritten.
         assert_eq!(
@@ -300,7 +316,7 @@ mod tests {
         event.shown_at = Instant::now() - (crate::state::CHYRON_FRAME * 4);
         let state = state_with_event(event, true);
         assert!(state.chyron.is_showing(&state));
-        let line = render_chyron(&state, 40).expect("an event renders");
+        let line = render_chyron_from_state(&state, 40).expect("an event renders");
         let span = &line.spans[0];
         assert_eq!(
             span.style.fg,
@@ -330,7 +346,7 @@ mod tests {
 
         // Flash + hold: the opening words sit still, head-clipped with
         // an ellipsis marking the cut (no scroll yet).
-        let line = render_chyron(&state, 20).unwrap();
+        let line = render_chyron_from_state(&state, 20).unwrap();
         assert!(line_text(&line).starts_with("✓ a-very-long-s"));
         assert!(line_text(&line).ends_with('…'));
 
@@ -345,7 +361,7 @@ mod tests {
         // reason in columns.
         let frames_in = crate::state::CHYRON_FLASH_FRAMES + crate::state::CHYRON_HOLD_FRAMES + 1;
         state.chyron.current.as_mut().unwrap().shown_at = frames_ago(frames_in as u32);
-        let line = render_chyron(&state, 20).unwrap();
+        let line = render_chyron_from_state(&state, 20).unwrap();
         let ascii = &text["✓".len()..];
         assert_eq!(line_text(&line), &ascii[..20]);
 
@@ -353,7 +369,7 @@ mod tests {
         let tail_frame =
             crate::state::CHYRON_FLASH_FRAMES + crate::state::CHYRON_HOLD_FRAMES + (text_w - 20);
         state.chyron.current.as_mut().unwrap().shown_at = frames_ago(tail_frame as u32);
-        let line = render_chyron(&state, 20).unwrap();
+        let line = render_chyron_from_state(&state, 20).unwrap();
         assert_eq!(line_text(&line).trim_end(), &ascii[ascii.len() - 20..]);
     }
 
@@ -363,7 +379,7 @@ mod tests {
         event.shown_at = Instant::now() - std::time::Duration::from_secs(5);
         let mut state = state_with_event(event, true);
         state.layout.header_width = Some(40);
-        assert!(render_chyron(&state, 40).is_none());
+        assert!(render_chyron_from_state(&state, 40).is_none());
         assert!(!state.chyron.is_showing(&state));
     }
 
@@ -372,7 +388,7 @@ mod tests {
         let mut state = state_with_event(done_event(), true);
         // The user looked: the flag cleared.
         state.repo_groups[0].panes[0].0.attention = PaneAttention::None;
-        assert!(render_chyron(&state, 40).is_none());
+        assert!(render_chyron_from_state(&state, 40).is_none());
         assert!(!state.chyron.is_showing(&state));
     }
 
@@ -381,7 +397,7 @@ mod tests {
         // A pane that disappeared has been consumed: the overlay ends
         // and the toolbar returns. There is no resting chyron text.
         let state = state_with_event(done_event(), false);
-        assert!(render_chyron(&state, 40).is_none());
+        assert!(render_chyron_from_state(&state, 40).is_none());
         assert!(!state.chyron.is_showing(&state));
     }
 
@@ -389,14 +405,14 @@ mod tests {
     fn waiting_and_failed_reuse_the_status_glyphs() {
         let mut state = state_with_event(done_event(), true);
         state.chyron.current.as_mut().unwrap().kind = ChyronKind::Waiting;
-        let line = render_chyron(&state, 40).unwrap();
+        let line = render_chyron_from_state(&state, 40).unwrap();
         assert_eq!(line_text(&line).trim_end(), "◐ fix-auth waiting");
 
         // A failed event stays visible only while the pane is still in
         // error; mirror the live state the consumption check reads.
         state.chyron.current.as_mut().unwrap().kind = ChyronKind::Failed;
         state.repo_groups[0].panes[0].0.status = crate::tmux::PaneStatus::Error;
-        let line = render_chyron(&state, 40).unwrap();
+        let line = render_chyron_from_state(&state, 40).unwrap();
         assert_eq!(line_text(&line).trim_end(), "✕ fix-auth failed");
     }
 

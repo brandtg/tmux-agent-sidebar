@@ -45,9 +45,10 @@ const PERMISSION_PROMPT_PATTERNS: [&str; 9] = [
 /// Channels and shared flags produced by [`spawn`] that the main event loop
 /// drains every tick.
 pub(super) struct Workers {
-    /// Requests the snapshot worker: one refresh tick. The raw listing
-    /// comes back on `snapshot_rx`; the parse and apply stay on the
-    /// render thread (cheap string work, and [`AppState`] lives there).
+    /// Requests the snapshot worker: one refresh tick. The raw listing and
+    /// its process snapshot come back on `snapshot_rx`; the remaining parse
+    /// and apply stay on the render thread (string work, and [`AppState`]
+    /// lives there — only the `ps` subprocess ships from here).
     pub snapshot_tx: mpsc::Sender<SnapshotRequest>,
     pub snapshot_rx: Receiver<SnapshotRaw>,
     pub session_rx: Receiver<session::ScannedNames>,
@@ -89,11 +90,21 @@ pub(super) struct SnapshotRequest {
 /// `fetched_at` is stamped before the `list-panes` spawn: the fold on the
 /// render thread compares it against optimistic focus writes (a jump) and
 /// refuses to let an older-than-the-jump listing clobber the focus state.
+///
+/// `process_snapshot` is the `ps` scan for this listing, run here in the
+/// worker right after the spawn under the same arming conditions the parse
+/// used to apply (`process_snapshot_for_panes`). A full-system `ps` plus
+/// tree walks used to run on the render thread on every snapshot apply —
+/// 10-40 ms of blocked input per tick, 6-7×/s while an agent streams tools
+/// (audit 2026-11-16 J1) — which the worker's comment about "cheap string
+/// work" papered over. `None` means the scan failed or was not armed; the
+/// fold treats that exactly as the inline scan returning `None`.
 pub(super) struct SnapshotRaw {
     pub panes_output: Option<String>,
     pub globals_requested: bool,
     pub global_options: Option<HashMap<String, String>>,
     pub fetched_at: std::time::Instant,
+    pub process_snapshot: Option<crate::process::ProcessSnapshot>,
 }
 
 /// Spawn the background threads (session-name polling, version notice
@@ -146,8 +157,9 @@ pub(super) fn spawn(_state: &crate::state::AppState) -> Workers {
 /// when the tick was signal-driven) used to run synchronously on the
 /// render thread: a keystroke arriving mid-spawn queued behind the
 /// subprocess, which is what made typing in the sidebar feel laggy. The
-/// spawn now happens here; the event loop drains the result and parses
-/// on its own thread.
+/// spawns — including the process snapshot's full-system `ps`, which used
+/// to block the render thread on every apply — happen here; the event
+/// loop drains the results and parses on its own thread.
 pub(super) fn snapshot_poll_loop(
     rx: &mpsc::Receiver<SnapshotRequest>,
     tx: &mpsc::Sender<SnapshotRaw>,
@@ -158,6 +170,13 @@ pub(super) fn snapshot_poll_loop(
         // focus write may be applied, anything older may not.
         let fetched_at = std::time::Instant::now();
         let panes_output = tmux::fetch_pane_listing();
+        // The process snapshot is armed by exactly the conditions the
+        // parse-time scan used (`process_snapshot_for_panes` inspects the
+        // listing), so the fold sees the same snapshot it would have
+        // scanned for itself — just scanned off the render thread.
+        let process_snapshot = panes_output
+            .as_ref()
+            .and_then(|output| tmux::process_snapshot_for_panes(output));
         let global_options = request
             .include_globals
             .then(tmux::try_get_all_global_options)
@@ -167,6 +186,7 @@ pub(super) fn snapshot_poll_loop(
             globals_requested: request.include_globals,
             global_options,
             fetched_at,
+            process_snapshot,
         });
     }
 }

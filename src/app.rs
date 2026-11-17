@@ -108,10 +108,16 @@ pub fn run(
         // false. Re-fetching the shared options on a fixed interval keeps
         // every instance converging no matter which signal went missing.
         let globals_due = last_globals_sync.elapsed() >= GLOBALS_RESYNC_INTERVAL;
-        let refresh_due = (signal_pending && since_refresh >= MIN_REFRESH_GAP)
+        // A key handler asked for an immediate snapshot (`s` regroup): it
+        // outranks the minimum gap (a direct user action, not a hook
+        // storm) and stays latched while a request is already in flight.
+        let forced = state.snapshot_now;
+        let refresh_due = forced
+            || (signal_pending && since_refresh >= MIN_REFRESH_GAP)
             || since_refresh >= refresh_interval
             || globals_due;
         if refresh_due && !snapshot_in_flight {
+            state.snapshot_now = false;
             state.refresh_now();
             state
                 .todos
@@ -126,8 +132,11 @@ pub fn run(
             // signal meant never syncing again.
             if snapshot_tx.send(request).is_ok() {
                 snapshot_in_flight = true;
-            } else if signal_pending {
-                needs_refresh.store(true, Ordering::Relaxed);
+            } else {
+                if signal_pending {
+                    needs_refresh.store(true, Ordering::Relaxed);
+                }
+                state.snapshot_now = forced;
             }
             last_refresh = std::time::Instant::now();
         } else if signal_pending {
@@ -180,7 +189,9 @@ pub fn run(
             snapshot_in_flight = false;
             let previous_sidebar_focused = state.focus_state.sidebar_focused;
             let is_window_active = match raw.panes_output {
-                Some(output) => state.apply_session_refresh(&output, raw.fetched_at),
+                Some(output) => {
+                    state.apply_session_refresh(&output, raw.process_snapshot, raw.fetched_at)
+                }
                 // A failed `list-panes` call is not evidence that no panes
                 // exist (the sync twin holds the same line): apply nothing,
                 // keep the last known-good snapshot, retry next tick.

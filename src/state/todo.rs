@@ -71,6 +71,29 @@ pub struct TodoState {
     /// the undo window: `u` while this is `Some` and unexpired restores
     /// the items. A new destructive action replaces the stash.
     pub undo: Option<TodoUndo>,
+    /// Memoized flow-wrap of the visible items at the panel's text
+    /// width, filled by the render pass and consumed by the height
+    /// sizing on the next frame. Both used to wrap every item and run
+    /// the two-regex resume recognition per frame — twice per frame,
+    /// once for sizing and once for drawing (audit 2026-11-16 J6).
+    /// Validated by comparing the cached source text, so no mutation
+    /// site needs an explicit invalidation.
+    wrap_cache: Option<TodoWrapCache>,
+}
+
+/// One item's memoized wrap (see [`TodoState::wrap_cache`]).
+#[derive(Debug, Clone)]
+struct TodoWrapCache {
+    text_width: usize,
+    entries: Vec<TodoWrapEntry>,
+}
+
+#[derive(Debug, Clone)]
+struct TodoWrapEntry {
+    index: usize,
+    text: String,
+    lines: Vec<String>,
+    is_resume: bool,
 }
 
 impl TodoState {
@@ -144,6 +167,44 @@ impl TodoState {
 
     pub fn open_count(&self) -> usize {
         self.items.iter().filter(|item| !item.done).count()
+    }
+
+    /// The memoized wrap for a visible item, when the cache matches this
+    /// width and the item's current text. `None` sends the caller to the
+    /// fresh `wrap_flow`/`recognize_resume` computation.
+    pub(crate) fn cached_wrap(&self, index: usize, text_width: usize) -> Option<(&[String], bool)> {
+        let cache = self.wrap_cache.as_ref()?;
+        if cache.text_width != text_width {
+            return None;
+        }
+        let entry = cache.entries.iter().find(|entry| entry.index == index)?;
+        if entry.text != self.items[index].text {
+            return None;
+        }
+        Some((entry.lines.as_slice(), entry.is_resume))
+    }
+
+    /// Re-wrap every visible item into the cache (called at the end of
+    /// the render pass; the height sizing consumes it next frame).
+    pub(crate) fn fill_wrap_cache(&mut self, text_width: usize, visible: &[usize]) {
+        let entries = visible
+            .iter()
+            .map(|&index| {
+                let text = self.items[index].text.clone();
+                let lines = crate::ui::text::wrap_flow(&text, text_width, text_width);
+                let is_resume = crate::park::recognize_resume(&text).is_some();
+                TodoWrapEntry {
+                    index,
+                    text,
+                    lines,
+                    is_resume,
+                }
+            })
+            .collect();
+        self.wrap_cache = Some(TodoWrapCache {
+            text_width,
+            entries,
+        });
     }
 
     pub fn total_count(&self) -> usize {
@@ -733,35 +794,43 @@ impl AppState {
         };
         let agent = reference.agent.clone();
         let id = reference.id.clone();
-        // Explicit `@ <path>` intent wins and needs no probe: resolve
-        // and launch inline like every other tmux write. Otherwise the
-        // whole resolve (parked sidecar, then the agent's own store)
-        // runs on the popup-op worker — a wedged sqlite probe must not
-        // stall the render loop.
-        if let Some(hint) = &reference.cwd_hint {
-            let home = std::env::var("HOME").ok();
-            match crate::park::expand_home(hint, home.as_deref()) {
-                // Both outcomes are banner text: `resumed <agent> <id8>`
-                // or the failure.
-                Some(cwd) => {
-                    self.flash_resume_result(crate::park::launch_with_cwd(
-                        &session, &cwd, &text, &agent, &id,
-                    ));
-                }
-                None => self.set_flash(crate::park::no_cwd_error(&id)),
+        // Both paths dispatch to the popup-op worker and report through
+        // the flash banner. The hint path used to resolve and launch
+        // inline ("explicit `@ <path>` intent wins and needs no probe"),
+        // but the launch itself is a window-creation burst of tmux
+        // spawns on the input thread (audit 2026-11-16 J5); the worker
+        // lands the same result one loop iteration later. The no-hint
+        // path keeps its full resolve (parked sidecar, then the agent's
+        // own store) on the worker — a wedged sqlite probe must not
+        // stall the render loop either way.
+        match &reference.cwd_hint {
+            Some(hint) => {
+                let home = std::env::var("HOME").ok();
+                let hint = hint.clone();
+                self.start_background_op(move || {
+                    PopupOpResult::Resume(match crate::park::expand_home(&hint, home.as_deref()) {
+                        // Both outcomes are banner text: `resumed
+                        // <agent> <id8>` or the failure.
+                        Some(cwd) => {
+                            crate::park::launch_with_cwd(&session, &cwd, &text, &agent, &id)
+                        }
+                        None => Err(crate::park::no_cwd_error(&id)),
+                    })
+                });
             }
-            return;
+            None => {
+                let dir = self.todos.dir.clone();
+                self.start_background_op(move || {
+                    PopupOpResult::Resume(crate::park::resolve_and_launch(
+                        &session,
+                        &text,
+                        dir.as_deref(),
+                        &agent,
+                        &id,
+                    ))
+                });
+            }
         }
-        let dir = self.todos.dir.clone();
-        self.start_background_op(move || {
-            PopupOpResult::Resume(crate::park::resolve_and_launch(
-                &session,
-                &text,
-                dir.as_deref(),
-                &agent,
-                &id,
-            ))
-        });
     }
 
     /// Both resume outcomes are banner text — `resumed <agent> <id8>`

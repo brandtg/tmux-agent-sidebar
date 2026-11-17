@@ -101,7 +101,10 @@ pub(super) fn panel_height(state: &AppState, area: Rect, agent_rows: usize) -> u
             // A block cursor with no cell left on an exactly full line
             // spills onto a row of its own.
             Some(edit) => wrap_with_cursor(&edit.input, edit.cursor, text_width, width).len(),
-            None => wrap_flow(&state.todos.items[index].text, text_width, text_width).len(),
+            None => match state.todos.cached_wrap(index, text_width) {
+                Some((lines, _)) => lines.len(),
+                None => wrap_flow(&state.todos.items[index].text, text_width, text_width).len(),
+            },
         };
         rows += text_rows.max(1);
     }
@@ -224,8 +227,21 @@ pub(super) fn render_todo_panel(frame: &mut Frame, state: &mut AppState, area: R
         // that `r` will relaunch this item's command. It is a view over
         // the item's text, never a state change — and it hides while
         // the row is being edited, where the live buffer replaces the
-        // stored text the glyph describes.
-        let is_resume_row = !is_edited && crate::park::recognize_resume(&item.text).is_some();
+        // stored text the glyph describes. Resolution and the wrap
+        // below both consult the memoized cache (refilled at the end of
+        // the render pass); the wrap used to run twice per frame — here
+        // and again in the height sizing (audit 2026-11-16 J6).
+        let (is_resume_row, cached) = if is_edited {
+            (false, None)
+        } else {
+            let cached = state.todos.cached_wrap(index, text_width);
+            let is_resume = match &cached {
+                Some((_, resume)) => *resume,
+                // Cache miss: recognize fresh, exactly as before the memo.
+                None => crate::park::recognize_resume(&item.text).is_some(),
+            };
+            (is_resume, cached)
+        };
         let checkbox_row_style = if is_edited {
             checkbox_style.bg(edit_wash)
         } else if is_selected {
@@ -233,9 +249,10 @@ pub(super) fn render_todo_panel(frame: &mut Frame, state: &mut AppState, area: R
         } else {
             checkbox_style
         };
-        let wrapped: Vec<(String, Option<usize>)> = match edit {
-            Some(edit) => wrap_with_cursor(&edit.input, edit.cursor, text_width, width),
-            None => wrap_flow(&item.text, text_width, text_width)
+        let wrapped: Vec<(String, Option<usize>)> = match (edit, cached) {
+            (Some(edit), _) => wrap_with_cursor(&edit.input, edit.cursor, text_width, width),
+            (None, Some((lines, _))) => lines.iter().map(|line| (line.clone(), None)).collect(),
+            (None, None) => wrap_flow(&item.text, text_width, text_width)
                 .into_iter()
                 .map(|line| (line, None))
                 .collect(),
@@ -312,6 +329,9 @@ pub(super) fn render_todo_panel(frame: &mut Frame, state: &mut AppState, area: R
         }
         ranges.push((index, first_line, lines.len() - 1));
     }
+    // Refill the wrap memo for the next frame's height sizing (see the
+    // cached_wrap consults above).
+    state.todos.fill_wrap_cache(text_width, &visible);
 
     // Inline add line. New items are appended here; edits happen in
     // place on the item's own rows. The row carries the wash across its
@@ -799,6 +819,10 @@ mod tests {
         [ ] Buy milk
         [✓] opencode -s ses_e1eb53dd9ffemw0k3treOa3PBO @ ~/Projects/w          ↻
         ");
+        // Second frame renders through the wrap memo filled by the first
+        // (audit 2026-11-16 J6): identical output, glyph included.
+        let again = render_panel(&mut state, 72, 8);
+        assert_eq!(again, output);
     }
 
     #[test]

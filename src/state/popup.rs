@@ -1,5 +1,10 @@
 use super::AppState;
 
+/// Placeholder warning lines shown in the remove-confirm dialog while
+/// its pre-flight git probes run on a worker thread (see
+/// [`AppState::open_remove_confirm_for_pane`]).
+const REMOVE_CHECKING_WARNING: [&str; 2] = ["Checking worktree…", ""];
+
 /// Focus target inside the spawn input popup. Tab / Shift+Tab / arrow
 /// keys cycle through these in order; only `Task` accepts text input.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -86,8 +91,9 @@ pub enum PopupState {
     /// Confirmation prompt shown when the user presses `x` on a
     /// spawn-created pane. `pane_id` feeds `worktree::remove`; `branch`
     /// is shown in the modal title; `warning` lines spell out what the
-    /// force-remove destroys (computed by a pre-flight git check when
-    /// the dialog opens).
+    /// force-remove destroys (computed by a pre-flight git check on a
+    /// worker thread after the dialog opens — the dialog shows a
+    /// checking placeholder until it lands).
     RemoveConfirm {
         pane_id: String,
         branch: String,
@@ -112,6 +118,15 @@ pub enum PopupOpResult {
     /// A resume launch (`r` on a resume-shaped todo) finished: the
     /// flash banner text on success, the failure text on error.
     Resume(Result<String, String>),
+    /// The remove-confirm dialog's pre-flight git warnings finished:
+    /// replaces the checking placeholder on the matching dialog. The
+    /// two `git status --porcelain` / `rev-list` probes used to run
+    /// inline when the dialog opened, blocking the input thread for
+    /// their full duration (audit 2026-11-16 J5).
+    RemoveWarnings {
+        pane_id: String,
+        warnings: Vec<String>,
+    },
 }
 
 impl PopupState {
@@ -563,6 +578,23 @@ impl AppState {
                     *error = Some(e);
                 }
             }
+            PopupOpResult::RemoveWarnings { pane_id, warnings } => {
+                // Only the dialog this pre-flight was opened for: a
+                // late result must not overwrite a different pane's
+                // dialog, and a closed popup drops it. A confirmed
+                // removal before the warnings landed is safe — the
+                // lines are informational, the removal is `--force`
+                // either way.
+                if let PopupState::RemoveConfirm {
+                    pane_id: current,
+                    warning,
+                    ..
+                } = &mut self.popup
+                    && *current == pane_id
+                {
+                    *warning = warnings;
+                }
+            }
             PopupOpResult::Resume(result) => self.flash_resume_result(result),
         }
     }
@@ -664,13 +696,28 @@ impl AppState {
             .map(|s| s.to_string_lossy().into_owned())
             .unwrap_or_default();
         self.popup = PopupState::RemoveConfirm {
-            pane_id,
+            pane_id: pane_id.clone(),
             branch,
-            warning: crate::worktree::removal_warnings(&markers.worktree_path),
+            warning: REMOVE_CHECKING_WARNING
+                .iter()
+                .map(|l| l.to_string())
+                .collect(),
             error: None,
             working: None,
             area: None,
         };
+        // The dirty/unpushed probes are two git spawns under a possibly
+        // hung repo; they used to run inline while the dialog opened,
+        // blocking the input thread (audit 2026-11-16 J5). The dialog
+        // opens on the checking placeholder and the worker replaces the
+        // lines when they land (`apply_popup_op_result` matches the
+        // pane_id, and a confirm before then is safe — the removal is
+        // force regardless).
+        let worktree_path = markers.worktree_path;
+        self.start_background_op(move || PopupOpResult::RemoveWarnings {
+            pane_id,
+            warnings: crate::worktree::removal_warnings(&worktree_path),
+        });
     }
 
     /// Run the remove flow for the pane stored in the confirmation
@@ -1154,6 +1201,50 @@ mod tests {
         state.start_popup_op("removing worktree…", || PopupOpResult::Remove(Ok(())));
         assert!(!state.is_remove_confirm_working());
         assert!(state.is_remove_confirm_open());
+    }
+
+    #[test]
+    fn remove_warnings_land_on_the_dialog_they_were_opened_for() {
+        // The pre-flight warnings arrive on a worker thread after the
+        // dialog opens; a result must replace only its own dialog's
+        // placeholder, and a closed dialog drops it.
+        let mut state = AppState::new("%99".into());
+        state.popup = PopupState::RemoveConfirm {
+            pane_id: "%1".into(),
+            branch: "agent/x".into(),
+            warning: REMOVE_CHECKING_WARNING
+                .iter()
+                .map(|l| l.to_string())
+                .collect(),
+            error: None,
+            working: None,
+            area: None,
+        };
+        // A different pane's late result must not overwrite this dialog.
+        state.apply_popup_op_result(PopupOpResult::RemoveWarnings {
+            pane_id: "%2".into(),
+            warnings: vec!["other".into()],
+        });
+        let PopupState::RemoveConfirm { warning, .. } = &state.popup else {
+            panic!("dialog must stay open");
+        };
+        assert_eq!(warning[0], "Checking worktree…");
+        // The matching result replaces the placeholder.
+        state.apply_popup_op_result(PopupOpResult::RemoveWarnings {
+            pane_id: "%1".into(),
+            warnings: vec!["Deletes uncommitted".into()],
+        });
+        let PopupState::RemoveConfirm { warning, .. } = &state.popup else {
+            panic!("dialog must stay open");
+        };
+        assert_eq!(warning[0], "Deletes uncommitted");
+        // A closed popup drops the result entirely.
+        state.popup = PopupState::None;
+        state.apply_popup_op_result(PopupOpResult::RemoveWarnings {
+            pane_id: "%1".into(),
+            warnings: vec!["late".into()],
+        });
+        assert!(matches!(state.popup, PopupState::None));
     }
 
     #[test]

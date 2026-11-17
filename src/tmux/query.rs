@@ -9,7 +9,8 @@ use super::options::{
     PANE_LAST_EXIT, PANE_LAUNCH_CWD, PANE_NAME, PANE_PENDING_SESSION_END,
     PANE_PENDING_WORKTREE_REMOVE, PANE_PERMISSION_MODE, PANE_PROMPT, PANE_PROMPT_SOURCE, PANE_ROLE,
     PANE_SESSION_ID, PANE_SESSION_TITLE, PANE_STARTED_AT, PANE_STATUS, PANE_SUBAGENTS,
-    PANE_WAIT_REASON, PANE_WORKTREE_BRANCH, PANE_WORKTREE_NAME, unset_pane_option,
+    PANE_WAIT_REASON, PANE_WORKTREE_BRANCH, PANE_WORKTREE_NAME, PaneOptionWrite,
+    apply_pane_options,
 };
 use super::types::{
     AgentType, CODEX_AGENT, OtherPane, PaneAttention, PaneInfo, PaneStatus, PermissionMode,
@@ -188,11 +189,24 @@ pub(crate) fn fetch_pane_listing() -> Option<String> {
 
 /// Parse raw `list-panes` output into the session hierarchy, the process
 /// snapshot, and the sidebar-centric fields (own focus flags + the pane list
-/// of the sidebar's window) used to resolve the focused pane.
+/// of the sidebar's window) used to resolve the focused pane. The `ps`
+/// scan runs here (the synchronous path).
 pub(crate) fn build_session_snapshot(all_panes_output: &str, sidebar_pane: &str) -> TmuxSnapshot {
+    let process_snapshot = process_snapshot_for_panes(all_panes_output);
+    build_session_snapshot_with(all_panes_output, sidebar_pane, process_snapshot)
+}
+
+/// [`build_session_snapshot`] with a caller-supplied process snapshot. The
+/// snapshot worker runs the `ps` scan next to the `list-panes` spawn and
+/// ships both halves to the render thread, which folds them together here —
+/// the scan itself never blocks the TUI (audit 2026-11-16 J1).
+pub(crate) fn build_session_snapshot_with(
+    all_panes_output: &str,
+    sidebar_pane: &str,
+    process_snapshot: Option<ProcessSnapshot>,
+) -> TmuxSnapshot {
     let (sidebar_pane_active, sidebar_window_active, sidebar_window_panes) =
         extract_sidebar_window_info(all_panes_output, sidebar_pane);
-    let process_snapshot = process_snapshot_for_panes(all_panes_output);
     let other_panes = collect_other_panes(all_panes_output, process_snapshot.as_ref());
     let (mut sessions_map, codex_pids) =
         build_session_hierarchy(all_panes_output, process_snapshot.as_ref());
@@ -708,9 +722,17 @@ fn clear_agent_pane_state(pane_id: &str) {
         PANE_ATTENTION,
         PANE_STATUS,
     ];
-    for key in KEYS {
-        unset_pane_option(pane_id, key);
-    }
+    // One tmux client process for the whole teardown (audit 2026-11-16
+    // J4): the unsets fire from `parse_pane_fields` on the render thread
+    // while a confirmed-dead pane is parsed, and nineteen sequential
+    // spawns each paid their own round trip there — 19 × per-spawn
+    // latency on the UI thread, with a wedged tmux pushing the ceiling
+    // toward a minute.
+    let writes: Vec<PaneOptionWrite> = KEYS
+        .iter()
+        .map(|key| PaneOptionWrite::Unset { key })
+        .collect();
+    apply_pane_options(pane_id, &writes);
     let log_path = crate::activity::log_file_path(pane_id);
     let _ = std::fs::remove_file(log_path);
 }
@@ -820,7 +842,7 @@ fn detect_codex_permission_mode(args: &str) -> PermissionMode {
     PermissionMode::Default
 }
 
-fn process_snapshot_for_panes(all_panes_output: &str) -> Option<ProcessSnapshot> {
+pub(crate) fn process_snapshot_for_panes(all_panes_output: &str) -> Option<ProcessSnapshot> {
     if !pane_output_needs_process_snapshot(all_panes_output)
         && !pane_output_has_other_panes(all_panes_output)
     {
