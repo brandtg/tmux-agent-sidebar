@@ -22,6 +22,11 @@ pub(crate) fn cmd_toggle(args: &[String]) -> i32 {
         None => return 0,
     };
     let pane_path = positional.get(1).copied().unwrap_or("~");
+    // Optional third argument: the width of the client that pressed the
+    // key (`#{client_width}`, forwarded by the keybinding). The keybinding
+    // context always has a client, so this is present for every real
+    // toggle press and absent for `--create-only` hook callers.
+    let client_width = positional.get(2).and_then(|s| s.trim().parse::<u32>().ok());
 
     let sidebar_width = sidebar_width_cells(window_id);
 
@@ -74,7 +79,8 @@ pub(crate) fn cmd_toggle(args: &[String]) -> i32 {
         }
     }
 
-    let use_popup = !force_split && should_use_popup(&popup_max_width, window_width);
+    let use_popup =
+        !force_split && should_use_popup_for_client(&popup_max_width, window_width, client_width);
 
     // Check for existing sidebar
     let existing_sidebar = find_window_sidebar(window_id);
@@ -498,8 +504,9 @@ fn dedupe_window_sidebars() {
 
 // ─── maintain-width (auto-hide a split sidebar on a shrink) ─────────
 
-/// Auto-hide entry point (`maintain-width <window_id>`), wired to the
-/// tmux `window-layout-changed` and `client-resized` hooks. Responsive
+/// Auto-hide entry point (`maintain-width <window_id> [client_width]`),
+/// wired to the tmux `window-layout-changed`, `client-resized`,
+/// `client-session-changed`, and `after-select-window` hooks. Responsive
 /// behavior, media-query style: the layout is a pure function of the
 /// current viewport. When a window with a split-pane sidebar shrinks
 /// below the popup threshold — a phone client attached, or an existing
@@ -508,13 +515,26 @@ fn dedupe_window_sidebars() {
 /// replays via the normal close path). No session state, no markers, no
 /// restore waves: a window that grows back simply has no sidebar until
 /// the user opens one (the toggle/summon keys, or auto-create for new
-/// windows). Deliberately cheap and idempotent under the dual-hook
-/// double fire: both instances read the same width and close the same
+/// windows). Deliberately cheap and idempotent under multi-hook double
+/// fires: concurrent instances read the same width and close the same
 /// pane, and the second kill/restore is a no-op.
+///
+/// The optional `client_width` argument is `#{client_width}` forwarded
+/// by the hook — the terminal width of the client that drove the event
+/// (an attaching or window-switching phone client, or a client that was
+/// resized). When it is below the popup threshold the hide fires even
+/// if the window's own crossing memory says otherwise: the crossing
+/// record lives on the window and can be stale (written by a popup
+/// toggle on the phone, or by a forced `toggle-all` split on a
+/// narrow-shaped window), while a sub-threshold *client* driving this
+/// window is direct evidence of a small viewport looking at it. Hook
+/// contexts without a client (server-side layout churn) pass nothing
+/// and fall back to the crossing rule alone.
 pub(crate) fn cmd_maintain_width(args: &[String]) -> i32 {
     let Some(window_id) = args.first().map(String::as_str) else {
         return 0;
     };
+    let client_width = args.get(1).and_then(|s| s.trim().parse::<u32>().ok());
 
     let current_width: u32 = tmux::display_message(window_id, "#{window_width}")
         .parse()
@@ -550,16 +570,20 @@ pub(crate) fn cmd_maintain_width(args: &[String]) -> i32 {
     // (the conf seeds it, but hand-rolled configs may not); anything but
     // an explicit `on` switches the feature off.
     let auto_hide = tmux::display_message(window_id, &format!("#{{{}}}", tmux::SIDEBAR_AUTO_HIDE));
-    if auto_hide_enabled(&auto_hide)
-        && should_auto_hide(last_width, current_width, threshold, sidebar_pane.is_some())
-    {
+    let narrow_client =
+        should_hide_for_narrow_client(client_width, threshold, sidebar_pane.is_some());
+    let crossing = should_auto_hide(last_width, current_width, threshold, sidebar_pane.is_some());
+    if auto_hide_enabled(&auto_hide) && (narrow_client || crossing) {
         // Narrow viewport detected: hide this window's sidebar so the
-        // real panes keep the whole viewport. The close replays the
+        // real panes keep the whole viewport. Either a client narrower
+        // than the popup threshold drove this event (a phone attached,
+        // switched to this window, or resized), or the window itself
+        // just crossed the threshold downward. The close replays the
         // saved pre-sidebar layout; the user brings the sidebar back
         // with the normal toggle/summon keys when a wide viewport is
         // driving the window again.
         close_sidebar(
-            &sidebar_pane.expect("checked by should_auto_hide"),
+            &sidebar_pane.expect("checked by both hide predicates"),
             window_id,
         );
         return 0;
@@ -619,6 +643,32 @@ fn should_auto_hide(
     match last_width {
         Some(last) => {
             threshold > 0 && current > 0 && has_sidebar && last >= threshold && current < threshold
+        }
+        None => false,
+    }
+}
+
+/// Pure decision core for the client-driven hide path: the hook was
+/// fired by an actual tmux client (attach, session change, window
+/// switch, client resize) whose terminal is narrower than the popup
+/// threshold. That client is looking at this window right now, so a
+/// live split-pane sidebar must make way regardless of the window's
+/// crossing memory — the record can be stale in every direction (a
+/// popup toggle on the phone writes the narrow width; a forced
+/// `toggle-all` split on a narrow-shaped window writes it too), while
+/// the client's own width is read fresh from the event.
+///
+/// `None` (hook context without a client — server-side layout churn)
+/// and a zero threshold or client width (disabled popup mode, failed
+/// query) never hide.
+fn should_hide_for_narrow_client(
+    client_width: Option<u32>,
+    threshold: u32,
+    has_sidebar: bool,
+) -> bool {
+    match client_width {
+        Some(client_width) => {
+            threshold > 0 && client_width > 0 && has_sidebar && client_width < threshold
         }
         None => false,
     }
@@ -877,11 +927,31 @@ fn width_max_from_setting(setting: &str) -> u32 {
 
 /// Decide between the popup and split-pane sidebar for a window.
 /// Popup mode applies when the window is strictly narrower than the
-/// configured maximum. A zero window width (query failure) or a zero
-/// configured maximum both keep the classic split-pane behaviour.
-fn should_use_popup(max_width_setting: &str, window_width: u32) -> bool {
+/// configured maximum — or when the client pressing the key is: a phone
+/// client can toggle a window that is still sized for a wide client,
+/// because `window-size latest` re-sizes the window asynchronously after
+/// the attach. In that race the split would briefly degenerate and then
+/// have to be torn down by the maintain-width hook; opening the popup
+/// directly is the outcome the phone user wants anyway. A zero window
+/// width (query failure) or a zero client width (unparseable argument)
+/// keeps the classic split-pane behaviour, and a zero configured maximum
+/// disables popup mode entirely.
+fn should_use_popup_for_client(
+    max_width_setting: &str,
+    window_width: u32,
+    client_width: Option<u32>,
+) -> bool {
     let max_width = popup_max_width_from_setting(max_width_setting);
-    max_width > 0 && window_width > 0 && window_width < max_width
+    if max_width == 0 {
+        return false;
+    }
+    if window_width > 0 && window_width < max_width {
+        return true;
+    }
+    match client_width {
+        Some(client_width) => client_width > 0 && client_width < max_width,
+        None => false,
+    }
 }
 
 /// Open the sidebar as a tmux popup instead of a split pane. `-E`
@@ -1436,32 +1506,96 @@ mod tests {
     #[test]
     fn should_use_popup_true_below_default_threshold() {
         // Missing option → default 100 → narrow windows use the popup.
-        assert!(should_use_popup("", 80));
-        assert!(should_use_popup("", 99));
+        assert!(should_use_popup_for_client("", 80, None));
+        assert!(should_use_popup_for_client("", 99, None));
     }
 
     #[test]
     fn should_use_popup_false_at_or_above_threshold() {
-        assert!(!should_use_popup("", 100));
-        assert!(!should_use_popup("", 120));
+        assert!(!should_use_popup_for_client("", 100, None));
+        assert!(!should_use_popup_for_client("", 120, None));
     }
 
     #[test]
     fn should_use_popup_respects_custom_threshold() {
-        assert!(should_use_popup("60", 59));
-        assert!(!should_use_popup("60", 60));
+        assert!(should_use_popup_for_client("60", 59, None));
+        assert!(!should_use_popup_for_client("60", 60, None));
     }
 
     #[test]
     fn should_use_popup_zero_threshold_disables_popup_mode() {
-        assert!(!should_use_popup("0", 40));
+        assert!(!should_use_popup_for_client("0", 40, None));
     }
 
     #[test]
     fn should_use_popup_zero_window_width_keeps_split_pane() {
         // A failed `#{window_width}` query must not silently switch the
         // user's desktop sidebar into popup mode.
-        assert!(!should_use_popup("", 0));
+        assert!(!should_use_popup_for_client("", 0, None));
+    }
+
+    #[test]
+    fn client_width_below_threshold_selects_popup_despite_wide_window() {
+        // A phone client pressing the toggle on a window that is still
+        // sized for a wide client (window-size latest catches up
+        // asynchronously after the attach) must get the popup, not a
+        // split that instantly degenerates.
+        assert!(should_use_popup_for_client("", 320, Some(60)));
+        assert!(should_use_popup_for_client("", 320, Some(99)));
+    }
+
+    #[test]
+    fn client_width_at_or_above_threshold_keeps_split_pane() {
+        assert!(!should_use_popup_for_client("", 320, Some(100)));
+        assert!(!should_use_popup_for_client("", 320, Some(237)));
+    }
+
+    #[test]
+    fn window_width_below_threshold_wins_even_for_wide_client() {
+        // The window is the harder constraint: a 60-column window cannot
+        // host a split sidebar no matter who is asking.
+        assert!(should_use_popup_for_client("", 60, Some(320)));
+    }
+
+    #[test]
+    fn zero_or_missing_client_width_keeps_window_only_decision() {
+        // `--create-only` callers pass no client width; an unparseable or
+        // zero expansion must not invent one.
+        assert!(!should_use_popup_for_client("", 320, None));
+        assert!(!should_use_popup_for_client("", 320, Some(0)));
+    }
+
+    #[test]
+    fn zero_threshold_disables_client_popup_decision_too() {
+        // @sidebar_popup_max_width = 0 means "always split", even for a
+        // narrow client.
+        assert!(!should_use_popup_for_client("0", 320, Some(60)));
+    }
+
+    #[test]
+    fn narrow_client_hides_sidebar_below_threshold() {
+        // The client-driven hide: a phone driving the window is direct
+        // evidence of a small viewport, regardless of crossing memory.
+        assert!(should_hide_for_narrow_client(Some(60), 100, true));
+        assert!(should_hide_for_narrow_client(Some(99), 100, true));
+    }
+
+    #[test]
+    fn wide_or_unknown_client_never_hides() {
+        assert!(!should_hide_for_narrow_client(Some(100), 100, true));
+        assert!(!should_hide_for_narrow_client(Some(320), 100, true));
+        assert!(!should_hide_for_narrow_client(None, 100, true));
+        assert!(!should_hide_for_narrow_client(Some(0), 100, true));
+    }
+
+    #[test]
+    fn narrow_client_without_sidebar_is_a_noop() {
+        assert!(!should_hide_for_narrow_client(Some(60), 100, false));
+    }
+
+    #[test]
+    fn zero_threshold_disables_client_hide() {
+        assert!(!should_hide_for_narrow_client(Some(60), 0, true));
     }
 
     #[test]
