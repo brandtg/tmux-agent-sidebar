@@ -293,10 +293,10 @@ fn test_agents_auto_scroll_up_shows_group_header() {
 
 #[test]
 fn test_window_switch_reset_returns_list_to_top() {
-    // A tmux window/pane switch reloads the shared `@sidebar_cursor`, which
-    // another window may have left on a low row; `app::run` then calls
-    // `reset_pane_scroll`. Without it the auto-scroll snaps this list down
-    // to the adopted row and hides the agents above it.
+    // A window/pane switch parks the scroll at the top (`app::run` calls
+    // `reset_pane_scroll` on unfocused ticks). The cursor row is left
+    // alone — it is the user's last selection, and the sidebar renders no
+    // highlight while unfocused, so nothing snaps the list down to it.
     let mut panes = Vec::new();
     for i in 0..8 {
         let mut pane = make_pane(AgentType::Claude, PaneStatus::Idle);
@@ -327,12 +327,28 @@ fn test_window_switch_reset_returns_list_to_top() {
         "an adopted cursor should scroll the list"
     );
 
+    // The user leaves the sidebar: the tick parks the scroll, and the
+    // unfocused render must not drag it back down to the parked cursor.
+    state.focus_state.sidebar_focused = false;
     state.reset_pane_scroll();
     let _ = render_to_string(&mut state, 28, 5);
-    assert_eq!(state.global.selected_pane_row, 0);
     assert_eq!(
         state.scrolls.panes.offset, 0,
-        "window switch must anchor the list at the top"
+        "the parked scroll sticks while unfocused"
+    );
+    assert_eq!(
+        state.global.selected_pane_row, 7,
+        "the selection survives the trip"
+    );
+
+    // Back on the sidebar: the same agent is selected and scrolled into
+    // view again — not row 0's.
+    state.focus_state.sidebar_focused = true;
+    let _ = render_to_string(&mut state, 28, 5);
+    assert_eq!(state.global.selected_pane_row, 7);
+    assert!(
+        state.scrolls.panes.offset > 0,
+        "returning scrolls the selection back into view"
     );
 }
 

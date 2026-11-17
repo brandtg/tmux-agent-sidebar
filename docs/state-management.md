@@ -25,23 +25,28 @@ hidden→visible transition, and multi-client setups keep several windows
 snapshot worker also re-fetches the global options on a 5s floor, so every
 instance converges without depending on catching a particular signal.
 Cursor updates are deliberately not broadcast — they
-fire on every navigation keystroke. On the SIGUSR1 focus-change reload the
-shared cursor is loaded, and the agent list is then re-anchored at the top
-(`reset_pane_scroll`), so switching windows or panes always shows the list
-from its first row instead of auto-scrolling down to a cursor left by
-another window. The one exception is the sidebar itself gaining focus: the
-transition tick instead selects the row of the pane that held focus in
-this window just before the jump (`select_focused_context_row`), so the
-list opens on the agent matching the current tmux context — with the
-auto-scroll bringing that row into view. Popups get the same treatment at
-startup, pinned to the pane they were opened from. A focus event is not a
-user choice, so the selection is not persisted to `@sidebar_cursor`; when
-the context pane is unknown or filtered out of the list, the reset to the
-first row applies as usual.
+fire on every navigation keystroke — and the runtime fold deliberately does
+not adopt the shared cursor either: an index is only meaningful in the list
+it was written against. On the SIGUSR1 focus-change reload the agent list's
+scroll is re-anchored at the top (`reset_pane_scroll`), so switching windows
+or panes always shows the list from its first row instead of auto-scrolling
+down to wherever navigation last left it — while the cursor row itself is
+preserved: it is the user's last selection, renders no highlight while the
+sidebar is unfocused, and would otherwise drag the highlight (and Enter)
+onto a different agent on return. The one exception is the sidebar itself
+gaining focus: the transition tick instead selects the row of the pane that
+held focus in this window just before the jump
+(`select_focused_context_row`), so the list opens on the agent matching the
+current tmux context — with the auto-scroll bringing that row into view.
+Popups get the same treatment at startup, pinned to the pane they were
+opened from. A focus event is not a user choice, so the selection is not
+persisted to `@sidebar_cursor`; when the context pane is unknown or
+filtered out of the list, the scroll parks at the top and the cursor stays
+on the last selection.
 
 | Field | Tmux Variable | Update Trigger | Description |
 |-------|--------------|----------------|-------------|
-| `selected_pane_row` | `@sidebar_cursor` | User input (j/k key); tmux write flushed after a short debounce | Cursor position in agent list; re-anchored to the first row on a window/pane (focus-change) reload, or to the row of the pre-focus context pane when the sidebar itself gains focus |
+| `selected_pane_row` | `@sidebar_cursor` | User input (j/k key); tmux write flushed after a short debounce | Cursor position in agent list; preserved across unfocused ticks (only the scroll offset re-anchors), and moved to the row of the pre-focus context pane when the sidebar itself gains focus |
 | `repo_filter` | `@sidebar_repo_filter` | User input (repo popup) | Repository filter (All or specific repo) |
 | `compact` | `@sidebar_compact` | User input (`c` key) | Compact one-line-per-pane rendering; the live value is shared by all open sidebars, and `@sidebar_default_compact_view` seeds it only before the first toggle |
 | `group_by` | `@sidebar_group_by` | User input (`s` key) | Group panes by repo root or tmux session; the runtime toggle writes the shared value and broadcasts, matching `c` / `w` |
