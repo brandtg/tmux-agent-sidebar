@@ -6,20 +6,34 @@ use crate::tmux::{
     AGY_BIN, ANTIGRAVITY_AGENT, CLAUDE_AGENT, CODEX_AGENT, HERMES_AGENT, OPENCODE_AGENT,
 };
 
+/// The canonical agent label for a resolvable name, which may be an
+/// alias (`agy` → `antigravity`). Single source of truth for the alias:
+/// `resolve_adapter` matches on this mapping, and the hook-side guards
+/// normalize through it so a hand-wired `hook agy …` config behaves
+/// exactly like the canonical label.
+pub fn canonical_agent_name(agent_name: &str) -> Option<&'static str> {
+    match agent_name {
+        CLAUDE_AGENT => Some(CLAUDE_AGENT),
+        CODEX_AGENT => Some(CODEX_AGENT),
+        OPENCODE_AGENT => Some(OPENCODE_AGENT),
+        HERMES_AGENT => Some(HERMES_AGENT),
+        ANTIGRAVITY_AGENT | AGY_BIN => Some(ANTIGRAVITY_AGENT),
+        _ => None,
+    }
+}
+
 /// Adapter that converts external agent events into internal `AgentEvent`.
 pub trait EventAdapter {
     fn parse(&self, event_name: &str, input: &Value) -> Option<AgentEvent>;
 }
 
 pub fn resolve_adapter(agent_name: &str) -> Option<Box<dyn EventAdapter>> {
-    match agent_name {
+    match canonical_agent_name(agent_name)? {
         CLAUDE_AGENT => Some(Box::new(adapter::claude::ClaudeAdapter)),
         CODEX_AGENT => Some(Box::new(adapter::codex::CodexAdapter)),
         OPENCODE_AGENT => Some(Box::new(adapter::opencode::OpenCodeAdapter)),
         HERMES_AGENT => Some(Box::new(adapter::hermes::HermesAdapter)),
-        // Generated hook configs use the canonical label; `agy` is accepted
-        // so a hand-written config that uses the executable name still works.
-        ANTIGRAVITY_AGENT | AGY_BIN => Some(Box::new(adapter::antigravity::AntigravityAdapter)),
+        ANTIGRAVITY_AGENT => Some(Box::new(adapter::antigravity::AntigravityAdapter)),
         _ => None,
     }
 }
@@ -65,6 +79,19 @@ mod tests {
     fn resolve_unknown_returns_none() {
         assert!(resolve_adapter("gemini").is_none());
         assert!(resolve_adapter("").is_none());
+    }
+
+    #[test]
+    fn canonical_agent_name_resolves_the_agy_alias() {
+        // Single source of truth for the alias: `resolve_adapter` matches
+        // on this mapping, and the hook-side guards normalize through it.
+        assert_eq!(canonical_agent_name("agy"), Some("antigravity"));
+        assert_eq!(canonical_agent_name("antigravity"), Some("antigravity"));
+        assert_eq!(canonical_agent_name("claude"), Some("claude"));
+        assert_eq!(canonical_agent_name("codex"), Some("codex"));
+        assert_eq!(canonical_agent_name("opencode"), Some("opencode"));
+        assert_eq!(canonical_agent_name("hermes"), Some("hermes"));
+        assert_eq!(canonical_agent_name("gemini"), None);
     }
 
     // ─── integration: resolve + parse produce correct agent names ─────
