@@ -567,8 +567,10 @@ export default {
     const lookupSessionInfo = async (session_id) => {
       if (sessionProjects.has(session_id)) return sessionProjects.get(session_id);
       let info = null;
+      let answered = false;
       try {
         const session = await ctx.session.get({ sessionID: session_id });
+        answered = true;
         if (session && typeof session === "object") {
           // The session record carries `directory` flat (SessionV1.Info);
           // some shapes wrap it in `location`. Read both.
@@ -586,9 +588,17 @@ export default {
           };
         }
       } catch {}
-      // Cache misses too, so a deleted/foreign session is not re-queried
-      // on every event.
-      sessionProjects.set(session_id, info);
+      // Cache only answers the server actually gave: a real miss (a
+      // deleted session) is cached so it is not re-queried on every
+      // event, but a THROWN lookup (service restarting, transient RPC
+      // failure) must retry on the next event. Caching the throw used
+      // to default-allow that session for its whole life, because
+      // belongsToInstance keeps the pre-gating behavior for unknown
+      // sessions — one transient failure opened the default-allow
+      // window permanently (audit 2026-11-16).
+      if (answered) {
+        sessionProjects.set(session_id, info);
+      }
       return info;
     };
     // Synchronous check for already-known sessions; null = not seen yet.

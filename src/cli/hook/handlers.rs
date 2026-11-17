@@ -11,3 +11,8 @@ pub(super) use run::{
 pub(super) use session::{on_session_end, on_session_start, on_session_title};
 pub(super) use status_priority::is_pending_action_wait_reason;
 pub(super) use subagent::{on_subagent_start, on_subagent_stop};
+
+// The per-pane identity lock is shared outside `handlers`: the
+// session-binding read-modify-write in `context::location` holds the
+// same flock as `on_session_title`'s check+write (audit 2026-11-16).
+pub(in crate::cli::hook) use subagent::with_subagent_lock;

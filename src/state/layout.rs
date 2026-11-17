@@ -162,6 +162,19 @@ impl AppState {
             .pane_row_targets
             .get(self.global.selected_pane_row)
             .map(|target| target.pane_id.clone());
+        // Also remember where in its group that pane sat: when the pane
+        // is gone after the rebuild, the cursor re-anchors by position
+        // within the same group instead of clamping to the global last
+        // row — which can be a different group entirely and made the
+        // selection drift (and later snap back down when the pane
+        // returned) on every row removal outside a search.
+        let previous_anchor = self.current_group_index().map(|index| {
+            let group = &self.layout.group_starts[index];
+            (
+                group.name.clone(),
+                self.global.selected_pane_row - group.row_start,
+            )
+        });
 
         self.layout.pane_row_targets.clear();
         self.layout.group_starts.clear();
@@ -256,6 +269,30 @@ impl AppState {
         }
         if self.search.has_query() {
             self.global.selected_pane_row = 0;
+        } else if let Some((group_name, offset)) = previous_anchor
+            && let Some(start) = self
+                .layout
+                .group_starts
+                .iter()
+                .position(|group| group.name == group_name)
+        {
+            // The cursor's pane is gone but its group survived: hold the
+            // cursor's old position within that group, clamped to the
+            // group's new size. Clamping to the global last row instead
+            // used to walk the cursor into a later group, and the pane's
+            // later return then re-anchored the selection back down —
+            // the very surprise the pane-id re-anchor was built to kill,
+            // surviving via the row-removal path.
+            let group_start = self.layout.group_starts[start].row_start;
+            let group_len = self
+                .layout
+                .group_starts
+                .get(start + 1)
+                .map(|group| group.row_start)
+                .unwrap_or(len)
+                .saturating_sub(group_start)
+                .max(1);
+            self.global.selected_pane_row = group_start + offset.min(group_len - 1);
         } else if self.global.selected_pane_row >= len {
             self.global.selected_pane_row = len - 1;
         }

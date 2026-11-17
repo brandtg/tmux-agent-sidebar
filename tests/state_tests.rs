@@ -268,6 +268,82 @@ fn test_rebuild_row_targets_clamps_selection() {
     assert_eq!(state.global.selected_pane_row, 0);
 }
 
+#[test]
+fn test_rebuild_row_targets_reanchors_within_the_group_on_removal() {
+    // Two groups: "alpha" with %1 %2 %3, "beta" with %4. Cursor on %3
+    // (row 2). When %3 disappears the cursor used to clamp to the global
+    // last row (row 2 = beta's %4), walking it into another group — and
+    // %3's later return then re-anchored the selection back down, the
+    // selection-drift surprise the pane-id re-anchor was built to kill
+    // surviving via the row-removal path (audit 2026-11-16). It now
+    // re-anchors by position within the same group instead.
+    let pane1 = make_pane(AgentType::Claude, PaneStatus::Idle);
+    let mut pane2 = pane1.clone();
+    pane2.pane_id = "%2".into();
+    let mut pane3 = pane1.clone();
+    pane3.pane_id = "%3".into();
+    let mut pane4 = pane1.clone();
+    pane4.pane_id = "%4".into();
+
+    let mut state = make_state(vec![]);
+    state.repo_groups = vec![
+        make_repo_group("alpha", vec![pane1, pane2.clone(), pane3.clone()]),
+        make_repo_group("beta", vec![pane4.clone()]),
+    ];
+    state.global.selected_pane_row = 2; // %3
+    state.rebuild_row_targets();
+    assert_eq!(
+        state.layout.pane_row_targets[state.global.selected_pane_row].pane_id,
+        "%3"
+    );
+
+    // %3 is gone: the cursor holds alpha's clamped position (alpha now
+    // has one row) instead of walking into beta.
+    state.repo_groups = vec![
+        make_repo_group("alpha", vec![pane2.clone()]),
+        make_repo_group("beta", vec![pane4.clone()]),
+    ];
+    state.rebuild_row_targets();
+    assert_eq!(
+        state.layout.pane_row_targets[state.global.selected_pane_row].pane_id, "%2",
+        "the cursor re-anchors within its group, not to the next group's row"
+    );
+
+    // %3 returns: the cursor's pane (%2) survives, so the selection stays
+    // put — the returning pane no longer drags the cursor (and the
+    // viewport) down to itself from a drifted position.
+    state.repo_groups = vec![
+        make_repo_group("alpha", vec![pane2, pane3]),
+        make_repo_group("beta", vec![pane4]),
+    ];
+    state.rebuild_row_targets();
+    assert_eq!(
+        state.layout.pane_row_targets[state.global.selected_pane_row].pane_id, "%2",
+        "the returning pane does not drag the cursor off its group position"
+    );
+}
+
+#[test]
+fn test_rebuild_row_targets_clamps_when_the_whole_group_goes() {
+    // The cursor's group vanishes entirely (repo filter change, collapse,
+    // or every pane leaving): no group to re-anchor in, so the old
+    // global clamp is the remaining sane fallback.
+    let pane1 = make_pane(AgentType::Claude, PaneStatus::Idle);
+    let mut pane2 = pane1.clone();
+    pane2.pane_id = "%2".into();
+    let mut state = make_state(vec![]);
+    state.repo_groups = vec![
+        make_repo_group("alpha", vec![pane1]),
+        make_repo_group("beta", vec![pane2.clone()]),
+    ];
+    state.global.selected_pane_row = 0; // alpha's %1
+    state.rebuild_row_targets();
+
+    state.repo_groups = vec![make_repo_group("beta", vec![pane2])];
+    state.rebuild_row_targets();
+    assert_eq!(state.global.selected_pane_row, 0);
+}
+
 // find_focused_pane now queries tmux directly, so it can't be tested
 // without a tmux session. The underlying logic (pick_active_pane) is
 // tested via unit tests in tmux.rs. focused_pane_id is pub, so tests

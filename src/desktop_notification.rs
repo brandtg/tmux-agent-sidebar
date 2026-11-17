@@ -188,27 +188,35 @@ pub fn notify_if_allowed(
         return false;
     }
 
-    let key = stamp_option_key(kind);
-    let normalized_fingerprint = normalize_fingerprint(fingerprint);
-    let now = now_epoch_secs();
-    let current = tmux::get_pane_option_value(pane_id, key);
-    if let Some(stamp) = parse_stamp(&current)
-        && stamp.fingerprint == normalized_fingerprint
-        && now.saturating_sub(stamp.timestamp) < DESKTOP_NOTIFICATION_COOLDOWN_SECS
-    {
-        return false;
-    }
+    // The stamp check → send → stamp-write sequence is a read-modify-
+    // write across independent hook processes: two concurrent identical
+    // events used to both pass the cooldown check and double-notify.
+    // Hold the pane's per-pane flock across the whole sequence so the
+    // second event sees the first's stamp (fail-open like every lock
+    // user here — an unlocked duplicate is only the pre-fix race).
+    crate::paths::with_pane_lock("notify", pane_id, || {
+        let key = stamp_option_key(kind);
+        let normalized_fingerprint = normalize_fingerprint(fingerprint);
+        let now = now_epoch_secs();
+        let current = tmux::get_pane_option_value(pane_id, key);
+        if let Some(stamp) = parse_stamp(&current)
+            && stamp.fingerprint == normalized_fingerprint
+            && now.saturating_sub(stamp.timestamp) < DESKTOP_NOTIFICATION_COOLDOWN_SECS
+        {
+            return false;
+        }
 
-    match send_desktop_notification(title, body) {
-        Ok(()) => {
-            tmux::set_pane_option(pane_id, key, &encode_stamp(now, &normalized_fingerprint));
-            true
+        match send_desktop_notification(title, body) {
+            Ok(()) => {
+                tmux::set_pane_option(pane_id, key, &encode_stamp(now, &normalized_fingerprint));
+                true
+            }
+            Err(err) => {
+                eprintln!("desktop notification failed: {err}");
+                false
+            }
         }
-        Err(err) => {
-            eprintln!("desktop notification failed: {err}");
-            false
-        }
-    }
+    })
 }
 
 fn read_bool(opts: &HashMap<String, String>, key: &str) -> Option<bool> {

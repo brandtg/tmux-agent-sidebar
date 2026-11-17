@@ -21,32 +21,21 @@ pub struct ScrollStates {
 }
 
 impl super::AppState {
-    /// Park the agent list at the top without touching the selection.
-    ///
-    /// Zeroes only the scroll offset. The cursor row is the user's last
-    /// selection and must survive the trip: erasing it to row 0 on every
-    /// unfocused tick made the highlight — and Enter — land on a different
-    /// agent after the user returned from a jump. Nothing needs the row
-    /// reset anymore: the highlight is gated on sidebar focus (a parked
-    /// cursor renders nothing while unfocused), the auto-scroll follows
-    /// the selection only while focused (`compute_scroll_offset`), and
-    /// the arrival's context selection reconciles the cursor to the
-    /// context pane.
-    pub fn reset_pane_scroll(&mut self) {
-        self.scrolls.panes.offset = 0;
-    }
-
     /// Select the row of the agent matching the current tmux context: the
     /// pane that held focus in this window just before the sidebar itself
     /// was focused. Across the focus-gain tick `find_focused_pane_from`
     /// preserves that id (the sidebar is the active pane then, so
     /// `pick_active_pane` yields nothing new), which is what makes it
-    /// readable here. Returns `true` when a row was selected; the caller
-    /// falls back to [`Self::reset_pane_scroll`] when the context pane is
-    /// unknown or filtered out of the list — which parks the scroll but
-    /// keeps the cursor on the user's last selection.
+    /// readable here. Returns `true` when a row was selected; when the
+    /// context pane is unknown or filtered out the caller keeps the
+    /// cursor (and the viewport) exactly where the user left them —
+    /// the selection is never reset to row 0, and the scroll offset is
+    /// not parked: erasing either on an unfocused tick made the
+    /// highlight, Enter, and the viewport land somewhere else after the
+    /// user returned from a jump. The offset only moves while focused
+    /// (`compute_scroll_offset` follows the selection then), so a
+    /// preserved cursor is still in view when focus returns.
     pub fn select_focused_context_row(&mut self) -> bool {
-        self.scrolls.panes.offset = 0;
         // In a popup the tracked focus id stays empty — `TMUX_PANE` is
         // pinned to the window's active pane at popup-open time and
         // `pick_active_pane` excludes that pane — so the pinned pane
@@ -148,21 +137,6 @@ mod tests {
         assert_eq!(states.todos.visible_height, 0);
     }
 
-    #[test]
-    fn reset_pane_scroll_parks_the_scroll_and_keeps_the_selection() {
-        let mut state = super::super::AppState::new("%99".into());
-        state.global.selected_pane_row = 7;
-        state.scrolls.panes.offset = 14;
-
-        state.reset_pane_scroll();
-
-        assert_eq!(
-            state.global.selected_pane_row, 7,
-            "the cursor is the user's last selection and survives the reset"
-        );
-        assert_eq!(state.scrolls.panes.offset, 0);
-    }
-
     // ─── select_focused_context_row ──────────────────────────────────
 
     use crate::state::layout::RowTarget;
@@ -185,23 +159,28 @@ mod tests {
         assert!(state.select_focused_context_row());
         assert_eq!(state.global.selected_pane_row, 2);
         assert_eq!(
-            state.scrolls.panes.offset, 0,
-            "selection anchors from a clean scroll state; render auto-scroll takes over"
+            state.scrolls.panes.offset, 9,
+            "the viewport is preserved across the refocus; render auto-scroll only nudges it if the row fell out of view"
         );
     }
 
     #[test]
-    fn select_focused_context_row_leaves_row_for_reset_when_unlisted() {
+    fn select_focused_context_row_keeps_cursor_and_viewport_when_unlisted() {
         // The context pane is filtered out of the list (or is a non-agent
-        // pane with no window row): no row is selected and the caller
-        // falls back to `reset_pane_scroll`.
+        // pane with no window row): no row is selected, and the cursor —
+        // and the viewport — stay exactly where the user left them.
+        // Used to park the scroll at the top, which made the viewport
+        // jump on refocus when the preserved cursor sat below the first
+        // screen (audit 2026-11-16, "viewport jumps when I tab back").
         let mut state = super::super::AppState::new("%99".into());
         state.layout.pane_row_targets = vec![row_target("%1")];
         state.focus_state.focused_pane_id = Some("%404".into());
         state.global.selected_pane_row = 5;
+        state.scrolls.panes.offset = 12;
 
         assert!(!state.select_focused_context_row());
         assert_eq!(state.global.selected_pane_row, 5);
+        assert_eq!(state.scrolls.panes.offset, 12);
     }
 
     #[test]

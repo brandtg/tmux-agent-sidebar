@@ -149,6 +149,20 @@ fn tool_response(input: &Value) -> Value {
     }
 }
 
+/// Expand a leading `~` against `$HOME`. Captured agy payloads carry
+/// `~`-relative transcript paths (`~/.gemini/…`); `File::open` never
+/// resolves a tilde, so without this the read misses and prompt/response
+/// recovery silently degrades to "" forever.
+fn expand_tilde(path: &str) -> String {
+    match path.strip_prefix("~/") {
+        Some(rest) => match std::env::var("HOME") {
+            Ok(home) if !home.is_empty() => format!("{home}/{rest}"),
+            _ => path.to_string(),
+        },
+        _ => path.to_string(),
+    }
+}
+
 /// Read the last [`TRANSCRIPT_TAIL_BYTES`] of `path`, aligned to the first
 /// complete line. Every agy hook payload carries `transcriptPath`; the
 /// transcript is the only source for prompt and response text, which no
@@ -158,7 +172,7 @@ fn transcript_tail(path: &str) -> String {
     if path.is_empty() {
         return String::new();
     }
-    let Ok(mut file) = std::fs::File::open(path) else {
+    let Ok(mut file) = std::fs::File::open(expand_tilde(path)) else {
         return String::new();
     };
     let len = file.metadata().map(|m| m.len()).unwrap_or(0);
@@ -308,6 +322,24 @@ mod tests {
             "antigravity",
             AntigravityAdapter::HOOK_REGISTRATIONS,
         );
+    }
+
+    #[test]
+    fn expand_tilde_resolves_a_leading_home_tilde() {
+        // Captured agy payloads carry `~`-relative transcript paths
+        // (`~/.gemini/…`, as in `session_start_payload` above); without
+        // expansion the transcript read always missed and prompt/response
+        // recovery silently degraded to "".
+        if std::env::var("HOME").unwrap_or_default().is_empty() {
+            return;
+        }
+        let home = std::env::var("HOME").unwrap();
+        assert_eq!(
+            expand_tilde("~/.gemini/antigravity-cli/t.jsonl"),
+            format!("{home}/.gemini/antigravity-cli/t.jsonl")
+        );
+        assert_eq!(expand_tilde("/abs/t.jsonl"), "/abs/t.jsonl");
+        assert_eq!(expand_tilde(""), "");
     }
 
     #[test]

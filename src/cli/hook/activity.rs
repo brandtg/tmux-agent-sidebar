@@ -49,11 +49,10 @@ pub(super) fn write_activity_entry(pane: &str, tool_name: &str, label: &str) {
 }
 
 /// Exclusive flock on an open file; false if the lock could not be
-/// taken. Shared by the activity-log append/trim and the subagent-list
-/// read-modify-write, which serialize independent hook processes.
+/// taken. Delegates to the shared implementation behind the per-pane
+/// lock helpers (`paths::with_pane_lock`).
 pub(in crate::cli::hook) fn lock_exclusive(file: &std::fs::File) -> bool {
-    use std::os::fd::AsRawFd;
-    unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) == 0 }
+    crate::paths::lock_exclusive(file)
 }
 
 /// Rewrite the file in place with only its last `keep` lines when it
@@ -113,23 +112,30 @@ pub(super) fn handle_activity_log(
     let agent_name = crate::event::canonical_agent_name(agent_name).unwrap_or(agent_name);
     let label = extract_tool_label(tool_name, tool_input, tool_response);
     if is_background_bash(tool_name, tool_input) {
-        let stored = if label.is_empty() {
-            tmux::BG_CMD_PLACEHOLDER
-        } else {
-            label.as_str()
-        };
-        tmux::set_pane_option(pane, tmux::PANE_BG_CMD, &sanitize_tmux_value(stored));
-        // Track the spawned process by PID when the result reports one
-        // (Hermes' `terminal(background=true)` returns `pid`). The ps
-        // sweep compares the stored raw command against shell-expanded
-        // ps args, which never match once the command uses quotes or
-        // `$(…)` substitution — a live PID is immune to that rewrite.
-        // Overwrite-or-clear every spawn: a stale PID from a previous
-        // shell must not keep the next command's marker alive.
-        match bg_pid_from_response(tool_response) {
-            Some(pid) => tmux::set_pane_option(pane, tmux::PANE_BG_PID, &pid.to_string()),
-            None => tmux::unset_pane_option(pane, tmux::PANE_BG_PID),
-        }
+        // The `@pane_bg_cmd` + `@pane_bg_pid` pair is a single unit: two
+        // concurrent background spawns in one pane used to interleave the
+        // set/unset across processes, leaving the placeholder clearing
+        // the other spawn's pid. Serialize the pair with the same
+        // fail-open per-pane flock the subagent list uses.
+        crate::paths::with_pane_lock("bgcmd", pane, || {
+            let stored = if label.is_empty() {
+                tmux::BG_CMD_PLACEHOLDER
+            } else {
+                label.as_str()
+            };
+            tmux::set_pane_option(pane, tmux::PANE_BG_CMD, &sanitize_tmux_value(stored));
+            // Track the spawned process by PID when the result reports one
+            // (Hermes' `terminal(background=true)` returns `pid`). The ps
+            // sweep compares the stored raw command against shell-expanded
+            // ps args, which never match once the command uses quotes or
+            // `$(…)` substitution — a live PID is immune to that rewrite.
+            // Overwrite-or-clear every spawn: a stale PID from a previous
+            // shell must not keep the next command's marker alive.
+            match bg_pid_from_response(tool_response) {
+                Some(pid) => tmux::set_pane_option(pane, tmux::PANE_BG_PID, &pid.to_string()),
+                None => tmux::unset_pane_option(pane, tmux::PANE_BG_PID),
+            }
+        });
     }
 
     let current_status = tmux::get_pane_option_value(pane, tmux::PANE_STATUS);
@@ -542,6 +548,62 @@ mod tests {
             Some("1126098")
         );
         fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn handle_activity_log_bg_pair_waits_for_the_bgcmd_lock() {
+        // The `@pane_bg_cmd` + `@pane_bg_pid` pair is a single unit under
+        // the pane's bgcmd flock (audit 2026-11-16): two concurrent
+        // background spawns used to interleave the set/unset across
+        // independent hook processes, leaving the placeholder clearing
+        // the other spawn's pid. Hold the lock from a helper thread —
+        // the handler must block until it is released, and only then
+        // write the pair.
+        //
+        // The helper touches nothing but the lockfile — the tmux mock is
+        // thread-local, so every pane-option access stays on this thread.
+        let _guard = tmux::test_mock::install();
+        let pane_id = "%CLI_BG_LOCKED";
+        let lock = crate::paths::pane_lock_path("bgcmd", pane_id);
+        let _ = fs::remove_file(&lock);
+
+        let (locked_tx, locked_rx) = std::sync::mpsc::channel();
+        let lock_for_helper = lock.clone();
+        let helper = std::thread::spawn(move || {
+            let file = fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .create(true)
+                .truncate(false)
+                .open(&lock_for_helper)
+                .unwrap();
+            assert!(crate::paths::lock_exclusive(&file));
+            locked_tx.send(()).unwrap();
+            // Hold long enough that an unlocked pair-write would finish
+            // entirely inside this window.
+            std::thread::sleep(std::time::Duration::from_millis(300));
+            // fd drops here, releasing the flock.
+        });
+
+        locked_rx.recv().unwrap();
+        handle_activity_log(
+            pane_id,
+            "hermes",
+            "Bash",
+            &json!({"command": "npm run dev", "run_in_background": true}),
+            &json!({"output": "Background process started", "pid": 4242}),
+        );
+        helper.join().unwrap();
+
+        assert_eq!(
+            tmux::test_mock::get(pane_id, tmux::PANE_BG_PID).as_deref(),
+            Some("4242")
+        );
+        assert_eq!(
+            tmux::test_mock::get(pane_id, tmux::PANE_BG_CMD).as_deref(),
+            Some("npm run dev")
+        );
+        fs::remove_file(&lock).ok();
     }
 
     #[test]

@@ -289,14 +289,17 @@ fn test_agents_auto_scroll_up_shows_group_header() {
     ");
 }
 
-// ─── Agents: window/pane switch resets scroll ───────────────────────
+// ─── Agents: window/pane switch preserves cursor and viewport ───────
 
 #[test]
-fn test_window_switch_reset_returns_list_to_top() {
-    // A window/pane switch parks the scroll at the top (`app::run` calls
-    // `reset_pane_scroll` on unfocused ticks). The cursor row is left
-    // alone — it is the user's last selection, and the sidebar renders no
-    // highlight while unfocused, so nothing snaps the list down to it.
+fn test_window_switch_preserves_cursor_and_viewport() {
+    // A window/pane switch keeps the cursor and the viewport exactly
+    // where the user left them: the offset is no longer parked at the
+    // top on unfocused ticks, so refocus restores the view instead of
+    // jumping down to the preserved cursor (audit 2026-11-16, "viewport
+    // jumps when I tab back"). The cursor row is left alone — it is the
+    // user's last selection, and the sidebar renders no highlight while
+    // unfocused, so nothing animates while they work in the agent pane.
     let mut panes = Vec::new();
     for i in 0..8 {
         let mut pane = make_pane(AgentType::Claude, PaneStatus::Idle);
@@ -322,33 +325,34 @@ fn test_window_switch_reset_returns_list_to_top() {
     // Cursor adopted from another window; auto-scroll moves the list down.
     state.global.selected_pane_row = 7;
     let _ = render_to_string(&mut state, 28, 5);
+    let offset_while_focused = state.scrolls.panes.offset;
     assert!(
-        state.scrolls.panes.offset > 0,
+        offset_while_focused > 0,
         "an adopted cursor should scroll the list"
     );
 
-    // The user leaves the sidebar: the tick parks the scroll, and the
-    // unfocused render must not drag it back down to the parked cursor.
+    // The user leaves the sidebar: nothing parks. The viewport and the
+    // preserved cursor survive the trip — the unfocused render must not
+    // drag the list anywhere (the highlight is focus-gated).
     state.focus_state.sidebar_focused = false;
-    state.reset_pane_scroll();
     let _ = render_to_string(&mut state, 28, 5);
     assert_eq!(
-        state.scrolls.panes.offset, 0,
-        "the parked scroll sticks while unfocused"
+        state.scrolls.panes.offset, offset_while_focused,
+        "the viewport sticks while unfocused"
     );
     assert_eq!(
         state.global.selected_pane_row, 7,
         "the selection survives the trip"
     );
 
-    // Back on the sidebar: the same agent is selected and scrolled into
-    // view again — not row 0's.
+    // Back on the sidebar: the same agent is selected and the viewport
+    // returns to where the user left it.
     state.focus_state.sidebar_focused = true;
     let _ = render_to_string(&mut state, 28, 5);
     assert_eq!(state.global.selected_pane_row, 7);
-    assert!(
-        state.scrolls.panes.offset > 0,
-        "returning scrolls the selection back into view"
+    assert_eq!(
+        state.scrolls.panes.offset, offset_while_focused,
+        "refocus restores the exact view"
     );
 }
 

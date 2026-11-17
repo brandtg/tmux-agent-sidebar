@@ -351,7 +351,10 @@ const PROJECTS_SCAN_LINES: usize = 50;
 /// pid-keyed `sessions/` files, and its entries carry the session's
 /// exact `cwd` — no decoding of the dash-encoded directory name
 /// needed. A missing transcript (session from another machine, or
-/// pruned) is simply "no cwd".
+/// pruned) is simply "no cwd". One unreadable transcript skips to the
+/// next candidate directory instead of aborting the whole walk: the
+/// read_dir order is not deterministic, so a `?` here made the resume
+/// cwd hint flaky (audit 2026-11-16).
 fn claude_cwd_from_projects(home: &Path, session_id: &str) -> Option<String> {
     let projects = home.join(".claude").join("projects");
     for entry in std::fs::read_dir(projects).ok()?.flatten() {
@@ -359,7 +362,9 @@ fn claude_cwd_from_projects(home: &Path, session_id: &str) -> Option<String> {
         if !transcript.is_file() {
             continue;
         }
-        let file = std::fs::File::open(&transcript).ok()?;
+        let Ok(file) = std::fs::File::open(&transcript) else {
+            continue;
+        };
         for line in std::io::BufReader::new(file)
             .lines()
             .map_while(Result::ok)
@@ -942,6 +947,41 @@ mod tests {
         assert_eq!(
             probe_cwd("claude", "bbbbbbbb-b474-4d9c-a5c6-e0db65c6c49e", tmp.path()),
             None
+        );
+    }
+
+    #[test]
+    fn projects_probe_skips_an_unreadable_transcript() {
+        // One candidate directory's transcript cannot be opened (the
+        // session may belong to another user after a shared-host move).
+        // The walk used to abort on the first such open — and since the
+        // read_dir order is not deterministic, the resume cwd hint
+        // flapped between None and the cwd (audit 2026-11-16). When the
+        // probe runs privileged the chmod is ignored, but then the
+        // unreadable transcript is readable and carries no cwd, so the
+        // assertion holds either way.
+        let tmp = tempfile::tempdir().unwrap();
+        let projects = tmp.path().join(".claude").join("projects");
+        let unreadable = projects.join("-home-u-locked");
+        let readable = projects.join("-home-u-open");
+        std::fs::create_dir_all(&unreadable).unwrap();
+        std::fs::create_dir_all(&readable).unwrap();
+        let id = "cccccccc-b474-4d9c-a5c6-e0db65c6c49e";
+        std::fs::write(unreadable.join(format!("{id}.jsonl")), "").unwrap();
+        std::fs::write(
+            readable.join(format!("{id}.jsonl")),
+            format!(r#"{{"cwd":"/recovered","sessionId":"{id}"}}"#),
+        )
+        .unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(
+            unreadable.join(format!("{id}.jsonl")),
+            std::fs::Permissions::from_mode(0o000),
+        )
+        .unwrap();
+        assert_eq!(
+            probe_cwd("claude", id, tmp.path()).as_deref(),
+            Some("/recovered")
         );
     }
 
