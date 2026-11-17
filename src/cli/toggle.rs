@@ -28,12 +28,24 @@ pub(crate) fn cmd_toggle(args: &[String]) -> i32 {
     // toggle press and absent for `--create-only` hook callers.
     let client_width = positional.get(2).and_then(|s| s.trim().parse::<u32>().ok());
 
-    let sidebar_width = sidebar_width_cells(window_id);
-
-    let sidebar_position = SidebarPosition::from_setting(&tmux::display_message(
+    // One window-targeted probe replaces six serial `display-message`
+    // spawns (audit 2026-11-16 J2): the jump path lands here right
+    // after `select_pane`, and each probe was its own tmux client
+    // round trip on the caller's thread.
+    let probe = tmux::display_message(
         window_id,
-        &format!("#{{{}}}", tmux::SIDEBAR_POSITION),
-    ));
+        "#{window_width}|#{@sidebar_width}|#{@sidebar_width_max}|#{@sidebar_position}|#{@sidebar_popup_max_width}|#{@sidebar_auto_create}",
+    );
+    let mut settings = probe.splitn(6, '|');
+    let window_width: u32 = settings.next().unwrap_or("").parse().unwrap_or(0);
+    let width_setting = settings.next().unwrap_or("").to_string();
+    let width_max = settings.next().unwrap_or("").to_string();
+    let sidebar_position = SidebarPosition::from_setting(settings.next().unwrap_or(""));
+    let popup_max_width = settings.next().unwrap_or("").to_string();
+    let auto_create = settings.next().unwrap_or("").to_string();
+
+    let sidebar_width =
+        sidebar_width_cells_with(window_id, &width_setting, &width_max, window_width);
 
     // Mobile viewport: windows narrower than `@sidebar_popup_max_width`
     // open as a tmux popup instead of a split pane. Auto-create stays a
@@ -50,13 +62,6 @@ pub(crate) fn cmd_toggle(args: &[String]) -> i32 {
     // check because the toggle-off path needs it too: on a narrow
     // viewport the popup replaces a desktop split pane in the same
     // keystroke.
-    let window_width: u32 = tmux::display_message(window_id, "#{window_width}")
-        .parse()
-        .unwrap_or(0);
-    let popup_max_width = tmux::display_message(
-        window_id,
-        &format!("#{{{}}}", tmux::SIDEBAR_POPUP_MAX_WIDTH),
-    );
 
     // Auto-create decision: `--create-only` runs from the new-window
     // hook and from the toggle-all sweep. A recorded mode
@@ -68,8 +73,6 @@ pub(crate) fn cmd_toggle(args: &[String]) -> i32 {
     // the mode.
     if create_only {
         let mode = read_global_option(tmux::SIDEBAR_MODE);
-        let auto_create =
-            tmux::display_message(window_id, &format!("#{{{}}}", tmux::SIDEBAR_AUTO_CREATE));
         let decision = auto_create_decision(&mode, &auto_create);
         if create_only_skips(&decision, force_split) {
             return 0;
@@ -709,25 +712,37 @@ fn clamp_width_max(cells: u32, max_setting: &str) -> u32 {
 /// unclamped.
 fn sidebar_width_cells(window_id: &str) -> String {
     let setting = tmux::display_message(window_id, &format!("#{{{}}}", tmux::SIDEBAR_WIDTH));
-    let setting = if setting.is_empty() { "30" } else { &setting };
     let max_setting =
         tmux::display_message(window_id, &format!("#{{{}}}", tmux::SIDEBAR_WIDTH_MAX));
+    let window_width: u32 = tmux::display_message(window_id, "#{window_width}")
+        .parse()
+        .unwrap_or(0);
+    sidebar_width_cells_with(window_id, &setting, &max_setting, window_width)
+}
+
+/// [`sidebar_width_cells`] with the settings and window width already
+/// probed (the cmd_toggle path batches them into one display-message);
+/// identical resolution otherwise.
+fn sidebar_width_cells_with(
+    _window_id: &str,
+    setting: &str,
+    max_setting: &str,
+    window_width: u32,
+) -> String {
+    let setting = if setting.is_empty() { "30" } else { setting };
     if !setting.ends_with('%') {
         return match setting.trim().parse::<u32>() {
-            Ok(cells) => clamp_width_max(cells, &max_setting).to_string(),
+            Ok(cells) => clamp_width_max(cells, max_setting).to_string(),
             // Not a cell count (garbage, or a unit tmux itself accepts) —
             // hand it to `split-window -l` verbatim, as before.
             Err(_) => setting.to_string(),
         };
     }
-    let window_width: u32 = tmux::display_message(window_id, "#{window_width}")
-        .parse()
-        .unwrap_or(0);
     let pct: u32 = setting.trim_end_matches('%').parse().unwrap_or(15);
     if window_width == 0 || pct == 0 {
         return setting.to_string();
     }
-    clamp_width_max((window_width * pct / 100).max(1), &max_setting).to_string()
+    clamp_width_max((window_width * pct / 100).max(1), max_setting).to_string()
 }
 
 /// Shrink an oversize split-pane sidebar back to the resolved
