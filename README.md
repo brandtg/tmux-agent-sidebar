@@ -8,10 +8,11 @@
 
 - Tracks Claude Code, Codex, OpenCode, Hermes, and Antigravity panes across all tmux sessions and windows
 - Live prompts, response previews, background shells, wait reasons, task progress, and subagent trees
+- A status chyron narrates each agent's latest move, group headers fold with a click, and `o` opens a fullscreen overview grid of every pane
 - Spawn a worktree + agent from the sidebar; tear down window, worktree, and branch in one keystroke
 - Plain shell panes are tracked too — long-running commands pulse as tasks, and an optional shell-integration snippet captures real exit codes
 - Desktop notifications when an agent finishes, needs permission, or errors out
-- A manual TODO list (`t`), shared across every open sidebar and saved between restarts
+- A manual TODO list (`t`), shared across every open sidebar and saved between restarts — edit in place, `y` yanks an item, and `r` relaunches a resume-shaped one in a new window
 
 ## Quick start
 

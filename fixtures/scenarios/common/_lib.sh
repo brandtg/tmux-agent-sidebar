@@ -257,6 +257,10 @@ build_layout() {
         wait_reason="anthropic api: rate limit reached"
     run_fake_agent "$PANE_ERROR" claude
 
+    # Quiet the setup-notices badge so the merged menu button rests at
+    # `—` in every capture (see the helper's comment).
+    seed_quiet_notices
+
     # Default focus = MAIN_PANE. Scenarios override via FOCUS.
     # `${!var}` indirection under `set -u` fails hard if FOCUS points at
     # an unset variable, so collect the known pane names through a case
@@ -392,13 +396,50 @@ run_fake_agent() {
     fi
 }
 
+# Seed the sidebar's HOME with a throwaway Claude plugin install whose
+# cached files are byte-exact copies of the embedded tracked files
+# (hook.sh + hooks/hooks.json). Without it, the sidebar probes the
+# build machine's real ~/.claude, whose installed plugin version is
+# usually behind the checkout — and the merged menu button then rests
+# at `ⓘ` (an update nag) instead of the quiet `—` the captures want.
+# The registry mirrors Claude Code's installed_plugins.json layout;
+# start_sidebar prefixes HOME onto the sidebar's launch line only, so
+# the agent panes keep the server's environment.
+seed_quiet_notices() {
+    local home="$TMUX_DIR/home"
+    local cache="$home/.claude/plugins/tmux-agent-sidebar"
+    mkdir -p "$home/.claude/plugins" "$cache/hooks"
+    cat > "$home/.claude/plugins/installed_plugins.json" <<JSON
+{"plugins":{"tmux-agent-sidebar@brandtg":[{"installPath":"$cache"}]}}
+JSON
+    cp "$ROOT/hook.sh" "$cache/hook.sh"
+    cp "$ROOT/hooks/hooks.json" "$cache/hooks/hooks.json"
+
+    # The missing-hooks probe evaluates claude and codex even when the
+    # plugin is installed (only claude is filtered out). Generate the
+    # codex snippet with the running binary — its own `setup` resolves
+    # hook.sh the same walk-up way the sidebar does, so the seeded
+    # config's hook paths match what the sidebar expects byte for byte.
+    mkdir -p "$home/.codex"
+    "$BIN" setup codex > "$home/.codex/hooks.json"
+
+    export HERO_HOME="$home"
+}
+
 # -- sidebar + capture ---------------------------------------------
 
 # Start the real sidebar binary in $SIDEBAR_PANE and wait for the
 # first frame. 2 s is enough for the port-scan cycle to identify
 # every agent and for the TUI to paint its first full frame.
 start_sidebar() {
-    tmux send-keys -t "$SIDEBAR_PANE" "$BIN" Enter
+    # seed_quiet_notices may have pointed the sidebar's HOME at a
+    # throwaway home; prefix it onto the launch line so only the
+    # sidebar sees it (the agent panes keep the server's environment).
+    if [[ -n "${HERO_HOME:-}" ]]; then
+        tmux send-keys -t "$SIDEBAR_PANE" "HOME=$HERO_HOME $BIN" Enter
+    else
+        tmux send-keys -t "$SIDEBAR_PANE" "$BIN" Enter
+    fi
     sleep 2.0
 }
 

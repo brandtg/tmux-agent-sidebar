@@ -15,15 +15,13 @@ description: Every shortcut in the sidebar, the worktree spawn modal, and the cl
 | `a`            | Jump to the next row that needs attention                     |
 | `g` / `G`      | Jump to the top / bottom of the list                          |
 | `[` / `]`      | Jump to the previous / next group header                      |
-| `z`            | Collapse / expand the selected group                          |
+| `z`            | Collapse / expand the selected group (clicking a group header folds it too) |
 | `Z`            | Expand every collapsed group                                  |
 | `s`            | Toggle repo / tmux-session grouping                           |
 | `PageUp` / `PageDown` | Page the agent list by a viewport                      |
-| `h` / `Left`   | Previous status filter                                        |
-| `l` / `Right`  | Next status filter; jump to the selected pane |
 | `r`            | Open repo filter popup                                        |
-| `Enter` / `→`  | Jump to the selected pane                                     |
-| `Tab`          | Cycle status filter                                           |
+| `Enter` / `l` / `Right` | Jump to the selected pane                            |
+| `o`            | Open the fullscreen agent overview grid popup                 |
 | `c`            | Toggle compact view (one line per agent)                      |
 | `w`            | Toggle listing non-agent panes (long-running tasks)           |
 | `t`            | Open the TODO panel; focus it when open, close it when focused |
@@ -38,7 +36,7 @@ Press `/` to filter the agent list without collapsing its groups. Matching is
 case-insensitive and checks each row's agent session title, tmux session name,
 and git branch. Typing a repo or tmux session name keeps the whole group
 visible; otherwise only rows whose own fields match are shown. Status counts
-in the filter bar follow the active query.
+in a collapsed group's badge follow the active query.
 
 | Key          | Action                                          |
 | ------------ | ----------------------------------------------- |
