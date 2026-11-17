@@ -29,7 +29,15 @@ pub(crate) fn copy_to_clipboard(text: &str) -> bool {
 /// the only path that actually reaches Alacritty, kitty, iTerm2, etc.
 /// Falls back to plain `set-buffer` for tmux versions predating 3.2 that
 /// reject `-w`. Returns whether the paste buffer was set.
+///
+/// The `-w` capability is remembered for the process lifetime: without
+/// it, a pre-3.2 tmux paid a doomed `-w` spawn *plus* the plain write on
+/// every copy — two serial 3s-timeout subprocesses on the UI thread per
+/// `y` (audit 2026-11-16 J5). The trade-off: a transient `-w` failure on
+/// a modern tmux also pins the plain path until restart, losing the OSC
+/// 52 delegation but never the paste buffer itself.
 fn copy_via_tmux_buffer(text: &str) -> bool {
+    static W_SUPPORTED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     let run_set_buffer = |args: &[&str]| {
         let mut command = std::process::Command::new("tmux");
         command.args(args);
@@ -37,7 +45,22 @@ fn copy_via_tmux_buffer(text: &str) -> bool {
             .map(|output| output.status.success())
             .unwrap_or(false)
     };
-    run_set_buffer(&["set-buffer", "-w", text]) || run_set_buffer(&["set-buffer", text])
+    match W_SUPPORTED.get() {
+        Some(true) => run_set_buffer(&["set-buffer", "-w", text]),
+        Some(false) => run_set_buffer(&["set-buffer", text]),
+        None => {
+            // First copy decides for the process: `-w` first, and the
+            // plain fallback both recovers the copy and records the
+            // capability.
+            let w_ok = run_set_buffer(&["set-buffer", "-w", text]);
+            let _ = W_SUPPORTED.set(w_ok);
+            if w_ok {
+                true
+            } else {
+                run_set_buffer(&["set-buffer", text])
+            }
+        }
+    }
 }
 
 /// Best-effort write to the OS clipboard via `arboard`. Only compiled
