@@ -794,35 +794,43 @@ impl AppState {
         };
         let agent = reference.agent.clone();
         let id = reference.id.clone();
-        // Explicit `@ <path>` intent wins and needs no probe: resolve
-        // and launch inline like every other tmux write. Otherwise the
-        // whole resolve (parked sidecar, then the agent's own store)
-        // runs on the popup-op worker — a wedged sqlite probe must not
-        // stall the render loop.
-        if let Some(hint) = &reference.cwd_hint {
-            let home = std::env::var("HOME").ok();
-            match crate::park::expand_home(hint, home.as_deref()) {
-                // Both outcomes are banner text: `resumed <agent> <id8>`
-                // or the failure.
-                Some(cwd) => {
-                    self.flash_resume_result(crate::park::launch_with_cwd(
-                        &session, &cwd, &text, &agent, &id,
-                    ));
-                }
-                None => self.set_flash(crate::park::no_cwd_error(&id)),
+        // Both paths dispatch to the popup-op worker and report through
+        // the flash banner. The hint path used to resolve and launch
+        // inline ("explicit `@ <path>` intent wins and needs no probe"),
+        // but the launch itself is a window-creation burst of tmux
+        // spawns on the input thread (audit 2026-11-16 J5); the worker
+        // lands the same result one loop iteration later. The no-hint
+        // path keeps its full resolve (parked sidecar, then the agent's
+        // own store) on the worker — a wedged sqlite probe must not
+        // stall the render loop either way.
+        match &reference.cwd_hint {
+            Some(hint) => {
+                let home = std::env::var("HOME").ok();
+                let hint = hint.clone();
+                self.start_background_op(move || {
+                    PopupOpResult::Resume(match crate::park::expand_home(&hint, home.as_deref()) {
+                        // Both outcomes are banner text: `resumed
+                        // <agent> <id8>` or the failure.
+                        Some(cwd) => {
+                            crate::park::launch_with_cwd(&session, &cwd, &text, &agent, &id)
+                        }
+                        None => Err(crate::park::no_cwd_error(&id)),
+                    })
+                });
             }
-            return;
+            None => {
+                let dir = self.todos.dir.clone();
+                self.start_background_op(move || {
+                    PopupOpResult::Resume(crate::park::resolve_and_launch(
+                        &session,
+                        &text,
+                        dir.as_deref(),
+                        &agent,
+                        &id,
+                    ))
+                });
+            }
         }
-        let dir = self.todos.dir.clone();
-        self.start_background_op(move || {
-            PopupOpResult::Resume(crate::park::resolve_and_launch(
-                &session,
-                &text,
-                dir.as_deref(),
-                &agent,
-                &id,
-            ))
-        });
     }
 
     /// Both resume outcomes are banner text — `resumed <agent> <id8>`
