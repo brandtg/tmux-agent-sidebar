@@ -1,4 +1,8 @@
+use std::path::Path;
+
+use super::super::activity::lock_exclusive;
 use crate::event::WorktreeInfo;
+use crate::time::now_epoch_secs;
 use crate::tmux;
 
 /// Returns whether the pane's cwd should be updated.
@@ -23,31 +27,48 @@ pub(in crate::cli::hook) fn resolve_cwd<'a>(
     raw_cwd
 }
 
-/// Sync worktree name/branch pane options from hook payload.
-///
-/// Clears both options when worktree is `None`. When worktree is `Some`
-/// but an individual field is empty, also clears that field so an
-/// explicit "no longer in a worktree" payload cannot leave stale
-/// metadata from a previous run behind.
-pub(in crate::cli::hook) fn sync_worktree_meta(pane: &str, worktree: &Option<WorktreeInfo>) {
+/// Collect the worktree name/branch writes for `worktree` into `writes`
+/// (clears both options when worktree is `None`; when worktree is `Some`
+/// but an individual field is empty, clears that field so an explicit
+/// "no longer in a worktree" payload cannot leave stale metadata from a
+/// previous run behind).
+fn push_worktree_writes<'a>(
+    worktree: &'a Option<WorktreeInfo>,
+    writes: &mut Vec<tmux::PaneOptionWrite<'a>>,
+) {
     if let Some(wt) = worktree {
         if wt.name.is_empty() {
-            tmux::unset_pane_option(pane, tmux::PANE_WORKTREE_NAME);
+            writes.push(tmux::PaneOptionWrite::Unset {
+                key: tmux::PANE_WORKTREE_NAME,
+            });
         } else {
-            tmux::set_pane_option(pane, tmux::PANE_WORKTREE_NAME, &wt.name);
+            writes.push(tmux::PaneOptionWrite::Set {
+                key: tmux::PANE_WORKTREE_NAME,
+                value: &wt.name,
+            });
         }
         if wt.branch.is_empty() {
-            tmux::unset_pane_option(pane, tmux::PANE_WORKTREE_BRANCH);
+            writes.push(tmux::PaneOptionWrite::Unset {
+                key: tmux::PANE_WORKTREE_BRANCH,
+            });
         } else {
-            tmux::set_pane_option(pane, tmux::PANE_WORKTREE_BRANCH, &wt.branch);
+            writes.push(tmux::PaneOptionWrite::Set {
+                key: tmux::PANE_WORKTREE_BRANCH,
+                value: &wt.branch,
+            });
         }
     } else {
-        tmux::unset_pane_option(pane, tmux::PANE_WORKTREE_NAME);
-        tmux::unset_pane_option(pane, tmux::PANE_WORKTREE_BRANCH);
+        writes.push(tmux::PaneOptionWrite::Unset {
+            key: tmux::PANE_WORKTREE_NAME,
+        });
+        writes.push(tmux::PaneOptionWrite::Unset {
+            key: tmux::PANE_WORKTREE_BRANCH,
+        });
     }
 }
 
-/// Seed or overwrite the launch anchor (`@pane_launch_cwd`).
+/// The `@pane_launch_cwd` value this event should store, or `None` when
+/// the existing anchor must be kept (or there is no cwd to anchor).
 ///
 /// The anchor is the cwd resolved at the pane's first observed hook event
 /// and is what repo grouping keys off, so an agent cd-ing into another
@@ -56,19 +77,33 @@ pub(in crate::cli::hook) fn sync_worktree_meta(pane: &str, worktree: &Option<Wor
 /// re-launches an agent in the pane and can therefore heal a stale anchor
 /// left behind by a hard-killed previous run. Every other event seeds the
 /// anchor only when unset.
+fn launch_anchor_value(
+    pane: &str,
+    cwd: &str,
+    worktree: &Option<WorktreeInfo>,
+    overwrite: bool,
+) -> Option<String> {
+    if cwd.is_empty() {
+        return None;
+    }
+    if !overwrite && !tmux::get_pane_option_value(pane, tmux::PANE_LAUNCH_CWD).is_empty() {
+        return None;
+    }
+    Some(resolve_cwd(cwd, worktree).to_string())
+}
+
+/// Seed or overwrite the launch anchor (`@pane_launch_cwd`). See
+/// [`launch_anchor_value`] for the anchoring rules. SessionStart is the
+/// only caller outside [`sync_pane_location`]'s batched write.
 pub(in crate::cli::hook) fn sync_launch_anchor(
     pane: &str,
     cwd: &str,
     worktree: &Option<WorktreeInfo>,
     overwrite: bool,
 ) {
-    if cwd.is_empty() {
-        return;
+    if let Some(anchor) = launch_anchor_value(pane, cwd, worktree, overwrite) {
+        tmux::set_pane_option(pane, tmux::PANE_LAUNCH_CWD, &anchor);
     }
-    if !overwrite && !tmux::get_pane_option_value(pane, tmux::PANE_LAUNCH_CWD).is_empty() {
-        return;
-    }
-    tmux::set_pane_option(pane, tmux::PANE_LAUNCH_CWD, resolve_cwd(cwd, worktree));
 }
 
 /// Whether this hook event may record `@pane_session_id` on the pane.
@@ -103,8 +138,14 @@ pub(in crate::cli::hook) fn sync_pane_location(
     if !should_update_cwd(&current_subagents) {
         return;
     }
+    // Reads first, then a single batched write: each of these options is
+    // otherwise its own tmux spawn, paid on every identity-bearing event
+    // (audit 2026-11-16 #5).
+    let anchor = launch_anchor_value(pane, cwd, worktree, false);
+    //
     // A bridge-guessed pane must not have its session identity rewritten:
     // the binding is what later events route by (see session_bind_allowed).
+    let mut writes: Vec<tmux::PaneOptionWrite> = Vec::new();
     if session_bind_allowed() {
         match session_id.as_deref() {
             Some(sid) if !sid.is_empty() => {
@@ -113,31 +154,54 @@ pub(in crate::cli::hook) fn sync_pane_location(
                 // arrives via a later session-title event.
                 let prev = tmux::get_pane_option_value(pane, tmux::PANE_SESSION_ID);
                 if !prev.is_empty() && prev != sid {
-                    tmux::unset_pane_option(pane, tmux::PANE_SESSION_TITLE);
+                    writes.push(tmux::PaneOptionWrite::Unset {
+                        key: tmux::PANE_SESSION_TITLE,
+                    });
                 }
-                tmux::set_pane_option(pane, tmux::PANE_SESSION_ID, sid);
+                writes.push(tmux::PaneOptionWrite::Set {
+                    key: tmux::PANE_SESSION_ID,
+                    value: sid,
+                });
             }
             _ => {
-                tmux::unset_pane_option(pane, tmux::PANE_SESSION_ID);
-                tmux::unset_pane_option(pane, tmux::PANE_SESSION_TITLE);
+                writes.push(tmux::PaneOptionWrite::Unset {
+                    key: tmux::PANE_SESSION_ID,
+                });
+                writes.push(tmux::PaneOptionWrite::Unset {
+                    key: tmux::PANE_SESSION_TITLE,
+                });
             }
         }
     }
     if !cwd.is_empty() {
         let effective_cwd = resolve_cwd(cwd, worktree);
-        tmux::set_pane_option(pane, tmux::PANE_CWD, effective_cwd);
+        writes.push(tmux::PaneOptionWrite::Set {
+            key: tmux::PANE_CWD,
+            value: effective_cwd,
+        });
         // Seed the launch anchor if the pane doesn't have one yet. Like
         // @pane_cwd this is parent-owned: the subagent guard above already
         // returned when children are active.
-        sync_launch_anchor(pane, cwd, worktree, false);
+        if let Some(anchor) = &anchor {
+            writes.push(tmux::PaneOptionWrite::Set {
+                key: tmux::PANE_LAUNCH_CWD,
+                value: anchor,
+            });
+        }
     }
-    sync_worktree_meta(pane, &with_live_worktree(pane, worktree));
+    let live_worktree = with_live_worktree(pane, worktree);
+    push_worktree_writes(&live_worktree, &mut writes);
+    tmux::apply_pane_options(pane, &writes);
 }
 
 /// Fill in a worktree name and branch the payload left out. Claude sends
 /// neither when a session enters an existing worktree by path, but the
 /// agent process itself moves there, so the pane's live directory says
 /// which linked worktree (if any) it is working in.
+///
+/// The probe is a git subprocess per event; its verdict cannot change
+/// while the pane's cwd is unchanged, so it is cached per pane+path in a
+/// runtime-dir file (audit 2026-11-16 #5).
 fn with_live_worktree(pane: &str, worktree: &Option<WorktreeInfo>) -> Option<WorktreeInfo> {
     if let Some(wt) = worktree
         && (!wt.name.is_empty() || !wt.branch.is_empty())
@@ -148,7 +212,20 @@ fn with_live_worktree(pane: &str, worktree: &Option<WorktreeInfo>) -> Option<Wor
         Some(wt) if !wt.path.is_empty() => wt.path.clone(),
         _ => tmux::display_message(pane, "#{pane_current_path}"),
     };
-    match linked_worktree_at(&path) {
+    let cache = worktree_cache_path();
+    if let Some(cached) = cached_probe(&cache, pane, &path) {
+        return finish_live_worktree(cached.probe, worktree);
+    }
+    let probed = linked_worktree_at(&path);
+    store_probe(&cache, pane, &path, &probed);
+    finish_live_worktree(probed, worktree)
+}
+
+fn finish_live_worktree(
+    probe: Option<(String, String)>,
+    worktree: &Option<WorktreeInfo>,
+) -> Option<WorktreeInfo> {
+    match probe {
         Some((root, branch)) => Some(WorktreeInfo {
             name: root.rsplit('/').next().unwrap_or_default().to_string(),
             path: root,
@@ -188,6 +265,128 @@ fn linked_worktree_at(path: &str) -> Option<(String, String)> {
         return None;
     }
     Some((root.to_string(), branch.to_string()))
+}
+
+/// How long a cached worktree probe stays trustworthy. The verdict is a
+/// pure function of the directory (repo layout), but the branch can be
+/// changed by a `git checkout` under an unchanged cwd; the TTL bounds how
+/// long a row can show a stale branch after such a checkout.
+const WORKTREE_CACHE_TTL_SECS: u64 = 60;
+
+/// A cached worktree probe: the path it was probed at and the
+/// [`linked_worktree_at`] verdict (`None` = no linked worktree there).
+struct CachedProbe {
+    probe: Option<(String, String)>,
+}
+
+/// Runtime-dir scratch file holding per-pane worktree-probe verdicts.
+/// Hook processes are fresh per event, so the cache must live on disk to
+/// outlive a single spawn (audit 2026-11-16 #5).
+fn worktree_cache_path() -> std::path::PathBuf {
+    crate::paths::runtime_dir().join("tmux-agent-worktree-cache.tsv")
+}
+
+/// The cached probe verdict for `pane` at `path`, when the pane's cwd is
+/// unchanged since the probe and the entry is fresh.
+fn cached_probe(cache: &Path, pane: &str, path: &str) -> Option<CachedProbe> {
+    if path.is_empty() {
+        return None;
+    }
+    let mut file = crate::paths::open_read_write_private(cache).ok()?;
+    if !lock_exclusive(&file) {
+        return None;
+    }
+    let rows = read_probe_cache(&mut file);
+    let now = now_epoch_secs();
+    let (_, _, root, branch, _) = rows.into_iter().find(|(row_pane, row_path, _, _, at)| {
+        row_pane == pane && row_path == path && now.saturating_sub(*at) < WORKTREE_CACHE_TTL_SECS
+    })?;
+    let probe = if root.is_empty() && branch.is_empty() {
+        None
+    } else {
+        Some((root, branch))
+    };
+    Some(CachedProbe { probe })
+}
+
+/// Record the probe verdict for `pane` at `path`, dropping expired rows
+/// while the file is held.
+fn store_probe(cache: &Path, pane: &str, path: &str, probe: &Option<(String, String)>) {
+    if path.is_empty() {
+        return;
+    }
+    let Ok(mut file) = crate::paths::open_read_write_private(cache) else {
+        return;
+    };
+    if !lock_exclusive(&file) {
+        return;
+    }
+    let now = now_epoch_secs();
+    let (root, branch) = match probe {
+        Some((root, branch)) => (root.as_str(), branch.as_str()),
+        None => ("", ""),
+    };
+    let mut rows: Vec<(String, String, String, String, u64)> = read_probe_cache(&mut file)
+        .into_iter()
+        .filter(|(_, _, _, _, at)| now.saturating_sub(*at) < WORKTREE_CACHE_TTL_SECS)
+        .filter(|(row_pane, ..)| row_pane != pane)
+        .collect();
+    rows.push((
+        pane.to_string(),
+        path.to_string(),
+        root.to_string(),
+        branch.to_string(),
+        now,
+    ));
+    write_probe_cache(&mut file, &rows);
+}
+
+/// Tab-separated rows of `pane, path, root, branch, cached_at`; malformed
+/// lines are skipped so a corrupted file degrades to a cache miss.
+fn read_probe_cache(file: &mut std::fs::File) -> Vec<(String, String, String, String, u64)> {
+    use std::io::{Read, Seek, SeekFrom};
+    let _ = file.seek(SeekFrom::Start(0));
+    let mut content = String::new();
+    if file.read_to_string(&mut content).is_err() {
+        return Vec::new();
+    }
+    content
+        .lines()
+        .filter_map(|line| {
+            let fields: Vec<&str> = line.split('\t').collect();
+            if fields.len() != 5 {
+                return None;
+            }
+            Some((
+                fields[0].to_string(),
+                fields[1].to_string(),
+                fields[2].to_string(),
+                fields[3].to_string(),
+                fields[4].parse().ok()?,
+            ))
+        })
+        .collect()
+}
+
+fn write_probe_cache(file: &mut std::fs::File, rows: &[(String, String, String, String, u64)]) {
+    use std::io::{Seek, SeekFrom, Write};
+    let mut body = String::new();
+    for (pane, path, root, branch, at) in rows {
+        body.push_str(pane);
+        body.push('\t');
+        body.push_str(path);
+        body.push('\t');
+        body.push_str(root);
+        body.push('\t');
+        body.push_str(branch);
+        body.push('\t');
+        body.push_str(&at.to_string());
+        body.push('\n');
+    }
+    let _ = file.seek(SeekFrom::Start(0));
+    if file.write_all(body.as_bytes()).is_ok() {
+        let _ = file.set_len(body.len() as u64);
+    }
 }
 
 /// Returns true if pane-scoped writes from this hook event are safe to
@@ -254,6 +453,97 @@ mod tests {
         assert!(root.ends_with("/feat-wt"), "unexpected root {root}");
         assert_eq!(branch, "feat/x");
         assert_eq!(linked_worktree_at(tmp.path().to_str().unwrap()), None);
+    }
+
+    #[test]
+    fn worktree_probe_cache_hits_only_while_pane_path_and_ttl_hold() {
+        let tmp = tempfile::tempdir().expect("temp dir");
+        let cache = tmp.path().join("wt-cache.tsv");
+        let pane = "%WT_CACHE";
+        let path_a = "/repo/a";
+        let path_b = "/repo/b";
+
+        store_probe(
+            &cache,
+            pane,
+            path_a,
+            &Some(("/wt/feat".to_string(), "feat/x".to_string())),
+        );
+        // Same pane, same path: hit.
+        let hit = cached_probe(&cache, pane, path_a).expect("fresh entry");
+        assert_eq!(
+            hit.probe,
+            Some(("/wt/feat".to_string(), "feat/x".to_string()))
+        );
+        // The pane moved: miss.
+        assert!(cached_probe(&cache, pane, path_b).is_none());
+        // A different pane: miss.
+        assert!(cached_probe(&cache, "%WT_CACHE_OTHER", path_a).is_none());
+
+        // An entry past the TTL is a miss, and a fresh store drops it.
+        let expired = vec![(
+            pane.to_string(),
+            path_a.to_string(),
+            "/wt/old".to_string(),
+            "old".to_string(),
+            now_epoch_secs() - WORKTREE_CACHE_TTL_SECS - 1,
+        )];
+        let mut file = crate::paths::open_read_write_private(&cache).unwrap();
+        write_probe_cache(&mut file, &expired);
+        drop(file);
+        assert!(
+            cached_probe(&cache, pane, path_a).is_none(),
+            "expired verdicts must re-probe"
+        );
+        store_probe(
+            &cache,
+            pane,
+            path_a,
+            &Some(("/wt/new".to_string(), "new".to_string())),
+        );
+        let hit = cached_probe(&cache, pane, path_a).expect("re-stored entry");
+        assert_eq!(hit.probe, Some(("/wt/new".to_string(), "new".to_string())));
+    }
+
+    #[test]
+    fn worktree_probe_cache_stores_none_verdicts() {
+        // A "no linked worktree here" verdict is the common case for main
+        // checkouts — it must cache too, or the git spawn is paid forever.
+        let tmp = tempfile::tempdir().expect("temp dir");
+        let cache = tmp.path().join("wt-cache-none.tsv");
+        let pane = "%WT_CACHE_NONE";
+        store_probe(&cache, pane, "/main/repo", &None);
+        let hit = cached_probe(&cache, pane, "/main/repo").expect("cached none verdict");
+        assert_eq!(hit.probe, None);
+        assert!(cached_probe(&cache, pane, "/other/repo").is_none());
+    }
+
+    #[test]
+    fn with_live_worktree_serves_a_cached_verdict_without_probing() {
+        // Prime the runtime cache with a verdict for a NON-repo directory:
+        // if the cache were ignored, git would report None here.
+        let tmp = tempfile::tempdir().expect("temp dir");
+        let dir = tmp.path().to_string_lossy().to_string();
+        let pane = "%WT_CACHE_E2E";
+        store_probe(
+            &worktree_cache_path(),
+            pane,
+            &dir,
+            &Some((format!("{dir}/feat-wt"), "feat/x".to_string())),
+        );
+        let wt = with_live_worktree(
+            pane,
+            &Some(WorktreeInfo {
+                name: String::new(),
+                path: dir.clone(),
+                branch: String::new(),
+                original_repo_dir: String::new(),
+            }),
+        )
+        .expect("cached verdict served");
+        assert!(wt.path.ends_with("/feat-wt"), "unexpected root {}", wt.path);
+        assert_eq!(wt.branch, "feat/x");
+        assert_eq!(wt.name, "feat-wt");
     }
 
     #[test]
@@ -455,7 +745,9 @@ mod tests {
         tmux::test_mock::set(pane, tmux::PANE_WORKTREE_NAME, "old");
         tmux::test_mock::set(pane, tmux::PANE_WORKTREE_BRANCH, "feat/old");
 
-        sync_worktree_meta(pane, &None);
+        let mut writes = Vec::new();
+        push_worktree_writes(&None, &mut writes);
+        tmux::apply_pane_options(pane, &writes);
 
         assert!(!tmux::test_mock::contains(pane, tmux::PANE_WORKTREE_NAME));
         assert!(!tmux::test_mock::contains(pane, tmux::PANE_WORKTREE_BRANCH));
@@ -472,15 +764,15 @@ mod tests {
         tmux::test_mock::set(pane, tmux::PANE_WORKTREE_NAME, "old-name");
         tmux::test_mock::set(pane, tmux::PANE_WORKTREE_BRANCH, "feat/old");
 
-        sync_worktree_meta(
-            pane,
-            &Some(WorktreeInfo {
-                name: "new-name".into(),
-                path: "/wt/new".into(),
-                branch: String::new(),
-                original_repo_dir: "/repo".into(),
-            }),
-        );
+        let wt = Some(WorktreeInfo {
+            name: "new-name".into(),
+            path: "/wt/new".into(),
+            branch: String::new(),
+            original_repo_dir: "/repo".into(),
+        });
+        let mut writes = Vec::new();
+        push_worktree_writes(&wt, &mut writes);
+        tmux::apply_pane_options(pane, &writes);
 
         assert_eq!(
             tmux::test_mock::get(pane, tmux::PANE_WORKTREE_NAME).as_deref(),

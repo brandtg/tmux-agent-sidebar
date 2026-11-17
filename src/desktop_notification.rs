@@ -81,20 +81,38 @@ impl Default for DesktopNotificationSettings {
 
 impl DesktopNotificationSettings {
     pub fn from_tmux_options(opts: &HashMap<String, String>) -> Self {
-        Self::from_tmux_options_with_backend(opts, notification_backend_available())
+        Self::from_tmux_options_with_probe(opts, notification_backend_available)
     }
 
+    /// The backend probe is a process spawn (`notify-send --version` /
+    /// `osascript -e "return 0"`) paid on every notification-gated hook
+    /// event; keep it behind the enabled gate so `@sidebar_notifications
+    /// off` costs one `tmux show -g` and nothing else.
+    fn from_tmux_options_with_probe(
+        opts: &HashMap<String, String>,
+        probe: impl FnOnce() -> bool,
+    ) -> Self {
+        let events = opts
+            .get(tmux::SIDEBAR_NOTIFICATIONS_EVENTS)
+            .map_or_else(|| Self::default().events, |raw| parse_events(raw));
+        if !read_bool(opts, tmux::SIDEBAR_NOTIFICATIONS).unwrap_or(true) {
+            return Self {
+                enabled: false,
+                events,
+            };
+        }
+        Self {
+            enabled: probe(),
+            events,
+        }
+    }
+
+    #[cfg(test)]
     fn from_tmux_options_with_backend(
         opts: &HashMap<String, String>,
         backend_available: bool,
     ) -> Self {
-        let enabled = read_bool(opts, tmux::SIDEBAR_NOTIFICATIONS).unwrap_or(true);
-        let enabled = enabled && backend_available;
-        let events = opts
-            .get(tmux::SIDEBAR_NOTIFICATIONS_EVENTS)
-            .map_or_else(|| Self::default().events, |raw| parse_events(raw));
-
-        Self { enabled, events }
+        Self::from_tmux_options_with_probe(opts, || backend_available)
     }
 
     pub fn from_tmux() -> Self {
@@ -365,6 +383,29 @@ mod tests {
         let opts = HashMap::new();
         let settings = DesktopNotificationSettings::from_tmux_options_with_backend(&opts, false);
         assert!(!settings.enabled);
+    }
+
+    #[test]
+    fn backend_probe_is_skipped_when_notifications_are_off() {
+        // The probe spawns a process; an explicit off switch must not pay
+        // for it (audit 2026-11-16 #5).
+        let mut opts = HashMap::new();
+        opts.insert(tmux::SIDEBAR_NOTIFICATIONS.into(), "off".into());
+        let settings = DesktopNotificationSettings::from_tmux_options_with_probe(&opts, || {
+            panic!("backend probe must not run when notifications are off");
+        });
+        assert!(!settings.enabled);
+    }
+
+    #[test]
+    fn backend_probe_gates_the_default_on_state() {
+        // Unset `@sidebar_notifications` defaults to on, so the probe runs
+        // and its verdict decides `enabled`.
+        let opts = HashMap::new();
+        let settings = DesktopNotificationSettings::from_tmux_options_with_probe(&opts, || false);
+        assert!(!settings.enabled);
+        let settings = DesktopNotificationSettings::from_tmux_options_with_probe(&opts, || true);
+        assert!(settings.enabled);
     }
 
     #[test]

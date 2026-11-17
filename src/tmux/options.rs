@@ -464,6 +464,76 @@ pub fn unset_pane_option(pane: &str, key: &str) {
     let _ = run_tmux(&["set", "-t", pane, "-p", "-u", "--", key]);
 }
 
+/// One pane-option write in a batched application: [`PaneOptionWrite::Set`]
+/// stores a value, [`PaneOptionWrite::Unset`] clears the option.
+pub enum PaneOptionWrite<'a> {
+    Set { key: &'a str, value: &'a str },
+    Unset { key: &'a str },
+}
+
+/// Apply multiple pane-option writes in a single tmux client process,
+/// chaining the individual `set` commands with tmux's `;` argument
+/// separator. Every identity-bearing hook event writes 5-10 options, each
+/// of which is otherwise its own tmux spawn on the agent-side hook budget
+/// (audit 2026-11-16 #5); one spawn per event instead of one per option is
+/// the difference between a hook that keeps up with a busy turn and one
+/// that lags it. An empty batch is a no-op.
+pub fn apply_pane_options(pane: &str, writes: &[PaneOptionWrite<'_>]) {
+    if writes.is_empty() {
+        return;
+    }
+    #[cfg(test)]
+    if test_mock::installed() {
+        for write in writes {
+            match write {
+                PaneOptionWrite::Set { key, value } => {
+                    test_mock::intercept_set(pane, key, &sanitize_option_value(value));
+                }
+                PaneOptionWrite::Unset { key } => {
+                    test_mock::intercept_unset(pane, key);
+                }
+            }
+        }
+        return;
+    }
+    let sanitized: Vec<String> = writes
+        .iter()
+        .map(|write| match write {
+            PaneOptionWrite::Set { value, .. } => sanitize_option_value(value),
+            PaneOptionWrite::Unset { .. } => String::new(),
+        })
+        .collect();
+    let _ = run_tmux(&build_batch_argv(pane, writes, &sanitized));
+}
+
+/// The tmux argv for a batch: each write is the exact argv the
+/// single-write path above uses, and consecutive commands are separated
+/// by a lone `;` argument, which tmux splits into one round trip.
+fn build_batch_argv<'a>(
+    pane: &'a str,
+    writes: &'a [PaneOptionWrite<'a>],
+    sanitized: &'a [String],
+) -> Vec<&'a str> {
+    let mut argv: Vec<&str> = Vec::new();
+    for (index, write) in writes.iter().enumerate() {
+        if index > 0 {
+            argv.push(";");
+        }
+        match write {
+            // `--` so a value that begins with `-` (a prompt like "- fix
+            // the login bug") is never parsed as a tmux flag — same guard
+            // as the single-write path above.
+            PaneOptionWrite::Set { key, .. } => {
+                argv.extend(["set", "-t", pane, "-p", "--", key, &sanitized[index]]);
+            }
+            PaneOptionWrite::Unset { key } => {
+                argv.extend(["set", "-t", pane, "-p", "-u", "--", key]);
+            }
+        }
+    }
+    argv
+}
+
 pub fn get_pane_option_value(pane: &str, key: &str) -> String {
     #[cfg(test)]
     if let Some(value) = test_mock::intercept_get(pane, key) {
@@ -538,6 +608,12 @@ pub mod test_mock {
         })
     }
 
+    /// Whether a mock store is installed for the current thread. Batched
+    /// writes route through the interceptors when it is.
+    pub(super) fn installed() -> bool {
+        MOCK.with(|m| m.borrow().is_some())
+    }
+
     pub(super) fn intercept_set(pane: &str, key: &str, value: &str) -> bool {
         MOCK.with(|m| {
             if let Some(store) = m.borrow_mut().as_mut() {
@@ -596,6 +672,96 @@ pub mod test_mock {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn apply_pane_options_matches_individual_writes() {
+        let _guard = test_mock::install();
+        let pane = "%BATCH";
+        apply_pane_options(
+            pane,
+            &[
+                PaneOptionWrite::Set {
+                    key: PANE_AGENT,
+                    value: "claude",
+                },
+                PaneOptionWrite::Unset {
+                    key: PANE_WAIT_REASON,
+                },
+                // A leading `-` must survive like on the single-write path.
+                PaneOptionWrite::Set {
+                    key: PANE_PROMPT,
+                    value: "- fix the login bug",
+                },
+            ],
+        );
+        assert_eq!(test_mock::get(pane, PANE_AGENT).as_deref(), Some("claude"));
+        assert!(
+            !test_mock::contains(pane, PANE_WAIT_REASON),
+            "batched unsets must clear like unset_pane_option"
+        );
+        assert_eq!(
+            test_mock::get(pane, PANE_PROMPT).as_deref(),
+            Some("- fix the login bug")
+        );
+    }
+
+    #[test]
+    fn apply_pane_options_is_a_noop_when_empty() {
+        let _guard = test_mock::install();
+        let pane = "%BATCH_EMPTY";
+        apply_pane_options(pane, &[]);
+        assert!(test_mock::installed(), "mock still installed; no panic");
+    }
+
+    #[test]
+    fn batch_argv_chains_single_write_argv_with_semicolons() {
+        let writes = [
+            PaneOptionWrite::Set {
+                key: "@k1",
+                value: "v 1",
+            },
+            PaneOptionWrite::Unset { key: "@k2" },
+            PaneOptionWrite::Set {
+                key: "@k3",
+                value: "-p not a flag",
+            },
+        ];
+        let sanitized: Vec<String> = writes
+            .iter()
+            .map(|w| match w {
+                PaneOptionWrite::Set { value, .. } => sanitize_option_value(value),
+                PaneOptionWrite::Unset { .. } => String::new(),
+            })
+            .collect();
+        assert_eq!(
+            build_batch_argv("%9", &writes, &sanitized),
+            vec![
+                "set",
+                "-t",
+                "%9",
+                "-p",
+                "--",
+                "@k1",
+                "v 1",
+                ";",
+                "set",
+                "-t",
+                "%9",
+                "-p",
+                "-u",
+                "--",
+                "@k2",
+                ";",
+                "set",
+                "-t",
+                "%9",
+                "-p",
+                "--",
+                "@k3",
+                "-p not a flag",
+            ]
+        );
+    }
 
     #[test]
     fn mock_install_round_trips_pane_option() {

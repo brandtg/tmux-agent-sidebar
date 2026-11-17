@@ -75,17 +75,33 @@ fn tmux_pane() -> String {
 }
 
 fn set_status(pane: &str, status: &str) {
+    use crate::tmux::PaneOptionWrite;
     if status == "clear" {
-        tmux::unset_pane_option(pane, tmux::PANE_STATUS);
-        tmux::unset_pane_option(pane, tmux::PANE_ATTENTION);
+        tmux::apply_pane_options(
+            pane,
+            &[
+                PaneOptionWrite::Unset {
+                    key: tmux::PANE_STATUS,
+                },
+                PaneOptionWrite::Unset {
+                    key: tmux::PANE_ATTENTION,
+                },
+            ],
+        );
     } else {
-        tmux::set_pane_option(pane, tmux::PANE_STATUS, status);
+        let mut writes = vec![PaneOptionWrite::Set {
+            key: tmux::PANE_STATUS,
+            value: status,
+        }];
         match status {
             "running" | "idle" => {
-                tmux::unset_pane_option(pane, tmux::PANE_ATTENTION);
+                writes.push(PaneOptionWrite::Unset {
+                    key: tmux::PANE_ATTENTION,
+                });
             }
             _ => {}
         }
+        tmux::apply_pane_options(pane, &writes);
     }
 }
 

@@ -47,8 +47,19 @@ pub(in crate::cli::hook) fn on_user_prompt_submit(
     set_notification_run_id(pane);
     if !prompt.is_empty() && !is_system_message(prompt) {
         let p = sanitize_tmux_value(prompt);
-        tmux::set_pane_option(pane, tmux::PANE_PROMPT, &p);
-        tmux::set_pane_option(pane, tmux::PANE_PROMPT_SOURCE, "user");
+        tmux::apply_pane_options(
+            pane,
+            &[
+                tmux::PaneOptionWrite::Set {
+                    key: tmux::PANE_PROMPT,
+                    value: &p,
+                },
+                tmux::PaneOptionWrite::Set {
+                    key: tmux::PANE_PROMPT_SOURCE,
+                    value: "user",
+                },
+            ],
+        );
     }
     // Only a real user turn restarts the run clock. Synthetic empty-prompt
     // submissions — OpenCode fires one per assistant response via
@@ -134,8 +145,19 @@ pub(in crate::cli::hook) fn on_stop(
     set_agent_meta(pane, ctx);
     if !last_message.is_empty() {
         let msg = sanitize_tmux_value(last_message);
-        tmux::set_pane_option(pane, tmux::PANE_PROMPT, &msg);
-        tmux::set_pane_option(pane, tmux::PANE_PROMPT_SOURCE, "response");
+        tmux::apply_pane_options(
+            pane,
+            &[
+                tmux::PaneOptionWrite::Set {
+                    key: tmux::PANE_PROMPT,
+                    value: &msg,
+                },
+                tmux::PaneOptionWrite::Set {
+                    key: tmux::PANE_PROMPT_SOURCE,
+                    value: "response",
+                },
+            ],
+        );
     }
     let bg_shell_live = !tmux::get_pane_option_value(pane, tmux::PANE_BG_CMD).is_empty();
     // Claude Code `Task` subagents are synchronous: once the parent
