@@ -90,10 +90,11 @@ cargo test               # unit + UI snapshot tests
 cargo clippy && cargo fmt --check
 ```
 
-To pick up local builds, symlink the checkout over the installed plugin and toggle the sidebar off → on:
+To pick up local builds, copy the release binary into the installed plugin (the entry script prefers bin/ over target/release/), then toggle the sidebar off → on. Do not symlink the checkout over the installed plugin: whichever stale bin/ binary a previous wizard run downloaded would keep shadowing your build.
 
 ```sh
-ln -sfn <path-to-this-repo> ~/.tmux/plugins/tmux-agent-sidebar
+cargo build --release
+cp target/release/tmux-agent-sidebar ~/.tmux/plugins/tmux-agent-sidebar/bin/
 ```
 
 ## History

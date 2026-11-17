@@ -586,23 +586,8 @@ mod tests {
         }
     }
 
-    /// Serializes every test that calls `on_session_title`. The
-    /// guessed-route test mutates the process-global
-    /// `TMUX_AGENT_SIDEBAR_BIND_SESSION` env var, and env is process-wide
-    /// in Rust — a parallel title test running inside that set/unset
-    /// window saw the gate leak in and intermittently dropped its title
-    /// write (the flaky `on_session_title_*` failures under load).
-    static BIND_SESSION_ENV: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
-    fn bind_session_env_guard() -> std::sync::MutexGuard<'static, ()> {
-        BIND_SESSION_ENV
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-    }
-
     #[test]
     fn on_session_title_sets_option_for_tracked_session() {
-        let _env = bind_session_env_guard();
         let _guard = tmux::test_mock::install();
         let pane = "%TITLE_MATCH";
         tmux::test_mock::set(pane, tmux::PANE_SESSION_ID, "ses-1");
@@ -621,7 +606,6 @@ mod tests {
         // The shim emits session-start and session-title as two
         // unordered spawns; on a fresh pane the title can land before
         // @pane_session_id exists and must not be dropped.
-        let _env = bind_session_env_guard();
         let _guard = tmux::test_mock::install();
         let pane = "%TITLE_RACE";
 
@@ -642,13 +626,14 @@ mod tests {
         // live session — the CLI-side complement of the bridge's
         // committed-guess doctrine (audit 2026-11-16). Once the pane is
         // bound to this session the write is unconditional again.
-        let _env = bind_session_env_guard();
+        // The per-thread override (context::test_env) stands in for the
+        // process-global env var, which parallel tests would otherwise
+        // race on.
         let _guard = tmux::test_mock::install();
         let pane = "%TITLE_GUESS";
 
-        unsafe { std::env::set_var("TMUX_AGENT_SIDEBAR_BIND_SESSION", "0") };
+        crate::cli::hook::context::test_env::set_bind_override(Some(false));
         let exit = on_session_title(pane, "some other session's title", Some("ses-1"));
-        unsafe { std::env::remove_var("TMUX_AGENT_SIDEBAR_BIND_SESSION") };
 
         assert_eq!(exit, 0);
         assert!(
@@ -658,9 +643,8 @@ mod tests {
 
         // Bound to this session: the title is written regardless.
         tmux::test_mock::set(pane, tmux::PANE_SESSION_ID, "ses-1");
-        unsafe { std::env::set_var("TMUX_AGENT_SIDEBAR_BIND_SESSION", "0") };
         let exit = on_session_title(pane, "Bound title", Some("ses-1"));
-        unsafe { std::env::remove_var("TMUX_AGENT_SIDEBAR_BIND_SESSION") };
+        crate::cli::hook::context::test_env::set_bind_override(None);
 
         assert_eq!(exit, 0);
         assert_eq!(
@@ -680,7 +664,6 @@ mod tests {
         //
         // The helper touches nothing but the lockfile — the tmux mock is
         // thread-local, so every pane-option access stays on this thread.
-        let _env = bind_session_env_guard();
         let _guard = tmux::test_mock::install();
         let pane = "%TITLE_LOCKED";
         let lock = crate::paths::pane_lock_path("subagent", pane);
@@ -720,7 +703,6 @@ mod tests {
     fn on_session_title_drops_foreign_session() {
         // The pane is already tracking ses-1; a title for ses-2 must
         // not latch onto it.
-        let _env = bind_session_env_guard();
         let _guard = tmux::test_mock::install();
         let pane = "%TITLE_FOREIGN";
         tmux::test_mock::set(pane, tmux::PANE_SESSION_ID, "ses-1");
@@ -738,7 +720,6 @@ mod tests {
 
     #[test]
     fn on_session_title_skipped_while_subagents_active() {
-        let _env = bind_session_env_guard();
         let _guard = tmux::test_mock::install();
         let pane = "%TITLE_SUBAGENT";
         tmux::test_mock::set(pane, tmux::PANE_SESSION_ID, "ses-1");
@@ -755,7 +736,6 @@ mod tests {
 
     #[test]
     fn on_session_title_without_session_id_is_dropped() {
-        let _env = bind_session_env_guard();
         let _guard = tmux::test_mock::install();
         let pane = "%TITLE_NO_SID";
 
@@ -767,7 +747,6 @@ mod tests {
 
     #[test]
     fn on_session_title_empty_clears_option() {
-        let _env = bind_session_env_guard();
         let _guard = tmux::test_mock::install();
         let pane = "%TITLE_EMPTY";
         tmux::test_mock::set(pane, tmux::PANE_SESSION_ID, "ses-1");
