@@ -286,18 +286,16 @@ pub fn run(
                 state
                     .todos
                     .clamp_selection(state.global.todo_hide_completed);
-                // While the sidebar pane is unfocused the cursor row is
-                // not this instance's business: nobody is navigating the
-                // list, so re-anchor at the top instead of auto-scrolling
-                // to wherever navigation last left it. Hook events from
-                // agents in this window ride the same SIGUSR1
-                // (notify_sidebars_of_pane), and while the user is
-                // navigating the selection is theirs: resetting on every
-                // agent-state signal yanked the cursor back to the first
-                // row mid-navigation. Leaving the sidebar flips the focus
-                // flag (the jump clears it the same frame now), so the
-                // next signal re-anchors as before; arriving re-anchors
-                // through the context selection below.
+                // While the sidebar pane is unfocused nobody is navigating
+                // the list: park the scroll at the top and end the search.
+                // The cursor row is deliberately left alone — it is the
+                // user's last selection, and erasing it to row 0 on every
+                // agent-state signal made the highlight (and Enter) land
+                // on a different agent after they returned. The parked
+                // cursor renders nothing while unfocused (the highlight is
+                // focus-gated), the auto-scroll only follows it while
+                // focused, and the context selection below reconciles it
+                // on arrival.
                 if !state.focus_state.sidebar_focused {
                     // A search is a transient navigation aid scoped to the
                     // sidebar's focus: leaving the sidebar (a jump, a
@@ -314,6 +312,9 @@ pub fn run(
                 // missed signal. Runs after `rebuild_row_targets` so the
                 // row index matches the filtered list this frame renders,
                 // and `compute_scroll_offset` brings the row into view.
+                // When the context pane is unknown or filtered out, the
+                // fallback only parks the scroll: the cursor stays on the
+                // user's last selection instead of jumping to row 0.
                 if !state.select_focused_context_row() {
                     state.reset_pane_scroll();
                 }

@@ -21,15 +21,18 @@ pub struct ScrollStates {
 }
 
 impl super::AppState {
-    /// Anchor the agent list at the top: first row selected, offset zero.
+    /// Park the agent list at the top without touching the selection.
     ///
-    /// `@sidebar_cursor` is a shared global and an index into the global
-    /// agent list, so the focus-change reload can adopt a value written by
-    /// a sidebar in another window. The auto-scroll then snaps this list
-    /// down to that row, hiding the agents above it. Resetting on the
-    /// switch keeps every window's list showing from the top.
+    /// Zeroes only the scroll offset. The cursor row is the user's last
+    /// selection and must survive the trip: erasing it to row 0 on every
+    /// unfocused tick made the highlight — and Enter — land on a different
+    /// agent after the user returned from a jump. Nothing needs the row
+    /// reset anymore: the highlight is gated on sidebar focus (a parked
+    /// cursor renders nothing while unfocused), the auto-scroll follows
+    /// the selection only while focused (`compute_scroll_offset`), and
+    /// the arrival's context selection reconciles the cursor to the
+    /// context pane.
     pub fn reset_pane_scroll(&mut self) {
-        self.global.selected_pane_row = 0;
         self.scrolls.panes.offset = 0;
     }
 
@@ -40,7 +43,8 @@ impl super::AppState {
     /// `pick_active_pane` yields nothing new), which is what makes it
     /// readable here. Returns `true` when a row was selected; the caller
     /// falls back to [`Self::reset_pane_scroll`] when the context pane is
-    /// unknown or filtered out of the list.
+    /// unknown or filtered out of the list — which parks the scroll but
+    /// keeps the cursor on the user's last selection.
     pub fn select_focused_context_row(&mut self) -> bool {
         self.scrolls.panes.offset = 0;
         // In a popup the tracked focus id stays empty — `TMUX_PANE` is
@@ -145,14 +149,17 @@ mod tests {
     }
 
     #[test]
-    fn reset_pane_scroll_returns_to_first_row() {
+    fn reset_pane_scroll_parks_the_scroll_and_keeps_the_selection() {
         let mut state = super::super::AppState::new("%99".into());
         state.global.selected_pane_row = 7;
         state.scrolls.panes.offset = 14;
 
         state.reset_pane_scroll();
 
-        assert_eq!(state.global.selected_pane_row, 0);
+        assert_eq!(
+            state.global.selected_pane_row, 7,
+            "the cursor is the user's last selection and survives the reset"
+        );
         assert_eq!(state.scrolls.panes.offset, 0);
     }
 
