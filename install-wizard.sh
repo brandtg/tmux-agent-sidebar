@@ -17,7 +17,17 @@ function finish {
     fi
     if [[ $exit_code -eq 0 ]]; then
         echo "Reloading tmux.conf"
-        tmux source ~/.tmux.conf
+        # XDG-only setups keep their config at $XDG_CONFIG_HOME/tmux/tmux.conf
+        # (defaulting to ~/.config/tmux/tmux.conf); only reload what exists.
+        conf="$HOME/.tmux.conf"
+        if [[ ! -f "$conf" ]]; then
+            conf="${XDG_CONFIG_HOME:-$HOME/.config}/tmux/tmux.conf"
+        fi
+        if [[ -f "$conf" ]]; then
+            tmux source "$conf"
+        else
+            echo "No tmux.conf found to reload."
+        fi
         exit 0
     else
         echo "Something went wrong. Press any key to close this window."
@@ -167,7 +177,7 @@ tmux display-menu -T "tmux-agent-sidebar" \
     "-  $(get_message) " "" "" \
     "- " "" "" \
     "" \
-    "Download binary" d "new-window \"$PLUGIN_DIR/install-wizard.sh download-binary\"" \
-    "Build from source (Rust required)" s "new-window \"$PLUGIN_DIR/install-wizard.sh build-from-source\"" \
+    "Download binary" d "new-window \"bash '$PLUGIN_DIR/install-wizard.sh download-binary'\"" \
+    "Build from source (Rust required)" s "new-window \"bash '$PLUGIN_DIR/install-wizard.sh build-from-source'\"" \
     "" \
     "Exit" q ""

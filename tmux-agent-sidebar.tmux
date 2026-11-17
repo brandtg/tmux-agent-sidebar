@@ -18,7 +18,12 @@ fi
 INSTALLED_VERSION="$("$SIDEBAR_BINARY" version 2>/dev/null)"
 EXPECTED_VERSION="$(sed -n 's/^version *= *"\(.*\)"/\1/p' "$PLUGIN_DIR/Cargo.toml")"
 
-if [[ -n "$EXPECTED_VERSION" && "$INSTALLED_VERSION" != "$EXPECTED_VERSION" ]]; then
+# Dev-checkout escape hatch: a checkout whose Cargo.toml is ahead of the
+# last published tag (post `make bump`, pre-tag) otherwise trips the
+# install wizard on every conf load. Set TMUX_AGENT_SIDEBAR_SKIP_VERSION_CHECK=1
+# to run the dev binary without the version-gate update flow.
+if [[ -n "$EXPECTED_VERSION" && "$INSTALLED_VERSION" != "$EXPECTED_VERSION" &&
+      "${TMUX_AGENT_SIDEBAR_SKIP_VERSION_CHECK:-0}" != "1" ]]; then
     tmux run-shell -b "SIDEBAR_UPDATE=1 bash '$PLUGIN_DIR/install-wizard.sh'"
     exit 0
 fi

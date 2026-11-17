@@ -110,7 +110,13 @@ cleanup() {
         tmux kill-server 2>/dev/null || true
     fi
     rm -rf "${TMUX_DIR:-}"
-    rm -f "$(activity_dir)"/tmux-agent-activity_*.log
+    # Same sentinel as the kill-server above: only touch the activity dir
+    # when we know we own TMUX_TMPDIR, so a bare run without setup() can
+    # never delete the live sidebar's logs (activity_dir falls back to
+    # /tmp, the same place paths.rs writes them).
+    if [[ -n "${TMUX_TMPDIR:-}" && "${TMUX_TMPDIR:-}" == /tmp/tas.* ]]; then
+        rm -f "$(activity_dir)"/tmux-agent-activity_*.log
+    fi
 }
 
 # -- layout ---------------------------------------------------------
