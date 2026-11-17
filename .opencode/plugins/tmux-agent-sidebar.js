@@ -52,7 +52,10 @@
 //      into the terminal title ("OC | <title>"), which is per-pane ground
 //      truth from the process actually hosting the session; when it names
 //      this session it wins over a contradicting binding, and when it
-//      contradicts a binding that binding is treated as stale;
+//      contradicts a binding that binding is treated as stale. A stamp the
+//      pane's own binding already explains is not evidence — auto-titles
+//      share long prefixes, and a prefix hit must never re-point another
+//      pane's binding;
 //   3. an unbound candidate, so concurrent same-directory sessions each
 //      claim their own pane instead of one starving the other;
 //   4. a provably-stale binding — the bound session's title no longer
@@ -62,7 +65,8 @@
 //   5. a last-resort first match, which is a GUESS: the spawned hook is
 //      flagged TMUX_AGENT_SIDEBAR_BIND_SESSION=0 so the CLI does not record
 //      the binding on a pane that may belong to another live session.
-// A valid inherited TMUX_PANE is only used when nothing better matches, so
+// A valid inherited TMUX_PANE is only used when nothing better matches —
+// and only when it is a live pane running opencode, never committed — so
 // in-pane setups (OpenCode 1 style, or a local server) keep working
 // unchanged.
 
@@ -157,10 +161,15 @@ function listPanes() {
 //      or, when no candidate is bound to it, an unbound candidate, so
 //      concurrent same-directory sessions each claim their own pane
 //      instead of one starving the other;
-//   3. when nothing matches, the inherited TMUX_PANE — but only if tmux
-//      confirms it still exists (the shared daemon's value is often stale).
+//   3. when nothing matches, the inherited TMUX_PANE — but only if it is a
+//      live pane running opencode, and never committed (the shared daemon's
+//      value is often stale or points at an unrelated pane).
 // The cache only collapses bursts of events for the same session; every
-// miss re-queries so a reopened or moved pane self-heals.
+// miss re-queries so a reopened or moved pane self-heals. A committed
+// resolution is about to write a session binding: cached resolutions
+// pointing at that same pane are dropped when the spawn goes out, so a
+// second same-directory session cannot ride a pre-write cache entry into
+// double-claiming the pane.
 // `cwd|session_id` → { pane, committed, at }. A map, not a single slot:
 // concurrent sessions in one directory interleave events, and a single
 // entry would thrash (a list-panes spawn per event). Insertion-ordered and
@@ -213,8 +222,23 @@ function titlesMatch(paneTitle, sessionTitle) {
   if (pane === "" || session === "") return false;
   if (pane === session) return true;
   // Prefix matches need enough characters to be meaningful — a truncated
-  // pane title is a prefix of the full session title.
+  // pane title is a prefix of the full session title. Claiming sites add
+  // the explained-stamp check on top (see stampExplainedByOwnBinding): a
+  // prefix hit alone must never re-point another pane's binding.
   return pane.length >= 8 && session.startsWith(pane);
+}
+
+// A pane whose stamp is already explained by its own binding — the TUI is
+// displaying its bound session's title — is not title evidence for another
+// session, however long the shared prefix. Auto-titled sessions in one
+// directory routinely share heads ("Refactor the auth flow" / "Refactor
+// the auth flow in the API"); treating such a stamp as evidence routed the
+// second session onto the first pane and re-pointed its binding, leaving
+// two rows animating with each other's state until the titles diverged.
+async function stampExplainedByOwnBinding(pane, sessionId) {
+  if (pane.sessionId === "" || pane.sessionId === sessionId) return false;
+  const boundTitle = await sessionTitleOf(pane.sessionId);
+  return boundTitle !== "" && titlesMatch(pane.title, boundTitle);
 }
 
 async function resolvePaneId(cwd, sessionId) {
@@ -281,6 +305,7 @@ async function resolvePaneId(cwd, sessionId) {
   // live session — and recording the binding there would permanently
   // misroute the session that owns it (its next event could never find a
   // binding of its own). Guesses are flagged so the CLI skips the write.
+  // The inherited TMUX_PANE fallback is likewise never committed.
   let chosen = "";
   let committed = true;
   if (pathMatches.length === 1) {
@@ -291,10 +316,32 @@ async function resolvePaneId(cwd, sessionId) {
     // after the first exchange), so this is often absent for a brand-new
     // session's first event.
     const myTitle = await sessionTitleOf(sessionId);
-    const titled =
-      myTitle !== ""
-        ? pathMatches.find((p) => titlesMatch(p.title, myTitle))
-        : undefined;
+    // Title evidence must be near-exact and not already explained by the
+    // pane's own binding (see stampExplainedByOwnBinding). An exact stamp
+    // wins outright; a truncated one (the TUI ellipsis-truncates the
+    // session title at the terminal width) is the only loose match
+    // accepted — and a stamp the pane's own binding accounts for is never
+    // evidence, however long the shared prefix.
+    let titled;
+    if (myTitle !== "") {
+      for (const p of pathMatches) {
+        if (
+          paneTitlePart(p.title) === myTitle &&
+          !(await stampExplainedByOwnBinding(p, sessionId))
+        ) {
+          titled = p;
+          break;
+        }
+      }
+      if (!titled) {
+        for (const p of pathMatches) {
+          if (!titlesMatch(p.title, myTitle)) continue;
+          if (await stampExplainedByOwnBinding(p, sessionId)) continue;
+          titled = p;
+          break;
+        }
+      }
+    }
     const bound =
       sessionId !== ""
         ? pathMatches.find((p) => p.sessionId === sessionId)
@@ -312,8 +359,16 @@ async function resolvePaneId(cwd, sessionId) {
       // different session — a restart or session switch (or a binding
       // written by an older, buggy bridge) — while another pane's title
       // names this one. The pane title is per-pane ground truth, so it
-      // wins; the binding rewrite below re-points it.
-      chosen = titled.id;
+      // wins; the binding rewrite below re-points it. But never when the
+      // bound pane's own stamp still confirms the binding: a prefix hit
+      // on another pane (two auto-titles sharing a head) must not re-point
+      // a binding the bound pane's TUI itself displays.
+      const boundPane = pathMatches.find((p) => p.id === bound.id);
+      if (boundPane && titlesMatch(boundPane.title, myTitle)) {
+        chosen = bound.id;
+      } else {
+        chosen = titled.id;
+      }
     } else {
       // 1. No binding for this session yet (its first event, or the bound
       // pane closed): claim an unbound pane rather than stealing a bound
@@ -358,10 +413,21 @@ async function resolvePaneId(cwd, sessionId) {
   if (
     chosen === "" &&
     typeof process.env?.TMUX_PANE === "string" &&
-    process.env.TMUX_PANE !== "" &&
-    panes.some((p) => p.id === process.env.TMUX_PANE)
+    process.env.TMUX_PANE !== ""
   ) {
-    chosen = process.env.TMUX_PANE;
+    // The daemon's inherited TMUX_PANE is at best a guess — it may be the
+    // pane that booted `opencode serve --service`, long since repurposed
+    // or gone. Only accept it when it is a live pane running opencode,
+    // and never let the CLI record a binding on it: an unguarded commit
+    // here is the permanent-misroute case TMUX_AGENT_SIDEBAR_BIND_SESSION
+    // exists to defuse. A non-opencode inherited pane (an in-pane setup's
+    // shell) gets no injection at all — env passthrough keeps those
+    // setups working unchanged.
+    const inherited = candidates.find((p) => p.id === process.env.TMUX_PANE);
+    if (inherited) {
+      chosen = inherited.id;
+      committed = false;
+    }
   }
 
   paneCache.set(key, { pane: chosen, committed, at: now });
@@ -392,6 +458,27 @@ const hook = (eventName, payload) => {
     // flags the spawn so the CLI does not record the session binding on a
     // pane that may belong to another live session.
     const resolved = await resolvePaneId(payload?.cwd, payload?.session_id ?? "");
+    // A committed resolution is about to write this session's binding on
+    // the pane: cached resolutions captured before that write are stale
+    // for every other session that resolved to the same pane — two
+    // same-directory sessions would otherwise both ride the 2s cache into
+    // claiming the first unbound pane. Drop them so the next event
+    // re-resolves against the fresh pane table; the chain is serialized,
+    // so the spawned hook — binding write included — has fully exited
+    // before the next link resolves.
+    if (
+      resolved.committed &&
+      resolved.pane !== "" &&
+      typeof payload?.cwd === "string" &&
+      payload.cwd !== ""
+    ) {
+      const ownKey = `${payload.cwd}|${payload.session_id ?? ""}`;
+      for (const [key, cached] of [...paneCache]) {
+        if (key !== ownKey && cached.pane === resolved.pane) {
+          paneCache.delete(key);
+        }
+      }
+    }
     const env =
       resolved.pane === ""
         ? undefined
