@@ -1,7 +1,7 @@
 mod adapter;
 mod kind;
 
-pub use adapter::{EventAdapter, resolve_adapter};
+pub use adapter::{EventAdapter, canonical_agent_name, resolve_adapter};
 pub use kind::AgentEventKind;
 
 use serde_json::Value;

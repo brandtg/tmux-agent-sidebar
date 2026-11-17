@@ -32,20 +32,38 @@ pub(in crate::cli::hook) fn make_ctx<'a>(
 }
 
 pub(in crate::cli::hook) fn set_agent_meta(pane: &str, ctx: &AgentContext<'_>) {
-    tmux::set_pane_option(pane, tmux::PANE_AGENT, ctx.agent);
+    // One batched spawn for the identity writes; the subagent guard read
+    // stays a probe (audit 2026-11-16 #5).
+    let mut writes = vec![tmux::PaneOptionWrite::Set {
+        key: tmux::PANE_AGENT,
+        value: ctx.agent,
+    }];
     // `@pane_permission_mode` is parent-owned: a child agent can be in
     // a different mode (e.g. plan vs. default) and overwriting the
     // parent's value here would flip the badge mid-session. Gate the
     // write behind the same subagent guard as the cwd/worktree fields.
     if !ctx.permission_mode.is_empty() && pane_writes_allowed(pane) {
-        tmux::set_pane_option(pane, tmux::PANE_PERMISSION_MODE, ctx.permission_mode);
+        writes.push(tmux::PaneOptionWrite::Set {
+            key: tmux::PANE_PERMISSION_MODE,
+            value: ctx.permission_mode,
+        });
     }
+    tmux::apply_pane_options(pane, &writes);
     sync_pane_location(pane, ctx.cwd, ctx.worktree, ctx.session_id);
 }
 
 pub(in crate::cli::hook) fn clear_run_state(pane: &str) {
-    tmux::unset_pane_option(pane, tmux::PANE_STARTED_AT);
-    tmux::unset_pane_option(pane, tmux::PANE_WAIT_REASON);
+    tmux::apply_pane_options(
+        pane,
+        &[
+            tmux::PaneOptionWrite::Unset {
+                key: tmux::PANE_STARTED_AT,
+            },
+            tmux::PaneOptionWrite::Unset {
+                key: tmux::PANE_WAIT_REASON,
+            },
+        ],
+    );
 }
 
 /// Check if a prompt is a system-injected message (not a real user prompt).
@@ -62,7 +80,7 @@ pub(in crate::cli::hook) fn is_system_message(s: &str) -> bool {
 }
 
 pub(in crate::cli::hook) fn clear_all_meta(pane: &str) {
-    for key in &[
+    let keys = [
         tmux::PANE_AGENT,
         tmux::PANE_PROMPT,
         tmux::PANE_PROMPT_SOURCE,
@@ -78,10 +96,14 @@ pub(in crate::cli::hook) fn clear_all_meta(pane: &str) {
         tmux::PANE_SESSION_TITLE,
         PENDING_SESSION_END,
         tmux::PANE_PENDING_WORKTREE_REMOVE,
-    ] {
-        tmux::unset_pane_option(pane, key);
-    }
-    clear_run_state(pane);
+        tmux::PANE_STARTED_AT,
+        tmux::PANE_WAIT_REASON,
+    ];
+    let writes: Vec<tmux::PaneOptionWrite> = keys
+        .iter()
+        .map(|key| tmux::PaneOptionWrite::Unset { key })
+        .collect();
+    tmux::apply_pane_options(pane, &writes);
 }
 
 /// Write a task-reset marker to the activity log so `parse_task_progress`

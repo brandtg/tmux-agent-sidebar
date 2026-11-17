@@ -52,10 +52,18 @@ fi
     { mode: 0o755 },
   );
   // Shadow tmux with a script printing the canned pane snapshot, so the
-  // bridge's pane resolution is exercised without a real tmux server.
+  // bridge's pane resolution is exercised without a real tmux server. The
+  // snapshot lives in a file so a test can land a binding write
+  // mid-scenario (setPanes) — the bridge re-reads it on its next resolve.
   const bindir = join(root, "bin");
   mkdirSync(bindir, { recursive: true });
-  writeFileSync(join(bindir, "tmux"), `#!/usr/bin/env sh\ncat <<'PANES'\n${panes}PANES\n`, { mode: 0o755 });
+  const panesFile = join(bindir, "panes.txt");
+  writeFileSync(panesFile, panes);
+  writeFileSync(
+    join(bindir, "tmux"),
+    `#!/usr/bin/env sh\ncat ${JSON.stringify(panesFile)}\n`,
+    { mode: 0o755 },
+  );
   const savedPath = process.env.PATH;
   process.env.PATH = `${bindir}:${savedPath ?? ""}`;
 
@@ -153,6 +161,9 @@ fi
       } catch {
         return [];
       }
+    },
+    setPanes(next) {
+      writeFileSync(panesFile, next);
     },
     dispose() {
       Promise.resolve(cleanup).then((fn) => fn?.());
@@ -701,9 +712,10 @@ test("a valid inherited TMUX_PANE is kept when no opencode pane matches better",
     await plugin.prompt({ sessionID: MAIN, prompt: { text: "go" } });
     await settle(h);
 
-    // %2 is an opencode pane but in the wrong directory; the inherited %1
-    // still exists in the pane table, so it is kept — the bridge cannot
-    // know better (this is what makes plain in-pane setups keep working).
+    // %2 is an opencode pane but in the wrong directory; %1 is not an
+    // opencode pane at all, so nothing is injected and the inherited
+    // environment passes through untouched (this is what keeps plain
+    // in-pane setups working — and no binding can be recorded on a shell).
     assert.deepEqual(h.events(), [
       "user-prompt-submit " + JSON.stringify({ cwd: "/repo", session_id: MAIN, prompt: "go" }) +
         " env=%1 bind=unset",
@@ -968,6 +980,142 @@ test("a last-resort guess routes the event but flags the binding as uncommitted"
     await plugin.prompt({ sessionID: "ses_new", prompt: { text: "go" } });
     await settle(h);
 
+    assert.match(h.events()[0], / env=%2 bind=0$/);
+  } finally {
+    delete process.env.TMUX_RECORD_ENV;
+    h.dispose();
+  }
+});
+
+// Audit #1: two auto-titled sessions in one directory share long prefixes.
+// %2 is bound to ses_a and its TUI displays ses_a's title — a prefix of
+// ses_b's longer title. That stamp is explained by %2's own binding, so it
+// is not evidence for ses_b: the old ≥8-char prefix match routed ses_b to
+// %2 and re-pointed its binding (the reported "two agents writing to each
+// other's title" wig).
+test("a stamp explained by the pane's own binding is not title evidence for another session", async () => {
+  const h = await loadPlugin({
+    panes:
+      "%2\topencode\t/repo\tses_a\tOC | Refactor the auth flow\n" +
+      "%4\topencode\t/repo\t\n",
+    titles: { ses_a: "Refactor the auth flow", ses_b: "Refactor the auth flow in the API" },
+  });
+  try {
+    process.env.TMUX_RECORD_ENV = "1";
+    const plugin = await h.init("/repo", undefined, "/repo");
+    await plugin.prompt({ sessionID: "ses_b", prompt: { text: "go" } });
+    await settle(h);
+
+    // %2's stamp belongs to ses_a; ses_b free-claims the unbound %4.
+    assert.match(h.events()[0], / env=%4 bind=unset$/);
+  } finally {
+    delete process.env.TMUX_RECORD_ENV;
+    h.dispose();
+  }
+});
+
+// Audit #1: ses_b is already bound to %4 and %4's own stamp confirms it,
+// while %2's stamp (ses_a's title, a prefix of ses_b's) loose-matches.
+// The titled-versus-bound conflict must not re-point ses_b's binding.
+test("a prefix-hit title cannot re-point a binding the bound pane's own stamp confirms", async () => {
+  const h = await loadPlugin({
+    panes:
+      "%2\topencode\t/repo\tses_a\tOC | Refactor the auth flow\n" +
+      "%4\topencode\t/repo\tses_b\tOC | Refactor the auth flow in the API\n",
+    titles: { ses_a: "Refactor the auth flow", ses_b: "Refactor the auth flow in the API" },
+  });
+  try {
+    process.env.TMUX_RECORD_ENV = "1";
+    const plugin = await h.init("/repo", undefined, "/repo");
+    await plugin.prompt({ sessionID: "ses_b", prompt: { text: "go" } });
+    await settle(h);
+
+    // %4's TUI displays ses_b's title: the binding is ground truth and
+    // %2's prefix hit must not win it.
+    assert.match(h.events()[0], / env=%4 bind=unset$/);
+  } finally {
+    delete process.env.TMUX_RECORD_ENV;
+    h.dispose();
+  }
+});
+
+// Audit #2: the daemon's inherited TMUX_PANE is a guess. When it does
+// point at a live opencode pane the event may ride it — but never
+// committed, or the CLI records a binding on a pane that may belong to
+// another session (the permanent-misroute case the bind flag defuses).
+test("an inherited TMUX_PANE pointing at an opencode pane is routed uncommitted", async () => {
+  const h = await loadPlugin({ panes: "%3\topencode\t/elsewhere\t\n" });
+  try {
+    process.env.TMUX_RECORD_ENV = "1";
+    process.env.TMUX_PANE = "%3";
+    const plugin = await h.init("/repo");
+    await plugin.prompt({ sessionID: MAIN, prompt: { text: "go" } });
+    await settle(h);
+
+    // %3 is an opencode pane but in the wrong directory and unbound: the
+    // inherited pane is the last resort — routed, flagged bind=0.
+    assert.match(h.events()[0], / env=%3 bind=0$/);
+  } finally {
+    delete process.env.TMUX_RECORD_ENV;
+    delete process.env.TMUX_PANE;
+    h.dispose();
+  }
+});
+
+// Audit #3: the 2s pane cache can serve a resolution captured before
+// another session's binding write landed, double-claiming one pane. A
+// committed resolution therefore invalidates cached resolutions pointing
+// at the same pane.
+test("a committed resolution invalidates cached resolutions of the same pane", async () => {
+  const h = await loadPlugin({
+    panes: "%2\topencode\t/repo\t\n%4\topencode\t/repo\t\n",
+  });
+  try {
+    process.env.TMUX_RECORD_ENV = "1";
+    const plugin = await h.init("/repo");
+    // B resolves first and free-claims %2 (cached).
+    await plugin.prompt({ sessionID: "ses_b", prompt: { text: "b1" } });
+    // A resolves next, free-claims %2 too, and its hook writes the
+    // binding — landed in the pane table here.
+    await plugin.prompt({ sessionID: "ses_a", prompt: { text: "a1" } });
+    h.setPanes("%2\topencode\t/repo\tses_a\t\n%4\topencode\t/repo\t\n");
+    // B's next event must re-resolve instead of riding the pre-write
+    // cache entry into re-claiming %2.
+    await plugin.prompt({ sessionID: "ses_b", prompt: { text: "b2" } });
+    await settle(h);
+
+    assert.match(h.events()[0], / env=%2 bind=unset$/);
+    assert.match(h.events()[1], / env=%2 bind=unset$/);
+    assert.match(h.events()[2], / env=%4 bind=unset$/);
+  } finally {
+    delete process.env.TMUX_RECORD_ENV;
+    h.dispose();
+  }
+});
+
+// The reclaim probe must keep accepting truncated stamps: a live binding
+// whose pane title is the bound session's title truncated at terminal
+// width is NOT stale. Over-tightening the match would let any new session
+// steal a live pane whose stamp happens to be truncated.
+test("a truncated stamp still proves a binding live (no false reclaim)", async () => {
+  const h = await loadPlugin({
+    panes:
+      "%2\topencode\t/repo\tses_other\tOC | Something else entirely\n" +
+      "%4\topencode\t/repo\tses_live\tOC | Fix opencode session status swap in T…\n",
+    titles: {
+      ses_other: "Something else entirely",
+      ses_live: "Fix opencode session status swap in Tmux sidebar",
+    },
+  });
+  try {
+    process.env.TMUX_RECORD_ENV = "1";
+    const plugin = await h.init("/repo", undefined, "/repo");
+    await plugin.prompt({ sessionID: "ses_new", prompt: { text: "go" } });
+    await settle(h);
+
+    // Neither binding is stale (%4's truncated stamp still matches its
+    // bound session's full title), so the last resort is the uncommitted
+    // first match — not a reclaim of %4.
     assert.match(h.events()[0], / env=%2 bind=0$/);
   } finally {
     delete process.env.TMUX_RECORD_ENV;

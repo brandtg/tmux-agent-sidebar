@@ -21,7 +21,12 @@ fn subagent_lock_path(pane: &str) -> PathBuf {
 /// write would strand the subagent guard, while an unlocked write is
 /// only the pre-fix race. The lock is released when the fd drops at
 /// the end of this function.
-fn with_subagent_lock<T>(pane: &str, f: impl FnOnce() -> T) -> T {
+///
+/// Held by both subagent-list writers (`on_subagent_start` /
+/// `on_subagent_stop`) and by `on_stop`'s stale-list clear, so a stop's
+/// read-modify-write cannot resurrect children an interleaved clear just
+/// removed (and vice versa).
+pub(in crate::cli::hook) fn with_subagent_lock<T>(pane: &str, f: impl FnOnce() -> T) -> T {
     match paths::open_read_write_private(&subagent_lock_path(pane)) {
         Ok(file) => {
             if !lock_exclusive(&file) {
@@ -110,6 +115,7 @@ pub(in crate::cli::hook) fn on_subagent_stop(pane: &str, agent_id: Option<&str>)
 
 #[cfg(test)]
 mod tests {
+    use super::super::run::on_stop;
     use super::super::session::on_session_end;
     use super::*;
     use crate::cli::hook::context::PENDING_SESSION_END;
@@ -186,6 +192,69 @@ mod tests {
             "flock must exclude concurrent subagent writers"
         );
         fs::remove_file(&lock).ok();
+    }
+
+    #[test]
+    fn on_stop_stale_clear_waits_for_the_subagent_lock() {
+        // Audit 2026-11-16 #4: the parent Stop's stale-list clear used to
+        // read+unset `@pane_subagents` with no flock, so an interleaved
+        // SubagentStop's read-modify-write could resurrect the removed
+        // children — stranding `pane_writes_allowed` and tripping the
+        // SessionEnd subagent guard until the next parent Stop. Hold the
+        // lock from a helper thread: on_stop must block until it is
+        // released, and only then clear the list.
+        //
+        // The helper touches nothing but the lockfile — the tmux mock is
+        // thread-local, so every pane-option access stays on this thread.
+        let _guard = tmux::test_mock::install();
+        let pane = "%STOP_LOCKED";
+        tmux::test_mock::set(pane, tmux::PANE_SUBAGENTS, ",Explore:sub-1,Plan:sub-2");
+        let lock = subagent_lock_path(pane);
+        let _ = fs::remove_file(&lock);
+
+        let (locked_tx, locked_rx) = std::sync::mpsc::channel();
+        let lock_for_helper = lock.clone();
+        let helper = std::thread::spawn(move || {
+            let file = fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .create(true)
+                .truncate(false)
+                .open(&lock_for_helper)
+                .unwrap();
+            assert!(lock_exclusive(&file));
+            locked_tx.send(()).unwrap();
+            // Hold long enough that an unlocked clear would finish
+            // entirely inside this window.
+            std::thread::sleep(std::time::Duration::from_millis(300));
+            // fd drops here, releasing the flock.
+        });
+
+        locked_rx.recv().unwrap();
+        let ctx = crate::cli::hook::context::AgentContext {
+            agent: "claude",
+            cwd: "/repo",
+            permission_mode: "default",
+            worktree: &None,
+            session_id: &None,
+        };
+        let started = std::time::Instant::now();
+        let exit = on_stop(pane, &ctx, "", None, &default_notifications());
+        let elapsed = started.elapsed();
+
+        assert_eq!(exit, 0);
+        assert!(
+            elapsed >= std::time::Duration::from_millis(100),
+            "the stale-list clear must wait for the subagent lock (took {elapsed:?})"
+        );
+        assert!(
+            !tmux::test_mock::contains(pane, tmux::PANE_SUBAGENTS),
+            "Stop must still clear the stale list once the lock is available"
+        );
+
+        helper.join().unwrap();
+        fs::remove_file(&lock).ok();
+        fs::remove_file(crate::activity::log_file_path(pane)).ok();
     }
 
     #[test]

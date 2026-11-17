@@ -104,6 +104,13 @@ pub(super) fn handle_activity_log(
     tool_input: &serde_json::Value,
     tool_response: &serde_json::Value,
 ) -> i32 {
+    // The CLI argument may be an alias (`agy`); every guard below compares
+    // against canonical labels. The run-state handlers are immune to the
+    // alias because the adapter supplies the canonical name in the event —
+    // normalize here too, or a hand-wired `hook agy activity-log` silently
+    // loses the pending-action stickiness and the `__`-churn suppression
+    // (audit 2026-11-16 #6).
+    let agent_name = crate::event::canonical_agent_name(agent_name).unwrap_or(agent_name);
     let label = extract_tool_label(tool_name, tool_input, tool_response);
     if is_background_bash(tool_name, tool_input) {
         let stored = if label.is_empty() {
@@ -901,6 +908,84 @@ mod tests {
             tmux::test_mock::get(pane_id, tmux::PANE_STATUS).as_deref(),
             Some("idle"),
             "internal agy state churn must not show the pane as working"
+        );
+        fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn handle_activity_log_agy_alias_keeps_permission_wait_sticky() {
+        // Audit 2026-11-16 #6: a hooks.json wired as `hook agy activity-log`
+        // used to compare the raw CLI argument against the canonical label,
+        // silently dropping the pending-action stickiness (and the churn
+        // suppression below) — idle panes glowed after `__task_reset__`
+        // churn and prompts got stomped. The alias must normalize.
+        let _guard = tmux::test_mock::install();
+        let pane_id = "%AGY_ALIAS_PERM_STICKY";
+        let path = crate::activity::log_file_path(pane_id);
+        let _ = fs::remove_file(&path);
+        tmux::test_mock::set(pane_id, tmux::PANE_STATUS, "waiting");
+        tmux::test_mock::set(pane_id, tmux::PANE_ATTENTION, "notification");
+        tmux::test_mock::set(pane_id, tmux::PANE_WAIT_REASON, "permission");
+
+        handle_activity_log(
+            pane_id,
+            "agy",
+            "Read",
+            &json!({"file_path": "/home/user/src/main.rs"}),
+            &Value::Null,
+        );
+
+        assert_eq!(
+            tmux::test_mock::get(pane_id, tmux::PANE_STATUS).as_deref(),
+            Some("waiting"),
+            "the agy alias must keep the pending-action wait sticky"
+        );
+        assert_eq!(
+            tmux::test_mock::get(pane_id, tmux::PANE_WAIT_REASON).as_deref(),
+            Some("permission")
+        );
+        assert!(tmux::test_mock::contains(pane_id, tmux::PANE_ATTENTION));
+        fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn handle_activity_log_agy_alias_pseudo_tool_does_not_promote() {
+        let _guard = tmux::test_mock::install();
+        let pane_id = "%AGY_ALIAS_CHURN";
+        let path = crate::activity::log_file_path(pane_id);
+        let _ = fs::remove_file(&path);
+        tmux::test_mock::set(pane_id, tmux::PANE_STATUS, "idle");
+
+        handle_activity_log(pane_id, "agy", "__task_reset__", &json!({}), &Value::Null);
+
+        assert_eq!(
+            tmux::test_mock::get(pane_id, tmux::PANE_STATUS).as_deref(),
+            Some("idle"),
+            "the agy alias must suppress internal state churn like the canonical label"
+        );
+        fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn handle_activity_log_agy_alias_real_tool_still_promotes() {
+        // Positive control: the alias suppresses only agy's own churn.
+        let _guard = tmux::test_mock::install();
+        let pane_id = "%AGY_ALIAS_REAL_TOOL";
+        let path = crate::activity::log_file_path(pane_id);
+        let _ = fs::remove_file(&path);
+        tmux::test_mock::set(pane_id, tmux::PANE_STATUS, "idle");
+
+        handle_activity_log(
+            pane_id,
+            "agy",
+            "Read",
+            &json!({"file_path": "/home/user/src/main.rs"}),
+            &Value::Null,
+        );
+
+        assert_eq!(
+            tmux::test_mock::get(pane_id, tmux::PANE_STATUS).as_deref(),
+            Some("running")
         );
         fs::remove_file(&path).ok();
     }
