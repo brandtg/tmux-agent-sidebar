@@ -143,7 +143,7 @@ jobs:
             number="${url##*/}"
           fi
           echo "bump PR: #$number"
-          if ! merge_err="$(gh pr merge "$number" --repo "$GITHUB_REPOSITORY" --squash 2>&1)"; then
+          if ! merge_err="$(gh pr merge "$number" --repo "$GITHUB_REPOSITORY" --merge 2>&1)"; then
             echo "::notice::auto-merge failed ($merge_err); waiting up to 15 min for a manual merge of ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/pull/$number"
           fi
           for i in $(seq 1 60); do
@@ -152,7 +152,7 @@ jobs:
             # Retry quietly: a just-opened PR can fail the first merge with
             # a transient "not mergeable yet".
             if [ "$state" = "OPEN" ]; then
-              gh pr merge "$number" --repo "$GITHUB_REPOSITORY" --squash 2>/dev/null || true
+              gh pr merge "$number" --repo "$GITHUB_REPOSITORY" --merge 2>/dev/null || true
             fi
             sleep 15
           done
@@ -265,7 +265,9 @@ jobs:
           # history, so anchor the changelog at the fork point instead of
           # listing every upstream commit too.
           : "${PREV_TAG:=fb11818}"
-          CHANGELOG=$(git log --pretty=format:"- %s (%h)" "${PREV_TAG}..${RELEASE_REF}")
+          # Merge commits carry no useful subject ("Merge pull request
+          # #N from ..."); list the commits on each PR branch instead.
+          CHANGELOG=$(git log --no-merges --pretty=format:"- %s (%h)" "${PREV_TAG}..${RELEASE_REF}")
           {
             echo "body<<EOF"
             echo "## What's Changed"
