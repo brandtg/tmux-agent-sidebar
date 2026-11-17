@@ -188,11 +188,24 @@ pub(crate) fn fetch_pane_listing() -> Option<String> {
 
 /// Parse raw `list-panes` output into the session hierarchy, the process
 /// snapshot, and the sidebar-centric fields (own focus flags + the pane list
-/// of the sidebar's window) used to resolve the focused pane.
+/// of the sidebar's window) used to resolve the focused pane. The `ps`
+/// scan runs here (the synchronous path).
 pub(crate) fn build_session_snapshot(all_panes_output: &str, sidebar_pane: &str) -> TmuxSnapshot {
+    let process_snapshot = process_snapshot_for_panes(all_panes_output);
+    build_session_snapshot_with(all_panes_output, sidebar_pane, process_snapshot)
+}
+
+/// [`build_session_snapshot`] with a caller-supplied process snapshot. The
+/// snapshot worker runs the `ps` scan next to the `list-panes` spawn and
+/// ships both halves to the render thread, which folds them together here —
+/// the scan itself never blocks the TUI (audit 2026-11-16 J1).
+pub(crate) fn build_session_snapshot_with(
+    all_panes_output: &str,
+    sidebar_pane: &str,
+    process_snapshot: Option<ProcessSnapshot>,
+) -> TmuxSnapshot {
     let (sidebar_pane_active, sidebar_window_active, sidebar_window_panes) =
         extract_sidebar_window_info(all_panes_output, sidebar_pane);
-    let process_snapshot = process_snapshot_for_panes(all_panes_output);
     let other_panes = collect_other_panes(all_panes_output, process_snapshot.as_ref());
     let (mut sessions_map, codex_pids) =
         build_session_hierarchy(all_panes_output, process_snapshot.as_ref());
@@ -820,7 +833,7 @@ fn detect_codex_permission_mode(args: &str) -> PermissionMode {
     PermissionMode::Default
 }
 
-fn process_snapshot_for_panes(all_panes_output: &str) -> Option<ProcessSnapshot> {
+pub(crate) fn process_snapshot_for_panes(all_panes_output: &str) -> Option<ProcessSnapshot> {
     if !pane_output_needs_process_snapshot(all_panes_output)
         && !pane_output_has_other_panes(all_panes_output)
     {

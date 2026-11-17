@@ -499,17 +499,21 @@ impl AppState {
     }
 
     /// The apply half of [`Self::refresh`] for the async snapshot worker:
-    /// fold an already-fetched `list-panes -a` listing into state. The
-    /// spawn runs off the render thread (a keystroke must never queue
-    /// behind the subprocess); the parse is string work, safe to run
-    /// where `AppState` lives. Returns whether the sidebar's window is
-    /// the active tmux window.
-    pub fn apply_session_refresh(
+    /// fold an already-fetched `list-panes -a` listing — and its worker-side
+    /// process snapshot — into state. The spawns run off the render thread
+    /// (a keystroke must never queue behind a subprocess, and the `ps` scan
+    /// blocked input for tens of ms on every apply before it moved into the
+    /// worker); the remaining parse is string work, safe to run where
+    /// `AppState` lives. Returns whether the sidebar's window is the active
+    /// tmux window.
+    pub(crate) fn apply_session_refresh(
         &mut self,
         all_panes_output: &str,
+        process_snapshot: Option<ProcessSnapshot>,
         fetched_at: std::time::Instant,
     ) -> bool {
-        let snapshot = tmux::build_session_snapshot(all_panes_output, &self.tmux_pane);
+        let snapshot =
+            tmux::build_session_snapshot_with(all_panes_output, &self.tmux_pane, process_snapshot);
         self.apply_snapshot(snapshot, fetched_at)
     }
 

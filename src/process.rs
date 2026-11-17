@@ -6,7 +6,7 @@ use std::time::Duration;
 use crate::subprocess;
 use crate::tmux::{AGY_BIN, ANTIGRAVITY_AGENT, AgentType, HERMES_AGENT};
 
-/// Deadline for the full-process `ps` scan; it runs on the TUI event loop
+/// Deadline for the full-process `ps` scan; it runs on the snapshot worker
 /// every refresh tick and must never hang there.
 const PS_TIMEOUT: Duration = Duration::from_secs(5);
 
