@@ -9,7 +9,8 @@ use super::options::{
     PANE_LAST_EXIT, PANE_LAUNCH_CWD, PANE_NAME, PANE_PENDING_SESSION_END,
     PANE_PENDING_WORKTREE_REMOVE, PANE_PERMISSION_MODE, PANE_PROMPT, PANE_PROMPT_SOURCE, PANE_ROLE,
     PANE_SESSION_ID, PANE_SESSION_TITLE, PANE_STARTED_AT, PANE_STATUS, PANE_SUBAGENTS,
-    PANE_WAIT_REASON, PANE_WORKTREE_BRANCH, PANE_WORKTREE_NAME, unset_pane_option,
+    PANE_WAIT_REASON, PANE_WORKTREE_BRANCH, PANE_WORKTREE_NAME, PaneOptionWrite,
+    apply_pane_options,
 };
 use super::types::{
     AgentType, CODEX_AGENT, OtherPane, PaneAttention, PaneInfo, PaneStatus, PermissionMode,
@@ -721,9 +722,17 @@ fn clear_agent_pane_state(pane_id: &str) {
         PANE_ATTENTION,
         PANE_STATUS,
     ];
-    for key in KEYS {
-        unset_pane_option(pane_id, key);
-    }
+    // One tmux client process for the whole teardown (audit 2026-11-16
+    // J4): the unsets fire from `parse_pane_fields` on the render thread
+    // while a confirmed-dead pane is parsed, and nineteen sequential
+    // spawns each paid their own round trip there — 19 × per-spawn
+    // latency on the UI thread, with a wedged tmux pushing the ceiling
+    // toward a minute.
+    let writes: Vec<PaneOptionWrite> = KEYS
+        .iter()
+        .map(|key| PaneOptionWrite::Unset { key })
+        .collect();
+    apply_pane_options(pane_id, &writes);
     let log_path = crate::activity::log_file_path(pane_id);
     let _ = std::fs::remove_file(log_path);
 }
