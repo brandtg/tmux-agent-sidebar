@@ -34,7 +34,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 
 const PLUGIN_SRC = fileURLToPath(new URL("./tmux-agent-sidebar.js", import.meta.url));
 
-async function loadPlugin({ panes = "", titles = {} } = {}) {
+async function loadPlugin({ panes = "", titles = {}, failFirstLookups = 0 } = {}) {
   const root = mkdtempSync(join(tmpdir(), "oc-bridge-test-"));
   const deep = join(root, "a", "b", "plugins");
   mkdirSync(deep, { recursive: true });
@@ -66,6 +66,7 @@ fi
   );
   const savedPath = process.env.PATH;
   process.env.PATH = `${bindir}:${savedPath ?? ""}`;
+  let remainingLookupFails = failFirstLookups;
 
   const mod = import(pathToFileURL(join(deep, "tmux-agent-sidebar.js")));
   // Setup's cleanup (set by init) aborts the bus subscription; without it
@@ -90,7 +91,13 @@ fi
           // Server lookup for sessions this instance never saw created:
           // the test harness resolves them to `sessionDirectory` (or 404s)
           // and `titles[sessionID]` when a test needs a known title.
+          // `failFirstLookups` makes the first N lookups throw, simulating
+          // a transient RPC failure right after a daemon restart.
           get: async ({ sessionID }) => {
+            if (remainingLookupFails > 0) {
+              remainingLookupFails -= 1;
+              throw new Error("transient lookup failure");
+            }
             if (!sessionDirectory) throw new Error("not found");
             return {
               id: sessionID,
@@ -674,6 +681,30 @@ test("an unknown session resolving inside the instance directory is adopted", as
     assert.deepEqual(h.events(), [
       "user-prompt-submit " + JSON.stringify({ cwd: "/repo/sub", session_id: "ses_recovered", prompt: "after restart" }),
     ]);
+  } finally {
+    h.dispose();
+  }
+});
+
+// A thrown lookup (service restarting, transient RPC failure) used to be
+// cached as a permanent miss — and since belongsToInstance keeps the
+// pre-gating behavior for unknown sessions, one transient failure
+// default-allowed that session for its whole life. A failed lookup must
+// retry on the next event so attribution eventually lands: the first
+// event rides the pre-gating pass (nothing is cached), the second is
+// finally attributed and dropped.
+test("a transient lookup failure is retried, not cached as a miss", async () => {
+  const h = await loadPlugin({ failFirstLookups: 1 });
+  try {
+    const plugin = await h.init("/repo", undefined, "/elsewhere");
+    await plugin.event({ type: "session.execution.succeeded", data: { sessionID: "ses_foreign" } });
+    await settle(h);
+    const afterFirst = h.events();
+
+    await plugin.event({ type: "session.execution.succeeded", data: { sessionID: "ses_foreign" } });
+    await settle(h);
+
+    assert.deepEqual(h.events(), afterFirst, "the attributed foreign session must be dropped");
   } finally {
     h.dispose();
   }
