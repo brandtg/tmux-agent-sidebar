@@ -6,7 +6,7 @@ ARGS ?=
 part ?=
 
 .DEFAULT_GOAL := build
-.PHONY: build test clippy fmt fmt-check ci check insta-accept bump tag install clean
+.PHONY: build test test-ignored clippy lint-shell fmt fmt-check ci check insta-accept bump tag install clean
 
 build: ## Build the release binary tmux loads (strip + lto)
 	cargo build --release
@@ -14,8 +14,14 @@ build: ## Build the release binary tmux loads (strip + lto)
 test: ## Run the full test suite (pass ARGS="" to filter, e.g. make test ARGS=run_with_timeout)
 	cargo test $(ARGS)
 
-clippy: ## Lint
-	cargo clippy
+clippy: ## Lint with CI's enforcement flags
+	cargo clippy --all-targets -- -D warnings
+
+lint-shell: ## Shellcheck the shell layer (same command CI runs)
+	shellcheck --severity=style hook.sh install-wizard.sh shell-exit.sh tmux-agent-sidebar.tmux scripts/build-assets.sh fixtures/scenarios/common/_lib.sh
+
+test-ignored: ## Run the #[ignore]d tmux integration tests (need a local tmux; isolated via TMUX_TMPDIR)
+	cargo test -- --ignored --test-threads=1
 
 fmt: ## Auto-format all source (run first, before fmt-check)
 	cargo fmt
@@ -23,7 +29,7 @@ fmt: ## Auto-format all source (run first, before fmt-check)
 fmt-check: ## Verify formatting only (what CI runs)
 	cargo fmt --check
 
-ci: fmt-check clippy test ## Run everything CI runs (formatting checked, not auto-fixed)
+ci: fmt-check clippy test lint-shell test-ignored ## Run everything CI runs (website build is CI-only: `cd website && npm ci && npm run build`)
 
 check: ci ## Alias for ci — run all CI checks locally
 

@@ -10,7 +10,7 @@ Method: parallel review of CI, Cargo metadata, the release pipeline, contributor
 docs, test seams, and the docs tree, with every finding re-checked against the
 current bytes before being recorded here.
 
-Status: **not started** — all items below are open.
+Status: **H1 done** — see progress log. H2-H4 open.
 
 ## Why this matters
 
@@ -22,28 +22,28 @@ contributor funnel at all: no CONTRIBUTING.md, no templates, no SECURITY.md.
 
 ## Batch H1 — CI hardening (highest value, mechanical)
 
-- [ ] macOS CI leg. .github/workflows/ci.yml:9 runs a single
+- [x] macOS CI leg. .github/workflows/ci.yml:9 runs a single
       ubuntu-latest job; darwin is a first-class release target (release.yml
       build matrix) and carries macOS-specific behavior (ad-hoc codesign per
       AGENTS.md, xattr strip in install-wizard.sh:77-82, arboard clipboard).
       A `runs-on: macos-latest` job running `cargo test` catches platform
       breakage before a release build does.
-- [ ] Tighten clippy: `cargo clippy --all-targets -- -D warnings`. Current CI
+- [x] Tighten clippy: `cargo clippy --all-targets -- -D warnings`. Current CI
       runs bare `cargo clippy` (ci.yml:14), so warnings never fail the build
       and the ~5.4k lines under tests/ are never linted at all.
-- [ ] Add cargo-audit (or cargo-deny with an advisories section) as a CI step.
+- [x] Add cargo-audit (or cargo-deny with an advisories section) as a CI step.
       Renovate has `:enableVulnerabilityAlerts` (renovate.json:6) but that is
       advisory-only; there is no CI gate and no deny.toml.
-- [ ] Add shellcheck over the shell layer in CI: hook.sh, install-wizard.sh,
+- [x] Add shellcheck over the shell layer in CI: hook.sh, install-wizard.sh,
       shell-exit.sh, tmux-agent-sidebar.tmux, scripts/build-assets.sh,
       fixtures/scenarios/common/_lib.sh. Zero shellcheck hits anywhere in the
       repo today. Expect an initial cleanup pass; add suppresions deliberately
       rather than ignoring the whole file.
-- [ ] Run the two `#[ignore = "requires local tmux"]` integration tests in CI
+- [x] Run the two `#[ignore = "requires local tmux"]` integration tests in CI
       (tests/capture_tests.rs:194-289). They already isolate via TMUX_TMPDIR
       against a throwaway scoped server, which an ubuntu runner can do:
       `cargo test -- --ignored --test-threads=1`.
-- [ ] Website build check on PRs. deploy-website.yml:4-5 deliberately disabled
+- [x] Website build check on PRs. deploy-website.yml:4-5 deliberately disabled
       the push trigger ("the site is disabled for now"), which also means no
       PR validation at all — a change can break the Astro build/`docs` content
       and nothing notices until a manual dispatch. Add a `website: npm run
@@ -117,3 +117,37 @@ contributor funnel at all: no CONTRIBUTING.md, no templates, no SECURITY.md.
 
 - 2026-11-18 — Track created from the post-audit OSS-hygiene review. All
   batches open. Findings re-verified against main @ 566eeae (v1.3.3).
+- 2026-11-18 — Batch H1 complete (worktree h1-ci-hardening). Details:
+  - ci.yml rewritten into six parallel jobs: test (ubuntu; clippy tightened
+    to `--all-targets -- -D warnings`), test-macos (cargo test only — the
+    platform canary), lint-shell (runner's preinstalled shellcheck 0.9.0, no
+    install step), tmux-integration (apt-installs tmux, runs the two ignored
+    capture tests with `-- --ignored --test-threads=1`), website-build
+    (npm ci + astro build on every PR), audit (rustsec/audit-check v2.0.0
+    pinned by SHA). Added a PR concurrency group with cancel-in-progress.
+  - Shellcheck wave was 10 findings, all fixed rather than suppressed except
+    one deliberate disable: SC2162 `read -r` in install-wizard.sh:34;
+    SC2148 `# shellcheck shell=bash` directives on shell-exit.sh and
+    _lib.sh (sourced libraries); SC2317 disable-comment on shell-exit.sh's
+    `return 0 || exit 0` guard (reachable only when executed, not sourced —
+    the line is pinned verbatim by shell_script_tests.rs, so restructuring
+    it would break the test for no behavioral gain); SC2206 quoting of the
+    zsh precmd/preexec array appends in shell-exit.sh:98-99 (array elements
+    are literal hook names, quoting is safe); four SC2155 declare/assign
+    splits in _lib.sh (MAIN_LOG/HERMES_LOG/FOCUSED_LOG exports, painted
+    local).
+  - clippy wave was zero: the crate (including tests/) is already clean
+    under `--all-targets -- -D warnings`; the CI tightening is pure config.
+  - Makefile: clippy target now matches CI's flags; new lint-shell and
+    test-ignored targets; make ci runs all five checks (website build
+    intentionally left out of make ci — separate toolchain, `cd website &&
+    npm ci && npm run build` when touching website/).
+  - Verified locally before commit: make ci green, website build green,
+    shellcheck clean at style severity on all six scripts, 1,787 + 2
+    integration tests passing.
+  - Known first-run risks: the macOS job may surface real platform test
+    failures (that is its purpose — triage in a follow-up); the audit job
+    fails if the lockfile carries any advisory — pre-checked locally with
+    cargo-audit before merge: 0 vulnerabilities, 5 warnings that do not
+    fail the run (unsound: anyhow, lru, rand, rustix; yanked:
+    clipboard-win).

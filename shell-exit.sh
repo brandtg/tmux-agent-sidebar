@@ -1,3 +1,4 @@
+# shellcheck shell=bash
 # tmux-agent-sidebar: shell integration for interactive bash and zsh.
 #
 # When sourced inside tmux, each foreground command is recorded into two
@@ -22,6 +23,7 @@
 # install hooks: the DEBUG trap would spawn a failing tmux write per
 # command. `return` covers sourcing; `exit` covers direct execution.
 if [ -z "${TMUX:-}" ] || [ -z "${TMUX_PANE:-}" ]; then
+  # shellcheck disable=SC2317  # `exit 0` runs only when executed, not sourced
   return 0 2>/dev/null || exit 0
 fi
 
@@ -95,8 +97,8 @@ if [ -n "${ZSH_VERSION:-}" ]; then
     add-zsh-hook precmd _tas_precmd_zsh
     add-zsh-hook preexec _tas_preexec_zsh
   else
-    precmd_functions=(${precmd_functions[@]} _tas_precmd_zsh)
-    preexec_functions=(${preexec_functions[@]} _tas_preexec_zsh)
+    precmd_functions=("${precmd_functions[@]}" _tas_precmd_zsh)
+    preexec_functions=("${preexec_functions[@]}" _tas_preexec_zsh)
   fi
 
   _unlink_marks

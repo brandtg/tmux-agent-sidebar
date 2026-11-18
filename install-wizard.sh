@@ -31,7 +31,7 @@ function finish {
         exit 0
     else
         echo "Something went wrong. Press any key to close this window."
-        read -n 1
+        read -r -n 1
         exit 1
     fi
 }
