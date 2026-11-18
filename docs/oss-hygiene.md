@@ -1,0 +1,119 @@
+# OSS Hygiene Track
+
+Living record for the contributor-experience and project-hygiene work identified
+in the 2026-11-18 review (after the 2026-11-16 audit's bug/jank batches all
+landed). The bug surface is covered by docs/audit-2026-11-16.md; this track is
+everything that makes the adopted project smoother for outside contributors and
+safer to release.
+
+Method: parallel review of CI, Cargo metadata, the release pipeline, contributor
+docs, test seams, and the docs tree, with every finding re-checked against the
+current bytes before being recorded here.
+
+Status: **not started** — all items below are open.
+
+## Why this matters
+
+The project ships four release targets (darwin-aarch64, darwin-x86_64,
+linux-x86_64, linux-aarch64) but CI only ever runs on ubuntu-latest, so macOS
+breakage surfaces at release time, not at PR time. The shell layer — the
+primary fresh-install failure surface — has no linter. And there is no
+contributor funnel at all: no CONTRIBUTING.md, no templates, no SECURITY.md.
+
+## Batch H1 — CI hardening (highest value, mechanical)
+
+- [ ] macOS CI leg. .github/workflows/ci.yml:9 runs a single
+      ubuntu-latest job; darwin is a first-class release target (release.yml
+      build matrix) and carries macOS-specific behavior (ad-hoc codesign per
+      AGENTS.md, xattr strip in install-wizard.sh:77-82, arboard clipboard).
+      A `runs-on: macos-latest` job running `cargo test` catches platform
+      breakage before a release build does.
+- [ ] Tighten clippy: `cargo clippy --all-targets -- -D warnings`. Current CI
+      runs bare `cargo clippy` (ci.yml:14), so warnings never fail the build
+      and the ~5.4k lines under tests/ are never linted at all.
+- [ ] Add cargo-audit (or cargo-deny with an advisories section) as a CI step.
+      Renovate has `:enableVulnerabilityAlerts` (renovate.json:6) but that is
+      advisory-only; there is no CI gate and no deny.toml.
+- [ ] Add shellcheck over the shell layer in CI: hook.sh, install-wizard.sh,
+      shell-exit.sh, tmux-agent-sidebar.tmux, scripts/build-assets.sh,
+      fixtures/scenarios/common/_lib.sh. Zero shellcheck hits anywhere in the
+      repo today. Expect an initial cleanup pass; add suppresions deliberately
+      rather than ignoring the whole file.
+- [ ] Run the two `#[ignore = "requires local tmux"]` integration tests in CI
+      (tests/capture_tests.rs:194-289). They already isolate via TMUX_TMPDIR
+      against a throwaway scoped server, which an ubuntu runner can do:
+      `cargo test -- --ignored --test-threads=1`.
+- [ ] Website build check on PRs. deploy-website.yml:4-5 deliberately disabled
+      the push trigger ("the site is disabled for now"), which also means no
+      PR validation at all — a change can break the Astro build/`docs` content
+      and nothing notices until a manual dispatch. Add a `website: npm run
+      build` job to CI.
+
+## Batch H2 — Contributor funnel
+
+- [ ] CONTRIBUTING.md. Missing entirely (repo-wide grep: zero hits). Should
+      cover: build/test commands (cargo test / clippy / fmt, the node bridge
+      suite `node --test .opencode/plugins/tmux-agent-sidebar.test.mjs`),
+      `make ci`, the `#[ignore]`d tmux integration tests and how to run them,
+      the debug-vs-deployed checkout rules from AGENTS.md (condensed), and the
+      `cargo fmt` before every commit rule.
+- [ ] Issue + PR templates (.github/ISSUE_TEMPLATE, PULL_REQUEST_TEMPLATE).
+      Useful prompts: tmux version (`tmux -V`), OS, agent(s) in use, terminal —
+      the plugin's behavior genuinely differs across tmux 3.2/3.3/3.8.
+- [ ] SECURITY.md with a private-contact route.
+- [ ] CHANGELOG policy. Release notes are commit-list style only
+      (release.yml:270, `git log --pretty=format:"- %s"`); there is no
+      in-repo CHANGELOG.md. Either adopt one or document the Releases-only
+      policy in CONTRIBUTING.md so nobody invents a competing convention.
+- [ ] README Development section (README.md:86-99): add `make ci`, the bridge
+      node suite, and the ignored integration tests.
+
+## Batch H3 — Metadata and small correctness
+
+- [ ] `rust-version` in Cargo.toml. Edition 2024 implies rustc >= 1.85 but
+      nothing pins it; the install wizard's build-from-source path surfaces a
+      confusing rustc error on older toolchains. Consider rust-toolchain.toml
+      alongside it (pinning vs floor is a one-line policy decision).
+- [ ] .claude-plugin/plugin.json:4 description still reads "Monitor Claude
+      Code agents across tmux panes" while the plugin tracks five agents
+      (README.md:3, 9). A `fix-plugin-description` branch existed; it never
+      landed here. Align the wording.
+- [ ] .gitignore: lines 5 and 9 both list `*.pending-snap` (line 5 predates
+      the explanatory comment block). Drop the stray line 5. Also
+      `.opencode/worktrees` appears at both line 14 (bare) and line 22 (with
+      comment) — keep the commented one.
+- [ ] Delete the stray `default` tmux socket file at the repo root (untracked,
+      dated Oct 26 — residue of an earlier scoped-server test that didn't use
+      a private TMUX_TMPDIR). Nothing should ever write a socket into the
+      source tree; worth a one-line note in the scoped-server testing section
+      of CONTRIBUTING.md.
+- [ ] Optional, cosmetic only: `keywords`/`categories` in Cargo.toml (only
+      relevant if crates.io publishing is ever intended), .editorconfig.
+
+## Batch H4 — Testing seams (start after H1)
+
+- [ ] hook.sh end-to-end test: pipe a representative JSON payload per agent
+      through hook.sh into the CLI and assert the pane-option writes. Today
+      hook.sh is only indirectly covered (plugin_hooks_tests.rs:83-88 pins the
+      quoting of its command line; no test executes it with a payload).
+- [ ] Consider reusing fixtures/scenarios/common/_lib.sh's `start_sidebar`
+      helper (fixtures/scenarios/common/_lib.sh:24) for a real TUI smoke test
+      against a scoped server. The helper already exists for capture
+      generation; nothing in the test suite reuses it.
+
+## Explicitly not doing
+
+- Dependency freshness work: deps are exact-pinned (Cargo.toml:15-28) with
+  Renovate pin-range + automerge (renovate.json:8-31) and Cargo.lock is
+  committed. Deliberate and maintained — leave it.
+- Binary signing/notarization for macOS releases: install-wizard.sh:77-82
+  already strips quarantine and ad-hoc signs. Real signing needs an Apple
+  Developer identity and CI secrets — a maintainers' decision, not hygiene.
+- Moving docs/: the dated audit/handoff files are internal working notes; the
+  user-facing docs live in website/src/content/docs. Splitting them is churn
+  without a payoff; if the repo grows more internal docs, revisit.
+
+## Progress log
+
+- 2026-11-18 — Track created from the post-audit OSS-hygiene review. All
+  batches open. Findings re-verified against main @ 566eeae (v1.3.3).
