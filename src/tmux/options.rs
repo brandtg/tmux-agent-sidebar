@@ -215,11 +215,21 @@ pub const SIDEBAR_POPUP_MAX_WIDTH: &str = "@sidebar_popup_max_width";
 /// Whether the `maintain-width` hook may auto-hide a split-pane sidebar
 /// when its window shrinks below [`SIDEBAR_POPUP_MAX_WIDTH`] (`on` /
 /// `off`, default `on` via agent-sidebar.conf seeding). The hide is
-/// stateless and per-window: the crossing window's own sidebar closes
-/// (its saved layout replays), and nothing records which windows were
-/// hidden. Read by the `maintain-width` subcommand; empty is treated as
-/// `on`.
+/// per-window: the crossing window's own sidebar closes (its saved
+/// layout replays) and the close is recorded on the window via
+/// [`SIDEBAR_AUTO_HIDDEN`], so the same hook can restore the sidebar
+/// when a wide viewport drives the window again. Read by the
+/// `maintain-width` subcommand; empty is treated as `on`.
 pub const SIDEBAR_AUTO_HIDE: &str = "@sidebar_auto_hide";
+/// Window-scoped marker written by the `maintain-width` auto-hide after
+/// it closes a window's sidebar (`1`), and cleared (unset) by every
+/// other sidebar close path — the manual toggle, the `toggle-all` sweep,
+/// the popup view's session sweep, and the duplicate collapse. The
+/// restore direction of `maintain-width` reopens the window's split
+/// sidebar only while this marker is set, so an auto-hide is undone
+/// exactly once, by a wide viewport driving the window again, and a
+/// manual close or a `toggle-all` sweep is never second-guessed.
+pub const SIDEBAR_AUTO_HIDDEN: &str = "@sidebar_auto_hidden";
 /// Window-scoped `#{window_layout}` snapshot taken immediately before the
 /// sidebar split is created. The close paths replay it with
 /// `select-layout` so every pane returns to its pre-sidebar geometry —

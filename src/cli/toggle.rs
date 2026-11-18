@@ -112,6 +112,35 @@ pub(crate) fn cmd_toggle(args: &[String]) -> i32 {
         return open_popup(window_id, pane_path);
     }
 
+    open_split_sidebar(
+        window_id,
+        pane_path,
+        sidebar_position,
+        &sidebar_width,
+        window_width,
+    )
+}
+
+/// Create a window's split-pane sidebar: the shared open path for the
+/// `toggle` command and the `maintain-width` restore. Resolves the
+/// target pane from the current geometry, snapshots the pre-sidebar
+/// layout so the close path can replay it, records the width before the
+/// split (so the maintain-width hook the split fires sees last ==
+/// current and cannot insta-hide the pane just created), role-tags and
+/// dedupes the new pane, and puts focus back.
+fn open_split_sidebar(
+    window_id: &str,
+    pane_path: &str,
+    sidebar_position: SidebarPosition,
+    sidebar_width: &str,
+    window_width: u32,
+) -> i32 {
+    // A (re)open consumes any auto-hide marker on the window: the
+    // maintain-width restore calls this to complete its own inverse, and
+    // a manual open must not leave a marker a later upward crossing
+    // could act on.
+    clear_auto_hidden_marker(window_id);
+
     let pane_geometry_output = tmux::run_tmux(&[
         "list-panes",
         "-t",
@@ -151,7 +180,7 @@ pub(crate) fn cmd_toggle(args: &[String]) -> i32 {
         "split-window",
         split_flags,
         "-l",
-        &sidebar_width,
+        sidebar_width,
         "-t",
         &target_pane,
         "-c",
@@ -209,6 +238,40 @@ fn find_window_sidebar(window_id: &str) -> Option<String> {
 fn close_sidebar(sidebar_pane: &str, window_id: &str) {
     let _ = tmux::run_tmux(&["kill-pane", "-t", sidebar_pane]);
     restore_window_layout(window_id);
+    // Whatever closed this sidebar — the manual toggle, the toggle-all
+    // sweep, the popup view's session sweep, the duplicate collapse —
+    // the auto-hide restore must not second-guess it. The maintain-width
+    // hide re-writes the marker right after its own close call, so this
+    // clear makes the hide the only path that leaves one behind.
+    clear_auto_hidden_marker(window_id);
+}
+
+/// Write the auto-hide marker on `window_id`: its last sidebar close was
+/// the maintain-width auto-hide, so the same hook's restore direction
+/// may reopen the split once a wide viewport drives the window again.
+fn set_auto_hidden_marker(window_id: &str) {
+    let _ = tmux::set_window_option(window_id, tmux::SIDEBAR_AUTO_HIDDEN, "1");
+}
+
+/// Remove the auto-hide marker (unset, matching how the saved-layout
+/// snapshot is cleared).
+fn clear_auto_hidden_marker(window_id: &str) {
+    let _ = tmux::run_tmux(&[
+        "set",
+        "-wu",
+        "-t",
+        window_id,
+        "--",
+        tmux::SIDEBAR_AUTO_HIDDEN,
+    ]);
+}
+
+/// Whether `window_id`'s last sidebar close was the maintain-width
+/// auto-hide (marker present).
+fn auto_hidden_marker_set(window_id: &str) -> bool {
+    tmux::display_message(window_id, &format!("#{{{}}}", tmux::SIDEBAR_AUTO_HIDDEN))
+        .trim()
+        .eq("1")
 }
 
 /// Store the window's current `#{window_layout}` in a window option so
@@ -507,20 +570,26 @@ fn dedupe_window_sidebars() {
 
 // ─── maintain-width (auto-hide a split sidebar on a shrink) ─────────
 
-/// Auto-hide entry point (`maintain-width <window_id> [client_width]`),
-/// wired to the tmux `window-layout-changed`, `client-resized`,
-/// `client-session-changed`, and `after-select-window` hooks. Responsive
-/// behavior, media-query style: the layout is a pure function of the
-/// current viewport. When a window with a split-pane sidebar shrinks
-/// below the popup threshold — a phone client attached, or an existing
-/// small client shrank the window — the split pane would degenerate
-/// into a sliver, so the window's own sidebar closes (its saved layout
-/// replays via the normal close path). No session state, no markers, no
-/// restore waves: a window that grows back simply has no sidebar until
-/// the user opens one (the toggle/summon keys, or auto-create for new
-/// windows). Deliberately cheap and idempotent under multi-hook double
-/// fires: concurrent instances read the same width and close the same
-/// pane, and the second kill/restore is a no-op.
+/// Auto-hide/restore entry point (`maintain-width <window_id>
+/// [client_width]`), wired to the tmux `window-layout-changed`,
+/// `client-resized`, `client-session-changed`, and `after-select-window`
+/// hooks. Responsive behavior, media-query style: sidebar visibility is
+/// a pure function of the viewport currently driving the window. When a
+/// window with a split-pane sidebar shrinks below the popup threshold —
+/// a phone client attached, or an existing small client shrank the
+/// window — the split pane would degenerate into a sliver, so the
+/// window's own sidebar closes (its saved layout replays via the normal
+/// close path) and the window is marked `@sidebar_auto_hidden`. The
+/// mirror direction undoes exactly that: a marked window whose viewport
+/// is wide again — an upward threshold crossing, or an at/above-
+/// threshold client selecting the window — reopens its split sidebar
+/// through the normal create path and clears the mark. Manual closes
+/// and the toggle-all sweep clear the mark, so only an auto-hide is
+/// ever restored. Per-window state only (one boolean option), and both
+/// directions are deliberately cheap and idempotent under multi-hook
+/// double fires: concurrent instances read the same width and close the
+/// same pane (the second kill/restore is a no-op), and the crossing
+/// rules debounce every event that does not actually cross.
 ///
 /// The optional `client_width` argument is `#{client_width}` forwarded
 /// by the hook — the terminal width of the client that drove the event
@@ -582,14 +651,64 @@ pub(crate) fn cmd_maintain_width(args: &[String]) -> i32 {
         // than the popup threshold drove this event (a phone attached,
         // switched to this window, or resized), or the window itself
         // just crossed the threshold downward. The close replays the
-        // saved pre-sidebar layout; the user brings the sidebar back
-        // with the normal toggle/summon keys when a wide viewport is
-        // driving the window again.
+        // saved pre-sidebar layout; the restore direction below brings
+        // the sidebar back when a wide viewport drives the window
+        // again.
         close_sidebar(
             &sidebar_pane.expect("checked by both hide predicates"),
             window_id,
         );
+        // Record that this close was the auto-hide's doing so the
+        // restore direction can undo it exactly once. `close_sidebar`
+        // clears the marker (every close path does); this re-write makes
+        // the hide the only path that leaves one behind.
+        set_auto_hidden_marker(window_id);
         return 0;
+    }
+
+    // Restore direction, the mirror image of the hide above: a window
+    // whose last sidebar close was the auto-hide reopens its split
+    // sidebar once a wide viewport is driving it again — the window
+    // regrew past the threshold (an upward crossing: the phone went
+    // away and the desktop client became the latest one), or an
+    // at/above-threshold client selected the window (the direct inverse
+    // of the narrow-client hide, for windows that stayed wide while
+    // hidden). The marker keeps the restore from second-guessing manual
+    // closes and toggle-all sweeps, and every close path clears it, so
+    // each auto-hide is undone at most once.
+    if sidebar_pane.is_none()
+        && auto_hide_enabled(&auto_hide)
+        && should_restore_sidebar(
+            auto_hidden_marker_set(window_id),
+            last_width,
+            current_width,
+            threshold,
+            client_width,
+            sidebar_pane.is_some(),
+        )
+    {
+        let pane_path = tmux::display_message(window_id, "#{pane_current_path}");
+        let probe = tmux::display_message(
+            window_id,
+            "#{@sidebar_width}|#{@sidebar_width_max}|#{@sidebar_position}",
+        );
+        let mut settings = probe.splitn(3, '|');
+        let width_setting = settings.next().unwrap_or("").to_string();
+        let width_max = settings.next().unwrap_or("").to_string();
+        let sidebar_position = SidebarPosition::from_setting(settings.next().unwrap_or(""));
+        let sidebar_width =
+            sidebar_width_cells_with(window_id, &width_setting, &width_max, current_width);
+        return open_split_sidebar(
+            window_id,
+            if pane_path.is_empty() {
+                "~"
+            } else {
+                &pane_path
+            },
+            sidebar_position,
+            &sidebar_width,
+            current_width,
+        );
     }
 
     // A window that gained columns while a sidebar was open: tmux grows
@@ -675,6 +794,43 @@ fn should_hide_for_narrow_client(
         }
         None => false,
     }
+}
+
+/// Pure decision core for the restore direction: the window's last
+/// sidebar close was the auto-hide (`marker_set`) and a wide viewport is
+/// driving it again, so the split sidebar should come back. Two
+/// triggers, mirroring the hide direction: an *upward* crossing of the
+/// threshold (the window regrew after the narrow client went away —
+/// the crossing record debounces the hook exactly as on the hide side),
+/// or an at/above-threshold *client* driving the window (an attach or
+/// window switch onto a window that stayed wide while hidden — no
+/// crossing is ever recorded in that shape).
+///
+/// The window itself must be at least `threshold` wide (under
+/// `window-size smallest` a wide client can drive a narrow window; the
+/// split would degenerate immediately), a sidebar must not already
+/// exist, and a zero threshold or zero current width (disabled popup
+/// mode, failed query) suppresses the restore.
+fn should_restore_sidebar(
+    marker_set: bool,
+    last_width: Option<u32>,
+    current: u32,
+    threshold: u32,
+    client_width: Option<u32>,
+    has_sidebar: bool,
+) -> bool {
+    if !marker_set || has_sidebar || threshold == 0 || current < threshold {
+        return false;
+    }
+    let upward_crossing = match last_width {
+        Some(last) => last < threshold,
+        None => false,
+    };
+    let wide_client = match client_width {
+        Some(client_width) => client_width > 0 && client_width >= threshold,
+        None => false,
+    };
+    upward_crossing || wide_client
 }
 
 /// Store `width` in the window-scoped [`SIDEBAR_LAST_WINDOW_WIDTH`]
@@ -1755,6 +1911,128 @@ mod tests {
         assert!(!auto_hide_enabled("off"));
         assert!(!auto_hide_enabled("0"));
         assert!(!auto_hide_enabled("garbage"));
+    }
+
+    // ─── auto-hide restore direction ─────────────────────────────────
+
+    #[test]
+    fn restore_fires_on_upward_crossing_with_marker() {
+        // The window regrew past the threshold (the phone went away and
+        // the desktop client became the latest one) after an auto-hide.
+        assert!(should_restore_sidebar(
+            true,
+            Some(80),
+            120,
+            100,
+            None,
+            false
+        ));
+    }
+
+    #[test]
+    fn restore_needs_the_marker() {
+        // A manual close or toggle-all sweep left no marker: never
+        // second-guessed.
+        assert!(!should_restore_sidebar(
+            false,
+            Some(80),
+            120,
+            100,
+            None,
+            false
+        ));
+    }
+
+    #[test]
+    fn restore_fires_for_a_wide_client_without_a_crossing() {
+        // No crossing memory at all, but a desktop client selected the
+        // window — the direct inverse of the narrow-client hide, for
+        // windows that stayed wide while hidden.
+        assert!(should_restore_sidebar(
+            true,
+            None,
+            120,
+            100,
+            Some(180),
+            false
+        ));
+        // Crossing memory pointing the wrong way (the window was
+        // already wide when last observed, so no crossing) still allows
+        // the wide-client trigger.
+        assert!(should_restore_sidebar(
+            true,
+            Some(150),
+            120,
+            100,
+            Some(180),
+            false
+        ));
+    }
+
+    #[test]
+    fn restore_ignores_narrow_clients_and_narrow_windows() {
+        // A phone client still driving: no restore.
+        assert!(!should_restore_sidebar(
+            true,
+            None,
+            120,
+            100,
+            Some(60),
+            false
+        ));
+        // The window itself is still narrow (window-size smallest with
+        // the phone attached): the split would degenerate immediately.
+        assert!(!should_restore_sidebar(
+            true,
+            Some(80),
+            90,
+            100,
+            Some(180),
+            false
+        ));
+    }
+
+    #[test]
+    fn restore_skips_without_a_trigger() {
+        // Server-side churn while the window is wide, no client context,
+        // no crossing recorded.
+        assert!(!should_restore_sidebar(true, None, 120, 100, None, false));
+        // Not an upward crossing (the window was already wide).
+        assert!(!should_restore_sidebar(
+            true,
+            Some(150),
+            120,
+            100,
+            None,
+            false
+        ));
+        // A zero-width client is a failed query, not a signal.
+        assert!(!should_restore_sidebar(
+            true,
+            None,
+            120,
+            100,
+            Some(0),
+            false
+        ));
+    }
+
+    #[test]
+    fn restore_requires_no_existing_sidebar() {
+        assert!(!should_restore_sidebar(
+            true,
+            Some(80),
+            120,
+            100,
+            None,
+            true
+        ));
+    }
+
+    #[test]
+    fn restore_suppressed_on_zero_threshold_or_width() {
+        assert!(!should_restore_sidebar(true, Some(80), 120, 0, None, false));
+        assert!(!should_restore_sidebar(true, Some(80), 0, 100, None, false));
     }
 
     // ─── responsive auto-hide is stateless ───────────────────────────
