@@ -58,7 +58,10 @@ tmux -L my-scratch kill-server              # scoped cleanup, flag always requir
 ```
 
 Never `pkill`/`killall` on patterns that could match a live tmux server or
-sidebar process.
+sidebar process. And never let a test create a socket in the source tree —
+tmux resolves sockets relative to `$TMUX_TMPDIR`, so a bare `tmux` call from
+a repo checkout can drop a `default` socket file right into it (this has
+happened once; it was cleaned up in the same change that added this note).
 
 ## Shell changes
 

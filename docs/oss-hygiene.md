@@ -10,7 +10,7 @@ Method: parallel review of CI, Cargo metadata, the release pipeline, contributor
 docs, test seams, and the docs tree, with every finding re-checked against the
 current bytes before being recorded here.
 
-Status: **H1, H2 done** — see progress log. H3-H4 open.
+Status: **H1, H2, H3 done** — see progress log. H4 open.
 
 ## Why this matters
 
@@ -70,25 +70,23 @@ contributor funnel at all: no CONTRIBUTING.md, no templates, no SECURITY.md.
 
 ## Batch H3 — Metadata and small correctness
 
-- [ ] `rust-version` in Cargo.toml. Edition 2024 implies rustc >= 1.85 but
+- [x] `rust-version` in Cargo.toml. Edition 2024 implies rustc >= 1.85 but
       nothing pins it; the install wizard's build-from-source path surfaces a
       confusing rustc error on older toolchains. Consider rust-toolchain.toml
       alongside it (pinning vs floor is a one-line policy decision).
-- [ ] .claude-plugin/plugin.json:4 description still reads "Monitor Claude
+- [x] .claude-plugin/plugin.json:4 description still reads "Monitor Claude
       Code agents across tmux panes" while the plugin tracks five agents
       (README.md:3, 9). A `fix-plugin-description` branch existed; it never
       landed here. Align the wording.
-- [ ] .gitignore: lines 5 and 9 both list `*.pending-snap` (line 5 predates
+- [x] .gitignore: lines 5 and 9 both list `*.pending-snap` (line 5 predates
       the explanatory comment block). Drop the stray line 5. Also
       `.opencode/worktrees` appears at both line 14 (bare) and line 22 (with
       comment) — keep the commented one.
-- [ ] Delete the stray `default` tmux socket file at the repo root (untracked,
+- [x] Delete the stray `default` tmux socket file at the repo root (untracked,
       dated Oct 26 — residue of an earlier scoped-server test that didn't use
       a private TMUX_TMPDIR). Nothing should ever write a socket into the
       source tree; worth a one-line note in the scoped-server testing section
       of CONTRIBUTING.md.
-- [ ] Optional, cosmetic only: `keywords`/`categories` in Cargo.toml (only
-      relevant if crates.io publishing is ever intended), .editorconfig.
 
 ## Batch H4 — Testing seams (start after H1)
 
@@ -102,6 +100,11 @@ contributor funnel at all: no CONTRIBUTING.md, no templates, no SECURITY.md.
       generation; nothing in the test suite reuses it.
 
 ## Explicitly not doing
+
+- Cargo.toml `keywords`/`categories` and .editorconfig (H3's optional
+  cosmetics): keywords/categories only matter for crates.io publishing,
+  which is not a plan; .editorconfig is one more config file with no
+  observed disagreement to settle. Revisit if either becomes relevant.
 
 - Dependency freshness work: deps are exact-pinned (Cargo.toml:15-28) with
   Renovate pin-range + automerge (renovate.json:8-31) and Cargo.lock is
@@ -171,3 +174,17 @@ contributor funnel at all: no CONTRIBUTING.md, no templates, no SECURITY.md.
     suite) with a pointer to CONTRIBUTING.md.
   - Templates validated: all three issue YAMLs parse (js-yaml); make ci
     green (1,789 passing incl. integration tests).
+- 2026-11-18 — Batch H3 complete (worktree h3-metadata). Details:
+  - Cargo.toml gains `rust-version = "1.85"` (the edition-2024 floor;
+    declared as a floor, not a pin — no rust-toolchain.toml, contributors
+    keep their own toolchains).
+  - plugin.json description updated to name all five agents, echoing the
+    README's phrasing, with the original-author credit kept.
+  - .gitignore: dropped the duplicate `*.pending-snap` (the pre-comment
+    occurrence) and the bare `.opencode/worktrees` (the commented
+    `.opencode/worktrees/` stays).
+  - Deleted the stray `default` socket from the repo root after verifying
+    no server was bound to it (`tmux -S <path> ls` → "no server running");
+    CONTRIBUTING.md's tmux-safety section now warns about sockets landing
+    in the source tree via unscoped tmux calls.
+  - make ci green after the Cargo.toml change.
