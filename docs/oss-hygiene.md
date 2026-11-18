@@ -10,7 +10,7 @@ Method: parallel review of CI, Cargo metadata, the release pipeline, contributor
 docs, test seams, and the docs tree, with every finding re-checked against the
 current bytes before being recorded here.
 
-Status: **H1 done** — see progress log. H2-H4 open.
+Status: **H1, H2 done** — see progress log. H3-H4 open.
 
 ## Why this matters
 
@@ -51,21 +51,21 @@ contributor funnel at all: no CONTRIBUTING.md, no templates, no SECURITY.md.
 
 ## Batch H2 — Contributor funnel
 
-- [ ] CONTRIBUTING.md. Missing entirely (repo-wide grep: zero hits). Should
+- [x] CONTRIBUTING.md. Should
       cover: build/test commands (cargo test / clippy / fmt, the node bridge
       suite `node --test .opencode/plugins/tmux-agent-sidebar.test.mjs`),
       `make ci`, the `#[ignore]`d tmux integration tests and how to run them,
       the debug-vs-deployed checkout rules from AGENTS.md (condensed), and the
       `cargo fmt` before every commit rule.
-- [ ] Issue + PR templates (.github/ISSUE_TEMPLATE, PULL_REQUEST_TEMPLATE).
+- [x] Issue + PR templates (.github/ISSUE_TEMPLATE, PULL_REQUEST_TEMPLATE).
       Useful prompts: tmux version (`tmux -V`), OS, agent(s) in use, terminal —
       the plugin's behavior genuinely differs across tmux 3.2/3.3/3.8.
-- [ ] SECURITY.md with a private-contact route.
-- [ ] CHANGELOG policy. Release notes are commit-list style only
+- [x] SECURITY.md with a private-contact route.
+- [x] CHANGELOG policy. Release notes are commit-list style only
       (release.yml:270, `git log --pretty=format:"- %s"`); there is no
       in-repo CHANGELOG.md. Either adopt one or document the Releases-only
       policy in CONTRIBUTING.md so nobody invents a competing convention.
-- [ ] README Development section (README.md:86-99): add `make ci`, the bridge
+- [x] README Development section (README.md:86-99): add `make ci`, the bridge
       node suite, and the ignored integration tests.
 
 ## Batch H3 — Metadata and small correctness
@@ -151,3 +151,23 @@ contributor funnel at all: no CONTRIBUTING.md, no templates, no SECURITY.md.
     cargo-audit before merge: 0 vulnerabilities, 5 warnings that do not
     fail the run (unsound: anyhow, lru, rand, rustix; yanked:
     clipboard-win).
+- 2026-11-18 — Batch H2 complete (worktree h2-contributor-funnel). Details:
+  - CONTRIBUTING.md: prereqs, the make target table (including lint-shell
+    and test-ignored), the bridge Node suite, CI's six jobs, UI-snapshot
+    testing rules, the scoped-tmux-server hard rule, shell-change rules,
+    conventional-commit style with the release-notes-from-subjects policy
+    (the changelog decision), a condensed test-your-build section pointing
+    at AGENTS.md for the full playbook, and the English-docs guideline.
+  - Issue templates as GitHub forms: bug_report.yml (sidebar version,
+    tmux -V, OS dropdown, agent multi-select, terminal, repro steps, debug
+    trace pointer), feature_request.yml (problem/proposal/alternatives +
+    tmux version), config.yml with blank issues disabled. PR template with
+    a how-tested checklist mirroring make ci.
+  - SECURITY.md: supported line (latest 1.3.x), GitHub private vulnerability
+    reporting as the channel, and a scope note listing the standing
+    invariants (argv vectors everywhere, hardened log opens) so reports can
+    target the right classes.
+  - README Development section expanded (make ci, integration tests, bridge
+    suite) with a pointer to CONTRIBUTING.md.
+  - Templates validated: all three issue YAMLs parse (js-yaml); make ci
+    green (1,789 passing incl. integration tests).

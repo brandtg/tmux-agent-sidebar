@@ -1,0 +1,33 @@
+name: Feature request
+description: An idea for the sidebar
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What are you trying to do, and what gets in the way today?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behavior
+      description: What it would look like from the keyboard/UI. Mockups or sketches welcome.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives and workarounds
+      description: Anything you do today to get by, and any tmux-native approaches considered.
+    validations:
+      required: false
+  - type: input
+    id: tmux-version
+    attributes:
+      label: tmux version
+      description: Output of `tmux -V` — newer tmux (3.8+) unlocks options a feature could use
+      placeholder: tmux 3.8
+    validations:
+      required: false
