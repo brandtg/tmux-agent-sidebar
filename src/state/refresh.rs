@@ -238,7 +238,14 @@ impl AppState {
             self.mark_window_finished_seen(&pane_id);
         }
 
-        let seen_pane_id = if self.popup_mode {
+        // Floating mode (tmux 3.8+): `TMUX_PANE` is the float itself, so
+        // the seen pane is the window's focused pane (see
+        // mark_window_finished_seen's popup note). Popup mode pins
+        // `TMUX_PANE` to the window's active pane — the pane the user
+        // works in while the popup is up.
+        let seen_pane_id = if self.floating_mode {
+            self.focus_state.focused_pane_id.clone()
+        } else if self.popup_mode {
             Some(self.tmux_pane.clone())
         } else if self.focus_state.window_active && !self.focus_state.sidebar_focused {
             self.focus_state.focused_pane_id.clone()
@@ -445,7 +452,13 @@ impl AppState {
         // flashing no matter how long the user works in the agent pane.
         // The pinned pane is still "where the user is": treat it as the
         // seen pane, with the same grace rules as a focused split pane.
-        let seen_pane_id = if self.popup_mode {
+        // Floating mode (tmux 3.8+) has real own-pane semantics inverted:
+        // `TMUX_PANE` is the float itself, so the pane the user works in
+        // is the window's focused pane — resolved directly, since the
+        // forced `sidebar_focused` flag would otherwise skip it.
+        let seen_pane_id = if self.floating_mode {
+            self.focus_state.focused_pane_id.clone()
+        } else if self.popup_mode {
             Some(self.tmux_pane.clone())
         } else {
             if self.focus_state.sidebar_focused {

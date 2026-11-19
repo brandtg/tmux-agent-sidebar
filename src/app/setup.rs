@@ -15,9 +15,12 @@ pub(super) fn init_state(tmux_pane: String) -> AppState {
     state.theme = ui::colors::ColorTheme::from_tmux();
     state.icons = ui::icons::StatusIcons::from_tmux();
     // The `toggle` subcommand launches the sidebar inside a tmux popup on
-    // narrow (mobile) viewports with `SIDEBAR_POPUP=1`. Popup mode forces
-    // window-active/focused semantics so the compact viewport stays readable.
-    state.popup_mode = std::env::var("SIDEBAR_POPUP").as_deref() == Ok("1");
+    // narrow viewports below tmux 3.8 (`SIDEBAR_POPUP=1`) or as a floating
+    // pane on 3.8+ (`SIDEBAR_FLOAT=1`). Both hosts force window-active/
+    // focused semantics so the compact viewport stays readable.
+    let floating = std::env::var("SIDEBAR_FLOAT").as_deref() == Ok("1");
+    state.floating_mode = floating;
+    state.popup_mode = floating || std::env::var("SIDEBAR_POPUP").as_deref() == Ok("1");
     state.global.load_from_tmux();
     // Landing defaults (`@sidebar_default_*`) apply only to values no
     // live tmux option carries yet; see GlobalState::apply_default_view.

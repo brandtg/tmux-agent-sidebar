@@ -212,6 +212,13 @@ pub const SIDEBAR_TODO_SCOPE: &str = "@sidebar_todo_scope";
 /// popup instead of a split pane (mobile viewports). `0` disables the
 /// popup path entirely. Read by the `toggle` subcommand.
 pub const SIDEBAR_POPUP_MAX_WIDTH: &str = "@sidebar_popup_max_width";
+/// Explicit opt-in for hosting the narrow-viewport sidebar in a tmux 3.8
+/// floating pane instead of a popup (`on` / `off`, default `off`). Off
+/// because tmux 3.8 crashes the whole server intermittently under the
+/// exact traffic a sidebar generates (alternate-screen entry in the
+/// float, window resize under a float) — see docs/tmux-3.8.md. Read by
+/// the `toggle` subcommand; anything but `on` keeps the popup host.
+pub const SIDEBAR_FLOAT_HOST: &str = "@sidebar_float_host";
 /// Whether the `maintain-width` hook may auto-hide a split-pane sidebar
 /// when its window shrinks below [`SIDEBAR_POPUP_MAX_WIDTH`] (`on` /
 /// `off`, default `on` via agent-sidebar.conf seeding). The hide is

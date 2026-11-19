@@ -7,10 +7,13 @@ machine already runs 3.8, so this work can be developed and verified locally.
 Origin: 2026-11-18 review of the 3.8 CHANGES against the codebase's tmux
 integration inventory. Every claim below was checked against current source.
 
-Status: **T0 spike complete (2026-11-18)** — findings recorded below; T1 is the
-next batch. All spike facts were measured on tmux 3.8 in a scoped
-`tmux -L tas38-probe` server (`-f /dev/null`, kill-server in an EXIT trap),
-per the HARD RULE in AGENTS.md. Backwards compatibility is verified by the
+Status: **T0 spike complete; T1 anchor fix shipped; floating host blocked on
+an upstream tmux 3.8 crash (2026-11-18)** — see "tmux 3.8 upstream blocker"
+below. All spike facts were measured on tmux 3.8 in scoped servers
+(`-f /dev/null`, kill-server in an EXIT trap), per the HARD RULE in
+AGENTS.md — with the lesson that single-run probes lie: the T0
+TUI-in-float success was a lucky survivor, and only multi-run probing
+exposed the ~50% server crash. Backwards compatibility is verified by the
 version matrix (below): the plugin itself passes on tmux 3.0a-3.7c, and
 tmux-behavior facts are probed per version. Raw probe scripts and artifacts:
 /tmp/opencode/tas38/ (not committed).
@@ -98,6 +101,11 @@ Findings, per original question:
   the alternate screen, default `capture-pane -p` reads the DISPLAYED grid
   (the TUI), while `-a` reads the hidden base grid (blank). Do not use `-a`
   to verify TUI frames.
+- CORRECTION (T1 probes): the TUI-in-float verification above ran ONCE and
+  got lucky. Systematic reruns show tmux 3.8 crashes the whole server
+  intermittently under exactly this traffic — see "tmux 3.8 upstream
+  blocker" below. The T1 thesis (floating host replaces the popup) is
+  blocked until upstream ships a fixed release.
 
 ### OSC 133 hooks
 
@@ -199,13 +207,49 @@ Findings from getting there — each one a genuine cross-version fact:
   toggles must either expect that sidebar or disable @sidebar_auto_create
   first (the probe disables it).
 
+### tmux 3.8 upstream blocker (T1)
+
+tmux 3.8 (Fedora tmux-3.8-2, vanilla release) intermittently crashes the
+whole server — every session, every window — under two reproducible
+triggers involving floating panes. Measured on scoped servers
+(`/usr/bin/tmux -L`, `-f /dev/null`), 2026-11-18:
+
+- A program entering the alternate screen inside a floating pane:
+  3/6 runs crashed (plain-text output into the same float: 0 crashes).
+- `resize-window` while a floating pane exists in the window — no TUI,
+  no output, just a `sleep` float: 2/4 runs crashed.
+- The sidebar TUI in a floating pane: 2/3 runs crashed (the one T0
+  success was a single lucky run; its conclusion above is corrected).
+- Trigger is a race, not geometry: both crash on wide and narrow
+  windows, at creation time or within ~250ms.
+
+Failure mode is `server exited unexpectedly` — a full server SIGSEGV,
+losing every session. Upstream has a history of floating-pane crashes
+(issue #4800 tracked several; 3.8 shipped "unzoom before creating
+floating panes to avoid a crash") but no existing report matches these
+triggers.
+
+Exposure analysis for this plugin:
+
+- The plugin never calls `resize-window` and (with the float host off)
+  never creates floating panes, so default installs do not trigger the
+  crash through the plugin.
+- A user who manually floats a pane (3.8 ships keybindings for it) and
+  runs any full-screen TUI in it hits the alt-screen crash with ~50%
+  probability. That is upstream's bug; nothing the plugin can do.
+- Consequence: the floating-pane sidebar host ships ONLY behind an
+  explicit opt-in (`@sidebar_float_host on`, default `off`) until a
+  tmux release with the fix exists to gate on. The host code is
+  complete and matrix-tested; landing it as default-on is a one-line
+  gate change once upstream fixes the crash.
+
 ### set-hook monitors
 
 - Working syntax: `set-hook -B '@name:@*:#{format}' 'command'` — `what` is a
   selector (`%0`, `%*`, `@0`, `@*`), not the word "window". Fires at most
   once a second on format change (verified on `window_zoomed_flag`).
 
-## Batch T1 — Floating pane as sidebar host (flagship)
+## Batch T1 — Floating pane as sidebar host (blocked on upstream)
 
 Today the sidebar is a split pane on wide viewports and a `display-popup -E`
 on narrow ones (src/cli/toggle.rs:1153-1183). The popup path carries real
@@ -215,32 +259,38 @@ pinned manually (toggle.rs:1145-1152), and the popup is invisible to
 exists because of this).
 
 A 3.8 floating pane is a real pane: it appears in `list-panes`, carries pane
-options, gets `TMUX_PANE` for free, and can be selected like any pane. T0
-confirmed the TUI runs, renders, resizes, and exits cleanly in one.
+options, gets `TMUX_PANE` for free, and can be selected like any pane. But
+tmux 3.8 crashes the whole server intermittently under floating-pane traffic
+(see "tmux 3.8 upstream blocker" above), so the host work is done, opt-in,
+and parked:
 
-- [ ] Prerequisite (correctness on 3.8 today, independent of the floating
-      sidebar): `target_pane_for_position` (toggle.rs:1059-1066) picks the
+- [x] Prerequisite (correctness on 3.7+/3.8, independent of the floating
+      sidebar): `target_pane_for_position` (toggle.rs:1059-1066) picked the
       split anchor by `pane_left`, and floating panes report their float
-      position there — a pane parked right of the tiled layout would be
-      chosen as the anchor, and splitting it yields another floating pane
-      (verified). The geometry query must add `#{pane_floating_flag}` and
-      filter floats out of anchor selection.
-- [ ] On tmux >= 3.8, host the narrow-viewport sidebar in a floating pane
-      instead of a display-popup; delete the popup-only workarounds that
-      become moot (TMUX_PANE pinning; the "TUI cannot see itself" marker
-      semantics). Keep the compact-viewport UI behavior the `SIDEBAR_POPUP=1`
-      marker drives (setup.rs:20, focus/refresh semantics) — derive it from a
-      floating-mode marker or `pane_floating_flag` rather than deleting it.
-      Gate: conf `if-shell` version probe (3.8+) with the popup path kept as
-      the < 3.8 fallback.
-- [ ] The bigger UX win: `new-pane -A` creates a pane that floats above a
-      zoomed pane (modal panes do this by default; T0 verified `-A` directly).
-      A "sidebar stays visible while an agent pane is zoomed" mode is
-      impossible with a split today — explore it as an opt-in setting.
-- [ ] Layout safety (T0-resolved risks to carry into tests): stale layout
-      replay is rejected by tmux when floating panes change the cell count
-      (safe); replay of a snapshot that includes floating panes succeeds.
-      Promote the captured JSON layout fixtures into toggle.rs tests.
+      position there — a parked float could be chosen as the anchor
+      (including via the min/max tie-break), and splitting it yields
+      another floating pane. FIXED: the geometry query now carries
+      `#{pane_floating_flag}`, floats are filtered out of anchor
+      selection, and the parser reads both line shapes (flag present on
+      3.7+, collapsed empty on <= 3.6). Verified by unit tests, a live
+      3.8 scoped-server run, and the plugin matrix (3.0a-3.7c).
+- [x] JSON layout fixtures promoted into toggle.rs tests: the T0-captured
+      layout containing floating panes (z-order cells) pins down that the
+      stale-snapshot guard reads the root w/h unaffected by floats.
+- [x] Floating host implementation exists behind `@sidebar_float_host`
+      (default `off`): `new-pane -d -x 90% -y 90% -X 5% -Y 5%` with
+      `SIDEBAR_FLOAT=1`, role-tagged, deduped; TUI-side `floating_mode`
+      resolves "where the user is" as the window's focused pane (the
+      float's TMUX_PANE is the sidebar itself, inverting the popup's
+      pinned-pane semantics). BLOCKED as default-on by the upstream
+      crash — flip the gate when a fixed tmux release ships.
+- [ ] Re-land the floating host as default-on (and delete the popup-only
+      workarounds that become moot) once upstream ships a fixed release;
+      verify the fix first with the same scoped-server probe methodology
+      (multi-run, not single-run).
+- [ ] The bigger UX win: `new-pane -A` (sidebar floats above a zoomed
+      pane) — blocked by the same crash; the opt-in gate covers it for
+      the brave once the host is enabled.
 
 ## Batch T2 — OSC 133 hooks vs shell-exit.sh
 
@@ -357,3 +407,13 @@ live server (foot 1.28): colours=16777216, I/f:RGB=1, RGB in termfeatures.
   <= 3.2a; set-hook accepts-but-drops unknown hook names with rc 0;
   window-layout-changed fires-but-invisible in show-hooks on 3.7c; hook CLI
   takes kebab-case internal event names).
+- 2026-11-18 — T1 anchor fix shipped (floating panes excluded from
+  split-anchor selection; both line shapes parsed; JSON float-layout
+  fixtures promoted). Live 3.8 verification caught a CRITICAL upstream
+  blocker: tmux 3.8 crashes the whole server ~50% of the time when a
+  program enters the alternate screen in a float (3/6) or the window
+  resizes under a float (2/4). T0's TUI-in-float success corrected as a
+  single lucky run. Floating host implemented complete but shipped
+  opt-in-only (`@sidebar_float_host`, default off); popup fallback
+  unchanged and matrix-green on 3.0a-3.7c. T1 re-landing blocked on an
+  upstream fix.

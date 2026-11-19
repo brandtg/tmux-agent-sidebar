@@ -131,12 +131,17 @@ pub struct AppState {
     /// one HashMap lookup per pane; the filesystem scan lives in the polling
     /// thread.
     pub sessions: SessionNamesState,
-    /// Running inside a tmux popup on a narrow (mobile) viewport. Set by
-    /// the `toggle` subcommand via `SIDEBAR_POPUP=1`. The popup anchors to
-    /// the window's active pane but always holds keyboard focus itself, so
-    /// popup mode also forces window-active/focused semantics to keep the
-    /// compact viewport readable.
+    /// Running as the compact-viewport sidebar: a tmux popup on tmux < 3.8
+    /// (`SIDEBAR_POPUP=1`) or a floating pane on 3.8+ (`SIDEBAR_FLOAT=1`).
+    /// Neither host is "focused" in the split-pane sense while the user
+    /// works in the agent pane below, so popup mode forces window-active/
+    /// focused semantics to keep the compact viewport readable.
     pub popup_mode: bool,
+    /// Running as a floating pane (`SIDEBAR_FLOAT=1`, tmux 3.8+). Implies
+    /// [`Self::popup_mode`], but unlike a popup the pane is real and
+    /// `TMUX_PANE` is the sidebar's own pane — so "where the user is" is
+    /// the window's focused pane, not this pane.
+    pub floating_mode: bool,
     /// Whether the sidebar's window currently contains no pane other than
     /// the sidebar's own pane. Recomputed on every session snapshot;
     /// always false in popup mode (a popup has no pane of its own). The
@@ -193,6 +198,7 @@ impl AppState {
             todos: TodoState::default(),
             sessions: SessionNamesState::default(),
             popup_mode: false,
+            floating_mode: false,
             window_has_no_other_panes: false,
             quit_requested: false,
             snapshot_now: false,

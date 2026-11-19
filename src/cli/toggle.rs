@@ -96,10 +96,10 @@ pub(crate) fn cmd_toggle(args: &[String]) -> i32 {
         // A narrow viewport: mobile usually attaches to a session the
         // desktop already set up, so the first toggle press in a narrow
         // viewport lands on a live split-pane sidebar. Reopen it as the
-        // popup right away instead of demanding a second press.
+        // compact view right away instead of demanding a second press.
         if use_popup {
             record_last_window_width(window_id, window_width);
-            return open_popup(window_id, pane_path);
+            return open_narrow_sidebar(window_id, pane_path);
         }
         return 0;
     }
@@ -109,7 +109,7 @@ pub(crate) fn cmd_toggle(args: &[String]) -> i32 {
             return 0;
         }
         record_last_window_width(window_id, window_width);
-        return open_popup(window_id, pane_path);
+        return open_narrow_sidebar(window_id, pane_path);
     }
 
     open_split_sidebar(
@@ -1207,6 +1207,140 @@ fn popup_command(
     args
 }
 
+/// Decide which host the narrow-viewport sidebar opens in: a floating
+/// pane on tmux 3.8+ when explicitly opted in, the `display-popup`
+/// fallback otherwise. Both drive the same compact-viewport semantics
+/// inside the TUI.
+fn open_narrow_sidebar(window_id: &str, start_directory: &str) -> i32 {
+    if float_host_enabled(window_id) && floating_panes_supported() {
+        open_floating_sidebar(window_id, start_directory)
+    } else {
+        open_popup(window_id, start_directory)
+    }
+}
+
+/// Whether the floating-pane sidebar host may be used. Off by default:
+/// tmux 3.8's floating panes crash the whole server intermittently when a
+/// program enters the alternate screen inside a float (3/6 runs) or the
+/// window resizes under one (2/4 runs) — measured in the T1 probes, see
+/// docs/tmux-3.8.md. The sidebar TUI does both by design, so the host
+/// stays opt-in until the upstream fix ships in a release this plugin can
+/// gate on.
+fn float_host_enabled(window_id: &str) -> bool {
+    tmux::display_message(window_id, &format!("#{{{}}}", tmux::SIDEBAR_FLOAT_HOST))
+        .trim()
+        .eq_ignore_ascii_case("on")
+}
+
+/// Whether the connected tmux supports the 3.8 floating-pane surface:
+/// `new-pane` with geometry/env/`-P` flags, `#{pane_floating_flag}`, and
+/// JSON layout serialization. Probed once per process and remembered —
+/// the clipboard.rs pattern for in-process capability decisions (the
+/// conf `if-shell` gate is for conf-registered wiring, which this is not).
+fn floating_panes_supported() -> bool {
+    static FLOATING_PANES: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *FLOATING_PANES.get_or_init(|| {
+        tmux::run_tmux(&["-V"])
+            .map(|version| version_at_least(&version, 3, 8))
+            .unwrap_or(false)
+    })
+}
+
+/// Parse `tmux -V` output and compare against `(major, minor)`. Handles
+/// the shapes across the supported range: release suffixes (`tmux 3.7c`),
+/// plain releases (`tmux 3.8`), master builds with a name prefix
+/// (`tmux next-3.9`), and unparseable output (false — the fallback path
+/// is always safe).
+fn version_at_least(version_output: &str, want_major: u32, want_minor: u32) -> bool {
+    let Some(version) = version_output.split_whitespace().nth(1) else {
+        return false;
+    };
+    let version = version
+        .split_once('-')
+        .map(|(_, rest)| rest)
+        .unwrap_or(version);
+    let core = version
+        .split(|c: char| !c.is_ascii_digit() && c != '.')
+        .next()
+        .unwrap_or("");
+    let mut parts = core.split('.');
+    let major: u32 = parts.next().and_then(|p| p.parse().ok()).unwrap_or(0);
+    let minor: u32 = parts.next().and_then(|p| p.parse().ok()).unwrap_or(0);
+    major > want_major || (major == want_major && minor >= want_minor)
+}
+
+/// Open the sidebar as a floating pane (tmux 3.8+, `@sidebar_float_host`
+/// opt-in — see [`float_host_enabled`]). Unlike a popup, a floating pane
+/// is a real pane: tmux sets `TMUX_PANE` for it, it appears in
+/// `list-panes`, and it carries pane options — so the popup-only
+/// workarounds (manual `TMUX_PANE` pinning, invisibility to the role
+/// scan) do not apply. The pane self-closes when the TUI exits, like a
+/// split pane, and `new-pane` returns immediately rather than blocking
+/// for the pane's lifetime.
+fn open_floating_sidebar(window_id: &str, start_directory: &str) -> i32 {
+    // Same replacement rule as the popup: desktop split-pane sidebars of
+    // the session make way for the narrow-viewport view. Runs before the
+    // anchor resolves so nothing is killed after being role-tagged here.
+    stop_session_sidebar_panes(window_id);
+
+    let self_bin = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.to_str().map(|s| s.to_string()))
+        .unwrap_or_else(|| "tmux-agent-sidebar".to_string());
+
+    let args = floating_command(window_id, start_directory, &self_bin);
+    let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
+    // Plain `new-pane` prints nothing; `-P -F '#{pane_id}'` reports the
+    // new pane so it can be role-tagged.
+    let sidebar_pane = tmux::run_tmux(&arg_refs).unwrap_or_default();
+    if sidebar_pane.is_empty() {
+        return 1;
+    }
+    tmux::set_pane_option(&sidebar_pane, tmux::PANE_ROLE, "sidebar");
+    // Two concurrent opens can both pass the find_window_sidebar check
+    // (the role tag lands after new-pane returns); collapse any duplicate,
+    // same as the split path.
+    dedupe_window_sidebars();
+    0
+}
+
+/// Build the `new-pane` argv for the floating sidebar. Geometry mirrors
+/// the popup: 90% of the window, centered (`-X/-Y 5%` offsets a 90% pane
+/// to the middle; the values accept `%` of the window size). The
+/// `-d` flag keeps the user's active pane unchanged — the float appears
+/// without stealing keyboard focus. `SIDEBAR_FLOAT=1` flags compact mode
+/// in the TUI (the same semantics `SIDEBAR_POPUP=1` drives for the
+/// popup), distinguishable inside the TUI because a float's `TMUX_PANE`
+/// is the sidebar itself.
+fn floating_command(window_id: &str, start_directory: &str, self_bin: &str) -> Vec<String> {
+    [
+        "new-pane",
+        "-d",
+        "-t",
+        window_id,
+        "-x",
+        "90%",
+        "-y",
+        "90%",
+        "-X",
+        "5%",
+        "-Y",
+        "5%",
+        "-c",
+        start_directory,
+        "-e",
+        "SIDEBAR_FLOAT=1",
+        "-P",
+        "-F",
+        "#{pane_id}",
+        self_bin,
+    ]
+    .iter()
+    .copied()
+    .map(String::from)
+    .collect()
+}
+
 /// Kill every split-pane sidebar still running in `window_id`'s session.
 ///
 /// Mobile normally attaches to a session the desktop already set up, so
@@ -1839,6 +1973,52 @@ mod tests {
         // @sidebar_popup_max_width = 0 means "always split", even for a
         // narrow client.
         assert!(!should_use_popup_for_client("0", 320, Some(60)));
+    }
+
+    #[test]
+    fn version_at_least_covers_the_release_suffixes() {
+        // Release suffixes (3.3a, 3.7c) must not confuse the numeric
+        // comparison; master builds prefix a name.
+        assert!(version_at_least("tmux 3.8", 3, 8));
+        assert!(version_at_least("tmux 3.9", 3, 8));
+        assert!(version_at_least("tmux 3.10", 3, 8));
+        assert!(version_at_least("tmux next-3.9", 3, 8));
+        assert!(!version_at_least("tmux 3.7c", 3, 8));
+        assert!(!version_at_least("tmux 3.6b", 3, 8));
+        assert!(!version_at_least("tmux 2.9a", 3, 8));
+        assert!(!version_at_least("tmux", 3, 8));
+        assert!(!version_at_least("", 3, 8));
+        assert!(!version_at_least("garbage", 3, 8));
+    }
+
+    #[test]
+    fn floating_command_mirrors_popup_geometry_and_flags_the_tui() {
+        let args = floating_command("@5", "/tmp/work", "/usr/local/bin/tmux-agent-sidebar");
+        assert_eq!(
+            args,
+            vec![
+                "new-pane",
+                "-d",
+                "-t",
+                "@5",
+                "-x",
+                "90%",
+                "-y",
+                "90%",
+                "-X",
+                "5%",
+                "-Y",
+                "5%",
+                "-c",
+                "/tmp/work",
+                "-e",
+                "SIDEBAR_FLOAT=1",
+                "-P",
+                "-F",
+                "#{pane_id}",
+                "/usr/local/bin/tmux-agent-sidebar",
+            ]
+        );
     }
 
     #[test]
