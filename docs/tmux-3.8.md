@@ -7,16 +7,14 @@ machine already runs 3.8, so this work can be developed and verified locally.
 Origin: 2026-11-18 review of the 3.8 CHANGES against the codebase's tmux
 integration inventory. Every claim below was checked against current source.
 
-Status: **T0 spike complete; T1 anchor fix shipped; floating host blocked on
-an upstream tmux 3.8 crash (2026-11-18)** — see "tmux 3.8 upstream blocker"
-below. All spike facts were measured on tmux 3.8 in scoped servers
-(`-f /dev/null`, kill-server in an EXIT trap), per the HARD RULE in
-AGENTS.md — with the lesson that single-run probes lie: the T0
-TUI-in-float success was a lucky survivor, and only multi-run probing
-exposed the ~50% server crash. Backwards compatibility is verified by the
-version matrix (below): the plugin itself passes on tmux 3.0a-3.7c, and
-tmux-behavior facts are probed per version. Raw probe scripts and artifacts:
-/tmp/opencode/tas38/ (not committed).
+Status: **PAUSED pending an upstream tmux fix (2026-11-18)** — tmux 3.8
+crashes the whole server intermittently under floating-pane traffic (see
+"tmux 3.8 upstream blocker" below), which gates the flagship T1 host and
+the `-A` zoom mode. What is landed and safe: the T0 spike findings, the
+version/plugin compatibility matrices, and the split-anchor correctness
+fix (3.7+). Resume path: re-probe with the same multi-run methodology,
+flip `@sidebar_float_host` to default-on once a fixed release exists,
+then continue T2/T3 (both unblocked, no floating-pane code).
 
 ## What the codebase already handles passively
 
@@ -417,3 +415,8 @@ live server (foot 1.28): colours=16777216, I/f:RGB=1, RGB in termfeatures.
   opt-in-only (`@sidebar_float_host`, default off); popup fallback
   unchanged and matrix-green on 3.0a-3.7c. T1 re-landing blocked on an
   upstream fix.
+- 2026-11-18 — Track PAUSED pending an upstream tmux fix. Landed and safe:
+  T0 findings, both compatibility matrices, split-anchor fix, opt-in
+  floating host (off by default). Resume with T2/T3 (no floating-pane
+  dependency) or re-land T1 default-on after a fixed tmux release ships —
+  re-probe multi-run first, same methodology.
