@@ -1,11 +1,31 @@
-# Multi-version tmux builder for backwards-compatibility probes.
+# Plugin compatibility matrix: build the real tmux-agent-sidebar binary and
+# run it against every tmux version the plugin claims to support.
 #
-# Builds official tmux release tarballs into /opt/tmux-<tag>/bin/tmux so the
-# pre-3.8 behavior of format variables, hook names, and command flags can be
-# probed per version (see probe.sh in this directory).
+# Stages:
+#   builder  — rustup on the same ubuntu:22.04 base as the runtime stage, so
+#              the release binary's glibc matches (a host-built binary would
+#              target the dev machine's newer glibc and fail to exec here).
+#   runtime  — tmux release tarballs (3.0a..3.7c + system 3.8 not included;
+#              the dev machine covers 3.8) plus the plugin binary and conf.
 #
-# Build:  docker build -t tmux-matrix .
-# Run:    docker run --rm tmux-matrix /probe.sh
+# Build:  docker build -f scripts/tmux-matrix/Dockerfile -t tmux-plugin-matrix .
+# Run:    docker run --rm tmux-plugin-matrix
+FROM ubuntu:22.04 AS builder
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        build-essential curl ca-certificates pkg-config \
+    && rm -rf /var/lib/apt/lists/*
+ENV RUSTUP_HOME=/usr/local/rustup CARGO_HOME=/usr/local/cargo
+ENV PATH=/usr/local/cargo/bin:$PATH
+RUN curl -fsSL https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain stable
+WORKDIR /build
+COPY Cargo.toml Cargo.lock ./
+COPY src ./src
+# include_str! sources referenced by src/cli/plugin_state.rs
+COPY hook.sh ./hook.sh
+COPY hooks ./hooks
+RUN cargo build --release
+
 FROM ubuntu:22.04
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -23,8 +43,10 @@ RUN set -eux; \
             && make -j"$(nproc)" >/dev/null && make install >/dev/null); \
         rm -rf /tmp/src /tmp/tmux.tar.gz; \
     done
-COPY probe.sh /probe.sh
-RUN chmod +x /probe.sh
-# The probes start detached servers; a TERM keeps tmux's client-side happy.
+COPY --from=builder /build/target/release/tmux-agent-sidebar /usr/local/bin/tmux-agent-sidebar
+COPY agent-sidebar.conf /opt/plugin/agent-sidebar.conf
+COPY scripts/tmux-matrix/probe.sh /probe.sh
+COPY scripts/tmux-matrix/plugin-probe.sh /plugin-probe.sh
+RUN chmod +x /plugin-probe.sh
 ENV TERM=xterm-256color
-CMD ["/probe.sh"]
+CMD ["/plugin-probe.sh"]

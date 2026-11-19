@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# tmux backwards-compatibility probe matrix.
+# tmux backwards-compatibility probe matrix (tmux behavior only — the plugin
+# itself is exercised by plugin-probe.sh).
 #
 # Runs INSIDE the tmux-matrix container (see Dockerfile) against every tmux
 # built into /opt/tmux-*/bin/tmux. For each version it answers the questions
@@ -7,7 +8,8 @@
 #
 #   - does the agent-sidebar.conf awk version gate classify the version right
 #   - do unknown format variables expand empty (T1 prerequisite assumption)
-#   - does #{q:...} escape '%' (3.8 changed this; parser must handle both)
+#   - does #{q:...} escape '%' (matrix showed this is long-standing, not a
+#     3.8 change; the parser handles it on every version)
 #   - does the project's 36-field pane format resolve
 #   - which 3.8-only commands/flags are absent (new-pane, set-hook -B,
 #     capture-pane -I, OSC 133 hook names)

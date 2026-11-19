@@ -10,7 +10,9 @@ integration inventory. Every claim below was checked against current source.
 Status: **T0 spike complete (2026-11-18)** — findings recorded below; T1 is the
 next batch. All spike facts were measured on tmux 3.8 in a scoped
 `tmux -L tas38-probe` server (`-f /dev/null`, kill-server in an EXIT trap),
-per the HARD RULE in AGENTS.md. Raw probe scripts and artifacts:
+per the HARD RULE in AGENTS.md. Backwards compatibility is verified by the
+version matrix (below): the plugin itself passes on tmux 3.0a-3.7c, and
+tmux-behavior facts are probed per version. Raw probe scripts and artifacts:
 /tmp/opencode/tas38/ (not committed).
 
 ## What the codebase already handles passively
@@ -160,6 +162,42 @@ on JSON layouts and the `-A`/`-O` flags), but the split-anchor fix must be
 version-agnostic: filter `#{pane_floating_flag}=1` where the variable exists
 (3.7+), treat empty (<= 3.6) as "no floating panes possible" — which is
 exactly the old behavior.
+
+### Plugin compatibility matrix (the actual binary + conf)
+
+plugin-probe.sh runs the real release binary and the real agent-sidebar.conf
+against every built tmux version, exercising four surfaces: conf load
+(parses clean, hooks register), toggle (split sidebar with @pane_role), TUI
+runtime (binary as pane process: renders header, writes @sidebar_pid), and
+the hook pipeline (real claude payload → adapter → @pane_agent=claude,
+@pane_status=idle). Result: ALL GREEN on 3.0a, 3.2a, 3.3a, 3.4, 3.5a, 3.6b,
+3.7c; 3.8 is the dev machine (covered by the scoped-server pipeline tests).
+
+Findings from getting there — each one a genuine cross-version fact:
+
+- tmux <= 3.2a ignores `new-session -x/-y` for detached sessions: the window
+  snaps to 80x24 until a client attaches (3.0a honors it; 3.2a does not).
+  `resize-window -x/-y` pins the size on every version. Test-infra relevant,
+  and a trap for anyone scripting detached-session setups on old tmux.
+- `new-pane` is 3.7+ (boundary pinned above). The plugin's open path uses
+  `split-window` everywhere — already compatible. Anything new that spawns
+  panes must fall back to split-window below 3.7.
+- `set-hook window-layout-changed` returns rc=0 even on 3.0a but does not
+  fire there (the conf's 3.2 gate is still required and correct). On 3.7c
+  the registered hook FIRES but is invisible in `show-hooks` output — the
+  conf's awk-based dedup cannot see it there. Harmless today (maintain-width
+  is idempotent under double-fire), but worth knowing before T3 registers
+  more hooks.
+- The hook CLI takes the INTERNAL kebab-case event name
+  (`hook claude session-start`), not the upstream trigger — hooks.json does
+  the mapping. Probe lesson: a "compat failure" with `SessionStart` was
+  wrong invocation, not incompatibility.
+- Probe environment requirements for anyone extending this: the plugin
+  execs bare `tmux`, so the version's bin dir must lead PATH and `TMUX` must
+  point at the scoped socket for out-of-pane invocations; the conf's
+  auto-create hook opens a sidebar at session start, so a probe that then
+  toggles must either expect that sidebar or disable @sidebar_auto_create
+  first (the probe disables it).
 
 ### set-hook monitors
 
@@ -312,3 +350,10 @@ live server (foot 1.28): colours=16777216, I/f:RGB=1, RGB in termfeatures.
   window-layout-changed hook name is 3.2+. Boundary pinned: floating panes
   exist from tmux 3.7 (not 3.8) — T1 gate stays 3.8, anchor fix made
   version-agnostic (empty flag on <= 3.6 = no filtering = old behavior).
+- 2026-11-18 — PLUGIN compatibility matrix added and green (plugin-probe.sh):
+  the real binary + real conf verified on 3.0a-3.7c across conf load,
+  toggle, TUI runtime, and the hook pipeline. Cross-version facts recorded
+  under "Plugin compatibility matrix" (detached-session -x/-y ignored on
+  <= 3.2a; set-hook accepts-but-drops unknown hook names with rc 0;
+  window-layout-changed fires-but-invisible in show-hooks on 3.7c; hook CLI
+  takes kebab-case internal event names).
