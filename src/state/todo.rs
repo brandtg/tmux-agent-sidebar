@@ -58,6 +58,10 @@ pub struct TodoState {
     pub visible: bool,
     /// `Some(input)` while the inline add line owns the keyboard.
     pub adding: Option<String>,
+    /// Cursor into `adding` as a char index (mirrors `TodoEdit::cursor`,
+    /// covering the char it sits on when rendering). Only meaningful
+    /// while `adding` is `Some`; every open resets it to 0.
+    pub adding_cursor: usize,
     /// `Some(edit)` while the selected item's text is being edited.
     pub editing: Option<TodoEdit>,
     /// Stamp of the file as of the last load, used to detect edits made
@@ -600,6 +604,53 @@ impl TodoState {
     }
 }
 
+/// Char-level edits shared by the add line and an open edit. Cursors
+/// are char indices into the buffer (never byte offsets), clamped to
+/// the buffer's length before use.
+fn insert_char_at(input: &mut String, cursor: &mut usize, c: char) {
+    let mut chars: Vec<char> = input.chars().collect();
+    let at = (*cursor).min(chars.len());
+    chars.insert(at, c);
+    *input = chars.into_iter().collect();
+    *cursor = at + 1;
+}
+
+fn pop_char_before(input: &mut String, cursor: &mut usize) {
+    let mut chars: Vec<char> = input.chars().collect();
+    let at = (*cursor).min(chars.len());
+    if at > 0 {
+        chars.remove(at - 1);
+        *input = chars.into_iter().collect();
+        *cursor = at - 1;
+    }
+}
+
+fn pop_char_at(input: &mut String, cursor: &mut usize) {
+    let mut chars: Vec<char> = input.chars().collect();
+    let at = (*cursor).min(chars.len());
+    if at < chars.len() {
+        chars.remove(at);
+        *input = chars.into_iter().collect();
+        // The cursor stays: the next char slides under it.
+    }
+}
+
+fn pop_word_before(input: &mut String, cursor: &mut usize) {
+    let mut chars: Vec<char> = input.chars().collect();
+    let mut cut = (*cursor).min(chars.len());
+    while cut > 0 && chars[cut - 1].is_whitespace() {
+        cut -= 1;
+    }
+    while cut > 0 && !chars[cut - 1].is_whitespace() {
+        cut -= 1;
+    }
+    if cut < *cursor {
+        chars.drain(cut..*cursor);
+        *input = chars.into_iter().collect();
+        *cursor = cut;
+    }
+}
+
 impl AppState {
     /// Three-state `t` behavior:
     /// 1. Panel hidden → open it and focus the list.
@@ -867,6 +918,7 @@ impl AppState {
         self.focus_state.focus = Focus::Todos;
         self.todos.editing = None;
         self.todos.adding = Some(String::new());
+        self.todos.adding_cursor = 0;
     }
 
     /// Commit the add line and immediately start a fresh one so several
@@ -884,6 +936,7 @@ impl AppState {
         self.todos.add(input);
         self.todos.clamp_selection(self.global.todo_hide_completed);
         self.todos.adding = Some(String::new());
+        self.todos.adding_cursor = 0;
     }
 
     /// Esc on the add line: commit the buffered text (vim's insert-mode
@@ -956,30 +1009,31 @@ impl AppState {
         self.begin_todo_add();
     }
 
-    pub fn todo_input_push_char(&mut self, c: char) {
+    /// The open text input as (`buffer`, `cursor`): an in-place edit
+    /// first, then the add line. Every `todo_input_*` mutation routes
+    /// through here so both inputs share one set of editing rules — the
+    /// add line used to be append-only, which left a mid-line typo
+    /// unfixable without rewriting the tail.
+    fn open_input_buffer(&mut self) -> Option<(&mut String, &mut usize)> {
         if let Some(edit) = self.todos.editing.as_mut() {
-            let mut chars: Vec<char> = edit.input.chars().collect();
-            let cursor = edit.cursor.min(chars.len());
-            chars.insert(cursor, c);
-            edit.input = chars.into_iter().collect();
-            edit.cursor = cursor + 1;
+            Some((&mut edit.input, &mut edit.cursor))
         } else if let Some(input) = self.todos.adding.as_mut() {
-            input.push(c);
+            Some((input, &mut self.todos.adding_cursor))
+        } else {
+            None
+        }
+    }
+
+    pub fn todo_input_push_char(&mut self, c: char) {
+        if let Some((input, cursor)) = self.open_input_buffer() {
+            insert_char_at(input, cursor, c);
         }
     }
 
     /// Backspace: delete the char before the cursor.
     pub fn todo_input_pop_char(&mut self) {
-        if let Some(edit) = self.todos.editing.as_mut() {
-            let mut chars: Vec<char> = edit.input.chars().collect();
-            let cursor = edit.cursor.min(chars.len());
-            if cursor > 0 {
-                chars.remove(cursor - 1);
-                edit.input = chars.into_iter().collect();
-                edit.cursor = cursor - 1;
-            }
-        } else if let Some(input) = self.todos.adding.as_mut() {
-            input.pop();
+        if let Some((input, cursor)) = self.open_input_buffer() {
+            pop_char_before(input, cursor);
         }
     }
 
@@ -1009,115 +1063,81 @@ impl AppState {
         self.begin_todo_edit();
     }
 
-    /// Delete: remove the char at the cursor. The add line has no
-    /// cursor, so this only applies to an open edit.
+    /// Delete: remove the char at the cursor.
     pub fn todo_input_delete_char(&mut self) {
-        let Some(edit) = self.todos.editing.as_mut() else {
-            return;
-        };
-        let mut chars: Vec<char> = edit.input.chars().collect();
-        let cursor = edit.cursor.min(chars.len());
-        if cursor < chars.len() {
-            chars.remove(cursor);
-            edit.input = chars.into_iter().collect();
+        if let Some((input, cursor)) = self.open_input_buffer() {
+            pop_char_at(input, cursor);
         }
     }
 
     pub fn todo_input_clear(&mut self) {
-        if let Some(edit) = self.todos.editing.as_mut() {
-            edit.input.clear();
-            edit.cursor = 0;
-        } else if let Some(input) = self.todos.adding.as_mut() {
+        if let Some((input, cursor)) = self.open_input_buffer() {
             input.clear();
+            *cursor = 0;
         }
     }
 
     /// Delete the word before the cursor (Ctrl-w).
     pub fn todo_input_pop_word(&mut self) {
-        if let Some(edit) = self.todos.editing.as_mut() {
-            let mut chars: Vec<char> = edit.input.chars().collect();
-            let cursor = edit.cursor.min(chars.len());
-            let mut cut = cursor;
-            while cut > 0 && chars[cut - 1].is_whitespace() {
-                cut -= 1;
-            }
-            while cut > 0 && !chars[cut - 1].is_whitespace() {
-                cut -= 1;
-            }
-            if cut < cursor {
-                chars.drain(cut..cursor);
-                edit.input = chars.into_iter().collect();
-                edit.cursor = cut;
-            }
-        } else if let Some(input) = self.todos.adding.as_mut() {
-            while input.ends_with(char::is_whitespace) {
-                input.pop();
-            }
-            while let Some(last) = input.chars().last() {
-                if last.is_whitespace() {
-                    break;
-                }
-                input.pop();
-            }
+        if let Some((input, cursor)) = self.open_input_buffer() {
+            pop_word_before(input, cursor);
         }
     }
 
-    /// Move the edit cursor by `delta` chars, clamped to the buffer.
-    pub fn todo_edit_cursor_move(&mut self, delta: isize) {
-        let Some(edit) = self.todos.editing.as_mut() else {
-            return;
-        };
-        let len = edit.input.chars().count();
-        edit.cursor = (edit.cursor as isize)
-            .saturating_add(delta)
-            .clamp(0, len as isize) as usize;
+    /// Move the open input's cursor by `delta` chars, clamped to the
+    /// buffer. Left/Right on the add line and in an open edit.
+    pub fn todo_input_cursor_move(&mut self, delta: isize) {
+        if let Some((input, cursor)) = self.open_input_buffer() {
+            let len = input.chars().count();
+            *cursor = ((*cursor as isize)
+                .saturating_add(delta)
+                .clamp(0, len as isize)) as usize;
+        }
     }
 
     /// Ctrl-Left: back to the start of the previous word, skipping the
     /// whitespace and then the word's chars before it. The same
     /// whitespace/word split Ctrl-w deletes by.
-    pub fn todo_edit_cursor_word_left(&mut self) {
-        let Some(edit) = self.todos.editing.as_mut() else {
-            return;
-        };
-        let chars: Vec<char> = edit.input.chars().collect();
-        let mut cursor = edit.cursor.min(chars.len());
-        while cursor > 0 && chars[cursor - 1].is_whitespace() {
-            cursor -= 1;
+    pub fn todo_input_cursor_word_left(&mut self) {
+        if let Some((input, cursor)) = self.open_input_buffer() {
+            let chars: Vec<char> = input.chars().collect();
+            let mut at = (*cursor).min(chars.len());
+            while at > 0 && chars[at - 1].is_whitespace() {
+                at -= 1;
+            }
+            while at > 0 && !chars[at - 1].is_whitespace() {
+                at -= 1;
+            }
+            *cursor = at;
         }
-        while cursor > 0 && !chars[cursor - 1].is_whitespace() {
-            cursor -= 1;
-        }
-        edit.cursor = cursor;
     }
 
     /// Ctrl-Right: forward past the end of the next word, skipping the
     /// whitespace and then the word's chars after the cursor.
-    pub fn todo_edit_cursor_word_right(&mut self) {
-        let Some(edit) = self.todos.editing.as_mut() else {
-            return;
-        };
-        let chars: Vec<char> = edit.input.chars().collect();
-        let len = chars.len();
-        let mut cursor = edit.cursor.min(len);
-        while cursor < len && chars[cursor].is_whitespace() {
-            cursor += 1;
-        }
-        while cursor < len && !chars[cursor].is_whitespace() {
-            cursor += 1;
-        }
-        edit.cursor = cursor;
-    }
-
-    pub fn todo_edit_cursor_home(&mut self) {
-        if let Some(edit) = self.todos.editing.as_mut() {
-            edit.cursor = 0;
+    pub fn todo_input_cursor_word_right(&mut self) {
+        if let Some((input, cursor)) = self.open_input_buffer() {
+            let chars: Vec<char> = input.chars().collect();
+            let len = chars.len();
+            let mut at = (*cursor).min(len);
+            while at < len && chars[at].is_whitespace() {
+                at += 1;
+            }
+            while at < len && !chars[at].is_whitespace() {
+                at += 1;
+            }
+            *cursor = at;
         }
     }
 
-    pub fn todo_edit_cursor_end(&mut self) {
-        if let Some(edit) = self.todos.editing.as_mut() {
-            edit.cursor = edit.input.chars().count();
+    pub fn todo_input_cursor_home(&mut self) {
+        if let Some((_, cursor)) = self.open_input_buffer() {
+            *cursor = 0;
+        }
+    }
+
+    pub fn todo_input_cursor_end(&mut self) {
+        if let Some((input, cursor)) = self.open_input_buffer() {
+            *cursor = input.chars().count();
         }
     }
 
@@ -1490,7 +1510,7 @@ mod tests {
         state.todos.selected = 0;
 
         state.begin_todo_edit();
-        state.todo_edit_cursor_move(-1);
+        state.todo_input_cursor_move(-1);
         assert_eq!(state.todos.editing.as_ref().unwrap().cursor, 1);
 
         state.todo_input_push_char('X');
@@ -1508,7 +1528,7 @@ mod tests {
         state.todos.selected = 0;
 
         state.begin_todo_edit();
-        state.todo_edit_cursor_home();
+        state.todo_input_cursor_home();
         state.todo_input_delete_char();
 
         assert_eq!(state.todos.editing.as_ref().unwrap().input, "bc");
@@ -1521,12 +1541,12 @@ mod tests {
         state.todos.selected = 0;
 
         state.begin_todo_edit();
-        state.todo_edit_cursor_move(-10);
+        state.todo_input_cursor_move(-10);
         assert_eq!(state.todos.editing.as_ref().unwrap().cursor, 0);
-        state.todo_edit_cursor_move(10);
+        state.todo_input_cursor_move(10);
         assert_eq!(state.todos.editing.as_ref().unwrap().cursor, 2);
-        state.todo_edit_cursor_home();
-        state.todo_edit_cursor_end();
+        state.todo_input_cursor_home();
+        state.todo_input_cursor_end();
         assert_eq!(state.todos.editing.as_ref().unwrap().cursor, 2);
     }
 
@@ -1537,14 +1557,14 @@ mod tests {
 
         state.begin_todo_edit();
         // From the end: "three" starts at 9, the previous word at 4.
-        state.todo_edit_cursor_word_left();
+        state.todo_input_cursor_word_left();
         assert_eq!(state.todos.editing.as_ref().unwrap().cursor, 9);
-        state.todo_edit_cursor_word_left();
+        state.todo_input_cursor_word_left();
         assert_eq!(state.todos.editing.as_ref().unwrap().cursor, 4);
-        state.todo_edit_cursor_word_left();
+        state.todo_input_cursor_word_left();
         assert_eq!(state.todos.editing.as_ref().unwrap().cursor, 0);
         // Stays clamped at the buffer start.
-        state.todo_edit_cursor_word_left();
+        state.todo_input_cursor_word_left();
         assert_eq!(state.todos.editing.as_ref().unwrap().cursor, 0);
     }
 
@@ -1554,15 +1574,15 @@ mod tests {
         state.todos.selected = 0;
 
         state.begin_todo_edit();
-        state.todo_edit_cursor_home();
-        state.todo_edit_cursor_word_right();
+        state.todo_input_cursor_home();
+        state.todo_input_cursor_word_right();
         assert_eq!(state.todos.editing.as_ref().unwrap().cursor, 3);
-        state.todo_edit_cursor_word_right();
+        state.todo_input_cursor_word_right();
         assert_eq!(state.todos.editing.as_ref().unwrap().cursor, 7);
-        state.todo_edit_cursor_word_right();
+        state.todo_input_cursor_word_right();
         assert_eq!(state.todos.editing.as_ref().unwrap().cursor, 14);
         // Stays clamped at the buffer end.
-        state.todo_edit_cursor_word_right();
+        state.todo_input_cursor_word_right();
         assert_eq!(state.todos.editing.as_ref().unwrap().cursor, 14);
     }
 
@@ -1573,7 +1593,7 @@ mod tests {
 
         state.begin_todo_edit();
         // Cursor lands after "now"; step back to the end of "docs".
-        state.todo_edit_cursor_move(-4);
+        state.todo_input_cursor_move(-4);
         state.todo_input_pop_word();
 
         assert_eq!(state.todos.editing.as_ref().unwrap().input, "write  now");
@@ -1686,6 +1706,85 @@ mod tests {
 
         assert!(state.todos.adding.is_some(), "nothing to fall back to");
         assert!(state.todos.editing.is_none());
+    }
+
+    #[test]
+    fn add_line_arrows_move_the_cursor_and_typing_inserts() {
+        let mut state = state_with(vec![]);
+
+        state.begin_todo_add();
+        for c in "hello".chars() {
+            state.todo_input_push_char(c);
+        }
+        state.todo_input_cursor_move(-2);
+        assert_eq!(state.todos.adding_cursor, 3);
+
+        state.todo_input_push_char('X');
+        assert_eq!(state.todos.adding.as_deref(), Some("helXlo"));
+        assert_eq!(
+            state.todos.adding_cursor, 4,
+            "the cursor rides past the insert"
+        );
+
+        // Clamped at both ends of the buffer.
+        state.todo_input_cursor_move(-10);
+        assert_eq!(state.todos.adding_cursor, 0);
+        state.todo_input_cursor_move(10);
+        assert_eq!(state.todos.adding_cursor, 6);
+    }
+
+    #[test]
+    fn add_line_backspace_and_delete_cut_around_the_cursor() {
+        let mut state = state_with(vec![]);
+
+        state.begin_todo_add();
+        for c in "hello".chars() {
+            state.todo_input_push_char(c);
+        }
+        state.todo_input_cursor_move(-2); // between "hel" and "lo"
+        state.todo_input_pop_char();
+        assert_eq!(state.todos.adding.as_deref(), Some("helo"));
+        assert_eq!(state.todos.adding_cursor, 2);
+
+        state.todo_input_delete_char();
+        assert_eq!(state.todos.adding.as_deref(), Some("heo"));
+        assert_eq!(
+            state.todos.adding_cursor, 2,
+            "Delete keeps the caret in place"
+        );
+    }
+
+    #[test]
+    fn add_line_home_end_and_word_walks_match_the_editor() {
+        let mut state = state_with(vec![]);
+
+        state.begin_todo_add();
+        for c in "one two three".chars() {
+            state.todo_input_push_char(c);
+        }
+        state.todo_input_cursor_home();
+        assert_eq!(state.todos.adding_cursor, 0);
+        state.todo_input_cursor_word_right();
+        assert_eq!(state.todos.adding_cursor, 3, "past the end of \"one\"");
+        state.todo_input_cursor_end();
+        assert_eq!(state.todos.adding_cursor, 13);
+        state.todo_input_cursor_word_left();
+        assert_eq!(state.todos.adding_cursor, 8, "the start of \"three\"");
+    }
+
+    #[test]
+    fn add_line_ctrl_w_deletes_the_word_before_the_cursor_mid_text() {
+        let mut state = state_with(vec![]);
+
+        state.begin_todo_add();
+        for c in "write docs now".chars() {
+            state.todo_input_push_char(c);
+        }
+        state.todo_input_cursor_move(-4); // after "docs"
+        state.todo_input_pop_word();
+
+        assert_eq!(state.todos.adding.as_deref(), Some("write  now"));
+        assert_eq!(state.todos.adding_cursor, 6);
     }
 
     #[test]
