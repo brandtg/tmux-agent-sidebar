@@ -766,11 +766,27 @@ impl AppState {
     pub(crate) fn apply_process_snapshot(&mut self, scanned: crate::port::PaneProcessSnapshot) {
         for pane_id in &scanned.scanned_panes {
             let pane_state = self.pane_state_mut(pane_id);
-            pane_state.ports = scanned
-                .ports_by_pane
-                .get(pane_id)
-                .cloned()
-                .unwrap_or_default();
+            match scanned.ports_by_pane.get(pane_id) {
+                // Ports confirmed by this sweep: publish them and clear
+                // the stickiness counter.
+                Some(ports) if !ports.is_empty() => {
+                    pane_state.ports = ports.clone();
+                    pane_state.port_miss_streak = 0;
+                }
+                // No ports confirmed this sweep. One miss only holds the
+                // previous badge — it is not evidence the listener died:
+                // the sweep's `ps` runs before its `lsof`, so a dev
+                // server that (re)binds in between is invisible to the
+                // tree mapping for exactly one sweep, and a failed lsof
+                // probe empties every pane's port set at once. Only
+                // back-to-back misses (`REQUIRED_PORT_MISSES`) clear it.
+                _ => {
+                    pane_state.port_miss_streak = pane_state.port_miss_streak.saturating_add(1);
+                    if pane_state.port_miss_streak >= REQUIRED_PORT_MISSES {
+                        pane_state.ports.clear();
+                    }
+                }
+            }
             pane_state.command = scanned.command_by_pane.get(pane_id).cloned();
         }
         // Wipe only after two consecutive scans missed the agent. A
@@ -927,6 +943,14 @@ impl AppState {
 /// `PORT_REFRESH_INTERVAL`, so this is ~20s of confirmed absence; one
 /// missed scan only starts the streak.
 const REQUIRED_DEAD_SCANS: u32 = 2;
+
+/// Consecutive port-scan sweeps that must fail to reconfirm a pane's
+/// listening ports before the badge clears. One unconfirmed sweep holds
+/// the previous badge (a dev server rebinding between the sweep's `ps`
+/// and `lsof` probes, or a transient lsof failure, must not blink the
+/// badge for a full refresh interval); two in a row — ~20s, mirroring
+/// [`REQUIRED_DEAD_SCANS`] — prove the listener is gone.
+const REQUIRED_PORT_MISSES: u32 = 2;
 
 /// Advance every scanned pane's dead-scan streak against this scan's live
 /// set and return the pane ids whose streak reached [`REQUIRED_DEAD_SCANS`].
@@ -1607,6 +1631,103 @@ mod tests {
         advance_dead_scan_streaks(&mut pane_states, &scanned(&["%1"]), &HashSet::new());
 
         assert!(pane_states.get("%2").is_none());
+    }
+
+    // ─── apply_process_snapshot port stickiness ─────────────────────
+
+    /// A completed scan over `scanned` panes with `ports_by_pane` as the
+    /// confirmed port sets (empty map: nothing confirmed anywhere, the
+    /// shape a failed lsof probe produces).
+    fn port_snapshot(
+        scanned: &[&str],
+        ports_by_pane: std::collections::HashMap<String, Vec<u16>>,
+    ) -> crate::port::PaneProcessSnapshot {
+        crate::port::PaneProcessSnapshot {
+            ports_by_pane,
+            command_by_pane: std::collections::HashMap::new(),
+            live_agent_panes: HashSet::new(),
+            scanned_panes: scanned.iter().map(|id| id.to_string()).collect(),
+            scanned_agent_panes: HashSet::new(),
+        }
+    }
+
+    #[test]
+    fn apply_process_snapshot_publishes_confirmed_ports() {
+        let mut state = AppState::new("%99".into());
+        let ports = std::collections::HashMap::from([("%1".to_string(), vec![3000, 5173])]);
+
+        state.apply_process_snapshot(port_snapshot(&["%1"], ports));
+
+        assert_eq!(state.pane_state("%1").unwrap().ports, vec![3000, 5173]);
+        assert_eq!(state.pane_state("%1").unwrap().port_miss_streak, 0);
+    }
+
+    #[test]
+    fn apply_process_snapshot_holds_ports_through_one_miss() {
+        // The rebind race: a dev server that restarts between the sweep's
+        // `ps` and `lsof` probes is invisible for exactly one sweep. The
+        // badge must not blink for a full refresh interval because of it.
+        let mut state = AppState::new("%99".into());
+        let ports = std::collections::HashMap::from([("%1".to_string(), vec![3000])]);
+        state.apply_process_snapshot(port_snapshot(&["%1"], ports));
+
+        state.apply_process_snapshot(port_snapshot(&["%1"], std::collections::HashMap::new()));
+
+        assert_eq!(
+            state.pane_state("%1").unwrap().ports,
+            vec![3000],
+            "one unconfirmed sweep must hold the previous badge"
+        );
+        assert_eq!(state.pane_state("%1").unwrap().port_miss_streak, 1);
+    }
+
+    #[test]
+    fn apply_process_snapshot_clears_ports_after_two_consecutive_misses() {
+        let mut state = AppState::new("%99".into());
+        let ports = std::collections::HashMap::from([("%1".to_string(), vec![3000])]);
+        state.apply_process_snapshot(port_snapshot(&["%1"], ports));
+
+        state.apply_process_snapshot(port_snapshot(&["%1"], std::collections::HashMap::new()));
+        state.apply_process_snapshot(port_snapshot(&["%1"], std::collections::HashMap::new()));
+
+        assert!(
+            state.pane_state("%1").unwrap().ports.is_empty(),
+            "back-to-back misses prove the listener is gone"
+        );
+    }
+
+    #[test]
+    fn apply_process_snapshot_reconfirm_resets_the_miss_streak() {
+        let mut state = AppState::new("%99".into());
+        let ports = std::collections::HashMap::from([("%1".to_string(), vec![3000])]);
+        let no_ports = std::collections::HashMap::new();
+
+        state.apply_process_snapshot(port_snapshot(&["%1"], ports.clone()));
+        state.apply_process_snapshot(port_snapshot(&["%1"], no_ports.clone()));
+        // Confirmed again: the server came back (or the probe healed).
+        state.apply_process_snapshot(port_snapshot(&["%1"], ports));
+        // The next single miss must hold the badge again, not clear it.
+        state.apply_process_snapshot(port_snapshot(&["%1"], no_ports));
+
+        assert_eq!(
+            state.pane_state("%1").unwrap().ports,
+            vec![3000],
+            "a live scan in between must reset the miss streak"
+        );
+    }
+
+    #[test]
+    fn apply_process_snapshot_leaves_unscanned_panes_untouched() {
+        let mut state = AppState::new("%99".into());
+        state.pane_state_mut("%1").ports = vec![8080];
+
+        state.apply_process_snapshot(port_snapshot(&["%2"], std::collections::HashMap::new()));
+
+        assert_eq!(
+            state.pane_state("%1").unwrap().ports,
+            vec![8080],
+            "a pane the scan never examined must keep its badge"
+        );
     }
 
     // ─── queue_approval_scan_if_due ─────────────────────────────────

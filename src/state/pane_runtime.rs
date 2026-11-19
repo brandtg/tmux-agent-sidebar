@@ -54,10 +54,20 @@ pub struct PaneRuntimeState {
     pub task_progress_log_mtime: Option<std::time::SystemTime>,
     /// Consecutive port-scan sweeps that found no live agent process in
     /// this pane's tree. Tmux metadata teardown only fires after
-    /// `REQUIRED_DEAD_SCANS` misses in a row (see `refresh_port_data`),
-    /// so one missed scan cannot destroy live state; any scan that
-    /// finds the agent resets the count to zero.
+    /// `REQUIRED_DEAD_SCANS` misses in a row (see `refresh`), so one
+    /// missed scan cannot destroy live state; any scan that finds the
+    /// agent resets the count to zero.
     pub dead_scan_streak: u32,
+    /// Consecutive port-scan sweeps that failed to reconfirm this
+    /// pane's listening ports (a transient lsof failure, or a
+    /// successful probe that found no listener in the pane's tree).
+    /// The badge survives one unconfirmed sweep — the sweep's `ps` runs
+    /// before its `lsof`, so a dev server that (re)binds in between is
+    /// invisible to the tree mapping for exactly one sweep, and a
+    /// failed probe empties every pane's port set at once — and clears
+    /// on the second consecutive miss (`REQUIRED_PORT_MISSES`, see
+    /// `apply_process_snapshot` in `state/refresh.rs`).
+    pub port_miss_streak: u32,
 }
 
 #[derive(Debug, Clone)]
