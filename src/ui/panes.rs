@@ -14,6 +14,7 @@ use ratatui::{
 };
 
 use crate::state::{AppState, Focus, PopupState, RepoFilter, SpawnField};
+use crate::ui::paint_background;
 
 pub(super) const SPAWN_BUTTON: &str = "+";
 
@@ -160,6 +161,7 @@ pub(super) fn render_spawn_input_popup(frame: &mut Frame, state: &mut AppState, 
     state.popup.set_spawn_input_area(Some(popup_rect));
 
     frame.render_widget(Clear, popup_rect);
+    paint_background(frame, theme, popup_rect);
     let title_trunc = truncate_to_width(
         " Spawn worktree ",
         popup_rect.width.saturating_sub(2) as usize,
@@ -332,6 +334,7 @@ pub(super) fn render_remove_confirm_popup(frame: &mut Frame, state: &mut AppStat
     let popup_rect = center_popup(area, area.width.min(28), popup_height);
     state.popup.set_remove_confirm_area(Some(popup_rect));
     frame.render_widget(Clear, popup_rect);
+    paint_background(frame, theme, popup_rect);
     let title_text = format!(" {branch} ");
     let title = truncate_to_width(&title_text, popup_rect.width.saturating_sub(2) as usize);
     let block = Block::default()
@@ -456,6 +459,7 @@ pub(super) fn render_repo_popup(frame: &mut Frame, state: &mut AppState, area: R
     state.popup.set_repo_area(Some(popup_rect));
 
     frame.render_widget(Clear, popup_rect);
+    paint_background(frame, &theme, popup_rect);
 
     let block = Block::default()
         .borders(Borders::ALL)
@@ -638,6 +642,7 @@ fn render_flash_banner_into(frame: &mut Frame, state: &mut AppState, area: Rect)
         let flash_y = area.y + area.height.saturating_sub(1);
         let flash_rect = Rect::new(area.x, flash_y, area.width, 1);
         frame.render_widget(Clear, flash_rect);
+        paint_background(frame, &state.theme, flash_rect);
         let theme = &state.theme;
         let color = if text.contains("failed") {
             theme.status_error

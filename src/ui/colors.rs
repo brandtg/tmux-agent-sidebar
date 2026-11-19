@@ -47,6 +47,13 @@ pub struct ColorTheme {
     pub port: Color,
     pub wait_reason: Color,
     pub selection_bg: Color,
+    /// Opt-in sidebar background painted under every cell of the frame —
+    /// the agent list, popups, and help overlay. `None` (the default)
+    /// leaves cells on the terminal's own background, so transparent
+    /// terminals stay transparent; `Some` is stamped onto the buffer at
+    /// the start of each frame and re-applied after every `Clear`
+    /// widget, which resets cells back to the default background.
+    pub background: Option<Color>,
     pub branch: Color,
     pub badge_danger: Color,
     pub badge_auto: Color,
@@ -101,6 +108,7 @@ impl Default for ColorTheme {
             port: Color::Indexed(246),
             wait_reason: Color::Indexed(221),
             selection_bg: Color::Indexed(239),
+            background: None,
             branch: Color::Indexed(109),
             badge_danger: Color::Indexed(167),
             badge_auto: Color::Indexed(221),
@@ -179,6 +187,12 @@ impl ColorTheme {
             tmux::SIDEBAR_COLOR_ACTIVITY_TIMESTAMP,
             theme.activity_timestamp,
         );
+        // Unlike the palette fields above, an unset (or unparseable)
+        // background means "no background": cells keep the terminal's
+        // own, which is what preserves transparency by default.
+        theme.background = all_opts
+            .get(tmux::SIDEBAR_COLOR_BACKGROUND)
+            .and_then(|s| parse_tmux_color(s));
 
         theme
     }
@@ -533,5 +547,51 @@ mod tests {
         assert_eq!(theme.accent, default_theme.accent);
         assert_eq!(theme.agent_claude, default_theme.agent_claude);
         assert_eq!(theme.border_inactive, default_theme.border_inactive);
+    }
+
+    #[test]
+    fn background_defaults_to_none() {
+        assert_eq!(ColorTheme::default().background, None);
+    }
+
+    #[test]
+    fn from_options_accepts_hex_and_indexed_background() {
+        let mut options = std::collections::HashMap::new();
+        options.insert(
+            tmux::SIDEBAR_COLOR_BACKGROUND.to_string(),
+            "#1e1e2e".to_string(),
+        );
+        assert_eq!(
+            ColorTheme::from_options(&options).background,
+            Some(Color::Rgb(0x1e, 0x1e, 0x2e))
+        );
+
+        options.insert(
+            tmux::SIDEBAR_COLOR_BACKGROUND.to_string(),
+            "236".to_string(),
+        );
+        assert_eq!(
+            ColorTheme::from_options(&options).background,
+            Some(Color::Indexed(236))
+        );
+    }
+
+    #[test]
+    fn from_options_leaves_background_none_for_unset_and_invalid() {
+        // Unset: no option at all.
+        assert_eq!(
+            ColorTheme::from_options(&std::collections::HashMap::new()).background,
+            None
+        );
+        // Invalid values fall back to "no background" too — the default
+        // state is nothing painted, never a guessed color.
+        let mut options = std::collections::HashMap::new();
+        options.insert(
+            tmux::SIDEBAR_COLOR_BACKGROUND.to_string(),
+            "not-a-color".to_string(),
+        );
+        assert_eq!(ColorTheme::from_options(&options).background, None);
+        options.insert(tmux::SIDEBAR_COLOR_BACKGROUND.to_string(), String::new());
+        assert_eq!(ColorTheme::from_options(&options).background, None);
     }
 }

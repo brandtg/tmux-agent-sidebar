@@ -19,6 +19,8 @@ fn test_all_color_theme_defaults() {
     assert_eq!(theme.accent, Color::Indexed(153));
     assert_eq!(theme.border_inactive, Color::Indexed(240));
     assert_eq!(theme.selection_bg, Color::Indexed(239));
+    // Opt-in background: nothing painted unless @sidebar_color_background is set.
+    assert_eq!(theme.background, None);
 
     // Status colors
     assert_eq!(theme.status_running, Color::Indexed(114));

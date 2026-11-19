@@ -305,6 +305,12 @@ pub const SIDEBAR_COLOR_FILE_CHANGE: &str = "@sidebar_color_file_change";
 pub const SIDEBAR_COLOR_PR_LINK: &str = "@sidebar_color_pr_link";
 pub const SIDEBAR_COLOR_SECTION_TITLE: &str = "@sidebar_color_section_title";
 pub const SIDEBAR_COLOR_ACTIVITY_TIMESTAMP: &str = "@sidebar_color_activity_timestamp";
+/// Opt-in sidebar background color. Unset (the default) leaves cells on
+/// the terminal's own background, so transparent terminals keep showing
+/// through; a 256-color index or `#RRGGBB` hex paints the whole sidebar —
+/// the agent list, popups, and help overlay included. Parsed by
+/// `ui::colors::ColorTheme::from_options` at startup.
+pub const SIDEBAR_COLOR_BACKGROUND: &str = "@sidebar_color_background";
 
 pub const SIDEBAR_ICON_SET: &str = "@sidebar_icon_set";
 pub const SIDEBAR_ICON_RUNNING: &str = "@sidebar_icon_running";
