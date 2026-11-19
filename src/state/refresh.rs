@@ -2339,7 +2339,12 @@ mod tests {
         let mut state = AppState::new("%99".into());
         let fetched_at = std::time::Instant::now();
         state.focus_state.focused_pane_id = Some("%2".into());
-        state.focus_state.focus_written_at = Some(std::time::Instant::now());
+        // A nanosecond after the listing: ordering must hold by
+        // construction, not by the clock advancing between two
+        // `Instant::now()` calls — on Apple Silicon the monotonic
+        // counter ticks every ~42ns, so adjacent calls can land in the
+        // same tick and an equality would read the listing as fresh.
+        state.focus_state.focus_written_at = Some(fetched_at + std::time::Duration::from_nanos(1));
 
         state.apply_session_snapshot(
             Vec::new(),
@@ -2374,7 +2379,12 @@ mod tests {
         // The jump dropped the flag and stamped the write; the stale
         // listing still claims the sidebar pane is active.
         state.focus_state.sidebar_focused = false;
-        state.focus_state.focus_written_at = Some(std::time::Instant::now());
+        // A nanosecond after the listing: ordering must hold by
+        // construction, not by the clock advancing between two
+        // `Instant::now()` calls — on Apple Silicon the monotonic
+        // counter ticks every ~42ns, so adjacent calls can land in the
+        // same tick and an equality would read the listing as fresh.
+        state.focus_state.focus_written_at = Some(fetched_at + std::time::Duration::from_nanos(1));
 
         let snapshot = TmuxSnapshot {
             sessions: Vec::new(),
