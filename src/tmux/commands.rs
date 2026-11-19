@@ -206,6 +206,31 @@ pub fn select_pane(pane_id: &str) {
     let _ = run_tmux(&argv);
 }
 
+/// Switch the invoking tmux client to `session`'s window `index` — the
+/// click action for a window header row (`index:name`, the
+/// `@sidebar_session_windows` / `@sidebar_worktree_windows` level; the
+/// label is tmux's own window selector, so the click does what the
+/// text says). Same chain as [`select_pane`] minus the pane:
+/// `switch-client` first moves the client to the session (needed when
+/// the target lives in another session, a no-op when it is already
+/// there), then `select-window` picks the window inside it — chaining
+/// both matters, because `switch-client` alone would land on the
+/// session's last-active window, which may not be the header the user
+/// clicked. The window keeps its own active pane, so no
+/// `select-pane` follows.
+pub fn switch_window(session: &str, index: i64) {
+    let window_target = format!("{session}:{index}");
+    let _ = run_tmux(&[
+        "switch-client",
+        "-t",
+        session,
+        ";",
+        "select-window",
+        "-t",
+        &window_target,
+    ]);
+}
+
 /// Test-only seam that makes every `run_tmux` call fail for the current
 /// thread until the guard is dropped. Used to simulate a tmux server that
 /// is unreachable (restart, socket hiccup) without spawning a real tmux.

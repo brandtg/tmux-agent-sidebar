@@ -28,7 +28,7 @@ pub use focus::{Focus, FocusState};
 pub use global::{GlobalState, GroupBy, TodoScope};
 pub use layout::{
     FrameLayout, GroupHeaderTarget, GroupStart, HyperlinkOverlay, OVERVIEW_BUTTON_WIDTH,
-    RepoSpawnTarget, RowTarget, SpawnRemoveTarget, TodoRowTarget,
+    RepoSpawnTarget, RowTarget, SpawnRemoveTarget, TodoRowTarget, WindowHeaderTarget,
 };
 pub(crate) use notices::debug_forced_display;
 pub(crate) use notices::parse_enabled_agents;
@@ -1177,6 +1177,46 @@ mod tests {
         state.handle_mouse_click(5, 5); // row 5 → line_index = (5-1) = 4 → card 1, second line
         assert_eq!(state.global.selected_pane_row, 1);
         assert_eq!(state.focus_state.focused_pane_id.as_deref(), Some("%11"));
+    }
+
+    #[test]
+    fn mouse_click_on_window_header_jumps_to_the_window() {
+        // Window headers (`index:name`, the session_windows /
+        // worktree_windows level) are non-rows: a click must neither
+        // move the cursor nor activate a pane, but jump the tmux client
+        // to the window the header names.
+        let mut state = AppState::new("%99".into());
+        state.layout.pane_row_targets = vec![RowTarget {
+            pane_id: "%1".into(),
+            is_window: false,
+        }];
+        // line 0 = group header, line 1 = window header, line 2 = blank
+        // spacer, line 3 = agent row.
+        state.layout.line_to_row = vec![None, None, None, Some(0)];
+        state.layout.window_header_targets = vec![WindowHeaderTarget {
+            rect: ratatui::layout::Rect::new(0, 1, 40, 1),
+            session_name: "main".into(),
+            window_index: 3,
+        }];
+        state.scrolls.panes.offset = 0;
+        state.global.selected_pane_row = 0;
+
+        state.handle_mouse_click(1, 4); // row 1 → line_index 0 → the window header
+
+        assert_eq!(
+            state.global.selected_pane_row, 0,
+            "the jump must not move the cursor"
+        );
+        assert!(
+            state.focus_state.focus_written_at.is_some(),
+            "the click must route to the window jump"
+        );
+
+        // A click on a line with no target and no row (the blank
+        // spacer) does nothing at all.
+        state.focus_state.focus_written_at = None;
+        state.handle_mouse_click(3, 4); // row 3 → line_index 2 → blank
+        assert!(state.focus_state.focus_written_at.is_none());
     }
 
     #[test]

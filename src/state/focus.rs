@@ -282,6 +282,25 @@ impl AppState {
         crate::cli::toggle::cmd_toggle(&["--create-only".to_string(), window_id, pane_path]);
     }
 
+    /// Jump the tmux client to a window, clicked via its header row
+    /// (`index:name`, the `@sidebar_session_windows` /
+    /// `@sidebar_worktree_windows` level). Unlike
+    /// [`Self::activate_selected_pane`] this names no pane — the window
+    /// keeps its own active pane — and summons no sidebar: the header
+    /// is a jump between windows the user already has, and the
+    /// after-select-window hook signals this sidebar for an instant
+    /// refresh the same way any other window switch does. The cursor
+    /// stays put too: window headers are not selectable rows, so a
+    /// click on one must not silently move the selection.
+    pub fn jump_to_window(&mut self, session_name: &str, window_index: i64) {
+        tmux::switch_window(session_name, window_index);
+        // Stamp AFTER the switch returns, same rule as the pane jump: a
+        // listing captured while the switch was running still shows the
+        // pre-click client state and must not replay it over the focus
+        // state the refresh is about to observe.
+        self.focus_state.focus_written_at = Some(std::time::Instant::now());
+    }
+
     /// Toggle the user's inbox flag (`@sidebar_flagged`) on the
     /// currently selected row — agent panes and non-agent window rows
     /// alike; a selection with no row behind it (header, empty list)
@@ -545,6 +564,34 @@ mod tests {
         state.activate_selected_pane();
 
         assert!(state.focus_state.sidebar_focused);
+    }
+
+    // ─── jump_to_window ──────────────────────────────────────────────
+
+    #[test]
+    fn jump_to_window_stamps_the_focus_write_without_touching_the_cursor() {
+        let _tmux_down = crate::tmux::test_fail_tmux::install();
+        let mut state = AppState::new("%99".into());
+        state.global.selected_pane_row = 2;
+        state.focus_state.focus_written_at = None;
+
+        state.jump_to_window("main", 3);
+
+        assert_eq!(
+            state.global.selected_pane_row, 2,
+            "window headers are not selectable rows: a click on one must \
+             not move the cursor"
+        );
+        assert_eq!(
+            state.focus_state.focused_pane_id, None,
+            "the jump names no pane — the window keeps its own active pane"
+        );
+        assert!(
+            state.focus_state.focus_written_at.is_some(),
+            "the client switch must stamp the freshness marker so a \
+             listing captured mid-switch cannot replay the pre-click \
+             client state"
+        );
     }
 
     // ─── toggle_selected_flag ────────────────────────────────────────

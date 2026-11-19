@@ -1,13 +1,16 @@
 use ratatui::layout::Rect;
 
 use super::{REMOVE_MARKER_HIT_WIDTH, SPAWN_BUTTON};
-use crate::state::{AppState, GroupHeaderTarget, RepoSpawnTarget, SpawnRemoveTarget};
+use crate::state::{
+    AppState, GroupHeaderTarget, RepoSpawnTarget, SpawnRemoveTarget, WindowHeaderTarget,
+};
 
 pub(super) fn materialize(
     state: &mut AppState,
     pending_spawn: Vec<(usize, String, String)>,
     pending_remove: Vec<(usize, u16, String)>,
     pending_header: Vec<(usize, String)>,
+    pending_window_header: Vec<(usize, String, i64)>,
     scroll_offset: usize,
     list_area: Rect,
 ) {
@@ -78,6 +81,28 @@ pub(super) fn materialize(
             })
         })
         .collect();
+
+    // Window header rows (`index:name`): the whole row jumps the tmux
+    // client to that window — same full-row convention as the group
+    // header's fold target. The two never share a line, so no slice
+    // priority applies between them.
+    state.layout.window_header_targets = pending_window_header
+        .into_iter()
+        .filter_map(|(line_idx, session_name, window_index)| {
+            if line_idx < scroll_offset {
+                return None;
+            }
+            let screen_row = (line_idx - scroll_offset) as u16;
+            if screen_row >= list_area.height {
+                return None;
+            }
+            Some(WindowHeaderTarget {
+                rect: Rect::new(list_area.x, list_area.y + screen_row, list_area.width, 1),
+                session_name,
+                window_index,
+            })
+        })
+        .collect();
 }
 
 #[cfg(test)]
@@ -102,6 +127,7 @@ mod tests {
         materialize(
             &mut state,
             vec![(0, "repo".into(), "/tmp/repo".into())],
+            Vec::new(),
             Vec::new(),
             Vec::new(),
             0,
@@ -136,6 +162,7 @@ mod tests {
             Vec::new(),
             vec![(2, marker_col, "%42".into())],
             Vec::new(),
+            Vec::new(),
             0,
             list_area,
         );
@@ -165,6 +192,7 @@ mod tests {
             ],
             vec![(0, 20, "%above".into()), (5, 20, "%visible".into())],
             vec![(0, "above".into()), (5, "visible".into())],
+            Vec::new(),
             3,
             list_area,
         );
@@ -190,6 +218,7 @@ mod tests {
                 (15, "outside".into(), "/repo/outside".into()),
             ],
             vec![(0, 20, "%inside".into()), (15, 20, "%outside".into())],
+            Vec::new(),
             Vec::new(),
             0,
             list_area,
@@ -218,9 +247,15 @@ mod tests {
             rect: Rect::new(0, 0, 1, 1),
             group_name: "stale".into(),
         }];
+        state.layout.window_header_targets = vec![WindowHeaderTarget {
+            rect: Rect::new(0, 0, 1, 1),
+            session_name: "stale".into(),
+            window_index: 0,
+        }];
 
         materialize(
             &mut state,
+            Vec::new(),
             Vec::new(),
             Vec::new(),
             Vec::new(),
@@ -231,6 +266,7 @@ mod tests {
         assert!(state.layout.repo_spawn_targets.is_empty());
         assert!(state.layout.spawn_remove_targets.is_empty());
         assert!(state.layout.group_header_targets.is_empty());
+        assert!(state.layout.window_header_targets.is_empty());
     }
 
     #[test]
@@ -243,6 +279,7 @@ mod tests {
             Vec::new(),
             Vec::new(),
             vec![(2, "backend".into())],
+            Vec::new(),
             0,
             list_area,
         );
@@ -255,6 +292,42 @@ mod tests {
         assert_eq!(
             target.rect,
             Rect::new(list_area.x, list_area.y + 2, list_area.width, 1)
+        );
+    }
+
+    #[test]
+    fn materialize_places_window_header_targets_across_the_full_row() {
+        let mut state = AppState::new("%0".into());
+        let list_area = test_list_area();
+
+        materialize(
+            &mut state,
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            vec![(3, "main".into(), 1), (9, "dev".into(), 4)],
+            0,
+            list_area,
+        );
+
+        assert_eq!(state.layout.window_header_targets.len(), 2);
+        let (first, second) = (
+            &state.layout.window_header_targets[0],
+            &state.layout.window_header_targets[1],
+        );
+        assert_eq!(first.session_name, "main");
+        assert_eq!(first.window_index, 1);
+        assert_eq!(second.session_name, "dev");
+        assert_eq!(second.window_index, 4);
+        // Same full-row geometry as the fold target: the whole
+        // `index:name` line jumps to the window.
+        assert_eq!(
+            first.rect,
+            Rect::new(list_area.x, list_area.y + 3, list_area.width, 1)
+        );
+        assert_eq!(
+            second.rect,
+            Rect::new(list_area.x, list_area.y + 9, list_area.width, 1)
         );
     }
 }
