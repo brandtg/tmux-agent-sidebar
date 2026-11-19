@@ -351,11 +351,20 @@ impl AppState {
     }
 
     pub fn open_spawn_input_from_selection(&mut self) {
-        let Some(pane) = self.selected_pane() else {
+        let Some(target) = self
+            .layout
+            .pane_row_targets
+            .get(self.global.selected_pane_row)
+        else {
             self.set_flash("spawn: no pane selected");
             return;
         };
-        let pane_id = pane.pane_id.clone();
+        if target.is_window {
+            let pane_id = target.pane_id.clone();
+            self.open_spawn_input_from_window_row(&pane_id);
+            return;
+        }
+        let pane_id = target.pane_id.clone();
         let Some(group) = self
             .repo_groups
             .iter()
@@ -375,6 +384,41 @@ impl AppState {
         let name = group.name.clone();
         // Anchor the popup directly below the repo header row so it
         // matches what the mouse `+` click flow does.
+        let anchor = self
+            .layout
+            .repo_spawn_targets
+            .iter()
+            .find(|t| t.repo_name == name)
+            .map(|t| t.rect.y);
+        self.open_spawn_input_for_repo(name, root, anchor);
+    }
+
+    /// Spawn anchored on a window row: a non-agent pane (shell, nvim,
+    /// dev server) that renders via `other_windows` rather than
+    /// `repo_groups`. The row's git info pins the repo, and the display
+    /// name comes from the repo group the row renders under — so `n`
+    /// works wherever the cursor can sit, matching how Enter jumps to
+    /// both row kinds.
+    fn open_spawn_input_from_window_row(&mut self, pane_id: &str) {
+        let Some((repo_key, git)) = self.other_windows.iter().find_map(|(repo_key, windows)| {
+            windows
+                .iter()
+                .find(|w| w.pane_id == pane_id)
+                .map(|w| (repo_key.clone(), w.git_info.clone()))
+        }) else {
+            self.set_flash("spawn: could not find repo group for selection");
+            return;
+        };
+        let Some(root) = git.repo_root.clone() else {
+            self.set_flash("spawn: selected pane is not in a git repo");
+            return;
+        };
+        let name = self
+            .repo_groups
+            .iter()
+            .find(|g| crate::group::repo_group_key(g) == repo_key)
+            .map(|g| g.name.clone())
+            .unwrap_or_else(|| crate::group::path_basename(&repo_key).to_string());
         let anchor = self
             .layout
             .repo_spawn_targets

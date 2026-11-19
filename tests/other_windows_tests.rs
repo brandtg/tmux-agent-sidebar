@@ -737,3 +737,60 @@ fn window_task_clears_across_sessions_when_tmux_attention_is_none() {
         "when tmux @pane_attention is None, stale finish in other sessions is cleared"
     );
 }
+
+#[test]
+fn spawn_opens_from_a_window_row_via_the_rows_git_info() {
+    let pane = make_pane(AgentType::Claude, PaneStatus::Idle);
+    let mut state = make_state(vec![]);
+    state.repo_groups = vec![make_repo_group("project", vec![pane])];
+    state.repo_groups[0].panes[0].1.repo_root = Some("/home/user/project".into());
+    state.global.show_windows = true;
+    state.other_windows.insert(
+        "/home/user/project".into(),
+        vec![OtherWindow {
+            window_id: "@5".into(),
+            window_index: 0,
+            window_name: "nvim".into(),
+            window_active: false,
+            session_name: "main".into(),
+            session_attached: true,
+            attention: tmux_agent_sidebar::tmux::PaneAttention::None,
+            pane_id: "%11".into(),
+            pane_active: true,
+            pane_pid: None,
+            command: "nvim".into(),
+            command_args: None,
+            path: "/home/user/project".into(),
+            git_info: PaneGitInfo {
+                repo_root: Some("/home/user/project".into()),
+                ..PaneGitInfo::default()
+            },
+            status: WindowStatus::Busy,
+            pane_title: String::new(),
+            flagged: false,
+        }],
+    );
+    state.rebuild_row_targets();
+    // Target order mirrors the render order: agent row first, window
+    // rows after (same window index). The nvim row is target index 1.
+    assert!(state.layout.pane_row_targets[1].is_window);
+    state.global.selected_pane_row = 1;
+
+    state.open_spawn_input_from_selection();
+
+    assert!(
+        state.is_spawn_input_open(),
+        "n on a window row must open the spawn popup"
+    );
+    match &state.popup {
+        tmux_agent_sidebar::state::PopupState::SpawnInput {
+            target_repo,
+            target_repo_root,
+            ..
+        } => {
+            assert_eq!(target_repo, "project");
+            assert_eq!(target_repo_root, "/home/user/project");
+        }
+        other => panic!("expected SpawnInput popup, got {other:?}"),
+    }
+}

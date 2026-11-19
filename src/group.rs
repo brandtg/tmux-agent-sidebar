@@ -386,8 +386,9 @@ pub fn ordered_group_rows<'a>(
 }
 
 /// Last path segment of `path`, or the whole path when it has no
-/// separator.
-fn path_basename(path: &str) -> &str {
+/// separator. Also used by the spawn flow to name a window-row group
+/// when no agent-pane group matches the row's repo key.
+pub(crate) fn path_basename(path: &str) -> &str {
     path.rsplit('/').next().unwrap_or(path)
 }
 
