@@ -183,3 +183,85 @@ fn test_theme_default_matches_shell_colors() {
     assert_eq!(theme.session_header, Color::Indexed(39));
     assert_eq!(theme.wait_reason, Color::Indexed(221));
 }
+
+// ─── Opt-in Sidebar Background ──────────────────────────────────────
+
+// `@sidebar_color_background` is opt-in and off by default: every other
+// styled snapshot in this file renders with no bg annotations outside
+// the selection row, which is what keeps transparent terminals
+// transparent. Set, the color must paint under the whole pane — header
+// row and empty gutter included — while the selection wash still layers
+// on top of it.
+#[test]
+fn snapshot_custom_background_paints_every_cell() {
+    use ratatui::style::Color;
+
+    let pane = make_pane(AgentType::Claude, PaneStatus::Idle);
+    let mut state = make_state(vec![SessionInfo {
+        session_name: "main".into(),
+        windows: vec![WindowInfo {
+            window_id: "@1".into(),
+            window_name: "project".into(),
+            window_active: true,
+            auto_rename: false,
+            panes: vec![pane.clone()],
+        }],
+    }]);
+    state.repo_groups = vec![make_repo_group("project", vec![pane])];
+    state.rebuild_row_targets();
+    state.theme.background = Some(Color::Indexed(236));
+
+    insta::assert_snapshot!(render_to_styled_string(&mut state, 28, 10), @"
+    ☰[fg:252,bg:236]  [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236]ⓘ[fg:221,bg:236] [bg:236]▾[fg:252,bg:236]
+    ▾[fg:153,bg:236] [fg:153,bg:236]p[fg:153,bg:236]r[fg:153,bg:236]o[fg:153,bg:236]j[fg:153,bg:236]e[fg:153,bg:236]c[fg:153,bg:236]t[fg:153,bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236]
+    ┃[fg:153,bg:239] [bg:239]○[fg:110,bg:239] [fg:173,bg:239]c[fg:173,bg:239]l[fg:173,bg:239]a[fg:173,bg:239]u[fg:173,bg:239]d[fg:173,bg:239]e[fg:173,bg:239] [bg:239] [bg:239] [bg:239] [bg:239] [bg:239] [bg:239] [bg:239] [bg:239] [bg:239] [bg:239] [bg:239] [bg:239] [bg:239] [bg:239] [bg:239] [bg:239] [bg:239] [bg:239]
+     [bg:236] [bg:236] [fg:255,bg:236] [fg:255,bg:236]W[fg:255,bg:236]a[fg:255,bg:236]i[fg:255,bg:236]t[fg:255,bg:236]i[fg:255,bg:236]n[fg:255,bg:236]g[fg:255,bg:236] [fg:255,bg:236]f[fg:255,bg:236]o[fg:255,bg:236]r[fg:255,bg:236] [fg:255,bg:236]p[fg:255,bg:236]r[fg:255,bg:236]o[fg:255,bg:236]m[fg:255,bg:236]p[fg:255,bg:236]t[fg:255,bg:236]…[fg:255,bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236]
+     [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236]
+     [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236]
+     [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236]
+     [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236]
+     [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236]
+     [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236]
+    ");
+}
+
+// The `?` help overlay is the one surface that starts with a `Clear`
+// widget (which resets cells back to the terminal-default background),
+// so it is where a custom background would visibly fall apart if the
+// re-application after `Clear` regressed: the overlay must carry the
+// custom bg across its border, gutter, and trailing blank rows.
+#[test]
+fn snapshot_custom_background_survives_help_overlay_clear() {
+    use ratatui::style::Color;
+
+    let pane = make_pane(AgentType::Claude, PaneStatus::Idle);
+    let mut state = make_state(vec![SessionInfo {
+        session_name: "main".into(),
+        windows: vec![WindowInfo {
+            window_id: "@1".into(),
+            window_name: "project".into(),
+            window_active: true,
+            auto_rename: false,
+            panes: vec![pane.clone()],
+        }],
+    }]);
+    state.repo_groups = vec![make_repo_group("project", vec![pane])];
+    state.rebuild_row_targets();
+    state.theme.background = Some(Color::Indexed(236));
+    state.toggle_help_popup();
+
+    insta::assert_snapshot!(render_to_styled_string(&mut state, 28, 12), @"
+    ╭[fg:153,bg:236] [fg:153,bg:236]s[fg:153,bg:236]h[fg:153,bg:236]o[fg:153,bg:236]r[fg:153,bg:236]t[fg:153,bg:236]c[fg:153,bg:236]u[fg:153,bg:236]t[fg:153,bg:236]s[fg:153,bg:236] [fg:153,bg:236]·[fg:153,bg:236] [fg:153,bg:236]e[fg:153,bg:236]s[fg:153,bg:236]c[fg:153,bg:236] [fg:153,bg:236]t[fg:153,bg:236]o[fg:153,bg:236] [fg:153,bg:236]c[fg:153,bg:236]l[fg:153,bg:236]o[fg:153,bg:236]s[fg:153,bg:236]e[fg:153,bg:236] [fg:153,bg:236]╮[fg:153,bg:236]
+    │[fg:153,bg:236] [fg:153,bg:236,bold]l[fg:153,bg:236,bold]i[fg:153,bg:236,bold]s[fg:153,bg:236,bold]t[fg:153,bg:236,bold] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236]│[fg:153,bg:236]
+    │[fg:153,bg:236] [fg:255,bg:236]j[fg:255,bg:236] [fg:255,bg:236]/[fg:255,bg:236] [fg:255,bg:236]k[fg:255,bg:236] [fg:255,bg:236]/[fg:255,bg:236] [fg:255,bg:236]↑[fg:255,bg:236] [fg:255,bg:236]/[fg:255,bg:236] [fg:255,bg:236]↓[fg:255,bg:236] [fg:255,bg:236] [fg:255,bg:236]M[fg:252,bg:236]o[fg:252,bg:236]v[fg:252,bg:236]e[fg:252,bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236]│[fg:153,bg:236]
+    │[fg:153,bg:236] [fg:255,bg:236] [fg:255,bg:236] [fg:255,bg:236] [fg:255,bg:236] [fg:255,bg:236] [fg:255,bg:236] [fg:255,bg:236] [fg:255,bg:236] [fg:255,bg:236] [fg:255,bg:236] [fg:255,bg:236] [fg:255,bg:236] [fg:255,bg:236] [fg:255,bg:236] [fg:255,bg:236] [fg:255,bg:236]s[fg:252,bg:236]e[fg:252,bg:236]l[fg:252,bg:236]e[fg:252,bg:236]c[fg:252,bg:236]t[fg:252,bg:236]i[fg:252,bg:236]o[fg:252,bg:236]n[fg:252,bg:236] [bg:236]│[fg:153,bg:236]
+    │[fg:153,bg:236] [fg:255,bg:236]g[fg:255,bg:236] [fg:255,bg:236]/[fg:255,bg:236] [fg:255,bg:236]G[fg:255,bg:236] [fg:255,bg:236] [fg:255,bg:236] [fg:255,bg:236] [fg:255,bg:236] [fg:255,bg:236] [fg:255,bg:236] [fg:255,bg:236] [fg:255,bg:236] [fg:255,bg:236] [fg:255,bg:236]J[fg:252,bg:236]u[fg:252,bg:236]m[fg:252,bg:236]p[fg:252,bg:236] [fg:252,bg:236]t[fg:252,bg:236]o[fg:252,bg:236] [bg:236] [bg:236] [bg:236]│[fg:153,bg:236]
+    │[fg:153,bg:236] [fg:255,bg:236] [fg:255,bg:236] [fg:255,bg:236] [fg:255,bg:236] [fg:255,bg:236] [fg:255,bg:236] [fg:255,bg:236] [fg:255,bg:236] [fg:255,bg:236] [fg:255,bg:236] [fg:255,bg:236] [fg:255,bg:236] [fg:255,bg:236] [fg:255,bg:236] [fg:255,bg:236] [fg:255,bg:236]t[fg:252,bg:236]o[fg:252,bg:236]p[fg:252,bg:236] [fg:252,bg:236]/[fg:252,bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236]│[fg:153,bg:236]
+    │[fg:153,bg:236] [fg:255,bg:236] [fg:255,bg:236] [fg:255,bg:236] [fg:255,bg:236] [fg:255,bg:236] [fg:255,bg:236] [fg:255,bg:236] [fg:255,bg:236] [fg:255,bg:236] [fg:255,bg:236] [fg:255,bg:236] [fg:255,bg:236] [fg:255,bg:236] [fg:255,bg:236] [fg:255,bg:236] [fg:255,bg:236]b[fg:252,bg:236]o[fg:252,bg:236]t[fg:252,bg:236]t[fg:252,bg:236]o[fg:252,bg:236]m[fg:252,bg:236] [bg:236] [bg:236] [bg:236] [bg:236]│[fg:153,bg:236]
+    │[fg:153,bg:236] [fg:255,bg:236]P[fg:255,bg:236]g[fg:255,bg:236]U[fg:255,bg:236]p[fg:255,bg:236] [fg:255,bg:236]/[fg:255,bg:236] [fg:255,bg:236]P[fg:255,bg:236]g[fg:255,bg:236]D[fg:255,bg:236]n[fg:255,bg:236] [fg:255,bg:236] [fg:255,bg:236] [fg:255,bg:236] [fg:255,bg:236]P[fg:252,bg:236]a[fg:252,bg:236]g[fg:252,bg:236]e[fg:252,bg:236] [fg:252,bg:236]t[fg:252,bg:236]h[fg:252,bg:236]e[fg:252,bg:236] [bg:236] [bg:236]│[fg:153,bg:236]
+    │[fg:153,bg:236] [fg:255,bg:236] [fg:255,bg:236] [fg:255,bg:236] [fg:255,bg:236] [fg:255,bg:236] [fg:255,bg:236] [fg:255,bg:236] [fg:255,bg:236] [fg:255,bg:236] [fg:255,bg:236] [fg:255,bg:236] [fg:255,bg:236] [fg:255,bg:236] [fg:255,bg:236] [fg:255,bg:236] [fg:255,bg:236]l[fg:252,bg:236]i[fg:252,bg:236]s[fg:252,bg:236]t[fg:252,bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236]│[fg:153,bg:236]
+    │[fg:153,bg:236] [fg:255,bg:236]a[fg:255,bg:236] [fg:255,bg:236] [fg:255,bg:236] [fg:255,bg:236] [fg:255,bg:236] [fg:255,bg:236] [fg:255,bg:236] [fg:255,bg:236] [fg:255,bg:236] [fg:255,bg:236] [fg:255,bg:236] [fg:255,bg:236] [fg:255,bg:236] [fg:255,bg:236] [fg:255,bg:236]N[fg:252,bg:236]e[fg:252,bg:236]x[fg:252,bg:236]t[fg:252,bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236]│[fg:153,bg:236]
+    │[fg:153,bg:236] [fg:255,bg:236] [fg:255,bg:236] [fg:255,bg:236] [fg:255,bg:236] [fg:255,bg:236] [fg:255,bg:236] [fg:255,bg:236] [fg:255,bg:236] [fg:255,bg:236] [fg:255,bg:236] [fg:255,bg:236] [fg:255,bg:236] [fg:255,bg:236] [fg:255,bg:236] [fg:255,bg:236] [fg:255,bg:236]a[fg:252,bg:236]t[fg:252,bg:236]t[fg:252,bg:236]e[fg:252,bg:236]n[fg:252,bg:236]t[fg:252,bg:236]i[fg:252,bg:236]o[fg:252,bg:236]n[fg:252,bg:236] [bg:236]│[fg:153,bg:236]
+    ╰[fg:153,bg:236]─[fg:153,bg:236]─[fg:153,bg:236]─[fg:153,bg:236]─[fg:153,bg:236]─[fg:153,bg:236]─[fg:153,bg:236]─[fg:153,bg:236]─[fg:153,bg:236]─[fg:153,bg:236]─[fg:153,bg:236]─[fg:153,bg:236]─[fg:153,bg:236]─[fg:153,bg:236]─[fg:153,bg:236]─[fg:153,bg:236]─[fg:153,bg:236]─[fg:153,bg:236]─[fg:153,bg:236]─[fg:153,bg:236]─[fg:153,bg:236]─[fg:153,bg:236]─[fg:153,bg:236]─[fg:153,bg:236]─[fg:153,bg:236]─[fg:153,bg:236]─[fg:153,bg:236]╯[fg:153,bg:236]
+    ");
+}

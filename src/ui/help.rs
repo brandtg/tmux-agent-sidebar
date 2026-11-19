@@ -7,6 +7,7 @@ use ratatui::{
 };
 
 use crate::state::AppState;
+use crate::ui::paint_background;
 use crate::ui::text::{display_width, truncate_to_width, wrap_flow};
 
 /// The `?` overlay's content, grouped like Google's shortcut sheet: a
@@ -154,6 +155,7 @@ pub(in crate::ui) fn render_help_popup(frame: &mut Frame, state: &mut AppState, 
         ));
     let inner = block.inner(area);
     frame.render_widget(Clear, area);
+    paint_background(frame, &state.theme, area);
     frame.render_widget(block, area);
 
     frame.render_widget(Paragraph::new(lines).scroll((scroll, 0)), inner);

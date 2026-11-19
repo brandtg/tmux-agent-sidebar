@@ -58,6 +58,7 @@ Most options must be set **before** loading the plugin in your `tmux.conf`. Colo
 | `@sidebar_color_accent`    | `153`&nbsp;(pale sky blue) | Active pane marker, focused repo header, repo popup border — the brand color |
 | `@sidebar_color_session`   | `39`&nbsp;(blue)          | Session name                                                                                            |
 | `@sidebar_color_selection` | `239`&nbsp;(dark gray)    | Selected row background                                                                                 |
+| `@sidebar_color_background` | unset          | Opt-in sidebar background. Unset keeps the terminal's own background — transparent terminals stay transparent. Set a 256-color index or `#RRGGBB` hex to paint the whole sidebar, popups and help overlay included |
 
 ## Agent colors
 
@@ -151,6 +152,9 @@ set -g @agent-sidebar-default-agent codex
 set -g @sidebar_color_accent 117
 set -g @sidebar_color_agent_claude "#d97757"
 set -g @sidebar_color_agent_opencode 39
+# Opt-in sidebar background — leave unset to keep the terminal's own
+# (transparent terminals stay transparent)
+# set -g @sidebar_color_background "#1e1e2e"
 
 # Icons
 set -g @sidebar_icon_set nerd
