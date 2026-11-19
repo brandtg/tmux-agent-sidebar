@@ -26,6 +26,16 @@ pub(crate) trait SpawnEnv {
     fn worktree_remove(&self, repo: &str, worktree_path: &str) -> Result<(), String>;
     fn branch_delete(&self, repo: &str, branch: &str) -> Result<(), String>;
     fn new_window(&self, session: &str, cwd: &str, name: &str) -> Result<(String, String), String>;
+    /// Split `target_pane` so the new pane sits to its left at `percent`
+    /// of its width, starting in `cwd`, without changing the active pane.
+    /// Returns the new pane id. The spawn / resume flows degrade to the
+    /// single-pane layout (agent takes over the target pane) on error.
+    fn split_window_left(
+        &self,
+        target_pane: &str,
+        cwd: &str,
+        percent: u32,
+    ) -> Result<String, String>;
     fn kill_window(&self, window_id: &str) -> Result<(), String>;
     fn set_window_option(&self, window: &str, key: &str, value: &str) -> Result<(), String>;
     fn send_command(&self, target: &str, command: &str) -> Result<(), String>;
@@ -68,6 +78,14 @@ impl SpawnEnv for RealEnv {
     }
     fn new_window(&self, session: &str, cwd: &str, name: &str) -> Result<(String, String), String> {
         tmux::new_window(session, cwd, name)
+    }
+    fn split_window_left(
+        &self,
+        target_pane: &str,
+        cwd: &str,
+        percent: u32,
+    ) -> Result<String, String> {
+        tmux::split_window_left(target_pane, cwd, percent)
     }
     fn kill_window(&self, window_id: &str) -> Result<(), String> {
         tmux::kill_window(window_id)

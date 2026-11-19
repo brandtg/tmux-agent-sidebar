@@ -3,6 +3,13 @@ pub const DEFAULT_WORKTREE_DIR: &str = ".worktrees";
 pub const DEFAULT_AGENT: &str = "claude";
 pub const DEFAULT_MODE: &str = "default";
 
+/// Width of the agent pane as a percentage of the pane it is split from
+/// at spawn / resume time, leaving the rest of the window as a blank
+/// shell the user can work in. The sidebar pane is added separately by
+/// the after-new-window hook on the far left, so the agent ends up with
+/// roughly a third of the screen right of the sidebar.
+pub const AGENT_PANE_PERCENT: u32 = 33;
+
 pub const AGENT_OPTION: &str = "@agent-sidebar-default-agent";
 pub const BRANCH_PREFIX_OPTION: &str = "@agent-sidebar-branch-prefix";
 pub const WORKTREE_DIR_OPTION: &str = "@agent-sidebar-worktree-dir";
