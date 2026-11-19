@@ -11,6 +11,11 @@ const SUBPROCESS_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[derive(Debug, Default, Clone)]
 pub struct PaneProcessSnapshot {
+    /// Listening ports found in each scanned pane's process tree. Empty
+    /// for a pane whose tree held no listener — but also for *every*
+    /// pane when the lsof probe failed, which consumers must hold over
+    /// one sweep instead of reading as "the listener died" (see
+    /// `AppState::apply_process_snapshot`).
     pub ports_by_pane: HashMap<String, Vec<u16>>,
     pub command_by_pane: HashMap<String, String>,
     pub live_agent_panes: HashSet<String>,
@@ -44,11 +49,26 @@ pub struct PaneScanTarget {
     pub kind: PaneKind,
 }
 
-fn run_command(cmd: &str, args: &[&str]) -> Option<String> {
-    let mut command = Command::new(cmd);
-    command.args(args);
+/// Whether an lsof exit status carries usable listening-port output.
+///
+/// lsof encodes the result in its exit code: 0 = listeners found and
+/// printed, 1 = none found — a valid empty scan, and the common case on
+/// a quiet box. Anything else (2+, or `None` from a signal kill on the
+/// timeout path) means the probe itself failed and must not read as
+/// "no listeners anywhere".
+fn lsof_status_usable(status: &std::process::ExitStatus) -> bool {
+    matches!(status.code(), Some(0) | Some(1))
+}
+
+/// Run the `lsof` listening-port probe and return its raw output.
+/// `None` is reserved for probe failure (spawn error, timeout, error
+/// exit) so the caller can tell "no listeners" apart from "could not
+/// look" — see [`lsof_status_usable`].
+fn run_lsof() -> Option<String> {
+    let mut command = Command::new("lsof");
+    command.args(["-iTCP", "-sTCP:LISTEN", "-nP", "-F", "pn"]);
     let output = subprocess::run_with_timeout(&mut command, SUBPROCESS_TIMEOUT).ok()?;
-    if output.status.success() {
+    if lsof_status_usable(&output.status) {
         Some(String::from_utf8_lossy(&output.stdout).to_string())
     } else {
         None
@@ -134,16 +154,6 @@ fn parse_lsof_listening_ports(lsof_output: &str) -> Vec<(u32, u16)> {
     out
 }
 
-/// Listening ports from lsof output, or an empty set when lsof is
-/// unavailable or failed — a missing binary degrades to "no port data",
-/// never to a failed scan.
-fn listening_ports(lsof_output: Option<String>) -> Vec<(u32, u16)> {
-    match lsof_output {
-        Some(output) => parse_lsof_listening_ports(&output),
-        None => Vec::new(),
-    }
-}
-
 /// Scan per-pane process state for the provided pane targets.
 /// The lookup starts from each pane's PID and walks the process tree, so it can
 /// pick up child dev servers spawned by an agent shell and detect when the
@@ -189,15 +199,24 @@ pub(crate) fn scan_pane_processes(targets: &[PaneScanTarget]) -> Option<PaneProc
         }
     }
 
-    // lsof is optional: a missing or failed binary only means "no
-    // listening-port data", never "the whole scan failed". Returning
-    // None here would also freeze dead-scan streaks (the caller drops
-    // None snapshots), silently disabling teardown on hosts without
-    // lsof. The process-tree data above is the load-bearing half.
-    let listening = listening_ports(run_command(
-        "lsof",
-        &["-iTCP", "-sTCP:LISTEN", "-nP", "-F", "pn"],
-    ));
+    // lsof is optional: a failed probe only means "no listening-port
+    // data this sweep", never "the whole scan failed". Returning None
+    // here would freeze dead-scan streaks (the caller drops None
+    // snapshots), silently disabling teardown on hosts without lsof.
+    // The process-tree data above is the load-bearing half. The empty
+    // port set a failed probe produces is survivable at the consumer:
+    // `apply_process_snapshot` holds the previous per-pane badge for a
+    // sweep rather than clearing it, so a transient lsof failure does
+    // not flash every badge on screen.
+    let lsof_output = run_lsof();
+    if lsof_output.is_none() {
+        // A failed probe is indistinguishable from "no ports found" in
+        // the snapshot itself; surface the distinction for flash reports.
+        crate::debug::log("port-scan: lsof probe failed; previous port state holds for one sweep");
+    }
+    let listening = lsof_output
+        .map(|output| parse_lsof_listening_ports(&output))
+        .unwrap_or_default();
 
     let mut ports_by_pane: HashMap<String, BTreeSet<u16>> = HashMap::new();
     for (pid, port) in listening {
@@ -243,15 +262,30 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[test]
-    fn listening_ports_fails_open_when_lsof_is_unavailable() {
-        // A missing/failed lsof yields empty port data, not a failed scan —
-        // the caller must still get a snapshot so dead-scan streaks advance.
-        assert!(listening_ports(None).is_empty());
-        assert_eq!(
-            listening_ports(Some("p1\nn*:3000\n".into())),
-            vec![(1, 3000)]
-        );
+    fn lsof_exit_one_is_a_valid_empty_scan() {
+        use std::os::unix::process::ExitStatusExt;
+        // Exit 0: listeners found and printed.
+        assert!(lsof_status_usable(&std::process::ExitStatus::from_raw(0)));
+        // Exit 1: no listeners matched — a valid empty scan, the common
+        // case on a quiet box, not a probe failure.
+        assert!(lsof_status_usable(&std::process::ExitStatus::from_raw(
+            1 << 8
+        )));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn lsof_error_exit_is_a_probe_failure() {
+        use std::os::unix::process::ExitStatusExt;
+        // Exit 2+: lsof itself failed (bad flags, permission errors).
+        assert!(!lsof_status_usable(&std::process::ExitStatus::from_raw(
+            2 << 8
+        )));
+        // A signal kill (the timeout path SIGKILLs the probe) carries no
+        // exit code and must read as failure, not as empty data.
+        assert!(!lsof_status_usable(&std::process::ExitStatus::from_raw(9)));
     }
 
     #[test]
