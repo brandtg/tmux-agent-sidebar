@@ -10,7 +10,7 @@ Method: parallel review of CI, Cargo metadata, the release pipeline, contributor
 docs, test seams, and the docs tree, with every finding re-checked against the
 current bytes before being recorded here.
 
-Status: **H1, H2, H3 done** — see progress log. H4 open.
+Status: **H1-H4 done** — track complete. See progress log.
 
 ## Why this matters
 
@@ -90,11 +90,11 @@ contributor funnel at all: no CONTRIBUTING.md, no templates, no SECURITY.md.
 
 ## Batch H4 — Testing seams (start after H1)
 
-- [ ] hook.sh end-to-end test: pipe a representative JSON payload per agent
+- [x] hook.sh end-to-end test: pipe a representative JSON payload per agent
       through hook.sh into the CLI and assert the pane-option writes. Today
       hook.sh is only indirectly covered (plugin_hooks_tests.rs:83-88 pins the
       quoting of its command line; no test executes it with a payload).
-- [ ] Consider reusing fixtures/scenarios/common/_lib.sh's `start_sidebar`
+- [x] Consider reusing fixtures/scenarios/common/_lib.sh's `start_sidebar`
       helper (fixtures/scenarios/common/_lib.sh:24) for a real TUI smoke test
       against a scoped server. The helper already exists for capture
       generation; nothing in the test suite reuses it.
@@ -188,3 +188,34 @@ contributor funnel at all: no CONTRIBUTING.md, no templates, no SECURITY.md.
     CONTRIBUTING.md's tmux-safety section now warns about sockets landing
     in the source tree via unscoped tmux calls.
   - make ci green after the Cargo.toml change.
+- 2026-11-18 — Batch H4 complete (worktree h3-metadata, same branch as H3).
+  Details:
+  - tests/hook_pipeline_tests.rs (6 tests, all `#[ignore]`d, serial): the
+    real hook.sh is staged into a fake plugin dir next to the real test
+    binary (exercising hook.sh's own binary-resolution order), then fed
+    per-agent payloads over stdin against a scoped tmux server. Covers
+    claude/codex/opencode session-start identity writes, claude
+    user-prompt-submit → running status, malformed-payload dropping (pane
+    untouched), and the silent-exit-without-TMUX_PANE path. The event names
+    are the hooks.json contract (kebab-case: `claude session-start`), not
+    the upstream trigger names.
+  - tests/toggle_pipeline_tests.rs (2 tests, same pattern): the real binary
+    creates and closes the sidebar split (`@pane_role=sidebar` tagged,
+    focus restored), and `--create-only` creates without stealing focus.
+  - Fixture hygiene learned the hard way: the first version leaked one
+    scoped server per test run (ten+ `hookpipe` and four `togglee2e`
+    servers found and killed by exact verified pid, with the live server
+    excluded by pid). Both fixtures now kill their server in a Drop impl
+    so cleanup always runs. AGENTS.md's hard-rule section gained the
+    TMUX-env trap (manual shells must never run tmux kill-*) and the
+    fixture-ownership rule.
+  - Second isolation gap found and closed: a tmux server sources
+    ~/.tmux.conf at startup even when "scoped" via TMUX_TMPDIR, so the
+    first toggle tests silently inherited the user's plugin conf (its
+    `@sidebar_auto_create off` made --create-only skip — caught because
+    the test asserted the create). Both fixtures now start with
+    `tmux -f /dev/null` and seed the settings they need, which also makes
+    them deterministic on a CI runner with no ~/.tmux.conf. Recorded in
+    AGENTS.md (scoped servers are process-isolated but config-coupled).
+  - make ci green: 1,797 passing (1,787 unit/UI + 2 capture + 8 pipeline),
+    zero leaked servers after the run.
