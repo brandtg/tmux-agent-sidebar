@@ -146,7 +146,7 @@ fn open_split_sidebar(
         "-t",
         window_id,
         "-F",
-        "#{pane_left} #{pane_width} #{pane_id}",
+        "#{pane_left} #{pane_width} #{pane_floating_flag} #{pane_id}",
     ])
     .unwrap_or_default();
 
@@ -1030,34 +1030,59 @@ impl SidebarPosition {
 }
 
 /// Horizontal placement of one pane, parsed from a
-/// `#{pane_left} #{pane_width} #{pane_id}` formatted `list-panes` line.
+/// `#{pane_left} #{pane_width} #{pane_floating_flag} #{pane_id}` formatted
+/// `list-panes` line.
 #[derive(Debug, Eq, PartialEq)]
 struct PaneGeometry {
     left: u32,
     width: u32,
+    /// tmux 3.7+: whether the pane is a floating pane. Empty on tmux <= 3.6
+    /// (the variable does not exist there), which means floating panes
+    /// cannot exist either — parsed as not-floating, the historical shape.
+    floating: bool,
     pane_id: String,
 }
 
 /// Parse a single `list-panes` output line into a [`PaneGeometry`].
-/// Returns `None` for malformed lines so callers can simply skip them.
+/// Two line shapes exist across tmux versions: four fields with the
+/// floating flag (3.7+), and three fields where the flag variable expanded
+/// empty (<= 3.6, the flag collapses out of the whitespace-separated
+/// format). The pane id is distinguished by its `%` prefix, which tmux
+/// guarantees for pane ids. Returns `None` for malformed lines so callers
+/// can simply skip them.
 fn parse_pane_geometry(line: &str) -> Option<PaneGeometry> {
     let mut parts = line.split_whitespace();
     let left = parts.next()?.parse().ok()?;
     let width = parts.next()?.parse().ok()?;
-    let pane_id = parts.next()?.to_string();
+    let flag_or_id = parts.next()?;
+    let (floating, pane_id) = if flag_or_id.starts_with('%') {
+        // Flag expanded empty (tmux <= 3.6): this token is the pane id.
+        (false, flag_or_id)
+    } else {
+        let id = parts.next()?;
+        (flag_or_id == "1", id)
+    };
     Some(PaneGeometry {
         left,
         width,
-        pane_id,
+        floating,
+        pane_id: pane_id.to_string(),
     })
 }
 
 /// Pick the pane the sidebar splits from: the leftmost pane for a left
 /// sidebar, or the pane with the largest right edge (`left + width`) for
 /// a right sidebar, so the new pane always lands at the window's outer
-/// edge. Returns `None` when no line of `output` parses as geometry.
+/// edge. Floating panes are never anchors: they report their float
+/// position in `#{pane_left}` (tmux 3.7+), so a pane parked past the
+/// tiled layout would otherwise be picked — and splitting a floating
+/// target creates another floating pane instead of a split sidebar.
+/// Returns `None` when no line of `output` parses as geometry.
 fn target_pane_for_position(output: &str, position: SidebarPosition) -> Option<String> {
-    let panes = output.lines().filter_map(parse_pane_geometry);
+    let panes = output
+        .lines()
+        .filter_map(parse_pane_geometry)
+        .filter(|pane| !pane.floating);
     match position {
         SidebarPosition::Left => panes.min_by_key(|pane| pane.left),
         SidebarPosition::Right => panes.max_by_key(|pane| pane.left.saturating_add(pane.width)),
@@ -1426,6 +1451,67 @@ mod tests {
     }
 
     #[test]
+    fn parse_pane_geometry_reads_both_line_shapes() {
+        // tmux 3.7+: the floating flag is present (0 for tiled panes).
+        assert_eq!(
+            parse_pane_geometry("12 30 0 %2"),
+            Some(PaneGeometry {
+                left: 12,
+                width: 30,
+                floating: false,
+                pane_id: "%2".into()
+            })
+        );
+        // tmux <= 3.6: the flag variable expands empty and collapses out
+        // of the whitespace-separated format, leaving three fields.
+        assert_eq!(
+            parse_pane_geometry("12 30 %2"),
+            Some(PaneGeometry {
+                left: 12,
+                width: 30,
+                floating: false,
+                pane_id: "%2".into()
+            })
+        );
+        // Flag set: the pane floats.
+        assert_eq!(
+            parse_pane_geometry("40 20 1 %7"),
+            Some(PaneGeometry {
+                left: 40,
+                width: 20,
+                floating: true,
+                pane_id: "%7".into()
+            })
+        );
+        assert_eq!(parse_pane_geometry("12 30"), None);
+    }
+
+    #[test]
+    fn target_pane_for_position_never_anchors_a_floating_pane() {
+        // tmux 3.7+ regression guard: floating panes report their float
+        // position in #{pane_left}, so a pane parked past the tiled layout
+        // would win both the leftmost and rightmost-edge comparisons — and
+        // splitting a floating target yields another floating pane instead
+        // of a split sidebar (verified in the T0 spike).
+        let output = "8 30 0 %1\n80 30 1 %2\n10 30 0 %3";
+
+        assert_eq!(
+            target_pane_for_position(output, SidebarPosition::Left),
+            Some("%1".to_string())
+        );
+        assert_eq!(
+            target_pane_for_position(output, SidebarPosition::Right),
+            Some("%3".to_string())
+        );
+        // Only floating panes in the window: no anchor at all (the caller
+        // falls back to splitting the window's active pane).
+        assert_eq!(
+            target_pane_for_position("4 20 1 %9", SidebarPosition::Left),
+            None
+        );
+    }
+
+    #[test]
     fn split_window_flags_match_tmux_side_semantics() {
         assert_eq!(split_window_flags(SidebarPosition::Left), "-hfb");
         assert_eq!(split_window_flags(SidebarPosition::Right), "-hf");
@@ -1513,6 +1599,18 @@ mod tests {
         assert_eq!(layout_dimensions(multi), Some((178, 51)));
         let single = r#"{"V":2,"L":{"t":"p","w":178,"h":51,"x":0,"y":0,"a":true,"i":0,"I":"%0"}}"#;
         assert_eq!(layout_dimensions(single), Some((178, 51)));
+    }
+
+    #[test]
+    fn layout_dimensions_parses_json_layout_with_floating_panes() {
+        // Verbatim 3.8 capture (scoped-server spike): a window whose
+        // layout contains floating panes. Each float is a cell with its
+        // own w/h/x/y plus a `z` stack order; the root still carries the
+        // window size, which is what the stale-snapshot guard reads.
+        let floating = r#"{"V":2,"L":{"t":"v","w":120,"h":40,"x":0,"y":0,"c":[{"t":"p","w":120,"h":40,"x":0,"y":0,"a":true,"i":0,"I":"%0"},{"t":"p","w":38,"h":6,"x":8,"y":12,"i":3,"z":0,"I":"%4"},{"t":"p","w":48,"h":8,"x":4,"y":2,"i":2,"z":1,"I":"%2"},{"t":"p","w":58,"h":10,"x":6,"y":4,"i":1,"z":2,"I":"%1"}]}}"#;
+        assert_eq!(layout_dimensions(floating), Some((120, 40)));
+        assert!(dimensions_match("120x40", floating));
+        assert!(!dimensions_match("100x30", floating));
     }
 
     #[test]
