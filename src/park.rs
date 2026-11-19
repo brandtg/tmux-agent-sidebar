@@ -20,6 +20,7 @@ use std::process::Command;
 use std::time::Duration;
 
 use crate::subprocess;
+use crate::worktree::AGENT_PANE_PERCENT;
 
 /// Deadline for a `sqlite3` store probe — same bound as session.rs, so
 /// a wedged read cannot stall its worker thread.
@@ -465,6 +466,14 @@ fn parse_first_cell(success: bool, stdout: &str) -> Option<String> {
 /// script tmux errors without a real server (same seam as SpawnEnv).
 pub(crate) trait ResumeEnv {
     fn new_window(&self, session: &str, cwd: &str, name: &str) -> Result<(String, String), String>;
+    /// Split `target_pane` so the new pane sits to its left at `percent`
+    /// of its width (same seam as [`crate::worktree::SpawnEnv`]).
+    fn split_window_left(
+        &self,
+        target_pane: &str,
+        cwd: &str,
+        percent: u32,
+    ) -> Result<String, String>;
     fn set_window_option(&self, window: &str, key: &str, value: &str) -> Result<(), String>;
     fn send_command(&self, target: &str, command: &str) -> Result<(), String>;
     fn kill_window(&self, window_id: &str) -> Result<(), String>;
@@ -475,6 +484,14 @@ struct RealResumeEnv;
 impl ResumeEnv for RealResumeEnv {
     fn new_window(&self, session: &str, cwd: &str, name: &str) -> Result<(String, String), String> {
         crate::tmux::new_window(session, cwd, name)
+    }
+    fn split_window_left(
+        &self,
+        target_pane: &str,
+        cwd: &str,
+        percent: u32,
+    ) -> Result<String, String> {
+        crate::tmux::split_window_left(target_pane, cwd, percent)
     }
     fn set_window_option(&self, window: &str, key: &str, value: &str) -> Result<(), String> {
         crate::tmux::set_window_option(window, key, value)
@@ -509,6 +526,20 @@ pub(crate) fn launch_resume<E: ResumeEnv>(env: &E, req: &LaunchRequest) -> Resul
     let (pane_id, window_id) = env
         .new_window(req.session, req.cwd, req.window_name)
         .map_err(|e| format!("tmux: {e}"))?;
+    // Same three-pane layout as the worktree spawn: the resumed agent
+    // gets a one-third pane left of a blank shell; the sidebar hook
+    // adds its pane by geometry. A failed split degrades to the
+    // single-pane layout — the resume command takes over the original
+    // pane and the launch still succeeds.
+    let agent_pane = match env.split_window_left(&pane_id, req.cwd, AGENT_PANE_PERCENT) {
+        Ok(pane) => pane,
+        Err(e) => {
+            crate::debug::log(&format!(
+                "resume: agent-pane split failed, single-pane fallback: {e}"
+            ));
+            pane_id.clone()
+        }
+    };
     for (key, value) in [
         (RESUMED_OPTION, req.session_id),
         (RESUME_AGENT_OPTION, req.agent),
@@ -518,7 +549,7 @@ pub(crate) fn launch_resume<E: ResumeEnv>(env: &E, req: &LaunchRequest) -> Resul
             return Err(format!("tmux: failed to set {key}: {e}"));
         }
     }
-    if let Err(e) = env.send_command(&pane_id, req.command) {
+    if let Err(e) = env.send_command(&agent_pane, req.command) {
         let _ = env.kill_window(&window_id);
         return Err(format!("tmux: {e}"));
     }
@@ -1102,6 +1133,7 @@ mod tests {
         calls: std::cell::RefCell<Vec<String>>,
         fail_set_window_option: bool,
         fail_send_command: bool,
+        fail_split: bool,
     }
 
     impl FakeEnv {
@@ -1110,6 +1142,7 @@ mod tests {
                 calls: std::cell::RefCell::new(Vec::new()),
                 fail_set_window_option: false,
                 fail_send_command: false,
+                fail_split: false,
             }
         }
         fn log(&self, s: String) {
@@ -1129,6 +1162,19 @@ mod tests {
         ) -> Result<(String, String), String> {
             self.log(format!("new_window({session},{cwd},{name})"));
             Ok(("%9".into(), "@9".into()))
+        }
+        fn split_window_left(
+            &self,
+            target_pane: &str,
+            cwd: &str,
+            percent: u32,
+        ) -> Result<String, String> {
+            self.log(format!("split_window_left({target_pane},{cwd},{percent})"));
+            if self.fail_split {
+                Err("split failed".into())
+            } else {
+                Ok("%8".into())
+            }
         }
         fn set_window_option(&self, window: &str, key: &str, value: &str) -> Result<(), String> {
             self.log(format!("set_window_option({window},{key}={value})"));
@@ -1172,10 +1218,30 @@ mod tests {
             calls,
             vec![
                 "new_window(sess,/repo,claude-resume-f4ac0121)".to_string(),
+                "split_window_left(%9,/repo,33)".to_string(),
                 format!("set_window_option(@9,{RESUMED_OPTION}=f4ac0121-58e7)"),
                 format!("set_window_option(@9,{RESUME_AGENT_OPTION}=claude)"),
-                "send_command(%9,claude --resume f4ac0121)".to_string(),
+                "send_command(%8,claude --resume f4ac0121)".to_string(),
             ]
+        );
+    }
+
+    #[test]
+    fn launch_degrades_to_single_pane_when_the_split_fails() {
+        let env = FakeEnv {
+            fail_split: true,
+            ..FakeEnv::new()
+        };
+        launch_resume(&env, &launch_req("/repo")).expect("split failure must not fail the launch");
+        let calls = env.calls();
+        assert!(calls.contains(&"split_window_left(%9,/repo,33)".to_string()));
+        assert!(
+            calls.contains(&"send_command(%9,claude --resume f4ac0121)".to_string()),
+            "resume command takes over the original pane on split failure: {calls:?}"
+        );
+        assert!(
+            !calls.contains(&"kill_window(@9)".to_string()),
+            "a usable window must not be rolled back: {calls:?}"
         );
     }
 
@@ -1227,7 +1293,7 @@ mod tests {
             calls
                 .last()
                 .unwrap()
-                .starts_with("send_command(%9,claude --resume f4ac0121-58e7)"),
+                .starts_with("send_command(%8,claude --resume f4ac0121-58e7)"),
             "the command is rebuilt, never item text: {calls:?}"
         );
     }

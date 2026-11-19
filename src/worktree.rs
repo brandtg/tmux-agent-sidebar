@@ -9,9 +9,9 @@ mod markers;
 mod slug;
 
 pub use config::{
-    AGENT_OPTION, AGENTS, BRANCH_PREFIX_OPTION, CLAUDE_MODES, CODEX_MODES, DEFAULT_AGENT,
-    DEFAULT_BRANCH_PREFIX, DEFAULT_MODE, DEFAULT_WORKTREE_DIR, OPENCODE_MODES, RemoveMode,
-    WORKTREE_DIR_OPTION, agent_command, modes_for,
+    AGENT_OPTION, AGENT_PANE_PERCENT, AGENTS, BRANCH_PREFIX_OPTION, CLAUDE_MODES, CODEX_MODES,
+    DEFAULT_AGENT, DEFAULT_BRANCH_PREFIX, DEFAULT_MODE, DEFAULT_WORKTREE_DIR, OPENCODE_MODES,
+    RemoveMode, WORKTREE_DIR_OPTION, agent_command, modes_for,
 };
 pub use flow::{SpawnRequest, removal_warnings, remove, spawn};
 pub use markers::{

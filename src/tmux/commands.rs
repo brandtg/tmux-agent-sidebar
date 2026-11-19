@@ -158,6 +158,38 @@ pub fn new_window(session: &str, cwd: &str, name: &str) -> Result<(String, Strin
     Ok((pane, window))
 }
 
+/// Split `target_pane` horizontally, inserting the new pane to its left
+/// at `percent` percent of the target's width, starting in `cwd`, without
+/// changing the active pane (`-d`). Returns the new pane id. Used by the
+/// spawn / resume flows to give the agent a one-third pane next to a
+/// blank shell; the sidebar pane is added separately by the
+/// after-new-window hook, which targets panes by geometry rather than
+/// focus, so it lands on the far left whether it fires before or after
+/// this split.
+pub fn split_window_left(target_pane: &str, cwd: &str, percent: u32) -> Result<String, String> {
+    let percent = percent.to_string();
+    let out = run_tmux_capture(&[
+        "split-window",
+        "-h",
+        "-b",
+        "-d",
+        "-p",
+        &percent,
+        "-t",
+        target_pane,
+        "-c",
+        cwd,
+        "-P",
+        "-F",
+        "#{pane_id}",
+    ])?;
+    let pane = out.trim();
+    if pane.is_empty() {
+        return Err("split-window returned no pane id".to_string());
+    }
+    Ok(pane.to_string())
+}
+
 /// Set a user option at window scope. Needed so markers survive through
 /// split panes that inherit from the window. Returns an error so the
 /// spawn flow can roll back when a marker the remove path relies on

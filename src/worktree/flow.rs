@@ -1,6 +1,6 @@
 use std::path::{Component, Path, PathBuf};
 
-use super::config::{DEFAULT_BRANCH_PREFIX, RemoveMode};
+use super::config::{AGENT_PANE_PERCENT, DEFAULT_BRANCH_PREFIX, RemoveMode};
 use super::env::{RealEnv, SpawnEnv};
 use super::markers::{
     SPAWNED_BRANCH_OPTION, SPAWNED_FROM_OPTION, SPAWNED_OPTION, SPAWNED_WORKTREE_OPTION,
@@ -71,6 +71,23 @@ pub(crate) fn spawn_with<E: SpawnEnv>(env: &E, req: &SpawnRequest) -> Result<Str
             compose_spawn_error(format!("tmux: {e}"), rb)
         })?;
 
+    // Three-pane layout: split the fresh window so the agent gets a
+    // one-third pane on the left and the original shell keeps the right
+    // two-thirds; the after-new-window hook then adds the sidebar pane
+    // left of the leftmost pane (it targets panes by geometry, not
+    // focus, so hook-vs-split ordering cannot misplace it). A failed
+    // split degrades to the single-pane layout — the agent takes over
+    // the original pane and the spawn still succeeds.
+    let agent_pane = match env.split_window_left(&pane_id, worktree, AGENT_PANE_PERCENT) {
+        Ok(pane) => pane,
+        Err(e) => {
+            crate::debug::log(&format!(
+                "spawn: agent-pane split failed, single-pane fallback: {e}"
+            ));
+            pane_id.clone()
+        }
+    };
+
     // Window scope so sub panes (e.g. Claude Code subagents split from
     // the original) inherit the markers via tmux's option fall-through.
     for (key, value) in [
@@ -89,7 +106,7 @@ pub(crate) fn spawn_with<E: SpawnEnv>(env: &E, req: &SpawnRequest) -> Result<Str
     }
 
     if let Err(e) = env.send_command(
-        &pane_id,
+        &agent_pane,
         &super::config::agent_command(&req.agent, &req.mode),
     ) {
         let rb = rollback_spawn(env, repo, worktree, &branch, Some(&window_id));
@@ -242,6 +259,7 @@ mod env_tests {
         set_option_calls: RefCell<usize>,
         worktree_dir: Option<String>,
         fail_set_option_at: Option<usize>,
+        fail_split: bool,
         fail_kill_window: bool,
         fail_worktree_remove: bool,
         fail_branch_delete: bool,
@@ -316,6 +334,19 @@ mod env_tests {
             self.log(format!("new_window({session},{cwd},{name})"));
             Ok(("%1".into(), "@1".into()))
         }
+        fn split_window_left(
+            &self,
+            target_pane: &str,
+            cwd: &str,
+            percent: u32,
+        ) -> Result<String, String> {
+            self.log(format!("split_window_left({target_pane},{cwd},{percent})"));
+            if self.fail_split {
+                Err("split_window_left failed".into())
+            } else {
+                Ok("%2".into())
+            }
+        }
         fn kill_window(&self, window_id: &str) -> Result<(), String> {
             self.log(format!("kill_window({window_id})"));
             if self.fail_kill_window {
@@ -374,11 +405,39 @@ mod env_tests {
             "worktree_add(/r,/r/.worktrees/task,agent/task)"
         ));
         assert!(has_call(&calls, "new_window(sess,/r/.worktrees/task,task)"));
+        assert!(
+            has_call(&calls, "split_window_left(%1,/r/.worktrees/task,33)"),
+            "agent pane split left of the original shell: {calls:?}"
+        );
         assert_eq!(*env.set_option_calls.borrow(), 4);
-        assert!(has_call(&calls, "send_command(%1,claude"));
+        assert!(
+            has_call(&calls, "send_command(%2,claude"),
+            "agent command goes to the split agent pane: {calls:?}"
+        );
         assert!(
             !has_call(&calls, "kill_window("),
             "no rollback on happy path"
+        );
+    }
+
+    #[test]
+    fn spawn_degrades_to_single_pane_when_the_split_fails() {
+        let env = FakeEnv {
+            fail_split: true,
+            ..FakeEnv::default()
+        };
+        let branch =
+            spawn_with(&env, &sample_req()).expect("split failure must not fail the spawn");
+        assert_eq!(branch, "agent/task");
+        let calls = env.calls();
+        assert!(has_call(&calls, "split_window_left("));
+        assert!(
+            has_call(&calls, "send_command(%1,claude"),
+            "agent takes over the original pane on split failure: {calls:?}"
+        );
+        assert!(
+            !has_call(&calls, "kill_window("),
+            "a usable window must not be rolled back: {calls:?}"
         );
     }
 
@@ -615,6 +674,9 @@ mod env_tests {
             fn new_window(&self, _s: &str, _c: &str, _n: &str) -> Result<(String, String), String> {
                 self.0.log("new_window(fail)".into());
                 Err("new_window failed".into())
+            }
+            fn split_window_left(&self, _t: &str, _c: &str, _p: u32) -> Result<String, String> {
+                self.0.split_window_left(_t, _c, _p)
             }
             fn kill_window(&self, w: &str) -> Result<(), String> {
                 self.0.kill_window(w)
