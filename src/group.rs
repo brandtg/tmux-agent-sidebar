@@ -475,7 +475,7 @@ pub fn group_panes_by_repo(
     }
 
     let mut result: Vec<RepoGroup> = groups.into_values().collect();
-    result.sort_by(|a, b| display_sort_key(&a.name).cmp(&display_sort_key(&b.name)));
+    result.sort_by_key(|a| display_sort_key(&a.name));
     result
 }
 
@@ -540,7 +540,7 @@ pub fn group_panes_by_session(
     }
 
     let mut result: Vec<RepoGroup> = groups.into_values().collect();
-    result.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    result.sort_by_key(|a| a.name.to_lowercase());
     result
 }
 
@@ -1314,10 +1314,13 @@ mod tests {
             false,
         );
 
+        // repo_root is canonicalized on resolve, so on macOS the tempdir's
+        // /var/folders prefix reads back as /private/var/folders.
+        let expected = std::fs::canonicalize(&repo).unwrap();
         assert_eq!(groups[0].name, "alpha");
         assert_eq!(
             groups[0].panes[0].1.repo_root.as_deref(),
-            Some(repo.to_str().unwrap()),
+            Some(expected.to_str().unwrap()),
             "branch labels still resolve; only the bucketing changes"
         );
     }
@@ -1532,8 +1535,8 @@ mod tests {
         // window, then a second agent in the next window. The list must
         // read (agent, server1, server2, agent2), not (agent, agent2,
         // server1, server2).
-        let panes = vec![agent_pane("%1", "main", 0), agent_pane("%2", "main", 1)];
-        let windows = vec![
+        let panes = [agent_pane("%1", "main", 0), agent_pane("%2", "main", 1)];
+        let windows = [
             other_window("%10", "main", 0),
             other_window("%11", "main", 0),
             other_window("%12", "main", 1),
@@ -1550,8 +1553,8 @@ mod tests {
         // A process-only window keeps its slot in the window order even
         // though it contributes no agent row, and within a session
         // windows order by index: beta's window 1 precedes its window 5.
-        let panes = vec![agent_pane("%1", "beta", 5), agent_pane("%2", "alpha", 0)];
-        let windows = vec![
+        let panes = [agent_pane("%1", "beta", 5), agent_pane("%2", "alpha", 0)];
+        let windows = [
             other_window("%10", "beta", 1),
             other_window("%11", "alpha", 0),
         ];
@@ -1567,8 +1570,8 @@ mod tests {
         // Unit-test panes carry no window position; all rows share the
         // empty key, so the stable sort preserves input order — agents
         // first, then windows.
-        let panes = vec![agent_pane("%1", "", 0), agent_pane("%2", "", 0)];
-        let windows = vec![other_window("%10", "", 0)];
+        let panes = [agent_pane("%1", "", 0), agent_pane("%2", "", 0)];
+        let windows = [other_window("%10", "", 0)];
         let pane_refs: Vec<_> = panes.iter().collect();
         let window_refs: Vec<_> = windows.iter().collect();
 
@@ -1582,9 +1585,9 @@ mod tests {
         // `window_key` changes, so an agent row and the `OtherWindow`
         // rows of the same window must report the same key — and the
         // header must be able to take the window name from either kind.
-        let mut panes = vec![agent_pane("%1", "main", 3)];
+        let mut panes = [agent_pane("%1", "main", 3)];
         panes[0].0.window_name = "api".into();
-        let windows = vec![other_window("%10", "main", 3)];
+        let windows = [other_window("%10", "main", 3)];
         let pane_refs: Vec<_> = panes.iter().collect();
         let window_refs: Vec<_> = windows.iter().collect();
 

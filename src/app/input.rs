@@ -282,10 +282,8 @@ pub(super) fn handle_key_event(key: KeyEvent, state: &mut AppState) -> bool {
         KeyCode::Char('?') => {
             state.toggle_help_popup();
         }
-        KeyCode::Enter => {
-            if state.focus_state.focus == Focus::Panes {
-                state.activate_selected_pane();
-            }
+        KeyCode::Enter if state.focus_state.focus == Focus::Panes => {
+            state.activate_selected_pane();
         }
         _ => {}
     }
