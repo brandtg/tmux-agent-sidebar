@@ -51,8 +51,7 @@ fn wrap_with_cursor(
     let home = lines
         .iter()
         .enumerate()
-        .filter(|(_, (_, start))| *start <= cursor)
-        .next_back();
+        .rfind(|(_, (_, start))| *start <= cursor);
     if let Some((index, (_, start))) = home {
         let line = &mut result[index].0;
         let len = line.chars().count();

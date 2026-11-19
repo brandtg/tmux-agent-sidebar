@@ -2,6 +2,7 @@
 name = "tmux-agent-sidebar"
 version = "1.3.3"
 edition = "2024"
+rust-version = "1.85"
 license = "MIT"
 description = "A tmux sidebar that monitors AI coding agents across all windows and sessions in real-time"
 repository = "https://github.com/brandtg/tmux-agent-sidebar"

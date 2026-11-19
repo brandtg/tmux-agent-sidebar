@@ -87,9 +87,14 @@ tmux-agent-sidebar todo add "claude --resume f4ac0121-58e7-4d9c-a5c6-e0db65c6c49
 
 ```sh
 cargo build --release    # build the binary tmux loads
-cargo test               # unit + UI snapshot tests
-cargo clippy && cargo fmt --check
+make ci                  # everything CI runs: fmt-check, clippy, tests, shellcheck, tmux integration tests
+cargo test -- --ignored --test-threads=1  # just the tmux integration tests (need a local tmux)
+node --test .opencode/plugins/tmux-agent-sidebar.test.mjs  # OpenCode bridge suite
 ```
+
+[CONTRIBUTING.md](CONTRIBUTING.md) covers the workflow end to end — testing
+conventions, the tmux safety rules for scoped test servers, and how to try
+local builds.
 
 To pick up local builds, copy the release binary into the installed plugin (the entry script prefers bin/ over target/release/), then toggle the sidebar off → on. Do not symlink the checkout over the installed plugin: whichever stale bin/ binary a previous wizard run downloaded would keep shadowing your build.
 

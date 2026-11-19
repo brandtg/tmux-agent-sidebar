@@ -5,13 +5,85 @@ on:
     branches: [main]
   pull_request:
 
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: true
+
 jobs:
   test:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - run: cargo test
-      - run: cargo clippy
+      - run: cargo clippy --all-targets -- -D warnings
       - run: cargo fmt --check
       - name: OpenCode bridge suite
         run: node --test .opencode/plugins/tmux-agent-sidebar.test.mjs
+
+  # darwin is a first-class release target (release.yml builds darwin-aarch64
+  # and darwin-x86_64), and the crate carries macOS-specific behavior (ad-hoc
+  # codesign handling, arboard clipboard, libc paths). Run the test suite
+  # there so platform breakage surfaces at PR time, not at release time.
+  test-macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - run: cargo test
+
+  # The shell layer (hook.sh, install-wizard.sh, shell-exit.sh, the entry
+  # script, the fixture library) is the primary fresh-install failure
+  # surface. Lint it with the runner's preinstalled shellcheck (the ubuntu
+  # image ships 0.9.0; no install step needed). Note: runner issue
+  # actions/runner#3667 reports shellcheck hanging on pathological inputs on
+  # ubuntu-24.04 — none of these files approach that size, and a hang would
+  # fail the job visibly rather than silently.
+  lint-shell:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: shellcheck (style severity)
+        run: |
+          shellcheck --severity=style \
+            hook.sh install-wizard.sh shell-exit.sh tmux-agent-sidebar.tmux \
+            scripts/build-assets.sh fixtures/scenarios/common/_lib.sh
+
+  # The capture integration tests run the real binary against a throwaway
+  # scoped tmux server (TMUX_TMPDIR isolation, kill-server cleanup) — safe on
+  # a headless runner. tmux is not preinstalled on ubuntu runners, hence the
+  # apt step. Single-threaded because the tests mutate process-global state
+  # (TMUX_TMPDIR) and share the scoped server.
+  tmux-integration:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install tmux
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends tmux
+      - run: cargo test -- --ignored --test-threads=1
+
+  # deploy-website.yml's push trigger is deliberately off (Pages is disabled),
+  # so a PR can otherwise break the Astro build with nothing noticing. Validate
+  # the build on every PR; deploys remain manual.
+  website-build:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: website
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: website/.node-version
+          cache: npm
+          cache-dependency-path: website/package-lock.json
+      - run: npm ci
+      - run: npm run build
+
+  # RustSec advisory scan against the committed Cargo.lock. Advisory-only
+  # failures; Renovate's vulnerability alerts complement this with a PR flow.
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: rustsec/audit-check@69366f33c96575abad1ee0dba8212993eecbe998 # v2.0.0
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}

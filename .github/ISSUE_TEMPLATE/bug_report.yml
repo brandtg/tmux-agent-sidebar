@@ -1,0 +1,79 @@
+name: Bug report
+description: Something broke or behaves unexpectedly
+labels: [bug]
+body:
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: What you saw, what you expected, and whether it reproduces every time.
+    validations:
+      required: true
+  - type: input
+    id: sidebar-version
+    attributes:
+      label: Sidebar version
+      description: Output of `tmux-agent-sidebar --version`
+      placeholder: v1.3.3
+    validations:
+      required: true
+  - type: input
+    id: tmux-version
+    attributes:
+      label: tmux version
+      description: Output of `tmux -V` — behavior differs across tmux 3.2 / 3.3 / 3.8
+      placeholder: tmux 3.8
+    validations:
+      required: true
+  - type: dropdown
+    id: os
+    attributes:
+      label: OS
+      options:
+        - macOS (Apple Silicon)
+        - macOS (Intel)
+        - Linux
+        - Other
+    validations:
+      required: true
+  - type: dropdown
+    id: agents
+    attributes:
+      label: Which agents were in use?
+      description: Multi-select applies — check everything running when it happened.
+      options:
+        - Claude Code
+        - Codex
+        - OpenCode
+        - Hermes
+        - Antigravity (agy)
+        - Not agent-related
+      multiple: true
+    validations:
+      required: true
+  - type: input
+    id: terminal
+    attributes:
+      label: Terminal
+      description: e.g. Ghostty, WezTerm, iTerm2, Alacritty — matters for color/rendering reports
+      placeholder: Ghostty
+    validations:
+      required: false
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: Minimal steps, including how the sidebar is hosted (split pane or popup) if relevant.
+    validations:
+      required: false
+  - type: textarea
+    id: debug-log
+    attributes:
+      label: Debug trace
+      description: |
+        If a maintainer asks for it, or you already have it: run with
+        `TMUX_AGENT_SIDEBAR_DEBUG=1` and check
+        `$XDG_RUNTIME_DIR/tmux-agent-sidebar-debug.log` (fallback /tmp).
+        Paste the relevant tail here.
+    validations:
+      required: false

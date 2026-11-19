@@ -2,7 +2,6 @@
 .astro
 .claude/*.lock
 .hermes
-*.pending-snap
 # Test tooling artifacts: insta pending snapshots (inline snapshots land
 # as .<source-file>.pending-snap next to the source; stored snapshots as
 # *.snap.new next to the .snap), plus tmux test-server logs.
@@ -11,7 +10,6 @@
 tmux-client-*.log
 tmux-server-*.log
 .worktrees
-.opencode/worktrees
 /bin
 /target
 dist

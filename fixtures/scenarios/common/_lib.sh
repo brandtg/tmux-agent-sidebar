@@ -1,3 +1,4 @@
+# shellcheck shell=bash
 # Shared shell library sourced by every scenario.sh.
 #
 # Provides:
@@ -172,7 +173,8 @@ build_layout() {
     tmux set-option -t "$MAIN_PANE" -p @pane_subagents \
         "Explore:a1b2c3de,Plan:d4e5f6ab,Bash:deadbeef"
 
-    export MAIN_LOG="$(activity_dir)/tmux-agent-activity${MAIN_PANE/\%/_}.log"
+    MAIN_LOG="$(activity_dir)/tmux-agent-activity${MAIN_PANE/\%/_}.log"
+    export MAIN_LOG
     : > "$MAIN_LOG" && chmod 600 "$MAIN_LOG"
 
     # Off-screen window hosting the other agents. Idle panes are
@@ -224,7 +226,8 @@ build_layout() {
             started_s=137
         run_fake_agent "$PANE_HERMES" hermes
 
-        export HERMES_LOG="$(activity_dir)/tmux-agent-activity${PANE_HERMES/\%/_}.log"
+        HERMES_LOG="$(activity_dir)/tmux-agent-activity${PANE_HERMES/\%/_}.log"
+        export HERMES_LOG
         : > "$HERMES_LOG" && chmod 600 "$HERMES_LOG"
 
         export PANE_BACKGROUND="${extras[2]}"
@@ -290,7 +293,8 @@ build_layout() {
     tmux select-pane -t "$focus_pane"
 
     export FOCUSED_PANE="$focus_pane"
-    export FOCUSED_LOG="$(activity_dir)/tmux-agent-activity${focus_pane/\%/_}.log"
+    FOCUSED_LOG="$(activity_dir)/tmux-agent-activity${focus_pane/\%/_}.log"
+    export FOCUSED_LOG
     : > "$FOCUSED_LOG" && chmod 600 "$FOCUSED_LOG"
 }
 
@@ -354,7 +358,8 @@ _seed_pane() {
 # would append ORS and push a full-height stream up by one).
 paint_stream() {
     local pane="$1" stream="$2" agent="${3:-claude}"
-    local painted="$TMUX_DIR/$(basename "$stream").painted"
+    local painted
+    painted="$TMUX_DIR/$(basename "$stream").painted"
     awk '{ gsub(/\\e/, "\033"); if (NR > 1) printf "\n"; printf "%s", $0 }' \
         < "$stream" > "$painted"
     tmux respawn-pane -k -t "$pane" \
