@@ -309,15 +309,15 @@ fn handle_todo_key(key: KeyEvent, state: &mut AppState) -> bool {
             // The Ctrl aliases must be separate arms: a guard on an
             // or-pattern applies to every alternative, which once left
             // plain Home/End matching nothing.
-            KeyCode::Home => state.todo_edit_cursor_home(),
-            KeyCode::Char('a') if ctrl => state.todo_edit_cursor_home(),
-            KeyCode::End => state.todo_edit_cursor_end(),
-            KeyCode::Char('e') if ctrl => state.todo_edit_cursor_end(),
+            KeyCode::Home => state.todo_input_cursor_home(),
+            KeyCode::Char('a') if ctrl => state.todo_input_cursor_home(),
+            KeyCode::End => state.todo_input_cursor_end(),
+            KeyCode::Char('e') if ctrl => state.todo_input_cursor_end(),
             // Word-wise navigation, readline style.
-            KeyCode::Left if ctrl => state.todo_edit_cursor_word_left(),
-            KeyCode::Right if ctrl => state.todo_edit_cursor_word_right(),
-            KeyCode::Left => state.todo_edit_cursor_move(-1),
-            KeyCode::Right => state.todo_edit_cursor_move(1),
+            KeyCode::Left if ctrl => state.todo_input_cursor_word_left(),
+            KeyCode::Right if ctrl => state.todo_input_cursor_word_right(),
+            KeyCode::Left => state.todo_input_cursor_move(-1),
+            KeyCode::Right => state.todo_input_cursor_move(1),
             KeyCode::Char('u') if ctrl => state.todo_input_clear(),
             KeyCode::Char('w') if ctrl => state.todo_input_pop_word(),
             KeyCode::Char(c) if !ctrl => state.todo_input_push_char(c),
@@ -335,6 +335,20 @@ fn handle_todo_key(key: KeyEvent, state: &mut AppState) -> bool {
             // Google Tasks' backspace: on the empty new-task line the
             // caret returns to the previous task, insert mode intact.
             KeyCode::Backspace => state.todo_input_backspace(),
+            // The same cursor movement the editor gets: plain arrows,
+            // Home/End plus their readline aliases, and word-wise
+            // Ctrl-Left/Right. Delete removes the char under the
+            // cursor. Separate Ctrl arms, same or-pattern trap as the
+            // editor match above.
+            KeyCode::Home => state.todo_input_cursor_home(),
+            KeyCode::Char('a') if ctrl => state.todo_input_cursor_home(),
+            KeyCode::End => state.todo_input_cursor_end(),
+            KeyCode::Char('e') if ctrl => state.todo_input_cursor_end(),
+            KeyCode::Left if ctrl => state.todo_input_cursor_word_left(),
+            KeyCode::Right if ctrl => state.todo_input_cursor_word_right(),
+            KeyCode::Left => state.todo_input_cursor_move(-1),
+            KeyCode::Right => state.todo_input_cursor_move(1),
+            KeyCode::Delete => state.todo_input_delete_char(),
             KeyCode::Char('u') if ctrl => state.todo_input_clear(),
             KeyCode::Char('w') if ctrl => state.todo_input_pop_word(),
             KeyCode::Char(c) if !ctrl => state.todo_input_push_char(c),
@@ -1357,6 +1371,69 @@ mod tests {
             vec!["a", "b", "hi"],
             "the buffered text stays"
         );
+    }
+
+    #[test]
+    fn arrows_navigate_the_add_line() {
+        let mut state = todo_fixture();
+        handle_key_event(key(KeyCode::Char('t')), &mut state);
+        handle_key_event(key(KeyCode::Char('a')), &mut state);
+        for c in "hello".chars() {
+            handle_key_event(key(KeyCode::Char(c)), &mut state);
+        }
+        assert_eq!(state.todos.adding_cursor, 5);
+
+        handle_key_event(key(KeyCode::Left), &mut state);
+        handle_key_event(key(KeyCode::Left), &mut state);
+        assert_eq!(state.todos.adding_cursor, 3);
+        handle_key_event(key(KeyCode::Right), &mut state);
+        assert_eq!(state.todos.adding_cursor, 4);
+
+        // Home/End and their readline aliases.
+        handle_key_event(key(KeyCode::Home), &mut state);
+        assert_eq!(state.todos.adding_cursor, 0);
+        handle_key_event(key(KeyCode::End), &mut state);
+        assert_eq!(state.todos.adding_cursor, 5);
+        handle_key_event(ctrl_key('a'), &mut state);
+        assert_eq!(state.todos.adding_cursor, 0);
+        handle_key_event(ctrl_key('e'), &mut state);
+        assert_eq!(state.todos.adding_cursor, 5);
+    }
+
+    #[test]
+    fn typing_lands_at_the_add_cursor_mid_line() {
+        let mut state = todo_fixture();
+        handle_key_event(key(KeyCode::Char('t')), &mut state);
+        handle_key_event(key(KeyCode::Char('a')), &mut state);
+        for c in "hello".chars() {
+            handle_key_event(key(KeyCode::Char(c)), &mut state);
+        }
+        handle_key_event(key(KeyCode::Left), &mut state);
+        handle_key_event(key(KeyCode::Left), &mut state);
+
+        handle_key_event(key(KeyCode::Char('X')), &mut state);
+
+        assert_eq!(
+            state.todos.adding.as_deref(),
+            Some("helXlo"),
+            "the char inserts at the caret, not at the tail"
+        );
+    }
+
+    #[test]
+    fn delete_removes_the_char_under_the_add_cursor() {
+        let mut state = todo_fixture();
+        handle_key_event(key(KeyCode::Char('t')), &mut state);
+        handle_key_event(key(KeyCode::Char('a')), &mut state);
+        for c in "hello".chars() {
+            handle_key_event(key(KeyCode::Char(c)), &mut state);
+        }
+
+        handle_key_event(key(KeyCode::Home), &mut state);
+        handle_key_event(key(KeyCode::Delete), &mut state);
+
+        assert_eq!(state.todos.adding.as_deref(), Some("ello"));
+        assert_eq!(state.todos.adding_cursor, 0, "the caret stays put");
     }
 
     #[test]

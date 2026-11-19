@@ -6,7 +6,6 @@ use ratatui::{
     widgets::Paragraph,
 };
 
-use super::tail_fit;
 use crate::state::{AppState, Focus, TodoRowTarget};
 use crate::ui::colors::shade_color;
 use crate::ui::text::{display_width, truncate_to_width, wrap_flow, wrap_flow_offsets};
@@ -65,6 +64,63 @@ fn wrap_with_cursor(
         }
     }
     result
+}
+
+/// The add line's visible text plus the cursor's char index into it.
+///
+/// The add line is a single row, so an input wider than it shows a
+/// window of itself, readline style. While the cursor sits inside the
+/// tail window — the default, since typing appends at the end — the
+/// window keeps the text's tail exactly like `tail_fit`, with `…`
+/// marking the hidden head. Arrowing left past the window's start
+/// slides the window so it ends at the cursor: the caret stays pinned
+/// at the right edge, with the hidden head marked the same way and the
+/// tail beyond the caret left for the arrow keys to walk back into.
+fn fit_input_window(input: &str, cursor: usize, max_width: usize) -> (String, usize) {
+    use unicode_width::UnicodeWidthChar;
+    if max_width == 0 {
+        return (String::new(), 0);
+    }
+    let chars: Vec<char> = input.chars().collect();
+    let cursor = cursor.min(chars.len());
+    let total: usize = chars.iter().map(|c| c.width().unwrap_or(0)).sum();
+    if total <= max_width {
+        return (input.to_string(), cursor);
+    }
+    // One column of the budget goes to the `…` marking the hidden side.
+    let budget = max_width - 1;
+    // The tail window: the widest run of trailing chars that fits.
+    let mut start = chars.len();
+    let mut taken = 0usize;
+    for (i, ch) in chars.iter().enumerate().rev() {
+        let w = ch.width().unwrap_or(0);
+        if taken + w > budget {
+            break;
+        }
+        taken += w;
+        start = i;
+    }
+    // The `…` shifts every visible char one position right, so the
+    // cursor's index into the window is its text offset plus one.
+    if start <= cursor {
+        let mut visible = String::from("\u{2026}");
+        visible.extend(chars[start..].iter());
+        return (visible, cursor - start + 1);
+    }
+    // Slide the window left so it ends at the cursor.
+    let mut end = cursor;
+    let mut taken = 0usize;
+    while end > 0 {
+        let w = chars[end - 1].width().unwrap_or(0);
+        if taken + w > budget {
+            break;
+        }
+        taken += w;
+        end -= 1;
+    }
+    let mut visible = String::from("\u{2026}");
+    visible.extend(chars[end..cursor].iter());
+    (visible, cursor - end + 1)
 }
 
 /// Rows the panel needs, clamped to what the agent list can spare.
@@ -334,19 +390,41 @@ pub(super) fn render_todo_panel(frame: &mut Frame, state: &mut AppState, area: R
 
     // Inline add line. New items are appended here; edits happen in
     // place on the item's own rows. The row carries the wash across its
-    // full width; no key hints — `?` documents the flow.
+    // full width; no key hints — `?` documents the flow. The cursor
+    // moves with the arrow keys like the editor's: past the end of the
+    // buffer it is the accent block glyph after the text, over a char
+    // it covers that char in place, so nothing shifts as it moves.
     let mut input_line: Option<usize> = None;
     if let Some(input) = &state.todos.adding {
         input_line = Some(lines.len());
         let bg = row_bg;
-        // "+ " prefix plus the cursor column.
-        let input_text = tail_fit(input, width.saturating_sub(3));
-        let used = 2 + display_width(&input_text) + 1;
-        let mut spans = vec![
-            Span::styled("+ ", accent.bg(bg)),
-            Span::styled(input_text, text_style.bg(bg)),
-            Span::styled("█", accent.bg(bg)),
-        ];
+        // "+ " prefix plus one column for the end-of-buffer glyph.
+        let (visible, cursor) =
+            fit_input_window(input, state.todos.adding_cursor, width.saturating_sub(3));
+        let mut spans = vec![Span::styled("+ ", accent.bg(bg))];
+        let mut used = 2usize;
+        if cursor >= visible.chars().count() {
+            used += display_width(&visible) + 1;
+            spans.push(Span::styled(visible, text_style.bg(bg)));
+            spans.push(Span::styled("█", accent.bg(bg)));
+        } else {
+            let mut chars = visible.chars();
+            let before: String = chars.by_ref().take(cursor).collect();
+            let under: String = chars.by_ref().take(1).collect();
+            let after: String = chars.collect();
+            let before_w = display_width(&before);
+            let under_w = display_width(&under);
+            let after_w = display_width(&after);
+            spans.push(Span::styled(before, text_style.bg(bg)));
+            spans.push(Span::styled(
+                under,
+                text_style.bg(bg).add_modifier(Modifier::REVERSED),
+            ));
+            if !after.is_empty() {
+                spans.push(Span::styled(after, text_style.bg(bg)));
+            }
+            used += before_w + under_w + after_w;
+        }
         if used < width {
             spans.push(Span::styled(
                 " ".repeat(width - used),
@@ -669,6 +747,58 @@ mod tests {
     }
 
     #[test]
+    fn add_line_cursor_covers_the_char_it_sits_on() {
+        // Left twice from the end: the cursor covers the char at its
+        // position in place — the same look as the editor's on-char
+        // cursor — instead of the trailing block glyph.
+        let mut state = AppState::new("%99".into());
+        state.todos.items = vec![TodoItem {
+            text: "Buy milk".into(),
+            done: false,
+        }];
+        state.todos.visible = true;
+        state.focus_state.focus = Focus::Todos;
+        state.begin_todo_add();
+        for c in "hello".chars() {
+            state.todo_input_push_char(c);
+        }
+        state.todo_input_cursor_move(-2);
+        let output = render_panel_styled(&mut state, 40, 4);
+        insta::assert_snapshot!(output, @"
+        ─[fg:153,bold] [fg:153,bold]□[fg:153,bold] [fg:153,bold]t[fg:153,bold]o[fg:153,bold]d[fg:153,bold]o[fg:153,bold]s[fg:153,bold] [fg:153,bold]·[fg:153,bold] [fg:153,bold]1[fg:153,bold]/[fg:153,bold]1[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]
+        [[fg:153,bg:236] [fg:153,bg:236]][fg:153,bg:236] [fg:153,bg:236]B[fg:255,bg:236]u[fg:255,bg:236]y[fg:255,bg:236] [fg:255,bg:236]m[fg:255,bg:236]i[fg:255,bg:236]l[fg:255,bg:236]k[fg:255,bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236]
+        +[fg:153,bg:236] [fg:153,bg:236]h[fg:255,bg:236]e[fg:255,bg:236]l[fg:255,bg:236]l[fg:255,bg:236,rev]o[fg:255,bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236] [bg:236]
+        ");
+    }
+
+    #[test]
+    fn add_line_keeps_the_cursor_visible_when_the_input_overflows() {
+        // The single add row shows a window of an input wider than the
+        // panel: the tail plus `…`, with the end cursor after it. Then
+        // arrowing into the hidden head slides the window so it ends at
+        // the cursor, keeping the caret on screen.
+        let mut state = AppState::new("%99".into());
+        state.todos.visible = true;
+        state.focus_state.focus = Focus::Todos;
+        state.begin_todo_add();
+        for c in "the quick brown fox jumps".chars() {
+            state.todo_input_push_char(c);
+        }
+        let output = render_panel(&mut state, 20, 4);
+        insta::assert_snapshot!(output, @"
+        ─ □ todos · 0/0─────
+        + … brown fox jumps█
+        ");
+
+        state.todo_input_cursor_move(-21);
+        let output = render_panel(&mut state, 20, 4);
+        insta::assert_snapshot!(output, @"
+        ─ □ todos · 0/0─────
+        + …the █
+        ");
+    }
+
+    #[test]
     fn edit_renders_in_place_with_a_trailing_cursor() {
         let mut state = todo_state();
         state.todos.selected = 0;
@@ -690,7 +820,7 @@ mod tests {
         let mut state = todo_state();
         state.todos.selected = 0;
         state.begin_todo_edit();
-        state.todo_edit_cursor_move(-2);
+        state.todo_input_cursor_move(-2);
         state.todo_input_push_char('X');
         let output = render_panel_styled(&mut state, 40, 8);
         insta::assert_snapshot!(output, @"
@@ -707,7 +837,7 @@ mod tests {
         let mut state = todo_state();
         state.todos.selected = 2;
         state.begin_todo_edit();
-        state.todo_edit_cursor_home();
+        state.todo_input_cursor_home();
         let output = render_panel_styled(&mut state, 24, 10);
         insta::assert_snapshot!(output, @"
         ─[fg:153,bold] [fg:153,bold]□[fg:153,bold] [fg:153,bold]t[fg:153,bold]o[fg:153,bold]d[fg:153,bold]o[fg:153,bold]s[fg:153,bold] [fg:153,bold]·[fg:153,bold] [fg:153,bold]2[fg:153,bold]/[fg:153,bold]3[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]─[fg:153,bold]
@@ -761,7 +891,7 @@ mod tests {
         // The cursor covers a char in place — no extra column, so the
         // exactly full line needs no spill row.
         state.begin_todo_edit();
-        state.todo_edit_cursor_move(-2);
+        state.todo_input_cursor_move(-2);
         assert_eq!(panel_height(&state, Rect::new(0, 0, 8, 20), 0), 2);
     }
 
