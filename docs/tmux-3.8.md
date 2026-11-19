@@ -22,9 +22,10 @@ No work needed — recorded so nobody re-investigates:
   both shapes already (src/cli/toggle.rs:336-358).
 - `show -g` decoding covers 3.8's single-quoted values, `\$`, backtick, `\t`,
   doubled backslashes, with verbatim fixtures (src/tmux/options.rs:369-439).
-- `#{q:...}` field quoting: on 3.8, `q:` now escapes `%` (a pane id comes back
-  as `\%0`). The pane-line splitter already unescapes backslashes generically
-  (src/tmux/query.rs:990-1023), so ids decode back to `%0` with no change.
+- `#{q:...}` field quoting: `q:` escapes `%` (a pane id comes back as `\%0`)
+  on every supported version — matrix-verified back to 3.0a, it is not a 3.8
+  change. The pane-line splitter already unescapes backslashes generically
+  (src/tmux/query.rs:990-1023), so ids decode back to `%0` everywhere.
 - Version gating exists twice over: the conf gates 3.2-only hooks with an
   `if-shell 'tmux -V | awk …'` probe on every load (agent-sidebar.conf:273-291),
   and Rust has a probe-once-remember pattern in clipboard.rs
@@ -128,6 +129,38 @@ Findings, per original question:
   OSC 10/11 at attach (byte-verified from the client side), and panes get no
   answer to their own OSC 11 query. T4 is re-scoped accordingly below.
 
+### Backwards compatibility matrix
+
+A Docker harness builds the official release tarballs of every relevant tmux
+and runs the same probe per version (scripts/tmux-matrix/, `docker build -t
+tmux-matrix scripts/tmux-matrix && docker run --rm tmux-matrix`). Verified
+against 3.0a, 3.2a, 3.3a, 3.4, 3.5a, 3.6b, 3.7c (3.8 is the dev machine):
+
+- The conf awk gate classifies correctly across the whole range (rejects
+  3.0a, passes 3.2a+).
+- Unknown format variables expand to empty on every version — so a format
+  field added for 3.8 is safely empty on older tmux, and the pane-line
+  parser's lenient trailing-field reads keep working.
+- `#{q:...}` `%` escaping is long-standing (3.0a), not 3.8-specific.
+- The 36-field pane format resolves on every version.
+- Fallback-path commands exist everywhere: `display-popup`, `split-window
+  -hfb -f`, `run-shell -b`, and the `window-layout-changed` hook name on
+  3.2+ (matching the conf's gate comment).
+- `new-pane`/floating panes exist from tmux 3.7 — NOT 3.8 (3.6b has
+  neither; 3.7c creates `floating=1` panes and its layout strings carry a
+  `<x,y,w,h>` float tail in the classic format). 3.8 is the overhaul: JSON
+  layout format, `-A`/`-O`/`-W` flags, OSC 133 hooks, `set-hook -B`,
+  `capture-pane -I`, themes.
+- `set-hook -B`, `pane-command-started`, `capture-pane -I` are absent on
+  every version below 3.8 (rc 1, "unknown command/flag") — gates must not
+  rely on them silently.
+
+Consequence for T1: the floating-sidebar host stays gated on 3.8 (it builds
+on JSON layouts and the `-A`/`-O` flags), but the split-anchor fix must be
+version-agnostic: filter `#{pane_floating_flag}=1` where the variable exists
+(3.7+), treat empty (<= 3.6) as "no floating panes possible" — which is
+exactly the old behavior.
+
 ### set-hook monitors
 
 - Working syntax: `set-hook -B '@name:@*:#{format}' 'command'` — `what` is a
@@ -202,6 +235,8 @@ through `window-layout-changed`.
 - [x] Spike: `window-zoomed`/`window-unzoomed` fire on zoom toggles;
       `pane-moved` fires on break-pane; `pane-resized` +
       `window-layout-changed` fire on floating-pane create/resize.
+      Compatibility: the `window-layout-changed` hook name registers on every
+      version from 3.2 (matrix-verified), matching the conf gate's comment.
 - [ ] Register window-zoom/unzoom hooks (gated 3.8+) so auto-hide/restore
       reacts to the user's actual zoom action instead of inferring it
       (newest main commit 566eeae infers conditions today).
@@ -269,3 +304,11 @@ live server (foot 1.28): colours=16777216, I/f:RGB=1, RGB in termfeatures.
   selection by `pane_left` must exclude floating panes (3.8 correctness fix).
   Two doc claims corrected: `new-pane` prints nothing without `-P`; no
   `window-swapped` hook exists.
+- 2026-11-18 — Backwards-compatibility matrix built (scripts/tmux-matrix/):
+  tmux 3.0a-3.7c compiled from official tarballs in Docker, same probe per
+  version. Verified: conf gate classification, unknown-format-vars-expand-
+  empty on every version, q: % escaping is long-standing (doc corrected
+  again), 36-field format and all fallback commands work back to 3.0a,
+  window-layout-changed hook name is 3.2+. Boundary pinned: floating panes
+  exist from tmux 3.7 (not 3.8) — T1 gate stays 3.8, anchor fix made
+  version-agnostic (empty flag on <= 3.6 = no filtering = old behavior).
