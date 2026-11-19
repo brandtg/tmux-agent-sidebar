@@ -19,6 +19,10 @@ pub(super) struct CollectedRows {
     /// click target that folds the group. Expanded and collapsed
     /// headers both register; the whole row is the target.
     pub pending_header: Vec<(usize, String)>,
+    /// `(line_idx, session_name, window_index)` for every rendered
+    /// window header (`index:name`) — the click target that jumps the
+    /// tmux client to that window. The whole row is the target.
+    pub pending_window_header: Vec<(usize, String, i64)>,
 }
 
 pub(super) fn collect(state: &AppState, width: u16) -> CollectedRows {
@@ -313,6 +317,7 @@ pub(super) fn collect(state: &AppState, width: u16) -> CollectedRows {
                         focused_window_key.as_ref().is_some_and(|(session, index)| {
                             session.as_str() == key.0 && *index == key.1
                         });
+                    let header_line_idx = collected.lines.len();
                     collected.lines.push(row::window_header_row(
                         key.1,
                         row.window_name(),
@@ -321,6 +326,14 @@ pub(super) fn collect(state: &AppState, width: u16) -> CollectedRows {
                         window_focused,
                     ));
                     collected.line_to_row.push(None);
+                    // The header reads as tmux's own window selector, so
+                    // it is also a click target: the whole row jumps the
+                    // tmux client to that window.
+                    collected.pending_window_header.push((
+                        header_line_idx,
+                        key.0.to_string(),
+                        key.1,
+                    ));
                 }
             }
             match row {
@@ -1049,6 +1062,13 @@ mod tests {
             ],
             "headers are non-rows; row targets keep the interleaved order"
         );
+        // Every rendered window header is also a jump click target,
+        // carrying the (session, window index) the click switches to.
+        assert_eq!(
+            collected.pending_window_header,
+            vec![(1, "main".to_string(), 0), (5, "main".to_string(), 1)],
+            "both window headers must register jump click targets"
+        );
     }
 
     #[test]
@@ -1225,6 +1245,13 @@ mod tests {
                 Some(2), // agent in window 1
             ],
             "headers are non-rows; row targets keep the interleaved order"
+        );
+        // Same jump registration as session mode — the session name
+        // comes from the rows' `tmux_session`, not the group key.
+        assert_eq!(
+            collected.pending_window_header,
+            vec![(1, "main".to_string(), 0), (5, "main".to_string(), 1)],
+            "both window headers must register jump click targets"
         );
     }
 

@@ -662,6 +662,7 @@ pub fn draw_agents(frame: &mut Frame, state: &mut AppState, area: Rect) {
         pending_spawn,
         pending_remove,
         pending_header,
+        pending_window_header,
     } = row_collector::collect(state, area.width);
     let todo_height = todo::panel_height(state, area, lines.len());
     let layout = PaneLayout::compute_with_todo(area, todo_height);
@@ -676,6 +677,7 @@ pub fn draw_agents(frame: &mut Frame, state: &mut AppState, area: Rect) {
         pending_spawn,
         pending_remove,
         pending_header,
+        pending_window_header,
         scroll_offset,
         layout.list_area,
     );

@@ -56,6 +56,17 @@ pub struct GroupHeaderTarget {
     pub group_name: String,
 }
 
+/// Click target for a window header row (`index:name`) rendered under
+/// the group title when the session-mode `@sidebar_session_windows` or
+/// its repo-mode counterpart `@sidebar_worktree_windows` is on. The
+/// whole row jumps the tmux client to that window.
+#[derive(Debug, Clone)]
+pub struct WindowHeaderTarget {
+    pub rect: ratatui::layout::Rect,
+    pub session_name: String,
+    pub window_index: i64,
+}
+
 /// Click target for one rendered TODO item. `rect` spans every wrapped
 /// line of the item for hit-testing. A click on `checkbox_rect` (the
 /// marker column of the item's first visible line) toggles the
@@ -121,6 +132,10 @@ pub struct FrameLayout {
     /// header toggles that group's collapsed state. One entry per
     /// rendered header, expanded or collapsed.
     pub group_header_targets: Vec<GroupHeaderTarget>,
+    /// Click regions for window header rows (`index:name` under a
+    /// group title): clicking anywhere on one switches the tmux client
+    /// to that window. One entry per rendered header.
+    pub window_header_targets: Vec<WindowHeaderTarget>,
     /// OSC 8 hyperlink overlays the main loop writes after each frame so
     /// terminals can recognise PR numbers as clickable links.
     pub hyperlink_overlays: Vec<HyperlinkOverlay>,
@@ -714,6 +729,27 @@ impl AppState {
                 self.focus_state.focus = Focus::Panes;
             }
             self.global.queue_cursor_save();
+            return;
+        }
+
+        // Window header rows next (`index:name` under a group title):
+        // a click jumps the tmux client to the window the header names,
+        // same full-row convention as the fold target above. They never
+        // share a row with the `+` / `×` markers, so ordering against
+        // those is only about keeping the precedence readable.
+        if let Some((session_name, window_index)) = self
+            .layout
+            .window_header_targets
+            .iter()
+            .find(|t| point_in_rect(row, col, t.rect))
+            .map(|t| (t.session_name.clone(), t.window_index))
+        {
+            self.jump_to_window(&session_name, window_index);
+            // Same Panes-focus rule as the group header above: the
+            // click acted inside the agents panel.
+            if self.todos.editing.is_none() && self.todos.adding.is_none() {
+                self.focus_state.focus = Focus::Panes;
+            }
             return;
         }
 

@@ -529,7 +529,9 @@ pub(super) fn window_row(
 /// header read as row-internal detail instead of a hierarchy level.
 /// `index:name` is tmux's own window selector. An empty window name
 /// degrades to the bare index.
-/// Not a selectable row: the caller maps it to `None` in `line_to_row`.
+/// Not a selectable row: the caller maps it to `None` in `line_to_row`,
+/// but the whole line is a click target — it jumps the tmux client to
+/// the window it names.
 /// `focused` takes the header to a lightened tint of the accent
 /// ([`ColorTheme::window_header_focus_color`]) — brighter than the
 /// resting gray and clearly off the session title's saturated
