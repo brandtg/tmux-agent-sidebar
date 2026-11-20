@@ -1,15 +1,17 @@
 use crate::debug;
 use crate::event::{AgentEvent, AgentEventKind, resolve_adapter};
 
-use super::{read_stdin_json, tmux_pane};
+use super::read_stdin_json;
 
 mod activity;
 mod context;
 mod handlers;
 mod notifications;
+mod resolve;
 
 use context::sync_pane_location;
 use notifications::notification_settings;
+use resolve::PaneRoute;
 
 // ─── hook subcommand ────────────────────────────────────────────────────────
 
@@ -31,17 +33,9 @@ pub(crate) fn cmd_hook(args: &[String]) -> i32 {
         return 0;
     };
 
-    let pane = tmux_pane();
-    if pane.is_empty() {
-        debug::log(&format!(
-            "hook: ignored: TMUX_PANE not set (agent '{agent_name}' event '{event_name}')"
-        ));
-        return 0;
-    }
-
     let Some((input, input_bytes, input_valid)) = read_stdin_json() else {
         debug::log(&format!(
-            "hook: {agent_name} {event_name} pane {pane}: stdin could not be read; dropping event"
+            "hook: {agent_name} {event_name} pane ?: stdin could not be read; dropping event"
         ));
         return 0;
     };
@@ -50,18 +44,44 @@ pub(crate) fn cmd_hook(args: &[String]) -> i32 {
         // an all-empty event parsed from garbage stdin would fire
         // spurious teardowns and notifications.
         debug::log(&format!(
-            "hook: {agent_name} {event_name} pane {pane}: payload is not valid JSON ({input_bytes} bytes); dropping event"
+            "hook: {agent_name} {event_name} pane ?: payload is not valid JSON ({input_bytes} bytes); dropping event"
         ));
         return 0;
     }
     let Some(event) = adapter.parse(event_name, &input) else {
         debug::log(&format!(
-            "hook: {agent_name} {event_name} pane {pane}: adapter produced no event for {} bytes: {}",
+            "hook: {agent_name} {event_name} pane ?: adapter produced no event for {} bytes: {}",
             input_bytes,
             payload_preview(&input)
         ));
         return 0;
     };
+
+    // Resolve the pane. `$TMUX_PANE` is the normal route; events from
+    // environment-scrubbed processes (Claude's bg-pty-host continuation
+    // forks and async subagent hosts) fall back to a session-id match —
+    // see `resolve` for the routing table and the guess semantics.
+    let (pane, route) = resolve::resolve_hook_pane(agent_name, event.session_id());
+    if pane.is_empty() {
+        debug::log(&format!(
+            "hook: {agent_name} {event_name}: no pane (TMUX_PANE unset, session {:?} matched no pane); dropping event",
+            event.session_id()
+        ));
+        return 0;
+    }
+    if matches!(route, PaneRoute::Guessed) {
+        // A guessed route must not rewrite the target pane's identity —
+        // the subagent shares the parent pane but the pane's session
+        // binding belongs to the parent. Same suppression the OpenCode
+        // bridge applies to its last-resort pane guess (see
+        // `session_bind_allowed`).
+        // SAFETY: single-threaded CLI dispatch on the process main
+        // thread; no other thread exists yet, and the variable is only
+        // read after this point within this process.
+        unsafe {
+            std::env::set_var("TMUX_AGENT_SIDEBAR_BIND_SESSION", "0");
+        }
+    }
 
     debug::log(&format!(
         "hook: {agent_name} {event_name} pane {pane} session {:?} -> {:?}",

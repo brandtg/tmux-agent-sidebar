@@ -124,6 +124,51 @@ fn run_hook(
     )
 }
 
+/// Run the staged hook.sh without `TMUX_PANE` — the environment a
+/// Claude `bg-pty-host` continuation fork or async subagent host gives
+/// its hooks. The scoped server is still reached via the inherited
+/// `TMUX_TMPDIR`.
+fn run_hook_paneless(
+    plugin_dir: &std::path::Path,
+    agent: &str,
+    event: &str,
+    payload: &str,
+) -> (i32, String) {
+    let mut child = Command::new("bash")
+        .arg(plugin_dir.join("hook.sh"))
+        .args([agent, event])
+        .env_remove("TMUX_PANE")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn hook.sh");
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(payload.as_bytes())
+        .unwrap();
+    let output = child.wait_with_output().unwrap();
+    (
+        output.status.code().unwrap_or(-1),
+        format!(
+            "{}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        ),
+    )
+}
+
+/// Seed a pane option on the scoped server.
+fn set_pane_option(pane: &str, option: &str, value: &str) {
+    let status = Command::new("tmux")
+        .args(["set-option", "-p", "-t", pane, option, value])
+        .status()
+        .expect("tmux set-option");
+    assert!(status.success(), "tmux set-option {option} failed");
+}
+
 /// Read a pane option from the scoped server.
 fn pane_option(pane: &str, option: &str) -> String {
     let output = Command::new("tmux")
@@ -260,5 +305,88 @@ fn hook_sh_exits_silently_without_tmux_pane() {
         "a pane-less hook must be silent: {}{}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+#[ignore = "requires local tmux; mutates process-global env (run via make test-ignored)"]
+fn hook_sh_routes_paneless_event_via_session_binding() {
+    // Claude's bg-pty-host continuation forks and async subagent hosts
+    // scrub TMUX_PANE from their hooks' environment. A payload whose
+    // session id matches the pane's `@pane_session_id` binding must
+    // still reach the pane instead of being dropped.
+    let server = ScopedServer::spawn();
+    let plugin = stage_plugin_dir();
+    set_pane_option(&server.pane, "@pane_agent", "claude");
+    set_pane_option(&server.pane, "@pane_session_id", "e2e-fork");
+    set_pane_option(&server.pane, "@pane_status", "waiting");
+
+    let (code, out) = run_hook_paneless(
+        plugin.path(),
+        "claude",
+        "tool-start",
+        r#"{"session_id":"e2e-fork","tool_name":"Bash","tool_input":{"command":"ls"}}"#,
+    );
+    assert_eq!(code, 0, "{out}");
+    assert_eq!(
+        pane_option(&server.pane, "@pane_status"),
+        "running",
+        "a pane-less tool event routed by session binding must promote the pane"
+    );
+}
+
+#[test]
+#[ignore = "requires local tmux; mutates process-global env (run via make test-ignored)"]
+fn hook_sh_routes_paneless_subagent_event_without_rebinding() {
+    // A subagent host's session id is registered on the parent pane's
+    // `@pane_subagents` list. Events from the child must route to the
+    // parent pane, and the route is a guess: the parent's session
+    // binding must survive untouched.
+    let server = ScopedServer::spawn();
+    let plugin = stage_plugin_dir();
+    set_pane_option(&server.pane, "@pane_agent", "claude");
+    set_pane_option(&server.pane, "@pane_session_id", "e2e-parent");
+    set_pane_option(&server.pane, "@pane_subagents", ",Explore:child-1");
+    set_pane_option(&server.pane, "@pane_status", "waiting");
+
+    let (code, out) = run_hook_paneless(
+        plugin.path(),
+        "claude",
+        "tool-start",
+        r#"{"session_id":"child-1","tool_name":"Bash","tool_input":{"command":"ls"}}"#,
+    );
+    assert_eq!(code, 0, "{out}");
+    assert_eq!(
+        pane_option(&server.pane, "@pane_status"),
+        "running",
+        "a pane-less subagent event must promote the parent pane"
+    );
+    assert_eq!(
+        pane_option(&server.pane, "@pane_session_id"),
+        "e2e-parent",
+        "a guessed subagent route must not rewrite the parent's session binding"
+    );
+}
+
+#[test]
+#[ignore = "requires local tmux; mutates process-global env (run via make test-ignored)"]
+fn hook_sh_drops_paneless_event_that_matches_no_pane() {
+    // Fail-closed: a session id no pane claims (and no subagent entry
+    // registers) must not land on an arbitrary pane.
+    let server = ScopedServer::spawn();
+    let plugin = stage_plugin_dir();
+    set_pane_option(&server.pane, "@pane_agent", "claude");
+    set_pane_option(&server.pane, "@pane_session_id", "e2e-bound");
+
+    let (code, out) = run_hook_paneless(
+        plugin.path(),
+        "claude",
+        "tool-start",
+        r#"{"session_id":"e2e-stranger","tool_name":"Bash","tool_input":{"command":"ls"}}"#,
+    );
+    assert_eq!(code, 0, "a dropped event must still exit 0: {out}");
+    assert!(
+        pane_option(&server.pane, "@pane_status").is_empty(),
+        "an unmatched pane-less event must not touch the pane"
     );
 }
