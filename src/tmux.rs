@@ -7,8 +7,8 @@ mod types;
 
 pub use commands::{
     display_message, enable_tmux_ipc, kill_window, new_window, pane_session_name, run_tmux,
-    run_tmux_blocking, run_tmux_capture, select_pane, send_command, set_window_option,
-    split_window_left, switch_to_window, switch_window,
+    run_tmux_blocking, run_tmux_capture, run_tmux_capture_raw, select_pane, send_command,
+    set_window_option, split_window_left, switch_to_window, switch_window,
 };
 pub use options::{
     BG_CMD_PLACEHOLDER, PANE_AGENT, PANE_ATTENTION, PANE_BG_CMD, PANE_BG_PID, PANE_CWD,
@@ -39,7 +39,8 @@ pub use options::{
     SIDEBAR_TODO_HIDE_COMPLETED, SIDEBAR_TODO_SCOPE, SIDEBAR_TODO_VISIBLE, SIDEBAR_WIDTH,
     SIDEBAR_WIDTH_MAX, SIDEBAR_WORKTREE_TITLES, SIDEBAR_WORKTREE_WINDOWS, append_pane_option,
     apply_pane_options, get_all_global_options, get_option, get_pane_option_value,
-    sanitize_option_value, set_pane_option, try_get_all_global_options, unset_pane_option,
+    get_pane_options, sanitize_option_value, set_pane_option, try_get_all_global_options,
+    unset_pane_option,
 };
 pub(crate) use panes::pick_active_pane;
 pub use panes::{find_active_pane, focused_pane_path, get_pane_path, query_active_window_panes};

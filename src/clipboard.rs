@@ -5,8 +5,6 @@
 //! same policy: `tmux set-buffer -w` (with a plain `set-buffer` fallback)
 //! on all platforms, plus `arboard` additionally on non-Linux.
 
-use std::time::Duration;
-
 /// Copy `text` to the clipboard surfaces reachable from inside tmux.
 /// Returns true only when at least one *verifiable* destination
 /// succeeded so the caller can decide whether to show the `copied`
@@ -38,13 +36,11 @@ pub(crate) fn copy_to_clipboard(text: &str) -> bool {
 /// 52 delegation but never the paste buffer itself.
 fn copy_via_tmux_buffer(text: &str) -> bool {
     static W_SUPPORTED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    let run_set_buffer = |args: &[&str]| {
-        let mut command = std::process::Command::new("tmux");
-        command.args(args);
-        crate::subprocess::run_with_timeout(&mut command, Duration::from_secs(3))
-            .map(|output| output.status.success())
-            .unwrap_or(false)
-    };
+    // Through the shared exec path: the IPC gate keeps test builds from
+    // clobbering a live paste buffer, and failures land in the debug
+    // trace (audit 2026-11-19 C3). `run_tmux` maps success → `Some`,
+    // failure → `None`, which is all the status check needs.
+    let run_set_buffer = |args: &[&str]| crate::tmux::run_tmux(args).is_some();
     match W_SUPPORTED.get() {
         Some(true) => run_set_buffer(&["set-buffer", "-w", text]),
         Some(false) => run_set_buffer(&["set-buffer", text]),

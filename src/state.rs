@@ -220,6 +220,18 @@ impl AppState {
             None => None,
         }
     }
+
+    /// Whether the flash banner is still inside its display window — i.e.
+    /// painted over the agents panel's bottom row. Click routing uses
+    /// this to keep the covered row inert (see
+    /// `FrameLayout::flash_rect`); `take_flash` only reports the text and
+    /// must not consume the banner.
+    pub fn flash_showing(&self) -> bool {
+        matches!(
+            &self.flash,
+            Some((_, exp)) if std::time::Instant::now() < *exp
+        )
+    }
 }
 
 #[cfg(test)]

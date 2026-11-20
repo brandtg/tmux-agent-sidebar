@@ -210,6 +210,11 @@ fn capture_frames_sequence_integration() {
         std::env::remove_var("TMUX");
         std::env::remove_var("TMUX_PANE");
     }
+    // The `capture` CLI spawns tmux through the shared IPC-gated exec
+    // path; this test is the sanctioned live-tmux caller (see
+    // `enable_tmux_ipc`), and the gate must open after TMUX_TMPDIR points
+    // at the throwaway server.
+    tmux_agent_sidebar::tmux::enable_tmux_ipc();
 
     Command::new("tmux")
         .args(["new-session", "-d", "-s", "cap-seq", "-x", "40", "-y", "10"])
@@ -268,6 +273,9 @@ fn capture_single_frame_integration() {
         std::env::remove_var("TMUX");
         std::env::remove_var("TMUX_PANE");
     }
+    // Open the IPC gate for the sanctioned live-tmux caller (see the
+    // sibling test's comment).
+    tmux_agent_sidebar::tmux::enable_tmux_ipc();
 
     Command::new("tmux")
         .args(["new-session", "-d", "-s", "cap-it", "-x", "40", "-y", "10"])

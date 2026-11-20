@@ -1,4 +1,4 @@
-use super::commands::run_tmux;
+use super::commands::{display_message, run_tmux};
 
 // ─── Pane-scoped option keys ─────────────────────────────────────────
 //
@@ -558,6 +558,35 @@ pub fn get_pane_option_value(pane: &str, key: &str) -> String {
     run_tmux(&["show", "-t", pane, "-pv", key])
         .map(|s| s.trim().to_string())
         .unwrap_or_default()
+}
+
+/// Read several pane options in one tmux spawn. Every write sanitizes
+/// stored values (newline and `|` stripped, see
+/// [`sanitize_option_value`]), so `|` is a safe field separator — the
+/// expansion always yields exactly one field per key. Hot-path callers
+/// (the hook handlers) used to pay one spawn per key (audit 2026-11-19
+/// C2).
+pub fn get_pane_options(pane: &str, keys: &[&str]) -> Vec<String> {
+    #[cfg(test)]
+    if test_mock::installed() {
+        // The IPC gate is off in test builds, so every real spawn fails:
+        // resolving all keys from the mock store (missing → "") matches
+        // the per-key read path exactly and keeps the pipeline tests
+        // honest about batched reads.
+        return keys
+            .iter()
+            .map(|key| test_mock::intercept_get(pane, key).unwrap_or_default())
+            .collect();
+    }
+    let format = keys
+        .iter()
+        .map(|key| format!("#{{{key}}}"))
+        .collect::<Vec<_>>()
+        .join("|");
+    let out = display_message(pane, &format);
+    let mut values: Vec<String> = out.split('|').map(str::to_string).collect();
+    values.resize(keys.len(), String::new());
+    values
 }
 
 /// Per-thread in-memory tmux pane store used by tests. Activated by

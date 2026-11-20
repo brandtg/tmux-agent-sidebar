@@ -1,5 +1,3 @@
-use std::process::Command;
-
 /// Per-pane geometry as emitted by `tmux list-panes -F`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct PaneGeom {
@@ -48,39 +46,26 @@ pub fn list_panes(session: &str, window: Option<&str>) -> Result<Vec<PaneGeom>, 
         Some(w) => format!("{session}:{w}"),
         None => session.to_string(),
     };
-    let out = Command::new("tmux")
-        .args([
-            "list-panes",
-            "-t",
-            &target,
-            "-F",
-            "#{pane_id},#{pane_left},#{pane_top},#{pane_width},#{pane_height},#{pane_active}",
-        ])
-        .output()
-        .map_err(|e| format!("spawning tmux: {e}"))?;
-    if !out.status.success() {
-        return Err(format!(
-            "tmux list-panes failed: {}",
-            String::from_utf8_lossy(&out.stderr)
-        ));
-    }
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    stdout.lines().map(PaneGeom::parse).collect()
+    // Through the shared exec path so the IPC gate applies (audit
+    // 2026-11-19 C3): the `capture` CLI must not probe a live server
+    // from test builds. The raw variant keeps the capture bytes
+    // un-trimmed, as the direct spawn did.
+    let out = crate::tmux::run_tmux_capture_raw(&[
+        "list-panes",
+        "-t",
+        &target,
+        "-F",
+        "#{pane_id},#{pane_left},#{pane_top},#{pane_width},#{pane_height},#{pane_active}",
+    ])
+    .map_err(|e| format!("tmux list-panes failed: {e}"))?;
+    out.lines().map(PaneGeom::parse).collect()
 }
 
 /// Capture one pane as ANSI-coloured bytes via `capture-pane -p -e`.
 pub fn capture_pane(pane_id: &str) -> Result<Vec<u8>, String> {
-    let out = Command::new("tmux")
-        .args(["capture-pane", "-p", "-e", "-t", pane_id])
-        .output()
-        .map_err(|e| format!("spawning tmux: {e}"))?;
-    if !out.status.success() {
-        return Err(format!(
-            "tmux capture-pane {pane_id} failed: {}",
-            String::from_utf8_lossy(&out.stderr)
-        ));
-    }
-    Ok(out.stdout)
+    let out = crate::tmux::run_tmux_capture_raw(&["capture-pane", "-p", "-e", "-t", pane_id])
+        .map_err(|e| format!("tmux capture-pane {pane_id} failed: {e}"))?;
+    Ok(out.into_bytes())
 }
 
 #[cfg(test)]

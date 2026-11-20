@@ -44,16 +44,29 @@ pub(super) fn handle_key_event(key: KeyEvent, state: &mut AppState) -> bool {
             KeyCode::Char('k') | KeyCode::Up => state.scroll_help(-1),
             KeyCode::PageDown => state.scroll_help_page(1),
             KeyCode::PageUp => state.scroll_help_page(-1),
-            _ => {}
+            // Unbound keys change nothing and must not force a full
+            // frame render (audit 2026-11-19 A6; same rule in every
+            // branch below).
+            _ => return false,
         }
         return true;
     }
     if state.is_spawn_input_open() {
         // While the spawn runs on its worker thread the modal must not
         // accept input: no double-submit, no edits the result would
-        // clobber, no dismissal that strands the feedback.
+        // clobber. Esc stays live — a hung repo (stale NFS, blocked
+        // index.lock) can hold the op for minutes, and eating the
+        // universal dismiss key turned the modal into a lockout (audit
+        // 2026-11-19 B1). The late result is dropped by the sink:
+        // apply_popup_op_result only touches a popup that still matches.
         if state.is_spawn_input_working() {
-            return true;
+            if key.code == KeyCode::Esc {
+                state.close_spawn_input();
+                return true;
+            }
+            // Swallowed with no state change — nothing to redraw. The
+            // working indicator animates on its own spinner timer.
+            return false;
         }
         match key.code {
             KeyCode::Esc => state.close_spawn_input(),
@@ -64,13 +77,19 @@ pub(super) fn handle_key_event(key: KeyEvent, state: &mut AppState) -> bool {
             KeyCode::Right => state.spawn_input_cycle(1),
             KeyCode::Backspace => state.spawn_input_pop_char(),
             KeyCode::Char(c) => state.spawn_input_push_char(c),
-            _ => {}
+            _ => return false,
         }
         return true;
     }
     if state.is_remove_confirm_open() {
+        // Same rule as the spawn modal: Esc dismisses even while the
+        // removal is running (audit 2026-11-19 B1).
         if state.is_remove_confirm_working() {
-            return true;
+            if key.code == KeyCode::Esc {
+                state.close_remove_confirm();
+                return true;
+            }
+            return false;
         }
         match key.code {
             KeyCode::Esc | KeyCode::Char('n') => state.close_remove_confirm(),
@@ -78,7 +97,7 @@ pub(super) fn handle_key_event(key: KeyEvent, state: &mut AppState) -> bool {
             KeyCode::Enter | KeyCode::Char('y') => {
                 state.confirm_remove(RemoveMode::WindowAndWorktree)
             }
-            _ => {}
+            _ => return false,
         }
         return true;
     }
@@ -91,7 +110,7 @@ pub(super) fn handle_key_event(key: KeyEvent, state: &mut AppState) -> bool {
             KeyCode::Char('k') | KeyCode::Up => repo_popup_nav_up(state),
             KeyCode::Char('p') if ctrl => repo_popup_nav_up(state),
             KeyCode::Enter => state.confirm_repo_popup(),
-            _ => {}
+            _ => return false,
         }
         return true;
     }
@@ -152,16 +171,19 @@ pub(super) fn handle_key_event(key: KeyEvent, state: &mut AppState) -> bool {
             KeyCode::Char('u') if ctrl => state.clear_search_query(),
             KeyCode::Char('w') if ctrl => state.search_pop_word(),
             KeyCode::Char(c) if !ctrl => state.search_push_char(c),
-            _ => {}
+            _ => return false,
         }
         return true;
     }
 
     match key.code {
         KeyCode::Esc => {
-            // Esc cancels an applied search; with no query it is inert.
+            // Esc cancels an applied search; with no query it changes
+            // nothing and must not force a render (audit 2026-11-19 A6).
             if state.search.has_query() {
                 state.cancel_search();
+            } else {
+                return false;
             }
         }
         KeyCode::Char('/') => state.open_search(),
@@ -261,14 +283,17 @@ pub(super) fn handle_key_event(key: KeyEvent, state: &mut AppState) -> bool {
             }
         }
         // Toggles are self-evident in the pane list; `?` explains them.
-        KeyCode::Char('c') => {
+        // Modifier guard: raw mode delivers Ctrl-C as Char('c') +
+        // CONTROL, and the universal interrupt must not flip compact
+        // mode (audit 2026-11-19 A3).
+        KeyCode::Char('c') if !ctrl => {
             state.global.toggle_compact();
         }
-        KeyCode::Char('w') => {
+        KeyCode::Char('w') if !ctrl => {
             state.global.toggle_show_windows();
             state.rebuild_row_targets();
         }
-        KeyCode::Char('t') => {
+        KeyCode::Char('t') if !ctrl => {
             state.toggle_todo_panel();
         }
         // Experimental agent overview grid in a fullscreen popup. The
@@ -285,7 +310,9 @@ pub(super) fn handle_key_event(key: KeyEvent, state: &mut AppState) -> bool {
         KeyCode::Enter if state.focus_state.focus == Focus::Panes => {
             state.activate_selected_pane();
         }
-        _ => {}
+        // Unbound keys (and modifier-only presses) change nothing: they
+        // must not schedule a full frame render (audit 2026-11-19 A6).
+        _ => return false,
     }
     true
 }
@@ -321,7 +348,7 @@ fn handle_todo_key(key: KeyEvent, state: &mut AppState) -> bool {
             KeyCode::Char('u') if ctrl => state.todo_input_clear(),
             KeyCode::Char('w') if ctrl => state.todo_input_pop_word(),
             KeyCode::Char(c) if !ctrl => state.todo_input_push_char(c),
-            _ => {}
+            _ => return false,
         }
         return true;
     }
@@ -352,7 +379,7 @@ fn handle_todo_key(key: KeyEvent, state: &mut AppState) -> bool {
             KeyCode::Char('u') if ctrl => state.todo_input_clear(),
             KeyCode::Char('w') if ctrl => state.todo_input_pop_word(),
             KeyCode::Char(c) if !ctrl => state.todo_input_push_char(c),
-            _ => {}
+            _ => return false,
         }
         return true;
     }
@@ -411,15 +438,16 @@ fn handle_todo_key(key: KeyEvent, state: &mut AppState) -> bool {
         KeyCode::Char('x') | KeyCode::Char('d') => state.delete_todo_selected(),
         KeyCode::Char('D') => state.clear_completed_todos(),
         KeyCode::Char('H') => state.toggle_todo_hide_completed(),
-        // Global keys stay available while the panel has focus.
-        KeyCode::Char('c') => state.global.toggle_compact(),
-        KeyCode::Char('w') => {
+        // Global keys stay available while the panel has focus. Same
+        // Ctrl-C guard as the Panes-focus toggles (audit 2026-11-19 A3).
+        KeyCode::Char('c') if !ctrl => state.global.toggle_compact(),
+        KeyCode::Char('w') if !ctrl => {
             state.global.toggle_show_windows();
             state.rebuild_row_targets();
         }
         KeyCode::Char('?') => state.toggle_help_popup(),
         KeyCode::Char('/') => state.open_search(),
-        _ => {}
+        _ => return false,
     }
     true
 }
@@ -490,7 +518,7 @@ fn repo_popup_nav_up(state: &mut AppState) {
 mod tests {
     use super::*;
     use crate::group::{PaneGitInfo, RepoGroup};
-    use crate::state::{PopupState, RowTarget, SpawnField};
+    use crate::state::{PopupOpResult, PopupState, RowTarget, SpawnField};
     use crate::tmux::{
         AgentType, PANE_FLAGGED, PaneAttention, PaneInfo, PaneStatus, PermissionMode,
         WorktreeMetadata, test_mock,
@@ -1026,6 +1054,120 @@ mod tests {
         if let PopupState::SpawnInput { input, .. } = &state.popup {
             assert_eq!(input, "q");
         }
+    }
+
+    #[test]
+    fn esc_dismisses_a_working_spawn_popup() {
+        // Audit 2026-11-19 B1: a hung spawn op held the modal for minutes
+        // with every key — including Esc — swallowed. Esc must stay live
+        // while `working`; the late result is dropped by the sink.
+        let mut state = state_with_three_panes();
+        state.popup = PopupState::SpawnInput {
+            input: "task".into(),
+            target_repo: "repo-a".into(),
+            target_repo_root: "/tmp/repo-a".into(),
+            target_session: "sess-a".into(),
+            kind_idx: 1,
+            agent_idx: 0,
+            field: SpawnField::Name,
+            anchor_y: None,
+            error: None,
+            working: Some("creating worktree…"),
+            area: None,
+        };
+        handle_key_event(key(KeyCode::Esc), &mut state);
+        assert!(!state.is_spawn_input_open());
+    }
+
+    #[test]
+    fn a_working_spawn_popup_still_swallows_every_other_key() {
+        // Dismissal is the only escape: no quit, no edits that the result
+        // would clobber, no double-submit.
+        let mut state = state_with_three_panes();
+        state.popup = PopupState::SpawnInput {
+            input: String::new(),
+            target_repo: "repo-a".into(),
+            target_repo_root: "/tmp/repo-a".into(),
+            target_session: "sess-a".into(),
+            kind_idx: 1,
+            agent_idx: 0,
+            field: SpawnField::Name,
+            anchor_y: None,
+            error: None,
+            working: Some("creating worktree…"),
+            area: None,
+        };
+        handle_key_event(key(KeyCode::Char('q')), &mut state);
+        assert!(!state.quit_requested);
+        assert!(state.is_spawn_input_open());
+        if let PopupState::SpawnInput { input, working, .. } = &state.popup {
+            assert!(input.is_empty(), "no edits while working");
+            assert!(working.is_some(), "still working");
+        }
+    }
+
+    #[test]
+    fn esc_dismisses_a_working_remove_confirm() {
+        let mut state = state_with_three_panes();
+        state.popup = PopupState::RemoveConfirm {
+            pane_id: "%1".into(),
+            label: "repo-a/agent".into(),
+            has_worktree: true,
+            warning: Vec::new(),
+            error: None,
+            working: Some("removing worktree…"),
+            area: None,
+        };
+        handle_key_event(key(KeyCode::Esc), &mut state);
+        assert!(!state.is_remove_confirm_open());
+    }
+
+    #[test]
+    fn esc_dismisses_a_working_spawn_popup_and_drops_the_late_result() {
+        // The worker's result landing after the Esc-dismissed popup must
+        // not re-open anything or strand state.
+        let mut state = state_with_three_panes();
+        state.popup = PopupState::SpawnInput {
+            input: "task".into(),
+            target_repo: "repo-a".into(),
+            target_repo_root: "/tmp/repo-a".into(),
+            target_session: "sess-a".into(),
+            kind_idx: 1,
+            agent_idx: 0,
+            field: SpawnField::Name,
+            anchor_y: None,
+            error: None,
+            working: Some("creating worktree…"),
+            area: None,
+        };
+        handle_key_event(key(KeyCode::Esc), &mut state);
+        state.apply_popup_op_result(PopupOpResult::Spawn(Err("boom".into())));
+        assert!(!state.is_spawn_input_open());
+    }
+
+    #[test]
+    fn ctrl_c_does_not_toggle_compact() {
+        // Audit 2026-11-19 A3: raw mode delivers Ctrl-C as Char('c') +
+        // CONTROL; the universal interrupt must fall through inert
+        // instead of flipping compact mode and broadcasting to every
+        // other sidebar.
+        let mut state = state_with_three_panes();
+        let before = state.global.compact;
+        handle_key_event(ctrl_key('c'), &mut state);
+        assert_eq!(state.global.compact, before);
+
+        // Plain `c` still toggles.
+        handle_key_event(key(KeyCode::Char('c')), &mut state);
+        assert_ne!(state.global.compact, before);
+    }
+
+    #[test]
+    fn ctrl_w_and_ctrl_t_are_inert() {
+        let mut state = state_with_three_panes();
+        handle_key_event(ctrl_key('w'), &mut state);
+        assert!(!state.global.show_windows);
+        handle_key_event(ctrl_key('t'), &mut state);
+        assert!(!state.todos.visible);
     }
 
     #[test]

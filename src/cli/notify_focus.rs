@@ -5,18 +5,17 @@ use crate::tmux;
 /// flags) are otherwise picked up on the sidebar's 1s poll, so a freshly
 /// opened agent row or a landed ring waits out up to a full second.
 pub(crate) fn notify_sidebars_of_pane(pane: &str) {
-    let window = tmux::display_message(pane, "#{window_id}");
-    if window.is_empty() {
-        return;
-    }
-    notify_sidebars_in_window(&window);
-}
-
-fn notify_sidebars_in_window(window: &str) {
-    let Some(out) = tmux::run_tmux(&["list-panes", "-t", window, "-F", "#{@sidebar_pid}"]) else {
+    // A pane target resolves to its window, so the sweep is one spawn —
+    // the window-id probe + listing pair used to cost two spawns on every
+    // non-ActivityLog hook event (audit 2026-11-19 C7).
+    let Some(out) = tmux::run_tmux(&["list-panes", "-t", pane, "-F", "#{@sidebar_pid}"]) else {
         return;
     };
-    for line in out.lines() {
+    signal_listed_pids(&out);
+}
+
+fn signal_listed_pids(listing: &str) {
+    for line in listing.lines() {
         let Ok(pid) = line.trim().parse::<u32>() else {
             continue;
         };
@@ -24,6 +23,13 @@ fn notify_sidebars_in_window(window: &str) {
             tmux::signal_usr1(pid);
         }
     }
+}
+
+fn notify_sidebars_in_window(window: &str) {
+    let Some(out) = tmux::run_tmux(&["list-panes", "-t", window, "-F", "#{@sidebar_pid}"]) else {
+        return;
+    };
+    signal_listed_pids(&out);
 }
 
 pub(crate) fn cmd_notify_focus(args: &[String]) -> i32 {

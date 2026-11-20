@@ -213,6 +213,18 @@ impl AppState {
             if !fresh {
                 runtime.window_finished = None;
                 tmux::unset_pane_option(&pane_id, tmux::PANE_ATTENTION);
+                // Mirror the agent path's in-memory clear: without it the
+                // row_collector still renders the row as Done and
+                // jump_to_next_attention can select the already-consumed
+                // row for one snapshot round-trip (audit 2026-11-19 A4).
+                if let Some(window) = self
+                    .other_windows
+                    .values_mut()
+                    .flat_map(|windows| windows.iter_mut())
+                    .find(|w| w.pane_id == pane_id)
+                {
+                    window.attention = crate::tmux::PaneAttention::None;
+                }
             }
         }
     }
@@ -603,7 +615,7 @@ impl AppState {
             ..
         } = snapshot;
         self.sweep_dead_bg_shells_if_due(&mut sessions, &mut process_snapshot);
-        self.queue_port_scan_if_due(&sessions);
+        self.queue_port_scan_if_due(&sessions, &other_panes);
         self.queue_approval_scan_if_due(&sessions);
         // Chyron diff: capture the pre-refresh pane conditions and
         // compare them against the fresh parse before either side is
@@ -665,7 +677,11 @@ impl AppState {
     /// stashed in `pending_port_scan`; the event loop hands them to the
     /// port-scan worker and results come back through
     /// [`AppState::apply_process_snapshot`].
-    pub(crate) fn queue_port_scan_if_due(&mut self, sessions: &[SessionInfo]) {
+    pub(crate) fn queue_port_scan_if_due(
+        &mut self,
+        sessions: &[SessionInfo],
+        other_panes: &[crate::tmux::OtherPane],
+    ) {
         const PORT_REFRESH_INTERVAL: Duration = Duration::from_secs(10);
 
         if self.timers.port_scan_initialized
@@ -692,16 +708,18 @@ impl AppState {
             .collect();
         // Non-agent window panes are scanned too so their listening ports
         // and foreground command show up. They are marked `Window` so the
-        // dead-scan sweep never tears them down.
-        for windows in self.other_windows.values() {
-            for window in windows {
-                targets.push(crate::port::PaneScanTarget {
-                    pane_id: window.pane_id.clone(),
-                    pane_pid: window.pane_pid,
-                    agent: crate::tmux::AgentType::Unknown,
-                    kind: crate::port::PaneKind::Window,
-                });
-            }
+        // dead-scan sweep never tears them down. Built from the fresh
+        // parse in hand — `self.other_windows` is the previous snapshot
+        // at this point (it is replaced further down), so a just-appeared
+        // pane was invisible to the scan for a full interval and a
+        // just-died one got a pointless target (audit 2026-11-19 A5).
+        for pane in other_panes {
+            targets.push(crate::port::PaneScanTarget {
+                pane_id: pane.pane_id.clone(),
+                pane_pid: pane.pane_pid,
+                agent: crate::tmux::AgentType::Unknown,
+                kind: crate::port::PaneKind::Window,
+            });
         }
         self.pending_port_scan = Some(targets);
     }
@@ -777,15 +795,21 @@ impl AppState {
                 // previous badge — it is not evidence the listener died:
                 // the sweep's `ps` runs before its `lsof`, so a dev
                 // server that (re)binds in between is invisible to the
-                // tree mapping for exactly one sweep, and a failed lsof
-                // probe empties every pane's port set at once. Only
-                // back-to-back misses (`REQUIRED_PORT_MISSES`) clear it.
-                _ => {
+                // tree mapping for exactly one sweep. Only back-to-back
+                // confirmed misses (`REQUIRED_PORT_MISSES`) clear it. A
+                // failed lsof probe is not a miss at all: its empty set
+                // carries no evidence either way, so the streak holds
+                // until a probe succeeds (audit 2026-11-19 A2 — a probe
+                // timing out twice under load used to clear live
+                // badges).
+                _ if scanned.lsof_ok => {
                     pane_state.port_miss_streak = pane_state.port_miss_streak.saturating_add(1);
                     if pane_state.port_miss_streak >= REQUIRED_PORT_MISSES {
                         pane_state.ports.clear();
                     }
                 }
+                // Probe failure: hold the badge and the streak as-is.
+                _ => {}
             }
             pane_state.command = scanned.command_by_pane.get(pane_id).cloned();
         }
@@ -1636,11 +1660,13 @@ mod tests {
     // ─── apply_process_snapshot port stickiness ─────────────────────
 
     /// A completed scan over `scanned` panes with `ports_by_pane` as the
-    /// confirmed port sets (empty map: nothing confirmed anywhere, the
-    /// shape a failed lsof probe produces).
+    /// confirmed port sets (empty map with `lsof_ok` true: the probe ran
+    /// and found nothing — a confirmed miss; `lsof_ok` false: the probe
+    /// itself failed and the port set carries no evidence).
     fn port_snapshot(
         scanned: &[&str],
         ports_by_pane: std::collections::HashMap<String, Vec<u16>>,
+        lsof_ok: bool,
     ) -> crate::port::PaneProcessSnapshot {
         crate::port::PaneProcessSnapshot {
             ports_by_pane,
@@ -1648,6 +1674,7 @@ mod tests {
             live_agent_panes: HashSet::new(),
             scanned_panes: scanned.iter().map(|id| id.to_string()).collect(),
             scanned_agent_panes: HashSet::new(),
+            lsof_ok,
         }
     }
 
@@ -1656,7 +1683,7 @@ mod tests {
         let mut state = AppState::new("%99".into());
         let ports = std::collections::HashMap::from([("%1".to_string(), vec![3000, 5173])]);
 
-        state.apply_process_snapshot(port_snapshot(&["%1"], ports));
+        state.apply_process_snapshot(port_snapshot(&["%1"], ports, true));
 
         assert_eq!(state.pane_state("%1").unwrap().ports, vec![3000, 5173]);
         assert_eq!(state.pane_state("%1").unwrap().port_miss_streak, 0);
@@ -1669,9 +1696,13 @@ mod tests {
         // badge must not blink for a full refresh interval because of it.
         let mut state = AppState::new("%99".into());
         let ports = std::collections::HashMap::from([("%1".to_string(), vec![3000])]);
-        state.apply_process_snapshot(port_snapshot(&["%1"], ports));
+        state.apply_process_snapshot(port_snapshot(&["%1"], ports, true));
 
-        state.apply_process_snapshot(port_snapshot(&["%1"], std::collections::HashMap::new()));
+        state.apply_process_snapshot(port_snapshot(
+            &["%1"],
+            std::collections::HashMap::new(),
+            true,
+        ));
 
         assert_eq!(
             state.pane_state("%1").unwrap().ports,
@@ -1685,14 +1716,74 @@ mod tests {
     fn apply_process_snapshot_clears_ports_after_two_consecutive_misses() {
         let mut state = AppState::new("%99".into());
         let ports = std::collections::HashMap::from([("%1".to_string(), vec![3000])]);
-        state.apply_process_snapshot(port_snapshot(&["%1"], ports));
+        state.apply_process_snapshot(port_snapshot(&["%1"], ports, true));
 
-        state.apply_process_snapshot(port_snapshot(&["%1"], std::collections::HashMap::new()));
-        state.apply_process_snapshot(port_snapshot(&["%1"], std::collections::HashMap::new()));
+        state.apply_process_snapshot(port_snapshot(
+            &["%1"],
+            std::collections::HashMap::new(),
+            true,
+        ));
+        state.apply_process_snapshot(port_snapshot(
+            &["%1"],
+            std::collections::HashMap::new(),
+            true,
+        ));
 
         assert!(
             state.pane_state("%1").unwrap().ports.is_empty(),
             "back-to-back misses prove the listener is gone"
+        );
+    }
+
+    #[test]
+    fn apply_process_snapshot_never_advances_streaks_on_a_failed_probe() {
+        // Audit 2026-11-19 A2: a failed lsof probe (spawn error, 5s
+        // timeout, error exit) produces the same empty port set as a
+        // confirmed miss. Two failures in a row used to clear badges on
+        // live dev servers; the probe's failure is now carried in
+        // `lsof_ok` and neither the streak nor the badge may move.
+        let mut state = AppState::new("%99".into());
+        let ports = std::collections::HashMap::from([("%1".to_string(), vec![3000])]);
+        state.apply_process_snapshot(port_snapshot(&["%1"], ports, true));
+
+        state.apply_process_snapshot(port_snapshot(
+            &["%1"],
+            std::collections::HashMap::new(),
+            false,
+        ));
+        state.apply_process_snapshot(port_snapshot(
+            &["%1"],
+            std::collections::HashMap::new(),
+            false,
+        ));
+        state.apply_process_snapshot(port_snapshot(
+            &["%1"],
+            std::collections::HashMap::new(),
+            false,
+        ));
+
+        assert_eq!(
+            state.pane_state("%1").unwrap().ports,
+            vec![3000],
+            "probe failure is not evidence the listener died"
+        );
+        assert_eq!(state.pane_state("%1").unwrap().port_miss_streak, 0);
+
+        // The next successful probe that finds nothing IS a miss: the
+        // stickiness machinery resumes normally afterwards.
+        state.apply_process_snapshot(port_snapshot(
+            &["%1"],
+            std::collections::HashMap::new(),
+            true,
+        ));
+        state.apply_process_snapshot(port_snapshot(
+            &["%1"],
+            std::collections::HashMap::new(),
+            true,
+        ));
+        assert!(
+            state.pane_state("%1").unwrap().ports.is_empty(),
+            "back-to-back confirmed misses still clear the badge"
         );
     }
 
@@ -1702,12 +1793,12 @@ mod tests {
         let ports = std::collections::HashMap::from([("%1".to_string(), vec![3000])]);
         let no_ports = std::collections::HashMap::new();
 
-        state.apply_process_snapshot(port_snapshot(&["%1"], ports.clone()));
-        state.apply_process_snapshot(port_snapshot(&["%1"], no_ports.clone()));
+        state.apply_process_snapshot(port_snapshot(&["%1"], ports.clone(), true));
+        state.apply_process_snapshot(port_snapshot(&["%1"], no_ports.clone(), true));
         // Confirmed again: the server came back (or the probe healed).
-        state.apply_process_snapshot(port_snapshot(&["%1"], ports));
+        state.apply_process_snapshot(port_snapshot(&["%1"], ports, true));
         // The next single miss must hold the badge again, not clear it.
-        state.apply_process_snapshot(port_snapshot(&["%1"], no_ports));
+        state.apply_process_snapshot(port_snapshot(&["%1"], no_ports, true));
 
         assert_eq!(
             state.pane_state("%1").unwrap().ports,
@@ -1721,7 +1812,11 @@ mod tests {
         let mut state = AppState::new("%99".into());
         state.pane_state_mut("%1").ports = vec![8080];
 
-        state.apply_process_snapshot(port_snapshot(&["%2"], std::collections::HashMap::new()));
+        state.apply_process_snapshot(port_snapshot(
+            &["%2"],
+            std::collections::HashMap::new(),
+            true,
+        ));
 
         assert_eq!(
             state.pane_state("%1").unwrap().ports,

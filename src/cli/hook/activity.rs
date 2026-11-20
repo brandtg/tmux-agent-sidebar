@@ -4,7 +4,7 @@ use crate::tool_name::CanonicalTool;
 
 use super::super::label::extract_tool_label;
 use super::super::{sanitize_tmux_value, set_status};
-use super::context::pane_writes_allowed;
+use super::context::pane_writes_allowed_with;
 
 /// Write a single activity entry to the log file and trim if needed.
 ///
@@ -138,7 +138,19 @@ pub(super) fn handle_activity_log(
         });
     }
 
-    let current_status = tmux::get_pane_option_value(pane, tmux::PANE_STATUS);
+    // One batched read for the four options the resume/plan gates inspect
+    // (audit 2026-11-19 C2): status, wait reason, the run clock, and the
+    // subagent guard used to be separate spawns per tool event.
+    let reads = tmux::get_pane_options(
+        pane,
+        &[
+            tmux::PANE_STATUS,
+            tmux::PANE_WAIT_REASON,
+            tmux::PANE_STARTED_AT,
+            tmux::PANE_SUBAGENTS,
+        ],
+    );
+    let current_status = reads.first().map(String::as_str).unwrap_or_default();
     // Permission/question prompts are cleared by something other than a
     // tool result, so a tool event landing while the prompt is open must
     // not flip the pane back to `running` and hide it. OpenCode runs a
@@ -155,10 +167,9 @@ pub(super) fn handle_activity_log(
     let pending_action = (agent_name == crate::tmux::OPENCODE_AGENT
         || agent_name == crate::tmux::ANTIGRAVITY_AGENT)
         && current_status == "waiting"
-        && super::handlers::is_pending_action_wait_reason(&tmux::get_pane_option_value(
-            pane,
-            tmux::PANE_WAIT_REASON,
-        ));
+        && super::handlers::is_pending_action_wait_reason(
+            reads.get(1).map(String::as_str).unwrap_or_default(),
+        );
     // Hermes is excluded from the promotion below. Its turns are bracketed
     // by `pre_llm_call` (→ running) and `post_llm_call` (→ idle), but its
     // background forks (skill review, side questions) emit `post_tool_call`
@@ -199,9 +210,16 @@ pub(super) fn handle_activity_log(
         // @pane_wait_reason under status `error`, and the renderer shows
         // the reason row for every status. The pending-action guard above
         // is what keeps a live prompt intact, not this gate.
-        tmux::unset_pane_option(pane, tmux::PANE_ATTENTION);
-        tmux::unset_pane_option(pane, tmux::PANE_WAIT_REASON);
-        let existing_started = tmux::get_pane_option_value(pane, tmux::PANE_STARTED_AT);
+        // set_status's batch already unset @pane_attention; the
+        // wait-reason clear is one batched write, not two spawns (audit
+        // 2026-11-19 C2).
+        tmux::apply_pane_options(
+            pane,
+            &[tmux::PaneOptionWrite::Unset {
+                key: tmux::PANE_WAIT_REASON,
+            }],
+        );
+        let existing_started = reads.get(2).map(String::as_str).unwrap_or_default();
         if existing_started.is_empty() {
             tmux::set_pane_option(pane, tmux::PANE_STARTED_AT, &now_epoch_secs().to_string());
         }
@@ -209,8 +227,9 @@ pub(super) fn handle_activity_log(
 
     // Update permission mode when plan mode tools are used.
     // Same parent-protection rule as `set_agent_meta`: a subagent that
-    // enters/exits plan mode must not flip the parent pane's badge.
-    if pane_writes_allowed(pane) {
+    // enters/exits plan mode must not flip the parent pane's badge. The
+    // subagent guard rides the batched read above (audit 2026-11-19 C2).
+    if pane_writes_allowed_with(reads.get(3).map(String::as_str).unwrap_or_default()) {
         match tool_name {
             "EnterPlanMode" => {
                 tmux::set_pane_option(pane, tmux::PANE_PERMISSION_MODE, "plan");

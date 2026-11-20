@@ -188,7 +188,11 @@ fn open_split_sidebar(
         "-P",
         "-F",
         "#{pane_id}",
-        &self_bin,
+        // A lone trailing positional is the shell-command: tmux runs it
+        // via `sh -c`, so the path needs quoting (a path with a space or
+        // a metacharacter would fail — or run — as shell syntax; audit
+        // 2026-11-19 C1). Verified on tmux 3.8.
+        &crate::cli::setup::shell_quote(&self_bin),
     ])
     .map(|s| s.trim().to_string())
     .unwrap_or_default();
@@ -1178,7 +1182,10 @@ fn popup_command(
     }
     args.push("-t".to_string());
     args.push(window_id.to_string());
-    args.push(self_bin.to_string());
+    // Lone trailing positional = shell-command, run via `sh -c`: quote
+    // the path (spaces / metacharacters would otherwise break or run as
+    // shell syntax; audit 2026-11-19 C1). Verified on tmux 3.8.
+    args.push(crate::cli::setup::shell_quote(self_bin));
     args
 }
 
@@ -1794,6 +1801,16 @@ mod tests {
             "/bin/tmux-agent-sidebar",
         ];
         assert_eq!(args, expected);
+    }
+
+    #[test]
+    fn popup_command_quotes_a_shell_unsafe_bin_path() {
+        // The lone trailing positional is the shell-command — tmux runs it
+        // via `sh -c` — so a path holding a space or metacharacter must
+        // arrive quoted (audit 2026-11-19 C1). A safe path passes through
+        // unquoted (see popup_command_pins_active_pane_as_tmux_pane).
+        let args = popup_command("@5", "~", "/opt/my tools/bin", "");
+        assert_eq!(args.last().map(String::as_str), Some("'/opt/my tools/bin'"));
     }
 
     #[test]

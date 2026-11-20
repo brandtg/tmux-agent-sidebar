@@ -244,7 +244,8 @@ fn handle_event(pane: &str, agent_name: &str, event: AgentEvent) -> i32 {
             session_id,
             ..
         } => {
-            sync_pane_location(pane, &cwd, &worktree, &session_id);
+            let identity = context::read_pane_identity(pane);
+            sync_pane_location(pane, &cwd, &worktree, &session_id, &identity);
             0
         }
         AgentEvent::TaskCreated { .. } => 0,

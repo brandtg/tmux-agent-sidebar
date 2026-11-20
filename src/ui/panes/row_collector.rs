@@ -28,6 +28,9 @@ pub(super) struct CollectedRows {
 pub(super) fn collect(state: &AppState, width: u16) -> CollectedRows {
     let width = width as usize;
     let theme = &state.theme;
+    // Lowered once for the whole pass: every row ORs four to five fields
+    // against it (audit 2026-11-19 B6).
+    let query_lower = state.search.lowercased_query();
 
     let mut collected = CollectedRows::default();
     // The pane the active bar names. `focused_pane_id` rules as before;
@@ -74,11 +77,13 @@ pub(super) fn collect(state: &AppState, width: u16) -> CollectedRows {
         }
         // Same rule as `rebuild_row_targets`: a group-name hit keeps the
         // whole group; otherwise each row must match on its own fields.
-        let group_matches_search = state.search_matches_group(group);
+        let group_matches_search = state.search_matches_group(&query_lower, group);
         let filtered_panes: Vec<_> = group
             .panes
             .iter()
-            .filter(|(pane, git)| group_matches_search || state.search_matches_pane(pane, git))
+            .filter(|(pane, git)| {
+                group_matches_search || state.search_matches_pane(&query_lower, pane, git)
+            })
             .collect();
 
         // A group with no matching agent panes is skipped entirely —
@@ -95,7 +100,8 @@ pub(super) fn collect(state: &AppState, width: u16) -> CollectedRows {
                     windows
                         .iter()
                         .filter(|window| {
-                            group_matches_search || state.search_matches_window(window)
+                            group_matches_search
+                                || state.search_matches_window(&query_lower, window)
                         })
                         .collect()
                 })
