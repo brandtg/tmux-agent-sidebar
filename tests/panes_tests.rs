@@ -458,6 +458,39 @@ fn test_empty_view_clamps_scroll_and_resets_cursor() {
 // ─── Repo popup rendering ───────────────────────────────────────────
 
 #[test]
+fn repo_popup_closes_instead_of_rendering_invisible_on_a_tiny_viewport() {
+    // Audit 2026-11-19 B4: on a <=3-row sidebar the menu cannot fit; the
+    // popup used to stay open-but-unrendered, silently eating every key
+    // and letting Enter apply a filter change the user never saw. The
+    // render pass now refuses it.
+    let pane = make_pane(AgentType::Claude, PaneStatus::Idle);
+    let mut state = make_state(vec![SessionInfo {
+        session_name: "main".into(),
+        windows: vec![WindowInfo {
+            window_id: "@1".into(),
+            window_name: "frontend".into(),
+            window_active: true,
+            auto_rename: false,
+            panes: vec![pane.clone()],
+        }],
+    }]);
+    state.repo_groups = vec![make_repo_group("frontend", vec![pane])];
+    state.rebuild_row_targets();
+    state.popup = tmux_agent_sidebar::state::PopupState::Repo {
+        repo_start: 0,
+        selected: 0,
+        area: None,
+    };
+
+    let _ = render_to_string(&mut state, 40, 3);
+
+    assert!(
+        !state.is_repo_popup_open(),
+        "an unrenderable popup must close instead of eating keys"
+    );
+}
+
+#[test]
 fn repo_popup_renders_repo_names_when_open() {
     let pane = make_pane(AgentType::Claude, PaneStatus::Idle);
     let mut state = make_state(vec![SessionInfo {

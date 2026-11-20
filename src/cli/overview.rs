@@ -25,7 +25,6 @@
 
 use std::collections::{HashMap, HashSet};
 use std::io;
-use std::process::Command;
 use std::time::{Duration, Instant};
 
 use crossterm::{
@@ -140,25 +139,33 @@ fn spawn_popup(client: Option<String>) -> Result<(), String> {
     }
     let exe = std::env::current_exe().map_err(|e| format!("resolve current exe: {e}"))?;
     let cwd = std::env::current_dir().map_err(|e| format!("resolve cwd: {e}"))?;
-    let mut cmd = Command::new("tmux");
-    cmd.args(["display-popup", "-E", "-w", "100%", "-h", "100%", "-d"]);
-    cmd.arg(cwd);
+    // Through the shared exec path so the IPC gate applies (audit
+    // 2026-11-19 C3). `run_tmux_blocking` matches this call's contract:
+    // display-popup's invoking process owns the popup for its lifetime,
+    // so the command intentionally blocks until it closes.
+    let mut args: Vec<String> = vec![
+        "display-popup".into(),
+        "-E".into(),
+        "-w".into(),
+        "100%".into(),
+        "-h".into(),
+        "100%".into(),
+        "-d".into(),
+        cwd.to_string_lossy().to_string(),
+    ];
     if let Some(client) = client {
-        cmd.arg("-t").arg(client);
+        args.push("-t".into());
+        args.push(client);
     }
-    // `exe` + `"overview"` are two positionals, so tmux execs them
-    // directly (no `sh -c`, tmux 3.8) and the raw path is safe as-is —
-    // quoting would break it by becoming part of argv[0]. The lone
-    // trailing positional in toggle.rs IS shell-command and quotes
-    // instead; audit 2026-11-19 C1 sorted the two shapes out.
-    cmd.arg(exe).arg("overview");
-    let status = cmd
-        .status()
-        .map_err(|e| format!("spawn tmux display-popup: {e}"))?;
-    if status.success() {
+    // Two positionals: tmux execs them directly, no `sh -c` (tmux
+    // 3.8) — the raw path is safe, quoting would corrupt argv[0].
+    args.push(exe.to_string_lossy().to_string());
+    args.push("overview".into());
+    let args: Vec<&str> = args.iter().map(String::as_str).collect();
+    if tmux::run_tmux_blocking(&args).is_some() {
         Ok(())
     } else {
-        Err(format!("tmux display-popup exited with {status}"))
+        Err("tmux display-popup failed".to_string())
     }
 }
 
@@ -178,20 +185,32 @@ pub(crate) fn spawn_overview_popup_detached() -> Result<(), String> {
     let window = window.trim().to_string();
     let exe = std::env::current_exe().map_err(|e| format!("resolve current exe: {e}"))?;
     let cwd = std::env::current_dir().map_err(|e| format!("resolve cwd: {e}"))?;
-    let mut child = Command::new("tmux")
-        .args(["display-popup", "-E", "-w", "100%", "-h", "100%", "-d"])
-        .arg(cwd)
-        .args(["-e", &format!("TMUX_PANE={pane}")])
-        .arg("-t")
-        .arg(window)
+    // Through the shared exec path so the IPC gate applies (audit
+    // 2026-11-19 C3). The popup's lifetime still belongs to a detached
+    // thread: run_tmux_blocking inside the thread blocks on the popup,
+    // while the sidebar's event loop carries on (same shape as the old
+    // spawn + wait).
+    let args: Vec<String> = vec![
+        "display-popup".into(),
+        "-E".into(),
+        "-w".into(),
+        "100%".into(),
+        "-h".into(),
+        "100%".into(),
+        "-d".into(),
+        cwd.to_string_lossy().to_string(),
+        "-e".into(),
+        format!("TMUX_PANE={pane}"),
+        "-t".into(),
+        window,
         // Two positionals: tmux execs them directly, no `sh -c` (tmux
         // 3.8) — the raw path is safe, quoting would corrupt argv[0].
-        .arg(exe)
-        .arg("overview")
-        .spawn()
-        .map_err(|e| format!("spawn tmux display-popup: {e}"))?;
+        exe.to_string_lossy().to_string(),
+        "overview".into(),
+    ];
     std::thread::spawn(move || {
-        let _ = child.wait();
+        let args: Vec<&str> = args.iter().map(String::as_str).collect();
+        let _ = tmux::run_tmux_blocking(&args);
     });
     Ok(())
 }

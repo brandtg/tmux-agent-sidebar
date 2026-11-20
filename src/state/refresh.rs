@@ -213,6 +213,18 @@ impl AppState {
             if !fresh {
                 runtime.window_finished = None;
                 tmux::unset_pane_option(&pane_id, tmux::PANE_ATTENTION);
+                // Mirror the agent path's in-memory clear: without it the
+                // row_collector still renders the row as Done and
+                // jump_to_next_attention can select the already-consumed
+                // row for one snapshot round-trip (audit 2026-11-19 A4).
+                if let Some(window) = self
+                    .other_windows
+                    .values_mut()
+                    .flat_map(|windows| windows.iter_mut())
+                    .find(|w| w.pane_id == pane_id)
+                {
+                    window.attention = crate::tmux::PaneAttention::None;
+                }
             }
         }
     }
@@ -603,7 +615,7 @@ impl AppState {
             ..
         } = snapshot;
         self.sweep_dead_bg_shells_if_due(&mut sessions, &mut process_snapshot);
-        self.queue_port_scan_if_due(&sessions);
+        self.queue_port_scan_if_due(&sessions, &other_panes);
         self.queue_approval_scan_if_due(&sessions);
         // Chyron diff: capture the pre-refresh pane conditions and
         // compare them against the fresh parse before either side is
@@ -665,7 +677,11 @@ impl AppState {
     /// stashed in `pending_port_scan`; the event loop hands them to the
     /// port-scan worker and results come back through
     /// [`AppState::apply_process_snapshot`].
-    pub(crate) fn queue_port_scan_if_due(&mut self, sessions: &[SessionInfo]) {
+    pub(crate) fn queue_port_scan_if_due(
+        &mut self,
+        sessions: &[SessionInfo],
+        other_panes: &[crate::tmux::OtherPane],
+    ) {
         const PORT_REFRESH_INTERVAL: Duration = Duration::from_secs(10);
 
         if self.timers.port_scan_initialized
@@ -692,16 +708,18 @@ impl AppState {
             .collect();
         // Non-agent window panes are scanned too so their listening ports
         // and foreground command show up. They are marked `Window` so the
-        // dead-scan sweep never tears them down.
-        for windows in self.other_windows.values() {
-            for window in windows {
-                targets.push(crate::port::PaneScanTarget {
-                    pane_id: window.pane_id.clone(),
-                    pane_pid: window.pane_pid,
-                    agent: crate::tmux::AgentType::Unknown,
-                    kind: crate::port::PaneKind::Window,
-                });
-            }
+        // dead-scan sweep never tears them down. Built from the fresh
+        // parse in hand — `self.other_windows` is the previous snapshot
+        // at this point (it is replaced further down), so a just-appeared
+        // pane was invisible to the scan for a full interval and a
+        // just-died one got a pointless target (audit 2026-11-19 A5).
+        for pane in other_panes {
+            targets.push(crate::port::PaneScanTarget {
+                pane_id: pane.pane_id.clone(),
+                pane_pid: pane.pane_pid,
+                agent: crate::tmux::AgentType::Unknown,
+                kind: crate::port::PaneKind::Window,
+            });
         }
         self.pending_port_scan = Some(targets);
     }

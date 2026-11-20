@@ -457,7 +457,10 @@ pub(super) fn render_repo_popup(frame: &mut Frame, state: &mut AppState, area: R
     // needs `&mut state` while the styles still reference the theme.
     let theme = state.theme.clone();
     let repos = state.repo_names();
+    // `repo_names` always leads with the "All" sentinel, so this is
+    // defensive only.
     if repos.is_empty() {
+        state.notices.copy_targets.clear();
         return;
     }
 
@@ -503,7 +506,12 @@ pub(super) fn render_repo_popup(frame: &mut Frame, state: &mut AppState, area: R
     let popup_height = ((inner_rows as u16) + 2).max(3).min(height_budget);
 
     if popup_height < 3 || popup_width < 2 {
-        state.popup.set_repo_area(None);
+        // The viewport cannot fit the menu (a <=3-row sidebar): leaving
+        // the popup open-but-unrendered silently eats every key, and
+        // Enter applies a filter change the user never saw (audit
+        // 2026-11-19 B4). Refuse it instead — the popup closes and the
+        // user reopens once the sidebar has the rows for it.
+        state.close_repo_popup();
         state.notices.copy_targets.clear();
         return;
     }

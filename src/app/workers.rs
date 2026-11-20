@@ -14,11 +14,6 @@ use crate::version::{self, UpdateNotice};
 /// branch label shown for panes without hook-provided worktree metadata.
 const GIT_INFO_TTL: Duration = Duration::from_secs(10);
 
-/// How long the capture-pane subprocess may take before the approval scan
-/// gives up on that pane. Well under the 1s tick so a hung capture cannot
-/// stack up scans.
-const APPROVAL_CAPTURE_TIMEOUT: Duration = Duration::from_secs(2);
-
 /// How much of the pane tail is inspected for an approval prompt. agy
 /// renders the prompt block at the bottom of the screen; restricting the
 /// match to the tail keeps conversation text that merely quotes a prompt
@@ -325,16 +320,14 @@ pub(super) fn approval_scan_loop(rx: &mpsc::Receiver<Vec<String>>) {
 /// approval matcher inspects. Empty on any failure — a failed capture must
 /// never flip state (the next cycle retries).
 fn capture_pane_tail(pane_id: &str) -> Vec<String> {
-    let mut command = std::process::Command::new("tmux");
-    command.args(["capture-pane", "-p", "-t", pane_id]);
-    let Ok(output) = crate::subprocess::run_with_timeout(&mut command, APPROVAL_CAPTURE_TIMEOUT)
-    else {
+    // Through the shared exec path: the IPC gate keeps test builds from
+    // probing a live server, and failures land in the debug trace (audit
+    // 2026-11-19 C3). The deadline is the shared TMUX_TIMEOUT now — this
+    // runs on the approval-scan worker, so the render path never waits
+    // on it.
+    let Ok(text) = tmux::run_tmux_capture(&["capture-pane", "-p", "-t", pane_id]) else {
         return Vec::new();
     };
-    if !output.status.success() {
-        return Vec::new();
-    }
-    let text = String::from_utf8_lossy(&output.stdout);
     // Blank rows are dropped before slicing: capture-pane pads to the full
     // pane height, so on a mostly-empty screen the prompt block would sit
     // entirely above a tail of blank padding lines.

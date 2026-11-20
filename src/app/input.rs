@@ -273,14 +273,17 @@ pub(super) fn handle_key_event(key: KeyEvent, state: &mut AppState) -> bool {
             }
         }
         // Toggles are self-evident in the pane list; `?` explains them.
-        KeyCode::Char('c') => {
+        // Modifier guard: raw mode delivers Ctrl-C as Char('c') +
+        // CONTROL, and the universal interrupt must not flip compact
+        // mode (audit 2026-11-19 A3).
+        KeyCode::Char('c') if !ctrl => {
             state.global.toggle_compact();
         }
-        KeyCode::Char('w') => {
+        KeyCode::Char('w') if !ctrl => {
             state.global.toggle_show_windows();
             state.rebuild_row_targets();
         }
-        KeyCode::Char('t') => {
+        KeyCode::Char('t') if !ctrl => {
             state.toggle_todo_panel();
         }
         // Experimental agent overview grid in a fullscreen popup. The
@@ -423,9 +426,10 @@ fn handle_todo_key(key: KeyEvent, state: &mut AppState) -> bool {
         KeyCode::Char('x') | KeyCode::Char('d') => state.delete_todo_selected(),
         KeyCode::Char('D') => state.clear_completed_todos(),
         KeyCode::Char('H') => state.toggle_todo_hide_completed(),
-        // Global keys stay available while the panel has focus.
-        KeyCode::Char('c') => state.global.toggle_compact(),
-        KeyCode::Char('w') => {
+        // Global keys stay available while the panel has focus. Same
+        // Ctrl-C guard as the Panes-focus toggles (audit 2026-11-19 A3).
+        KeyCode::Char('c') if !ctrl => state.global.toggle_compact(),
+        KeyCode::Char('w') if !ctrl => {
             state.global.toggle_show_windows();
             state.rebuild_row_targets();
         }
@@ -1127,6 +1131,31 @@ mod tests {
         handle_key_event(key(KeyCode::Esc), &mut state);
         state.apply_popup_op_result(PopupOpResult::Spawn(Err("boom".into())));
         assert!(!state.is_spawn_input_open());
+    }
+
+    #[test]
+    fn ctrl_c_does_not_toggle_compact() {
+        // Audit 2026-11-19 A3: raw mode delivers Ctrl-C as Char('c') +
+        // CONTROL; the universal interrupt must fall through inert
+        // instead of flipping compact mode and broadcasting to every
+        // other sidebar.
+        let mut state = state_with_three_panes();
+        let before = state.global.compact;
+        handle_key_event(ctrl_key('c'), &mut state);
+        assert_eq!(state.global.compact, before);
+
+        // Plain `c` still toggles.
+        handle_key_event(key(KeyCode::Char('c')), &mut state);
+        assert_ne!(state.global.compact, before);
+    }
+
+    #[test]
+    fn ctrl_w_and_ctrl_t_are_inert() {
+        let mut state = state_with_three_panes();
+        handle_key_event(ctrl_key('w'), &mut state);
+        assert!(!state.global.show_windows);
+        handle_key_event(ctrl_key('t'), &mut state);
+        assert!(!state.todos.visible);
     }
 
     #[test]

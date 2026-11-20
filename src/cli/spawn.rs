@@ -20,7 +20,7 @@ pub fn cmd_spawn(args: &[String]) -> i32 {
         eprintln!("error: could not resolve current pane path");
         return 1;
     };
-    let Some(repo_root) = git::repo_root(&cwd) else {
+    let Some(repo_root) = git::main_repo_root(&cwd) else {
         eprintln!("error: {cwd} is not inside a git repository");
         return 1;
     };

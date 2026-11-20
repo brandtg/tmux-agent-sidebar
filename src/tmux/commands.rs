@@ -58,6 +58,13 @@ pub fn run_tmux_capture(args: &[&str]) -> Result<String, String> {
     exec_tmux(args, Some(TMUX_TIMEOUT)).map(|out| out.trim().to_string())
 }
 
+/// Like [`run_tmux_capture`] but without the trim: `capture-pane` output
+/// is content, and `trim()` would eat the first line's indentation and
+/// trailing blank rows the ANSI parser expects to see.
+pub fn run_tmux_capture_raw(args: &[&str]) -> Result<String, String> {
+    exec_tmux(args, Some(TMUX_TIMEOUT))
+}
+
 /// Shared execution path for every tmux invocation. Failures are recorded
 /// in the opt-in debug trace (`TMUX_AGENT_SIDEBAR_DEBUG=1`, see
 /// [`crate::debug`]) before the caller's usual silent fallback. This is the
@@ -196,9 +203,15 @@ pub fn split_window_left(target_pane: &str, cwd: &str, percent: u32) -> Result<S
 /// cannot be written — silently dropping the failure would leave an
 /// un-removable pane.
 pub fn set_window_option(window: &str, key: &str, value: &str) -> Result<(), String> {
+    // Same normalization as every pane write: a newline splits the
+    // sidebar's line-based record in two (the pane silently vanishes) and
+    // a pipe shifts every downstream field. Spawn markers ride this path,
+    // and a shifted record made `SpawnMarkers::parse` hand the remove
+    // flow misparsed repo/branch values (audit 2026-11-19 C4).
+    let value = crate::tmux::sanitize_option_value(value);
     // `--` so values starting with `-` (user-supplied task slugs, paths)
     // are never parsed as tmux flags.
-    run_tmux_capture(&["set", "-w", "-t", window, "--", key, value]).map(|_| ())
+    run_tmux_capture(&["set", "-w", "-t", window, "--", key, &value]).map(|_| ())
 }
 
 /// Send a command line to `target` (a pane id) and press Enter so the shell

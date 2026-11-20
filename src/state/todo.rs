@@ -710,7 +710,13 @@ fn pop_word_before(input: &mut String, cursor: &mut usize) {
         cut -= 1;
     }
     if cut < *cursor {
-        chars.drain(cut..*cursor);
+        // Clamp the range end too: `cut` is safe but a `cursor` beyond
+        // the buffer would panic `drain`. Every mutator keeps the cursor
+        // in bounds today, so this is latent — but the stale-buffer class
+        // (an external reload landing under an open edit) is exactly what
+        // would trip it (audit 2026-11-19 B5).
+        let end = (*cursor).min(chars.len());
+        chars.drain(cut..end);
         *input = chars.into_iter().collect();
         *cursor = cut;
     }
@@ -1773,6 +1779,24 @@ mod tests {
 
         assert_eq!(state.todos.editing.as_ref().unwrap().input, "write  now");
         assert_eq!(state.todos.editing.as_ref().unwrap().cursor, 6);
+    }
+
+    #[test]
+    fn ctrl_w_tolerates_a_cursor_beyond_the_buffer() {
+        // Audit 2026-11-19 B5: the drain range end used the unclamped
+        // cursor — a cursor past the buffer length (the stale-buffer
+        // class: an external reload landing under an open edit) panicked
+        // instead of restoring the invariant.
+        let mut state = state_with(vec![item("one two", false)]);
+        state.todos.selected = 0;
+        state.begin_todo_edit();
+        if let Some(edit) = state.todos.editing.as_mut() {
+            edit.cursor = 20; // beyond "one two"
+        }
+        state.todo_input_pop_word();
+        let edit = state.todos.editing.as_ref().unwrap();
+        assert_eq!(edit.input, "one ");
+        assert!(edit.cursor <= edit.input.chars().count());
     }
 
     #[test]
