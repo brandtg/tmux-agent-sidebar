@@ -964,8 +964,56 @@ fn default_compact_view_does_not_break_cross_instance_sync() {
 
 fn spawn_state_with_repo() -> AppState {
     let mut state = make_state(vec![]);
-    state.open_spawn_input_for_repo("myproj".into(), "/home/u/myproj".into(), None);
+    state.open_spawn_input_for_repo(
+        "myproj".into(),
+        "/home/u/myproj".into(),
+        "sess".into(),
+        None,
+    );
     state
+}
+
+#[test]
+fn open_spawn_input_from_selection_pins_the_selected_panes_session() {
+    // `n` on an agent row in a session other than the sidebar's must
+    // pin that row's tmux session: the spawn has to create its window
+    // where the selected agent lives, not where the sidebar runs.
+    let mut pane = make_pane(AgentType::Claude, PaneStatus::Running);
+    pane.pane_id = "%7".into();
+    pane.tmux_session = "notes".into();
+    let mut state = make_state(vec![]);
+    state.repo_groups = vec![RepoGroup {
+        name: "myproj".into(),
+        has_focus: false,
+        panes: vec![(
+            pane,
+            PaneGitInfo {
+                repo_root: Some("/home/u/myproj".into()),
+                ..PaneGitInfo::default()
+            },
+        )],
+    }];
+    state.rebuild_row_targets();
+    state.global.selected_pane_row = 0;
+
+    state.open_spawn_input_from_selection();
+
+    match &state.popup {
+        PopupState::SpawnInput {
+            target_repo,
+            target_repo_root,
+            target_session,
+            ..
+        } => {
+            assert_eq!(target_repo, "myproj");
+            assert_eq!(target_repo_root, "/home/u/myproj");
+            assert_eq!(
+                target_session, "notes",
+                "spawn session must come from the selected pane"
+            );
+        }
+        _ => panic!("expected SpawnInput popup"),
+    }
 }
 
 #[test]

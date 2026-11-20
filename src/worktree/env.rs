@@ -37,6 +37,12 @@ pub(crate) trait SpawnEnv {
         percent: u32,
     ) -> Result<String, String>;
     fn kill_window(&self, window_id: &str) -> Result<(), String>;
+    /// Move the invoking tmux client to `window_id` inside `session`.
+    /// Best-effort tail of the spawn flow: `new-window` only selects
+    /// the new window within its own session, so a spawn targeting a
+    /// session other than the sidebar's must switch the client over or
+    /// the user sees nothing happen.
+    fn switch_client_to_window(&self, session: &str, window_id: &str) -> Result<(), String>;
     fn set_window_option(&self, window: &str, key: &str, value: &str) -> Result<(), String>;
     fn send_command(&self, target: &str, command: &str) -> Result<(), String>;
     fn display_message(&self, pane_id: &str, template: &str) -> String;
@@ -89,6 +95,9 @@ impl SpawnEnv for RealEnv {
     }
     fn kill_window(&self, window_id: &str) -> Result<(), String> {
         tmux::kill_window(window_id)
+    }
+    fn switch_client_to_window(&self, session: &str, window_id: &str) -> Result<(), String> {
+        tmux::switch_to_window(session, window_id)
     }
     fn set_window_option(&self, window: &str, key: &str, value: &str) -> Result<(), String> {
         tmux::set_window_option(window, key, value)

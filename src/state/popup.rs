@@ -63,7 +63,10 @@ pub enum PopupState {
     },
     /// Modal text input shown when the user presses `n` (or clicks `+`)
     /// to spawn a new agent. `target_repo` / `target_repo_root` pin
-    /// the spawn target; `kind_idx` indexes into
+    /// the spawn target; `target_session` pins the tmux session the
+    /// window is created in — the session of the pane (or repo group)
+    /// the modal was opened from, which may differ from the sidebar's
+    /// own session. `kind_idx` indexes into
     /// [`crate::worktree::SPAWN_MODES`] (default = spawn in the repo
     /// folder, worktree = create a worktree first) and `agent_idx`
     /// indexes into [`crate::worktree::AGENTS`] so arrow keys can cycle
@@ -72,6 +75,7 @@ pub enum PopupState {
         input: String,
         target_repo: String,
         target_repo_root: String,
+        target_session: String,
         kind_idx: usize,
         agent_idx: usize,
         field: SpawnField,
@@ -352,12 +356,14 @@ impl AppState {
         &mut self,
         repo_name: String,
         repo_root: String,
+        target_session: String,
         anchor_y: Option<u16>,
     ) {
         self.popup = PopupState::SpawnInput {
             input: String::new(),
             target_repo: repo_name,
             target_repo_root: repo_root,
+            target_session,
             kind_idx: 0,
             agent_idx: 0,
             field: SpawnField::Mode,
@@ -391,11 +397,16 @@ impl AppState {
             self.set_flash("spawn: could not find repo group for selection");
             return;
         };
-        let Some(root) = group
-            .panes
-            .iter()
-            .find_map(|(_, git)| git.repo_root.clone())
-        else {
+        // The spawn targets the selected pane's tmux session — `n` on
+        // an agent in another session must create the window there,
+        // not where the sidebar lives.
+        let Some((root, session)) = group.panes.iter().find_map(|(p, git)| {
+            (p.pane_id == pane_id).then(|| (git.repo_root.clone(), p.tmux_session.clone()))
+        }) else {
+            self.set_flash("spawn: could not find repo group for selection");
+            return;
+        };
+        let Some(root) = root else {
             self.set_flash("spawn: selected pane is not in a git repo");
             return;
         };
@@ -408,7 +419,7 @@ impl AppState {
             .iter()
             .find(|t| t.repo_name == name)
             .map(|t| t.rect.y);
-        self.open_spawn_input_for_repo(name, root, anchor);
+        self.open_spawn_input_for_repo(name, root, session, anchor);
     }
 
     /// Spawn anchored on a window row: a non-agent pane (shell, nvim,
@@ -418,12 +429,14 @@ impl AppState {
     /// works wherever the cursor can sit, matching how Enter jumps to
     /// both row kinds.
     fn open_spawn_input_from_window_row(&mut self, pane_id: &str) {
-        let Some((repo_key, git)) = self.other_windows.iter().find_map(|(repo_key, windows)| {
-            windows
-                .iter()
-                .find(|w| w.pane_id == pane_id)
-                .map(|w| (repo_key.clone(), w.git_info.clone()))
-        }) else {
+        let Some((repo_key, git, session)) =
+            self.other_windows.iter().find_map(|(repo_key, windows)| {
+                windows
+                    .iter()
+                    .find(|w| w.pane_id == pane_id)
+                    .map(|w| (repo_key.clone(), w.git_info.clone(), w.session_name.clone()))
+            })
+        else {
             self.set_flash("spawn: could not find repo group for selection");
             return;
         };
@@ -443,7 +456,7 @@ impl AppState {
             .iter()
             .find(|t| t.repo_name == name)
             .map(|t| t.rect.y);
-        self.open_spawn_input_for_repo(name, root, anchor);
+        self.open_spawn_input_for_repo(name, root, session, anchor);
     }
 
     pub fn close_spawn_input(&mut self) {
@@ -673,6 +686,7 @@ impl AppState {
         let PopupState::SpawnInput {
             input,
             target_repo_root,
+            target_session,
             kind_idx,
             agent_idx,
             working,
@@ -700,17 +714,19 @@ impl AppState {
             self.set_spawn_error("name is empty");
             return;
         }
-        let repo_root = std::path::PathBuf::from(target_repo_root.clone());
-
-        let Some(session) = crate::tmux::pane_session_name(&self.tmux_pane) else {
+        // The session was pinned from the selected pane / repo group
+        // when the modal opened — an agent row in another session must
+        // spawn there, not in the sidebar's own session.
+        if target_session.is_empty() {
             self.set_spawn_error("could not resolve tmux session");
             return;
-        };
+        }
+        let repo_root = std::path::PathBuf::from(target_repo_root.clone());
 
         let req = crate::worktree::SpawnRequest {
             repo_root,
             task_name,
-            session,
+            session: target_session.clone(),
             agent,
             kind,
         };
@@ -1101,12 +1117,18 @@ mod tests {
     #[test]
     fn open_spawn_input_for_repo_initializes_fields() {
         let mut state = AppState::new("%99".into());
-        state.open_spawn_input_for_repo("alpha".into(), "/tmp/alpha".into(), Some(7));
+        state.open_spawn_input_for_repo(
+            "alpha".into(),
+            "/tmp/alpha".into(),
+            "sess".into(),
+            Some(7),
+        );
         assert!(state.is_spawn_input_open());
         if let PopupState::SpawnInput {
             input,
             target_repo,
             target_repo_root,
+            target_session,
             kind_idx,
             agent_idx,
             field,
@@ -1119,6 +1141,7 @@ mod tests {
             assert!(input.is_empty());
             assert_eq!(target_repo, "alpha");
             assert_eq!(target_repo_root, "/tmp/alpha");
+            assert_eq!(target_session, "sess", "spawn session is pinned at open");
             assert_eq!(*kind_idx, 0, "default spawn kind is folder");
             assert_eq!(*agent_idx, 0);
             assert_eq!(*field, SpawnField::Mode, "focus starts on the MODE field");
@@ -1147,7 +1170,7 @@ mod tests {
     #[test]
     fn spawn_input_next_prev_cycle_field() {
         let mut state = AppState::new("%99".into());
-        state.open_spawn_input_for_repo("alpha".into(), "/tmp/alpha".into(), None);
+        state.open_spawn_input_for_repo("alpha".into(), "/tmp/alpha".into(), "sess".into(), None);
         // Default kind is folder (no NAME field): two-field cycle.
         state.spawn_input_next_field();
         assert!(matches!(
@@ -1180,7 +1203,7 @@ mod tests {
         // Selecting the worktree kind adds the NAME field; cycling back
         // to the folder kind must make it unreachable again.
         let mut state = AppState::new("%99".into());
-        state.open_spawn_input_for_repo("alpha".into(), "/tmp/alpha".into(), None);
+        state.open_spawn_input_for_repo("alpha".into(), "/tmp/alpha".into(), "sess".into(), None);
         if let PopupState::SpawnInput { kind_idx, .. } = &mut state.popup {
             *kind_idx = 1; // worktree
         }
@@ -1209,7 +1232,7 @@ mod tests {
     #[test]
     fn spawn_input_field_change_clears_error() {
         let mut state = AppState::new("%99".into());
-        state.open_spawn_input_for_repo("alpha".into(), "/tmp/alpha".into(), None);
+        state.open_spawn_input_for_repo("alpha".into(), "/tmp/alpha".into(), "sess".into(), None);
         if let PopupState::SpawnInput { error, .. } = &mut state.popup {
             *error = Some("boom".into());
         }
@@ -1222,7 +1245,7 @@ mod tests {
     #[test]
     fn spawn_input_cycle_agent_wraps() {
         let mut state = AppState::new("%99".into());
-        state.open_spawn_input_for_repo("alpha".into(), "/tmp/alpha".into(), None);
+        state.open_spawn_input_for_repo("alpha".into(), "/tmp/alpha".into(), "sess".into(), None);
         // Switch field to Agent, then cycle to verify agent_idx wraps.
         if let PopupState::SpawnInput { field, .. } = &mut state.popup {
             *field = SpawnField::Agent;
@@ -1240,7 +1263,7 @@ mod tests {
     #[test]
     fn spawn_input_cycle_mode_field_toggles_spawn_kind() {
         let mut state = AppState::new("%99".into());
-        state.open_spawn_input_for_repo("alpha".into(), "/tmp/alpha".into(), None);
+        state.open_spawn_input_for_repo("alpha".into(), "/tmp/alpha".into(), "sess".into(), None);
         // Focus starts on MODE; cycle flips default ↔ worktree.
         state.spawn_input_cycle(1);
         if let PopupState::SpawnInput { kind_idx, .. } = &state.popup {
@@ -1259,7 +1282,7 @@ mod tests {
     #[test]
     fn spawn_input_cycle_name_field_is_noop() {
         let mut state = AppState::new("%99".into());
-        state.open_spawn_input_for_repo("alpha".into(), "/tmp/alpha".into(), None);
+        state.open_spawn_input_for_repo("alpha".into(), "/tmp/alpha".into(), "sess".into(), None);
         // Name field (only reachable for worktree spawns) ignores cycles.
         if let PopupState::SpawnInput {
             field, kind_idx, ..
@@ -1284,7 +1307,7 @@ mod tests {
     #[test]
     fn spawn_input_push_pop_char_only_on_name_field() {
         let mut state = AppState::new("%99".into());
-        state.open_spawn_input_for_repo("alpha".into(), "/tmp/alpha".into(), None);
+        state.open_spawn_input_for_repo("alpha".into(), "/tmp/alpha".into(), "sess".into(), None);
         // Worktree kind so the NAME field is focusable.
         if let PopupState::SpawnInput { kind_idx, .. } = &mut state.popup {
             *kind_idx = 1;
@@ -1320,7 +1343,7 @@ mod tests {
     #[test]
     fn confirm_spawn_input_empty_sets_error() {
         let mut state = AppState::new("%99".into());
-        state.open_spawn_input_for_repo("alpha".into(), "/tmp/alpha".into(), None);
+        state.open_spawn_input_for_repo("alpha".into(), "/tmp/alpha".into(), "sess".into(), None);
         // Worktree spawns need a name (it becomes the branch slug).
         if let PopupState::SpawnInput { kind_idx, .. } = &mut state.popup {
             *kind_idx = 1;
@@ -1341,7 +1364,7 @@ mod tests {
         // a bare test env — what matters is the error is NOT the name
         // validation, i.e. the folder path never demands a name.
         let mut state = AppState::new("%99".into());
-        state.open_spawn_input_for_repo("alpha".into(), "/tmp/alpha".into(), None);
+        state.open_spawn_input_for_repo("alpha".into(), "/tmp/alpha".into(), "sess".into(), None);
         state.confirm_spawn_input();
         if let PopupState::SpawnInput { error, .. } = &state.popup {
             assert_ne!(
@@ -1359,7 +1382,7 @@ mod tests {
         // The no-double-spawn guard must run before any dispatch, so a
         // second Enter while an op is in flight is a synchronous no-op.
         let mut state = AppState::new("%99".into());
-        state.open_spawn_input_for_repo("alpha".into(), "/tmp/alpha".into(), None);
+        state.open_spawn_input_for_repo("alpha".into(), "/tmp/alpha".into(), "sess".into(), None);
         if let PopupState::SpawnInput { working, .. } = &mut state.popup {
             *working = Some("creating worktree…");
         }
@@ -1506,6 +1529,7 @@ mod tests {
             input: "task".into(),
             target_repo: "alpha".into(),
             target_repo_root: "/tmp/alpha".into(),
+            target_session: "sess".into(),
             kind_idx: 1,
             agent_idx: 0,
             field: SpawnField::Name,

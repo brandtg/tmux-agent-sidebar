@@ -763,7 +763,12 @@ fn snapshot_spawn_modal_folder_kind_hides_name_field() {
     // Default kind is the folder spawn: MODE first, then AGENT, and no
     // NAME row — the modal is one section shorter than the worktree one.
     let mut state = make_state(vec![]);
-    state.open_spawn_input_for_repo("project".into(), "/home/u/project".into(), None);
+    state.open_spawn_input_for_repo(
+        "project".into(),
+        "/home/u/project".into(),
+        "sess".into(),
+        None,
+    );
     state.focus_state.sidebar_focused = false;
 
     insta::assert_snapshot!(render_to_string(&mut state, 40, 25), @"
@@ -782,7 +787,12 @@ fn snapshot_spawn_modal_worktree_kind_shows_name_field() {
     // Worktree kind adds the NAME row (last, per MODE → AGENT → NAME)
     // with a text cursor while it has focus.
     let mut state = make_state(vec![]);
-    state.open_spawn_input_for_repo("project".into(), "/home/u/project".into(), None);
+    state.open_spawn_input_for_repo(
+        "project".into(),
+        "/home/u/project".into(),
+        "sess".into(),
+        None,
+    );
     if let tmux_agent_sidebar::state::PopupState::SpawnInput {
         kind_idx, field, ..
     } = &mut state.popup
@@ -809,7 +819,12 @@ fn snapshot_spawn_modal_worktree_kind_shows_name_field() {
 fn snapshot_spawn_modal_compact_folder_kind() {
     // Compact layout (short terminal): MODE / AGENT rows only.
     let mut state = make_state(vec![]);
-    state.open_spawn_input_for_repo("project".into(), "/home/u/project".into(), None);
+    state.open_spawn_input_for_repo(
+        "project".into(),
+        "/home/u/project".into(),
+        "sess".into(),
+        None,
+    );
     state.focus_state.sidebar_focused = false;
 
     insta::assert_snapshot!(render_to_string(&mut state, 40, 10), @"

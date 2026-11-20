@@ -2103,6 +2103,7 @@ mod tests {
             input: "task".into(),
             target_repo: "repo-a".into(),
             target_repo_root: "/tmp/repo-a".into(),
+            target_session: "sess-a".into(),
             kind_idx: 1,
             agent_idx: 0,
             field: crate::state::SpawnField::Name,

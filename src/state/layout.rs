@@ -29,12 +29,16 @@ pub struct GroupStart {
 
 /// Click target for the `+` button rendered at the right edge of each
 /// repo-group header in the agents panel. Clicking it opens the spawn
-/// modal prefilled for that repo.
+/// modal prefilled for that repo. `session_name` is the tmux session
+/// the group's panes live in (the focused pane's session, else the
+/// first pane's) — the spawn must create its window in the group's
+/// session, not the sidebar's.
 #[derive(Debug, Clone)]
 pub struct RepoSpawnTarget {
     pub rect: ratatui::layout::Rect,
     pub repo_name: String,
     pub repo_root: String,
+    pub session_name: String,
 }
 
 /// Click target for the red `×` rendered next to the branch of a
@@ -685,14 +689,21 @@ impl AppState {
 
         // Check the `+` spawn buttons before the pane-row fallback so a
         // click on the button doesn't also shift the pane selection.
-        if let Some((repo_name, repo_root, anchor_y)) = self
+        if let Some((repo_name, repo_root, session_name, anchor_y)) = self
             .layout
             .repo_spawn_targets
             .iter()
             .find(|t| point_in_rect(row, col, t.rect))
-            .map(|t| (t.repo_name.clone(), t.repo_root.clone(), t.rect.y))
+            .map(|t| {
+                (
+                    t.repo_name.clone(),
+                    t.repo_root.clone(),
+                    t.session_name.clone(),
+                    t.rect.y,
+                )
+            })
         {
-            self.open_spawn_input_for_repo(repo_name, repo_root, Some(anchor_y));
+            self.open_spawn_input_for_repo(repo_name, repo_root, session_name, Some(anchor_y));
             return;
         }
 
@@ -947,6 +958,7 @@ mod tests {
             rect: Rect::new(38, 2, 1, 1),
             repo_name: "backend".into(),
             repo_root: "/tmp/repo".into(),
+            session_name: "sess".into(),
         }];
 
         state.handle_mouse_click(2, 38);

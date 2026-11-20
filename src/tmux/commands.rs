@@ -263,6 +263,26 @@ pub fn switch_window(session: &str, index: i64) {
     ]);
 }
 
+/// Switch the invoking tmux client to `window_id` (e.g. `@9`) inside
+/// `session` — the final step of the spawn flow when the spawn targets
+/// a session other than the sidebar's own: `new-window` only selects
+/// the new window within its own session, so without the switch a
+/// cross-session spawn would be invisible to the user. The session
+/// switch comes first (a no-op when already there), then the window
+/// selection — the same chain as [`switch_window`].
+pub fn switch_to_window(session: &str, window_id: &str) -> Result<(), String> {
+    run_tmux_capture(&[
+        "switch-client",
+        "-t",
+        session,
+        ";",
+        "select-window",
+        "-t",
+        window_id,
+    ])
+    .map(|_| ())
+}
+
 /// Test-only seam that makes every `run_tmux` call fail for the current
 /// thread until the guard is dropped. Used to simulate a tmux server that
 /// is unreachable (restart, socket hiccup) without spawning a real tmux.

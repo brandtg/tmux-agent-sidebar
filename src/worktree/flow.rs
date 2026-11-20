@@ -101,6 +101,8 @@ fn spawn_folder<E: SpawnEnv>(env: &E, req: &SpawnRequest) -> Result<String, Stri
         return Err(compose_spawn_error(format!("tmux: {e}"), rb));
     }
 
+    switch_to_spawned_window(env, &req.session, &window_id);
+
     Ok(window_id)
 }
 
@@ -203,7 +205,23 @@ fn spawn_worktree<E: SpawnEnv>(env: &E, req: &SpawnRequest) -> Result<String, St
         return Err(compose_spawn_error(format!("tmux: {e}"), rb));
     }
 
+    switch_to_spawned_window(env, &req.session, &window_id);
+
     Ok(branch)
+}
+
+/// Best-effort client switch to the freshly spawned window. `new-window`
+/// only selects the new window within its own session, so a spawn that
+/// targets a session other than the sidebar's own would otherwise be
+/// invisible: the user stays put while the window appears elsewhere. A
+/// failure (e.g. no attached client when the sidebar runs detached) is
+/// logged and ignored — the spawn itself already succeeded.
+fn switch_to_spawned_window<E: SpawnEnv>(env: &E, session: &str, window_id: &str) {
+    if let Err(e) = env.switch_client_to_window(session, window_id) {
+        crate::debug::log(&format!(
+            "spawn: client switch to {session}:{window_id} failed: {e}"
+        ));
+    }
 }
 
 /// Best-effort rollback after a partial spawn. Kills the tmux window
@@ -450,6 +468,10 @@ mod env_tests {
                 Ok(())
             }
         }
+        fn switch_client_to_window(&self, session: &str, window_id: &str) -> Result<(), String> {
+            self.log(format!("switch_client_to_window({session},{window_id})"));
+            Ok(())
+        }
         fn set_window_option(&self, window: &str, key: &str, _value: &str) -> Result<(), String> {
             let idx = *self.set_option_calls.borrow();
             *self.set_option_calls.borrow_mut() += 1;
@@ -534,6 +556,77 @@ mod env_tests {
             !has_call(&calls, "kill_window("),
             "no rollback on happy path"
         );
+        assert!(
+            has_call(&calls, "switch_client_to_window(sess,@1)"),
+            "the client lands on the freshly spawned window: {calls:?}"
+        );
+    }
+
+    #[test]
+    fn a_failed_client_switch_does_not_fail_the_spawn() {
+        // The window and agent exist by the time the switch runs; a
+        // failure there (e.g. sidebar started detached, no attached
+        // client) must only be logged, never rolled back.
+        #[derive(Default)]
+        struct SwitchFailingEnv(FakeEnv);
+        impl SpawnEnv for SwitchFailingEnv {
+            fn branch_prefix(&self) -> Option<String> {
+                self.0.branch_prefix()
+            }
+            fn worktree_dir(&self) -> Option<String> {
+                self.0.worktree_dir()
+            }
+            fn branch_is_free(&self, r: &str, b: &str) -> bool {
+                self.0.branch_is_free(r, b)
+            }
+            fn branch_exists(&self, r: &str, b: &str) -> bool {
+                self.0.branch_exists(r, b)
+            }
+            fn worktree_path_is_free(&self, p: &Path) -> bool {
+                self.0.worktree_path_is_free(p)
+            }
+            fn worktree_path_exists(&self, p: &str) -> bool {
+                self.0.worktree_path_exists(p)
+            }
+            fn worktree_add(&self, r: &str, p: &str, b: &str) -> Result<(), String> {
+                self.0.worktree_add(r, p, b)
+            }
+            fn worktree_remove(&self, r: &str, p: &str) -> Result<(), String> {
+                self.0.worktree_remove(r, p)
+            }
+            fn branch_delete(&self, r: &str, b: &str) -> Result<(), String> {
+                self.0.branch_delete(r, b)
+            }
+            fn new_window(&self, s: &str, c: &str, n: &str) -> Result<(String, String), String> {
+                self.0.new_window(s, c, n)
+            }
+            fn split_window_left(&self, t: &str, c: &str, p: u32) -> Result<String, String> {
+                self.0.split_window_left(t, c, p)
+            }
+            fn kill_window(&self, w: &str) -> Result<(), String> {
+                self.0.kill_window(w)
+            }
+            fn switch_client_to_window(&self, _s: &str, _w: &str) -> Result<(), String> {
+                Err("no current client".into())
+            }
+            fn set_window_option(&self, w: &str, k: &str, v: &str) -> Result<(), String> {
+                self.0.set_window_option(w, k, v)
+            }
+            fn send_command(&self, t: &str, c: &str) -> Result<(), String> {
+                self.0.send_command(t, c)
+            }
+            fn display_message(&self, p: &str, t: &str) -> String {
+                self.0.display_message(p, t)
+            }
+        }
+
+        let env = SwitchFailingEnv::default();
+        let branch = spawn_with(&env, &sample_req()).expect("spawn must still succeed");
+        assert_eq!(branch, "agent/task");
+        assert!(
+            !has_call(&env.0.calls(), "kill_window("),
+            "a failed switch must not roll the spawn back"
+        );
     }
 
     #[test]
@@ -613,6 +706,10 @@ mod env_tests {
         assert!(
             !has_call(&calls, "kill_window("),
             "no rollback on happy path"
+        );
+        assert!(
+            has_call(&calls, "switch_client_to_window(sess,@1)"),
+            "the client lands on the freshly spawned window: {calls:?}"
         );
     }
 
@@ -876,6 +973,9 @@ mod env_tests {
             }
             fn kill_window(&self, w: &str) -> Result<(), String> {
                 self.0.kill_window(w)
+            }
+            fn switch_client_to_window(&self, s: &str, w: &str) -> Result<(), String> {
+                self.0.switch_client_to_window(s, w)
             }
             fn set_window_option(&self, w: &str, k: &str, v: &str) -> Result<(), String> {
                 self.0.set_window_option(w, k, v)
