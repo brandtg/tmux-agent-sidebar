@@ -466,7 +466,7 @@ fn parse_first_cell(success: bool, stdout: &str) -> Option<String> {
 /// script tmux errors without a real server (same seam as SpawnEnv).
 pub(crate) trait ResumeEnv {
     fn new_window(&self, session: &str, cwd: &str, name: &str) -> Result<(String, String), String>;
-    /// Raw `@agent-sidebar-spawn-layout` option value (same seam as
+    /// Raw `@sidebar_spawn_layout` option value (same seam as
     /// [`crate::worktree::SpawnEnv`]); `None` = unset (default layout).
     fn spawn_layout(&self) -> Option<String>;
     /// Split `target_pane` so the new pane sits to its left at `percent`
@@ -534,7 +534,7 @@ pub(crate) fn launch_resume<E: ResumeEnv>(env: &E, req: &LaunchRequest) -> Resul
     let (pane_id, window_id) = env
         .new_window(req.session, req.cwd, req.window_name)
         .map_err(|e| format!("tmux: {e}"))?;
-    // Layout per `@agent-sidebar-spawn-layout`: `full` (the default)
+    // Layout per `@sidebar_spawn_layout`: `full` (the default)
     // hands the resumed agent the whole window; `split` keeps the
     // classic side-by-side (one-third agent pane left of a blank shell;
     // the sidebar hook adds its pane by geometry). A failed split
@@ -1148,7 +1148,7 @@ mod tests {
         fail_set_window_option: bool,
         fail_send_command: bool,
         fail_split: bool,
-        /// Raw `@agent-sidebar-spawn-layout` value (`None` = unset,
+        /// Raw `@sidebar_spawn_layout` value (`None` = unset,
         /// which resolves to the default `full` layout).
         spawn_layout: Option<String>,
     }

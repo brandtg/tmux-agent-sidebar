@@ -10,7 +10,7 @@ use crate::{git, tmux};
 pub(crate) trait SpawnEnv {
     fn branch_prefix(&self) -> Option<String>;
     fn worktree_dir(&self) -> Option<String>;
-    /// Raw `@agent-sidebar-spawn-layout` option value; parsed by
+    /// Raw `@sidebar_spawn_layout` option value; parsed by
     /// [`super::config::spawn_layout`]. `None` = unset (default layout).
     fn spawn_layout(&self) -> Option<String>;
     fn branch_is_free(&self, repo: &str, branch: &str) -> bool;

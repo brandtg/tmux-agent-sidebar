@@ -55,7 +55,7 @@ pub(crate) fn spawn_with<E: SpawnEnv>(env: &E, req: &SpawnRequest) -> Result<Str
 }
 
 /// Pick the pane the agent command is sent to for a freshly created
-/// window, per the `@agent-sidebar-spawn-layout` option. `full` (the
+/// window, per the `@sidebar_spawn_layout` option. `full` (the
 /// default) hands the agent the whole window — the user makes their own
 /// splits; `split` keeps the classic layout: a left one-third agent
 /// pane beside a blank right shell (the after-new-window hook adds the
@@ -369,7 +369,7 @@ mod env_tests {
         calls: RefCell<Vec<String>>,
         set_option_calls: RefCell<usize>,
         worktree_dir: Option<String>,
-        /// Raw `@agent-sidebar-spawn-layout` value (`None` = unset,
+        /// Raw `@sidebar_spawn_layout` value (`None` = unset,
         /// which resolves to the default `full` layout).
         spawn_layout: Option<String>,
         fail_set_option_at: Option<usize>,
@@ -571,7 +571,7 @@ mod env_tests {
 
     #[test]
     fn split_layout_keeps_the_side_by_side_panes() {
-        // `@agent-sidebar-spawn-layout split` restores the classic
+        // `@sidebar_spawn_layout split` restores the classic
         // three-pane layout: agent in a left one-third pane, blank shell
         // on the right, sidebar added by the hook.
         let env = FakeEnv {

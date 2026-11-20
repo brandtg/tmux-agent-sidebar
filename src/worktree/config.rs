@@ -24,7 +24,7 @@ pub const WORKTREE_DIR_OPTION: &str = "@agent-sidebar-worktree-dir";
 /// splits), `split` keeps the classic side-by-side — a left one-third
 /// agent pane beside a blank shell. Anything unset or unrecognised
 /// falls back to [`DEFAULT_SPAWN_LAYOUT`].
-pub const SPAWN_LAYOUT_OPTION: &str = "@agent-sidebar-spawn-layout";
+pub const SPAWN_LAYOUT_OPTION: &str = "@sidebar_spawn_layout";
 pub const SPAWN_LAYOUT_FULL: &str = "full";
 pub const SPAWN_LAYOUT_SPLIT: &str = "split";
 pub const DEFAULT_SPAWN_LAYOUT: &str = SPAWN_LAYOUT_FULL;
@@ -39,7 +39,7 @@ pub enum SpawnLayout {
     Split,
 }
 
-/// Resolve the raw `@agent-sidebar-spawn-layout` option value. Unset /
+/// Resolve the raw `@sidebar_spawn_layout` option value. Unset /
 /// empty / unknown values fall back to the default (`full`) so a stale
 /// or mistyped option can never block spawning.
 pub fn spawn_layout(value: Option<&str>) -> SpawnLayout {
