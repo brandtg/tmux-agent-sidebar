@@ -1298,6 +1298,7 @@ mod tests {
             index: 0,
             input: "Buy milk for the cat".into(),
             cursor: 20,
+            original_text: "Buy milk for the cat".into(),
         });
 
         let before = render_panel(&mut state, 30, 10);

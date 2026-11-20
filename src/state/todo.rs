@@ -30,12 +30,18 @@ pub struct TodoUndo {
 
 /// In-progress text edit for one item, opened with `e`. The buffer is
 /// rendered in place of the item's own text; `cursor` is a char index
-/// into `input`.
+/// into `input`. `original_text` is the item's text as of the moment
+/// the edit opened: an external reload re-anchors the edit by it, and
+/// the commit refuses to write when the item at `index` no longer holds
+/// it — a shifted list must never take the buffer's text (audit
+/// 2026-11-19 B3: a stale index used to overwrite whatever item had
+/// moved into place).
 #[derive(Debug, Clone)]
 pub struct TodoEdit {
     pub index: usize,
     pub input: String,
     pub cursor: usize,
+    pub original_text: String,
 }
 
 /// Manual TODO list state for one sidebar instance.
@@ -141,11 +147,47 @@ impl TodoState {
             Ok(items) => {
                 self.items = items;
                 self.error = None;
+                self.reanchor_edit();
                 self.clamp_selection(hide_completed);
             }
             Err(err) => {
                 self.error = Some(format!("read failed: {err}"));
             }
+        }
+    }
+
+    /// Re-point the open edit at the item it started from after an
+    /// external reload replaced `items`. The buffer's `original_text`
+    /// locates the item in the fresh list: still under the edit's index
+    /// means nothing moved; exactly one carrier elsewhere re-anchors the
+    /// index; zero carriers (the item was deleted or rewritten) or
+    /// several (ambiguous duplicates) close the edit rather than commit
+    /// onto a guessed row (audit 2026-11-19 B3).
+    fn reanchor_edit(&mut self) {
+        let Some(edit) = self.editing.as_ref() else {
+            return;
+        };
+        if self
+            .items
+            .get(edit.index)
+            .is_some_and(|item| item.text == edit.original_text)
+        {
+            return;
+        }
+        let matches: Vec<usize> = self
+            .items
+            .iter()
+            .enumerate()
+            .filter(|(_, item)| item.text == edit.original_text)
+            .map(|(index, _)| index)
+            .collect();
+        match matches[..] {
+            [index] => {
+                if let Some(edit) = self.editing.as_mut() {
+                    edit.index = index;
+                }
+            }
+            _ => self.editing = None,
         }
     }
 
@@ -364,35 +406,58 @@ impl TodoState {
     }
 
     /// Replace the text of the item at `index`, persisting first.
-    /// Whitespace-only text is ignored.
-    pub fn set_text(&mut self, index: usize, text: String) {
+    /// Whitespace-only text is ignored. `expected_original` guards the
+    /// shared file against a shifted list: when the item at `index` no
+    /// longer holds the text the edit started from, the write is
+    /// refused and `false` returned — the commit must never land on
+    /// whatever moved into place (audit 2026-11-19 B3).
+    pub fn set_text(&mut self, index: usize, text: String, expected_original: &str) -> bool {
         let text = text.trim().to_string();
         if text.is_empty() || index >= self.items.len() {
-            return;
+            return false;
         }
         match self.dir.clone() {
             None => {
+                if self
+                    .items
+                    .get(index)
+                    .is_none_or(|item| item.text != expected_original)
+                {
+                    return false;
+                }
                 if let Some(item) = self.items.get_mut(index) {
                     item.text = text;
                 }
+                true
             }
-            Some(dir) => match crate::todo::update_in(&dir, |items| {
-                if let Some(item) = items.get_mut(index) {
-                    item.text = text.clone();
-                }
-            }) {
-                Ok(items) => {
-                    self.items = items;
-                    self.file_stamp = crate::todo::stamp_in(&dir);
-                    self.error = None;
-                }
-                Err(err) => {
-                    if let Some(item) = self.items.get_mut(index) {
-                        item.text = text;
+            Some(dir) => {
+                let mut wrote = false;
+                match crate::todo::update_in(&dir, |items| {
+                    if let Some(item) = items.get_mut(index) {
+                        if item.text == expected_original {
+                            item.text = text.clone();
+                            wrote = true;
+                        }
                     }
-                    self.error = Some(format!("save failed: {err}"));
+                }) {
+                    Ok(items) => {
+                        self.items = items;
+                        self.file_stamp = crate::todo::stamp_in(&dir);
+                        self.error = None;
+                        wrote
+                    }
+                    Err(err) => {
+                        if let Some(item) = self.items.get(index) {
+                            if item.text == expected_original {
+                                self.items[index].text = text;
+                                wrote = true;
+                            }
+                        }
+                        self.error = Some(format!("save failed: {err}"));
+                        wrote
+                    }
                 }
-            },
+            }
         }
     }
 
@@ -985,11 +1050,15 @@ impl AppState {
             index,
             input,
             cursor,
+            original_text: item.text.clone(),
         });
     }
 
     /// Save the edited text and return to normal panel keys. An empty
-    /// edit is ignored (the original text is kept).
+    /// edit is ignored (the original text is kept), and so is an edit
+    /// whose item no longer holds the text it started from — another
+    /// instance moved or rewrote the list; the commit refuses rather
+    /// than overwrite the wrong item (audit 2026-11-19 B3).
     pub fn commit_todo_edit(&mut self) {
         let Some(edit) = self.todos.editing.take() else {
             return;
@@ -997,7 +1066,12 @@ impl AppState {
         if edit.input.trim().is_empty() {
             return;
         }
-        self.todos.set_text(edit.index, edit.input);
+        if !self
+            .todos
+            .set_text(edit.index, edit.input, &edit.original_text)
+        {
+            self.set_flash("todo: item changed elsewhere — edit discarded");
+        }
         self.todos.clamp_selection(self.global.todo_hide_completed);
     }
 
@@ -1376,6 +1450,107 @@ mod tests {
 
         assert!(state.global.todo_hide_completed);
         assert_eq!(state.todos.selected, 0);
+    }
+
+    #[test]
+    fn commit_refuses_when_the_item_changed_under_the_edit() {
+        // Audit 2026-11-19 B3: an external reload shifted the list while
+        // an edit was open; committing must not overwrite whatever moved
+        // into the edit's index.
+        let mut state = state_with(vec![item("one", false), item("two", false)]);
+        state.todos.editing = Some(TodoEdit {
+            index: 1,
+            input: "two rewritten".into(),
+            cursor: 13,
+            original_text: "two".into(),
+        });
+        state.todos.items[1].text = "three".into();
+
+        state.commit_todo_edit();
+
+        assert_eq!(state.todos.items[1].text, "three");
+        assert!(state.todos.editing.is_none());
+        assert!(state.flash.is_some(), "the refusal is surfaced");
+    }
+
+    #[test]
+    fn commit_writes_when_the_item_still_holds_its_original_text() {
+        let mut state = state_with(vec![item("one", false), item("two", false)]);
+        state.todos.editing = Some(TodoEdit {
+            index: 1,
+            input: "two rewritten".into(),
+            cursor: 13,
+            original_text: "two".into(),
+        });
+
+        state.commit_todo_edit();
+
+        assert_eq!(state.todos.items[1].text, "two rewritten");
+        assert!(state.flash.is_none());
+    }
+
+    #[test]
+    fn reanchor_follows_the_edited_item_after_an_external_shift() {
+        let mut state = state_with(vec![item("a", false), item("b", false), item("c", false)]);
+        state.todos.editing = Some(TodoEdit {
+            index: 2,
+            input: "c draft".into(),
+            cursor: 7,
+            original_text: "c".into(),
+        });
+        // Another instance deleted "b"; "c" moved up one row.
+        state.todos.items.remove(1);
+
+        state.todos.reanchor_edit();
+
+        assert_eq!(state.todos.editing.as_ref().unwrap().index, 1);
+        assert_eq!(state.todos.editing.as_ref().unwrap().input, "c draft");
+    }
+
+    #[test]
+    fn reanchor_keeps_an_edit_whose_anchor_is_unchanged() {
+        // Duplicates existed before the reload and the edit's row still
+        // holds its original text: the index is authoritative, no scan.
+        let mut state = state_with(vec![item("dup", false), item("dup", false)]);
+        state.todos.editing = Some(TodoEdit {
+            index: 1,
+            input: "dup draft".into(),
+            cursor: 9,
+            original_text: "dup".into(),
+        });
+
+        state.todos.reanchor_edit();
+
+        assert_eq!(state.todos.editing.as_ref().unwrap().index, 1);
+    }
+
+    #[test]
+    fn reanchor_drops_an_orphaned_or_ambiguous_edit() {
+        // Zero matches: the edited item is no longer in the list.
+        let mut state = state_with(vec![item("a", false), item("b", false)]);
+        state.todos.editing = Some(TodoEdit {
+            index: 1,
+            input: "b draft".into(),
+            cursor: 8,
+            original_text: "gone".into(),
+        });
+        state.todos.reanchor_edit();
+        assert!(state.todos.editing.is_none());
+
+        // Several matches: committing could land on either row.
+        let mut state = state_with(vec![
+            item("x", false),
+            item("dup", false),
+            item("dup", false),
+        ]);
+        state.todos.editing = Some(TodoEdit {
+            index: 0,
+            input: "dup draft".into(),
+            cursor: 9,
+            original_text: "dup".into(),
+        });
+        state.todos.reanchor_edit();
+        assert!(state.todos.editing.is_none());
     }
 
     #[test]
