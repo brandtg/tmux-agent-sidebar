@@ -24,16 +24,24 @@ impl SearchState {
     pub fn has_query(&self) -> bool {
         !self.query.trim().is_empty()
     }
+
+    /// The trimmed query, lowercased once per collection pass. The
+    /// matchers run per field per row, and lowering the query inside each
+    /// call was dozens of avoidable allocations per frame during an
+    /// active search (audit 2026-11-19 B6).
+    pub fn lowercased_query(&self) -> String {
+        self.query.trim().to_lowercase()
+    }
 }
 
-/// Case-insensitive substring match. Whitespace-only queries match
+/// Case-insensitive substring match against a pre-lowered query (see
+/// [`SearchState::lowercased_query`]). Whitespace-only queries match
 /// everything, which is what an empty search box means.
-pub fn query_matches(query: &str, haystack: &str) -> bool {
-    let query = query.trim();
-    if query.is_empty() {
+fn query_matches_lower(query_lower: &str, haystack: &str) -> bool {
+    if query_lower.is_empty() {
         return true;
     }
-    haystack.to_lowercase().contains(&query.to_lowercase())
+    haystack.to_lowercase().contains(query_lower)
 }
 
 impl AppState {
@@ -109,36 +117,41 @@ impl AppState {
     /// Does the group header itself match? When it does every row in the
     /// group stays visible, so typing a repo or tmux session name shows the
     /// whole group rather than only rows whose own fields contain it.
-    pub fn search_matches_group(&self, group: &crate::group::RepoGroup) -> bool {
-        query_matches(&self.search.query, &group.name)
+    /// `query_lower` is [`SearchState::lowercased_query`], computed once
+    /// per pass.
+    pub fn search_matches_group(&self, query_lower: &str, group: &crate::group::RepoGroup) -> bool {
+        query_matches_lower(query_lower, &group.name)
     }
 
     /// Does an agent row match on its own fields? The caller ORs this with
     /// [`Self::search_matches_group`] so a group-name hit keeps every row.
     pub fn search_matches_pane(
         &self,
+        query_lower: &str,
         pane: &crate::tmux::PaneInfo,
         git: &crate::group::PaneGitInfo,
     ) -> bool {
-        let query = &self.search.query;
-        query_matches(query, &pane.tmux_session)
-            || query_matches(query, &pane.session_name)
+        query_matches_lower(query_lower, &pane.tmux_session)
+            || query_matches_lower(query_lower, &pane.session_name)
             // A row with no session title renders the agent label as its
             // title, so typing what the user sees must still match.
-            || query_matches(query, pane.agent.label())
-            || query_matches(query, git.branch.as_deref().unwrap_or(""))
+            || query_matches_lower(query_lower, pane.agent.label())
+            || query_matches_lower(query_lower, git.branch.as_deref().unwrap_or(""))
     }
 
     /// Does a non-agent window row match? Mirrors the pane rule and covers
     /// the fields the row actually renders, so `w` mode behaves
     /// consistently with the agent list.
-    pub fn search_matches_window(&self, window: &crate::group::OtherWindow) -> bool {
-        let query = &self.search.query;
-        query_matches(query, &window.session_name)
-            || query_matches(query, &window.window_name)
-            || query_matches(query, &window.command)
-            || query_matches(query, window.command_args.as_deref().unwrap_or(""))
-            || query_matches(query, &window.pane_title)
+    pub fn search_matches_window(
+        &self,
+        query_lower: &str,
+        window: &crate::group::OtherWindow,
+    ) -> bool {
+        query_matches_lower(query_lower, &window.session_name)
+            || query_matches_lower(query_lower, &window.window_name)
+            || query_matches_lower(query_lower, &window.command)
+            || query_matches_lower(query_lower, window.command_args.as_deref().unwrap_or(""))
+            || query_matches_lower(query_lower, &window.pane_title)
     }
 }
 
@@ -213,29 +226,55 @@ mod tests {
     #[test]
     fn empty_query_matches_everything() {
         let state = AppState::new("%0".into());
-        assert!(state.search_matches_pane(&pane("%1", "work", "claude-api"), &git(Some("main"))));
-        assert!(state.search_matches_window(&window("work", "tests", "cargo")));
-        assert!(state.search_matches_group(&RepoGroup {
-            name: "repo".into(),
-            has_focus: false,
-            panes: vec![],
-        }));
+        assert!(state.search_matches_pane(
+            &state.search.lowercased_query(),
+            &pane("%1", "work", "claude-api"),
+            &git(Some("main"))
+        ));
+        assert!(state.search_matches_window(
+            &state.search.lowercased_query(),
+            &window("work", "tests", "cargo")
+        ));
+        assert!(state.search_matches_group(
+            &state.search.lowercased_query(),
+            &RepoGroup {
+                name: "repo".into(),
+                has_focus: false,
+                panes: vec![],
+            }
+        ));
     }
 
     #[test]
     fn query_is_case_insensitive() {
         let mut state = AppState::new("%0".into());
         state.search.query = "CLAUDE".into();
-        assert!(state.search_matches_pane(&pane("%1", "work", "claude-api"), &git(None)));
+        assert!(state.search_matches_pane(
+            &state.search.lowercased_query(),
+            &pane("%1", "work", "claude-api"),
+            &git(None)
+        ));
 
         state.search.query = "work".into();
-        assert!(state.search_matches_pane(&pane("%2", "WORK", "x"), &git(None)));
+        assert!(state.search_matches_pane(
+            &state.search.lowercased_query(),
+            &pane("%2", "WORK", "x"),
+            &git(None)
+        ));
 
         state.search.query = "MAIN".into();
-        assert!(state.search_matches_pane(&pane("%3", "other", "codex"), &git(Some("main"))));
+        assert!(state.search_matches_pane(
+            &state.search.lowercased_query(),
+            &pane("%3", "other", "codex"),
+            &git(Some("main"))
+        ));
 
         state.search.query = "missing".into();
-        assert!(!state.search_matches_pane(&pane("%4", "work", "claude"), &git(Some("main"))));
+        assert!(!state.search_matches_pane(
+            &state.search.lowercased_query(),
+            &pane("%4", "work", "claude"),
+            &git(Some("main"))
+        ));
     }
 
     #[test]
@@ -243,18 +282,32 @@ mod tests {
         let mut state = AppState::new("%0".into());
 
         state.search.query = "backend".into();
-        assert!(state.search_matches_pane(&pane("%1", "backend", "claude"), &git(Some("main"))));
+        assert!(state.search_matches_pane(
+            &state.search.lowercased_query(),
+            &pane("%1", "backend", "claude"),
+            &git(Some("main"))
+        ));
 
         state.search.query = "fix-auth".into();
-        assert!(state.search_matches_pane(&pane("%1", "backend", "fix-auth"), &git(Some("main"))));
+        assert!(state.search_matches_pane(
+            &state.search.lowercased_query(),
+            &pane("%1", "backend", "fix-auth"),
+            &git(Some("main"))
+        ));
 
         state.search.query = "agent/".into();
-        assert!(
-            state.search_matches_pane(&pane("%1", "backend", "claude"), &git(Some("agent/search")))
-        );
+        assert!(state.search_matches_pane(
+            &state.search.lowercased_query(),
+            &pane("%1", "backend", "claude"),
+            &git(Some("agent/search"))
+        ));
 
         state.search.query = "missing".into();
-        assert!(!state.search_matches_pane(&pane("%1", "backend", "claude"), &git(Some("main"))));
+        assert!(!state.search_matches_pane(
+            &state.search.lowercased_query(),
+            &pane("%1", "backend", "claude"),
+            &git(Some("main"))
+        ));
     }
 
     #[test]
@@ -266,7 +319,7 @@ mod tests {
             has_focus: false,
             panes: vec![],
         };
-        assert!(state.search_matches_group(&group));
+        assert!(state.search_matches_group(&state.search.lowercased_query(), &group));
     }
 
     #[test]
@@ -274,15 +327,27 @@ mod tests {
         let mut state = AppState::new("%0".into());
 
         state.search.query = "tests".into();
-        assert!(state.search_matches_window(&window("work", "tests", "cargo")));
+        assert!(state.search_matches_window(
+            &state.search.lowercased_query(),
+            &window("work", "tests", "cargo")
+        ));
 
         state.search.query = "cargo".into();
-        assert!(state.search_matches_window(&window("work", "tests", "cargo")));
+        assert!(state.search_matches_window(
+            &state.search.lowercased_query(),
+            &window("work", "tests", "cargo")
+        ));
 
         state.search.query = "work".into();
-        assert!(state.search_matches_window(&window("work", "tests", "cargo")));
+        assert!(state.search_matches_window(
+            &state.search.lowercased_query(),
+            &window("work", "tests", "cargo")
+        ));
 
         state.search.query = "missing".into();
-        assert!(!state.search_matches_window(&window("work", "tests", "cargo")));
+        assert!(!state.search_matches_window(
+            &state.search.lowercased_query(),
+            &window("work", "tests", "cargo")
+        ));
     }
 }

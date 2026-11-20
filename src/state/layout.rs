@@ -203,6 +203,9 @@ impl AppState {
 
         self.layout.pane_row_targets.clear();
         self.layout.group_starts.clear();
+        // Lowered once for the whole pass, mirroring row_collector::collect
+        // (audit 2026-11-19 B6).
+        let query_lower = self.search.lowercased_query();
         for group in &self.repo_groups {
             if !self.global.repo_filter.matches_group(&group.name) {
                 continue;
@@ -216,11 +219,13 @@ impl AppState {
             // A group-name hit keeps every row in the group visible; a
             // miss falls back to each row's own fields. This mirrors the
             // renderer's rule in `row_collector::collect`.
-            let group_matches_search = self.search_matches_group(group);
+            let group_matches_search = self.search_matches_group(&query_lower, group);
             let filtered_panes: Vec<_> = group
                 .panes
                 .iter()
-                .filter(|(pane, git)| group_matches_search || self.search_matches_pane(pane, git))
+                .filter(|(pane, git)| {
+                    group_matches_search || self.search_matches_pane(&query_lower, pane, git)
+                })
                 .collect();
 
             // The same window set as the renderer, so the target order
@@ -236,7 +241,9 @@ impl AppState {
             {
                 windows
                     .iter()
-                    .filter(|window| group_matches_search || self.search_matches_window(window))
+                    .filter(|window| {
+                        group_matches_search || self.search_matches_window(&query_lower, window)
+                    })
                     .collect()
             } else {
                 Vec::new()
@@ -416,13 +423,21 @@ impl AppState {
         // One lookup map instead of per-row scans: window rows resolved
         // their attention by linearly sweeping every `other_windows`
         // entry for *each* candidate row — O(rows × windows) per
-        // keypress (audit 2026-11-16 J6). Pane rows were already a
-        // single pane-state hit.
+        // keypress (audit 2026-11-16 J6). The agent half did the same
+        // through `pane_by_id`'s linear sweep per candidate row —
+        // O(rows × panes) (audit 2026-11-19 A7) — so both halves read
+        // one map each.
         let window_attention: std::collections::HashMap<&str, PaneAttention> = self
             .other_windows
             .values()
             .flat_map(|windows| windows.iter())
             .map(|window| (window.pane_id.as_str(), window.attention))
+            .collect();
+        let agent_attention: std::collections::HashMap<&str, PaneAttention> = self
+            .repo_groups
+            .iter()
+            .flat_map(|group| group.panes.iter())
+            .map(|(pane, _)| (pane.pane_id.as_str(), pane.attention))
             .collect();
         let current = self.global.selected_pane_row.min(len - 1);
         for offset in 1..len {
@@ -436,8 +451,9 @@ impl AppState {
                     .copied()
                     .unwrap_or(PaneAttention::None)
             } else {
-                self.pane_by_id(&target.pane_id)
-                    .map(|pane| pane.attention)
+                agent_attention
+                    .get(target.pane_id.as_str())
+                    .copied()
                     .unwrap_or(PaneAttention::None)
             };
             if attention != PaneAttention::None {

@@ -843,63 +843,87 @@ fn detect_codex_permission_mode(args: &str) -> PermissionMode {
 }
 
 pub(crate) fn process_snapshot_for_panes(all_panes_output: &str) -> Option<ProcessSnapshot> {
-    if !pane_output_needs_process_snapshot(all_panes_output)
-        && !pane_output_has_other_panes(all_panes_output)
-    {
-        return None;
+    // One split pass over the listing instead of two (audit 2026-11-19
+    // C6): arming needs "some pane's tree is load-bearing" OR "some
+    // non-agent pane exists", and each used to re-split every line. Both
+    // predicates are existential, so the first satisfying line decides.
+    all_panes_output
+        .lines()
+        .any(|line| {
+            split_session_line(line).is_some_and(|parts| {
+                pane_line_needs_process_snapshot(&parts) || pane_line_is_other_pane(&parts)
+            })
+        })
+        .then(ProcessSnapshot::scan)
+        .flatten()
+}
+
+/// Split one raw `list-panes` line, rejecting lines shorter than the
+/// pane-line contract.
+fn split_session_line(line: &str) -> Option<Vec<String>> {
+    let parts = split_tmux_fields(line, '|');
+    if parts.len() < session_line_field::MIN_FIELDS {
+        None
+    } else {
+        Some(parts)
     }
-    ProcessSnapshot::scan()
 }
 
+fn pane_line_is_other_pane(parts: &[String]) -> bool {
+    let pane_fields = &parts[session_line_field::PANE_LINE_OFFSET..];
+    if pane_fields[pane_line_field::PANE_ROLE] == "sidebar" {
+        return false;
+    }
+    let agent_field = &pane_fields[pane_line_field::AGENT];
+    let command = &pane_fields[pane_line_field::PANE_CURRENT_COMMAND];
+    AgentType::from_label(agent_field).is_none() && AgentType::from_label(command).is_none()
+}
+
+/// Batched arming predicate — production uses the single combined pass in
+/// [`process_snapshot_for_panes`]; this per-predicate form is kept for the
+/// tests that pin each arming rule.
+#[cfg(test)]
 fn pane_output_has_other_panes(all_panes_output: &str) -> bool {
-    all_panes_output.lines().any(|line| {
-        let parts = split_tmux_fields(line, '|');
-        if parts.len() < session_line_field::MIN_FIELDS {
-            return false;
-        }
-        let pane_fields = &parts[session_line_field::PANE_LINE_OFFSET..];
-        if pane_fields[pane_line_field::PANE_ROLE] == "sidebar" {
-            return false;
-        }
-        let agent_field = &pane_fields[pane_line_field::AGENT];
-        let command = &pane_fields[pane_line_field::PANE_CURRENT_COMMAND];
-        AgentType::from_label(agent_field).is_none() && AgentType::from_label(command).is_none()
-    })
+    all_panes_output
+        .lines()
+        .any(|line| split_session_line(line).is_some_and(|parts| pane_line_is_other_pane(&parts)))
 }
 
+fn pane_line_needs_process_snapshot(parts: &[String]) -> bool {
+    let pane_fields = &parts[session_line_field::PANE_LINE_OFFSET..];
+    if AgentType::from_label(&pane_fields[pane_line_field::AGENT])
+        .is_some_and(|agent| matches!(agent, AgentType::Codex | AgentType::OpenCode))
+    {
+        return true;
+    }
+    // A shell-foreground pane also needs the tree: `bash deploy.sh`
+    // and an idle prompt both read as "bash" from the command alone,
+    // and only the descendants tell them apart.
+    if is_shell_command(&pane_fields[pane_line_field::PANE_CURRENT_COMMAND]) {
+        return true;
+    }
+    // An unregistered pane behind a runtime shim needs the tree too:
+    // hermes' launcher execs `python3 -I -c …`, so the pane reads as
+    // `python3` until the first hook fires, and only the descendants
+    // (comm renamed to `hermes`) can identify it. Without this the row
+    // stays invisible until the user sends the first message.
+    AgentType::from_label(&pane_fields[pane_line_field::AGENT]).is_none()
+        && is_runtime_shim_command(&pane_fields[pane_line_field::PANE_CURRENT_COMMAND])
+        ||
+        // A pane running a background shell needs the tree too: the
+        // dead-bg-shell sweep consumes the snapshot to tell a finished
+        // background command from a live one. A window whose only
+        // qualifying pane is this one would otherwise ship no snapshot
+        // at all, pushing the full `ps` onto the render thread's
+        // fallback every tick (audit 2026-11-19 A1).
+        !pane_fields[pane_line_field::BG_CMD].is_empty()
+}
+
+/// Batched arming predicate — see [`pane_output_has_other_panes`].
+#[cfg(test)]
 fn pane_output_needs_process_snapshot(all_panes_output: &str) -> bool {
     all_panes_output.lines().any(|line| {
-        let parts = split_tmux_fields(line, '|');
-        if parts.len() < session_line_field::MIN_FIELDS {
-            return false;
-        }
-        let pane_fields = &parts[session_line_field::PANE_LINE_OFFSET..];
-        if AgentType::from_label(&pane_fields[pane_line_field::AGENT])
-            .is_some_and(|agent| matches!(agent, AgentType::Codex | AgentType::OpenCode))
-        {
-            return true;
-        }
-        // A shell-foreground pane also needs the tree: `bash deploy.sh`
-        // and an idle prompt both read as "bash" from the command alone,
-        // and only the descendants tell them apart.
-        if is_shell_command(&pane_fields[pane_line_field::PANE_CURRENT_COMMAND]) {
-            return true;
-        }
-        // An unregistered pane behind a runtime shim needs the tree too:
-        // hermes' launcher execs `python3 -I -c …`, so the pane reads as
-        // `python3` until the first hook fires, and only the descendants
-        // (comm renamed to `hermes`) can identify it. Without this the row
-        // stays invisible until the user sends the first message.
-        AgentType::from_label(&pane_fields[pane_line_field::AGENT]).is_none()
-            && is_runtime_shim_command(&pane_fields[pane_line_field::PANE_CURRENT_COMMAND])
-            ||
-            // A pane running a background shell needs the tree too: the
-            // dead-bg-shell sweep consumes the snapshot to tell a finished
-            // background command from a live one. A window whose only
-            // qualifying pane is this one would otherwise ship no snapshot
-            // at all, pushing the full `ps` onto the render thread's
-            // fallback every tick (audit 2026-11-19 A1).
-            !pane_fields[pane_line_field::BG_CMD].is_empty()
+        split_session_line(line).is_some_and(|parts| pane_line_needs_process_snapshot(&parts))
     })
 }
 

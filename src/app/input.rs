@@ -44,7 +44,10 @@ pub(super) fn handle_key_event(key: KeyEvent, state: &mut AppState) -> bool {
             KeyCode::Char('k') | KeyCode::Up => state.scroll_help(-1),
             KeyCode::PageDown => state.scroll_help_page(1),
             KeyCode::PageUp => state.scroll_help_page(-1),
-            _ => {}
+            // Unbound keys change nothing and must not force a full
+            // frame render (audit 2026-11-19 A6; same rule in every
+            // branch below).
+            _ => return false,
         }
         return true;
     }
@@ -59,8 +62,11 @@ pub(super) fn handle_key_event(key: KeyEvent, state: &mut AppState) -> bool {
         if state.is_spawn_input_working() {
             if key.code == KeyCode::Esc {
                 state.close_spawn_input();
+                return true;
             }
-            return true;
+            // Swallowed with no state change — nothing to redraw. The
+            // working indicator animates on its own spinner timer.
+            return false;
         }
         match key.code {
             KeyCode::Esc => state.close_spawn_input(),
@@ -71,7 +77,7 @@ pub(super) fn handle_key_event(key: KeyEvent, state: &mut AppState) -> bool {
             KeyCode::Right => state.spawn_input_cycle(1),
             KeyCode::Backspace => state.spawn_input_pop_char(),
             KeyCode::Char(c) => state.spawn_input_push_char(c),
-            _ => {}
+            _ => return false,
         }
         return true;
     }
@@ -81,8 +87,9 @@ pub(super) fn handle_key_event(key: KeyEvent, state: &mut AppState) -> bool {
         if state.is_remove_confirm_working() {
             if key.code == KeyCode::Esc {
                 state.close_remove_confirm();
+                return true;
             }
-            return true;
+            return false;
         }
         match key.code {
             KeyCode::Esc | KeyCode::Char('n') => state.close_remove_confirm(),
@@ -90,7 +97,7 @@ pub(super) fn handle_key_event(key: KeyEvent, state: &mut AppState) -> bool {
             KeyCode::Enter | KeyCode::Char('y') => {
                 state.confirm_remove(RemoveMode::WindowAndWorktree)
             }
-            _ => {}
+            _ => return false,
         }
         return true;
     }
@@ -103,7 +110,7 @@ pub(super) fn handle_key_event(key: KeyEvent, state: &mut AppState) -> bool {
             KeyCode::Char('k') | KeyCode::Up => repo_popup_nav_up(state),
             KeyCode::Char('p') if ctrl => repo_popup_nav_up(state),
             KeyCode::Enter => state.confirm_repo_popup(),
-            _ => {}
+            _ => return false,
         }
         return true;
     }
@@ -164,16 +171,19 @@ pub(super) fn handle_key_event(key: KeyEvent, state: &mut AppState) -> bool {
             KeyCode::Char('u') if ctrl => state.clear_search_query(),
             KeyCode::Char('w') if ctrl => state.search_pop_word(),
             KeyCode::Char(c) if !ctrl => state.search_push_char(c),
-            _ => {}
+            _ => return false,
         }
         return true;
     }
 
     match key.code {
         KeyCode::Esc => {
-            // Esc cancels an applied search; with no query it is inert.
+            // Esc cancels an applied search; with no query it changes
+            // nothing and must not force a render (audit 2026-11-19 A6).
             if state.search.has_query() {
                 state.cancel_search();
+            } else {
+                return false;
             }
         }
         KeyCode::Char('/') => state.open_search(),
@@ -300,7 +310,9 @@ pub(super) fn handle_key_event(key: KeyEvent, state: &mut AppState) -> bool {
         KeyCode::Enter if state.focus_state.focus == Focus::Panes => {
             state.activate_selected_pane();
         }
-        _ => {}
+        // Unbound keys (and modifier-only presses) change nothing: they
+        // must not schedule a full frame render (audit 2026-11-19 A6).
+        _ => return false,
     }
     true
 }
@@ -336,7 +348,7 @@ fn handle_todo_key(key: KeyEvent, state: &mut AppState) -> bool {
             KeyCode::Char('u') if ctrl => state.todo_input_clear(),
             KeyCode::Char('w') if ctrl => state.todo_input_pop_word(),
             KeyCode::Char(c) if !ctrl => state.todo_input_push_char(c),
-            _ => {}
+            _ => return false,
         }
         return true;
     }
@@ -367,7 +379,7 @@ fn handle_todo_key(key: KeyEvent, state: &mut AppState) -> bool {
             KeyCode::Char('u') if ctrl => state.todo_input_clear(),
             KeyCode::Char('w') if ctrl => state.todo_input_pop_word(),
             KeyCode::Char(c) if !ctrl => state.todo_input_push_char(c),
-            _ => {}
+            _ => return false,
         }
         return true;
     }
@@ -435,7 +447,7 @@ fn handle_todo_key(key: KeyEvent, state: &mut AppState) -> bool {
         }
         KeyCode::Char('?') => state.toggle_help_popup(),
         KeyCode::Char('/') => state.open_search(),
-        _ => {}
+        _ => return false,
     }
     true
 }
