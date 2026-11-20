@@ -12,13 +12,19 @@ const SUBPROCESS_TIMEOUT: Duration = Duration::from_secs(5);
 #[derive(Debug, Default, Clone)]
 pub struct PaneProcessSnapshot {
     /// Listening ports found in each scanned pane's process tree. Empty
-    /// for a pane whose tree held no listener — but also for *every*
-    /// pane when the lsof probe failed, which consumers must hold over
-    /// one sweep instead of reading as "the listener died" (see
+    /// for a pane whose tree held no listener — and for *every* pane
+    /// when the lsof probe failed, in which case [`Self::lsof_ok`] is
+    /// `false` and consumers must hold the previous badges instead of
+    /// reading the empty set as "the listener died" (see
     /// `AppState::apply_process_snapshot`).
     pub ports_by_pane: HashMap<String, Vec<u16>>,
     pub command_by_pane: HashMap<String, String>,
     pub live_agent_panes: HashSet<String>,
+    /// Whether the lsof probe actually ran and produced usable output.
+    /// `false` means the empty port set is a probe failure (spawn error,
+    /// 5s timeout, error exit), not evidence of "no listeners" — port
+    /// miss streaks must not advance on it (audit 2026-11-19 A2).
+    pub lsof_ok: bool,
     /// Every pane the scan examined, including panes with no ports and no
     /// detected command. Consumers use this to refresh (or clear) runtime
     /// state exactly for the panes this scan saw — never for panes that
@@ -203,16 +209,19 @@ pub(crate) fn scan_pane_processes(targets: &[PaneScanTarget]) -> Option<PaneProc
     // data this sweep", never "the whole scan failed". Returning None
     // here would freeze dead-scan streaks (the caller drops None
     // snapshots), silently disabling teardown on hosts without lsof.
-    // The process-tree data above is the load-bearing half. The empty
-    // port set a failed probe produces is survivable at the consumer:
-    // `apply_process_snapshot` holds the previous per-pane badge for a
-    // sweep rather than clearing it, so a transient lsof failure does
-    // not flash every badge on screen.
+    // The process-tree data above is the load-bearing half. A failed
+    // probe's empty port set is carried to the consumer with
+    // `lsof_ok: false`, so `apply_process_snapshot` holds the previous
+    // per-pane badges instead of counting the sweep as a miss.
     let lsof_output = run_lsof();
+    let lsof_ok = lsof_output.is_some();
     if lsof_output.is_none() {
-        // A failed probe is indistinguishable from "no ports found" in
-        // the snapshot itself; surface the distinction for flash reports.
-        crate::debug::log("port-scan: lsof probe failed; previous port state holds for one sweep");
+        // The snapshot carries the failure in `lsof_ok` now, so the
+        // consumer can hold the previous badges instead of advancing
+        // miss streaks on probe failure.
+        crate::debug::log(
+            "port-scan: lsof probe failed; previous port state holds until a probe succeeds",
+        );
     }
     let listening = lsof_output
         .map(|output| parse_lsof_listening_ports(&output))
@@ -239,6 +248,7 @@ pub(crate) fn scan_pane_processes(targets: &[PaneScanTarget]) -> Option<PaneProc
         live_agent_panes,
         scanned_panes,
         scanned_agent_panes,
+        lsof_ok,
     })
 }
 
