@@ -146,6 +146,11 @@ fn spawn_popup(client: Option<String>) -> Result<(), String> {
     if let Some(client) = client {
         cmd.arg("-t").arg(client);
     }
+    // `exe` + `"overview"` are two positionals, so tmux execs them
+    // directly (no `sh -c`, tmux 3.8) and the raw path is safe as-is —
+    // quoting would break it by becoming part of argv[0]. The lone
+    // trailing positional in toggle.rs IS shell-command and quotes
+    // instead; audit 2026-11-19 C1 sorted the two shapes out.
     cmd.arg(exe).arg("overview");
     let status = cmd
         .status()
@@ -179,6 +184,8 @@ pub(crate) fn spawn_overview_popup_detached() -> Result<(), String> {
         .args(["-e", &format!("TMUX_PANE={pane}")])
         .arg("-t")
         .arg(window)
+        // Two positionals: tmux execs them directly, no `sh -c` (tmux
+        // 3.8) — the raw path is safe, quoting would corrupt argv[0].
         .arg(exe)
         .arg("overview")
         .spawn()
