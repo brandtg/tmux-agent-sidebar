@@ -892,6 +892,14 @@ fn pane_output_needs_process_snapshot(all_panes_output: &str) -> bool {
         // stays invisible until the user sends the first message.
         AgentType::from_label(&pane_fields[pane_line_field::AGENT]).is_none()
             && is_runtime_shim_command(&pane_fields[pane_line_field::PANE_CURRENT_COMMAND])
+            ||
+            // A pane running a background shell needs the tree too: the
+            // dead-bg-shell sweep consumes the snapshot to tell a finished
+            // background command from a live one. A window whose only
+            // qualifying pane is this one would otherwise ship no snapshot
+            // at all, pushing the full `ps` onto the render thread's
+            // fallback every tick (audit 2026-11-19 A1).
+            !pane_fields[pane_line_field::BG_CMD].is_empty()
     })
 }
 
@@ -1464,6 +1472,31 @@ mod tests {
         assert!(!pane_output_needs_process_snapshot(&line("", "htop")));
         // Shell foreground is armed by the existing rule.
         assert!(pane_output_needs_process_snapshot(&line("", "zsh")));
+    }
+
+    #[test]
+    fn pane_output_needs_process_snapshot_arms_for_bg_shell_panes() {
+        // Audit 2026-11-19 A1: the dead-bg-shell sweep runs whenever any
+        // pane carries @pane_bg_cmd, so the worker must ship a snapshot
+        // for that window — otherwise the render thread falls back to a
+        // full `ps` every tick. A claude pane (no other arming rule
+        // applies) with a background shell is the failing shape.
+        let line = |agent: &str, command: &str, bg_cmd: &str| {
+            let mut fields = full_fields();
+            fields[pane_line_field::AGENT] = agent;
+            fields[pane_line_field::PANE_CURRENT_COMMAND] = command;
+            fields[pane_line_field::BG_CMD] = bg_cmd;
+            let mut segments: Vec<&str> = vec!["main", "@5", "1", "editor", "0", "1"];
+            segments.extend(&fields);
+            segments.join("|")
+        };
+        assert!(
+            pane_output_needs_process_snapshot(&line("claude", "claude", "cargo build")),
+            "a bg-shell pane arms the scan even when no other rule does"
+        );
+        assert!(!pane_output_needs_process_snapshot(&line(
+            "claude", "claude", ""
+        )));
     }
 
     #[test]
