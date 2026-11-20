@@ -21,6 +21,20 @@ pub(in crate::cli::hook) fn on_notification(
     if meta_only {
         return 0;
     }
+    // Claude's `agent_completed` notification fires when the foreground
+    // CLI hands the session to a background continuation (`continued-in`
+    // in the transcript): the turn's `Stop` already resolved the status,
+    // and nothing is waiting on the user. Forcing `waiting` here glued
+    // the pane in `waiting`/`agent_completed` for the whole continuation
+    // (observed live 2026-11-20): the continuation's own hooks never
+    // reach the pane (the daemon's bg-pty-host scrubs TMUX_PANE), so no
+    // later event ever cleared it. Keep the Stop-resolved status, drop
+    // any stale wait reason, and skip both the Feed entry and the
+    // desktop notification — a completion is not a "needs you" event.
+    if wait_reason == "agent_completed" {
+        tmux::unset_pane_option(pane, tmux::PANE_WAIT_REASON);
+        return 0;
+    }
     let bg_shell_live = !tmux::get_pane_option_value(pane, tmux::PANE_BG_CMD).is_empty();
     set_status(
         pane,
@@ -337,6 +351,68 @@ mod tests {
         assert!(
             !tmux::test_mock::contains(pane, tmux::PANE_WAIT_REASON),
             "empty wait_reason must clear a prior value"
+        );
+    }
+
+    #[test]
+    fn on_notification_agent_completed_is_not_a_wait_state() {
+        // Regression: Claude fires `notification_type: "agent_completed"`
+        // when the foreground CLI hands the session to a background
+        // continuation. The turn's Stop already resolved the status, but
+        // this notification used to force `waiting` + a wait reason —
+        // and since the continuation's hooks never reach the pane
+        // (bg-pty-host scrubs TMUX_PANE), nothing ever cleared it. The
+        // pane must keep its Stop-resolved status, clear any stale wait
+        // reason, and leave the done attention flag alone.
+        let _guard = tmux::test_mock::install();
+        let pane = "%NOTIF_COMPLETED";
+        tmux::test_mock::set(pane, tmux::PANE_STATUS, "idle");
+        tmux::test_mock::set(pane, tmux::PANE_ATTENTION, "done");
+        tmux::test_mock::set(pane, tmux::PANE_WAIT_REASON, "auth_success");
+
+        let ctx = AgentContext {
+            agent: "claude",
+            cwd: "/repo",
+            permission_mode: "auto",
+            worktree: &None,
+            session_id: &None,
+        };
+        // Notifications enabled with the Notification event: if the
+        // completion notice ever reaches the desktop-notification gate,
+        // the stamp is written on a dev machine with a notifier — so a
+        // missing stamp proves the gate was skipped, not that sending
+        // failed.
+        let notifications = desktop_notification::DesktopNotificationSettings {
+            enabled: true,
+            events: [desktop_notification::DesktopNotificationEvent::Notification]
+                .into_iter()
+                .collect(),
+        };
+        on_notification(
+            pane,
+            &ctx,
+            "agent_completed",
+            /* meta_only */ false,
+            &notifications,
+        );
+
+        assert_eq!(
+            tmux::test_mock::get(pane, tmux::PANE_STATUS).as_deref(),
+            Some("idle"),
+            "a completion notice must not move the pane into waiting"
+        );
+        assert_eq!(
+            tmux::test_mock::get(pane, tmux::PANE_ATTENTION).as_deref(),
+            Some("done"),
+            "the Stop-set done flag must survive the completion notice"
+        );
+        assert!(
+            !tmux::test_mock::contains(pane, tmux::PANE_WAIT_REASON),
+            "the completion notice must not write a wait reason"
+        );
+        assert!(
+            !tmux::test_mock::contains(pane, tmux::PANE_OS_NOTIFY_PERMISSION_REQUIRED),
+            "a completion notice must not fire a permission-required notification"
         );
     }
 

@@ -193,6 +193,9 @@ Per-pane file-based state:
 Agent hooks (hook.sh)
   → CLI `hook` subcommand (cli/hook.rs)
     → resolve_adapter() (event.rs) → adapter.parse() → AgentEvent
+    → resolve_hook_pane() (cli/hook/resolve.rs) ← $TMUX_PANE, or a
+      session-id fallback when the firing process has no tmux env
+      (Claude bg-pty-host continuation forks / async subagent hosts)
     → handle_event() writes @pane_* tmux options + /tmp activity log files
                         ↓
 TUI main loop (app::run in app.rs; submodules app/{setup,workers,input,render})
