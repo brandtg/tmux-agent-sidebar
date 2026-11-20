@@ -697,6 +697,10 @@ fn render_flash_banner_into(frame: &mut Frame, state: &mut AppState, area: Rect)
     if let Some(text) = state.take_flash() {
         let flash_y = area.y + area.height.saturating_sub(1);
         let flash_rect = Rect::new(area.x, flash_y, area.width, 1);
+        // Record where the banner painted so click routing can keep the
+        // covered row inert for the banner's lifetime (audit 2026-11-19
+        // B2). Cleared on the first banner-free frame.
+        state.layout.flash_rect = Some(flash_rect);
         frame.render_widget(Clear, flash_rect);
         paint_background(frame, &state.theme, flash_rect);
         let theme = &state.theme;
@@ -709,6 +713,8 @@ fn render_flash_banner_into(frame: &mut Frame, state: &mut AppState, area: Rect)
             Paragraph::new(Line::from(Span::styled(text, Style::default().fg(color)))),
             flash_rect,
         );
+    } else {
+        state.layout.flash_rect = None;
     }
 }
 

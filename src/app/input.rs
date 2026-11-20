@@ -51,8 +51,15 @@ pub(super) fn handle_key_event(key: KeyEvent, state: &mut AppState) -> bool {
     if state.is_spawn_input_open() {
         // While the spawn runs on its worker thread the modal must not
         // accept input: no double-submit, no edits the result would
-        // clobber, no dismissal that strands the feedback.
+        // clobber. Esc stays live — a hung repo (stale NFS, blocked
+        // index.lock) can hold the op for minutes, and eating the
+        // universal dismiss key turned the modal into a lockout (audit
+        // 2026-11-19 B1). The late result is dropped by the sink:
+        // apply_popup_op_result only touches a popup that still matches.
         if state.is_spawn_input_working() {
+            if key.code == KeyCode::Esc {
+                state.close_spawn_input();
+            }
             return true;
         }
         match key.code {
@@ -69,7 +76,12 @@ pub(super) fn handle_key_event(key: KeyEvent, state: &mut AppState) -> bool {
         return true;
     }
     if state.is_remove_confirm_open() {
+        // Same rule as the spawn modal: Esc dismisses even while the
+        // removal is running (audit 2026-11-19 B1).
         if state.is_remove_confirm_working() {
+            if key.code == KeyCode::Esc {
+                state.close_remove_confirm();
+            }
             return true;
         }
         match key.code {
@@ -490,7 +502,7 @@ fn repo_popup_nav_up(state: &mut AppState) {
 mod tests {
     use super::*;
     use crate::group::{PaneGitInfo, RepoGroup};
-    use crate::state::{PopupState, RowTarget, SpawnField};
+    use crate::state::{PopupOpResult, PopupState, RowTarget, SpawnField};
     use crate::tmux::{
         AgentType, PANE_FLAGGED, PaneAttention, PaneInfo, PaneStatus, PermissionMode,
         WorktreeMetadata, test_mock,
@@ -1026,6 +1038,95 @@ mod tests {
         if let PopupState::SpawnInput { input, .. } = &state.popup {
             assert_eq!(input, "q");
         }
+    }
+
+    #[test]
+    fn esc_dismisses_a_working_spawn_popup() {
+        // Audit 2026-11-19 B1: a hung spawn op held the modal for minutes
+        // with every key — including Esc — swallowed. Esc must stay live
+        // while `working`; the late result is dropped by the sink.
+        let mut state = state_with_three_panes();
+        state.popup = PopupState::SpawnInput {
+            input: "task".into(),
+            target_repo: "repo-a".into(),
+            target_repo_root: "/tmp/repo-a".into(),
+            target_session: "sess-a".into(),
+            kind_idx: 1,
+            agent_idx: 0,
+            field: SpawnField::Name,
+            anchor_y: None,
+            error: None,
+            working: Some("creating worktree…"),
+            area: None,
+        };
+        handle_key_event(key(KeyCode::Esc), &mut state);
+        assert!(!state.is_spawn_input_open());
+    }
+
+    #[test]
+    fn a_working_spawn_popup_still_swallows_every_other_key() {
+        // Dismissal is the only escape: no quit, no edits that the result
+        // would clobber, no double-submit.
+        let mut state = state_with_three_panes();
+        state.popup = PopupState::SpawnInput {
+            input: String::new(),
+            target_repo: "repo-a".into(),
+            target_repo_root: "/tmp/repo-a".into(),
+            target_session: "sess-a".into(),
+            kind_idx: 1,
+            agent_idx: 0,
+            field: SpawnField::Name,
+            anchor_y: None,
+            error: None,
+            working: Some("creating worktree…"),
+            area: None,
+        };
+        handle_key_event(key(KeyCode::Char('q')), &mut state);
+        assert!(!state.quit_requested);
+        assert!(state.is_spawn_input_open());
+        if let PopupState::SpawnInput { input, working, .. } = &state.popup {
+            assert!(input.is_empty(), "no edits while working");
+            assert!(working.is_some(), "still working");
+        }
+    }
+
+    #[test]
+    fn esc_dismisses_a_working_remove_confirm() {
+        let mut state = state_with_three_panes();
+        state.popup = PopupState::RemoveConfirm {
+            pane_id: "%1".into(),
+            label: "repo-a/agent".into(),
+            has_worktree: true,
+            warning: Vec::new(),
+            error: None,
+            working: Some("removing worktree…"),
+            area: None,
+        };
+        handle_key_event(key(KeyCode::Esc), &mut state);
+        assert!(!state.is_remove_confirm_open());
+    }
+
+    #[test]
+    fn esc_dismisses_a_working_spawn_popup_and_drops_the_late_result() {
+        // The worker's result landing after the Esc-dismissed popup must
+        // not re-open anything or strand state.
+        let mut state = state_with_three_panes();
+        state.popup = PopupState::SpawnInput {
+            input: "task".into(),
+            target_repo: "repo-a".into(),
+            target_repo_root: "/tmp/repo-a".into(),
+            target_session: "sess-a".into(),
+            kind_idx: 1,
+            agent_idx: 0,
+            field: SpawnField::Name,
+            anchor_y: None,
+            error: None,
+            working: Some("creating worktree…"),
+            area: None,
+        };
+        handle_key_event(key(KeyCode::Esc), &mut state);
+        state.apply_popup_op_result(PopupOpResult::Spawn(Err("boom".into())));
+        assert!(!state.is_spawn_input_open());
     }
 
     #[test]

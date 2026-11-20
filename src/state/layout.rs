@@ -150,6 +150,12 @@ pub struct FrameLayout {
     /// The TODO panel's on-screen area (zero-height when hidden). Used to
     /// route mouse-wheel scrolling to the panel instead of the agent list.
     pub todo_area: ratatui::layout::Rect,
+    /// The flash banner's on-screen rect, recorded by the render pass on
+    /// every frame where one is painted. The banner `Clear`s and repaints
+    /// its row, so click targets underneath must go inert for the
+    /// banner's lifetime (audit 2026-11-19 B2). `None` when the last
+    /// frame painted no banner.
+    pub flash_rect: Option<ratatui::layout::Rect>,
 }
 
 pub(super) fn point_in_rect(row: u16, col: u16, rect: ratatui::layout::Rect) -> bool {
@@ -663,6 +669,21 @@ impl AppState {
             return;
         }
 
+        // The flash banner Clear-paints over the panel's bottom row for
+        // its ~4s lifetime; the targets under it must not fire. Clicking
+        // the banner text used to toggle the invisible todo item (or
+        // activate the hidden agent row) beneath it (audit 2026-11-19
+        // B2). Checked before the toolbar row so a banner on a
+        // one-row-tall panel still wins.
+        if self.flash_showing()
+            && self
+                .layout
+                .flash_rect
+                .is_some_and(|rect| point_in_rect(row, col, rect))
+        {
+            return;
+        }
+
         // The single header row hosts the toolbar, or the chyron while
         // one is showing. Row defaults match the normal layout for
         // callers (tests) that have not rendered a frame yet. The `☰`
@@ -882,6 +903,33 @@ mod tests {
         ];
         state.rebuild_row_targets();
         state
+    }
+
+    #[test]
+    fn a_click_on_the_flash_banner_row_is_inert() {
+        // Audit 2026-11-19 B2: the banner Clear-paints over the panel's
+        // bottom row for ~4s while the targets under it stay registered —
+        // the click used to reach the invisible item underneath.
+        let mut state = two_group_state();
+        state.set_flash("worktree created");
+        state.layout.flash_rect = Some(Rect::new(0, 2, 40, 1));
+        state.layout.group_header_targets = vec![GroupHeaderTarget {
+            rect: Rect::new(0, 2, 40, 1),
+            group_name: "backend".into(),
+        }];
+
+        state.handle_mouse_click(2, 7);
+
+        assert!(
+            !state.is_group_collapsed("backend"),
+            "a click on the banner row must not reach the covered target"
+        );
+
+        // Once the banner's window passes, the same row routes again —
+        // the deadline check, not the stale rect, gates the routing.
+        state.flash = None;
+        state.handle_mouse_click(2, 7);
+        assert!(state.is_group_collapsed("backend"));
     }
 
     #[test]
