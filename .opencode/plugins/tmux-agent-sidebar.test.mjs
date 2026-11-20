@@ -1183,3 +1183,66 @@ test("a child's tool activity is gated on its own parent's turn", async () => {
     h.dispose();
   }
 });
+
+// Regression: a project spans every worktree of the repo, so sibling-
+// worktree TUIs all share one projectID and the project check alone passed
+// every sibling session's events. Each instance then forwarded the foreign
+// session with its own cwd, and resolution's single path match committed
+// the foreign session's identity onto that instance's pane — the newest
+// session took over every opencode row's title, binding, and run clock.
+// Ownership is per directory: a session living in a sibling worktree must
+// not be forwarded at all (its own instance owns it).
+test("a sibling-worktree session sharing the project is never forwarded", async () => {
+  const h = await loadPlugin();
+  try {
+    const plugin = await h.init("/repo/.worktrees/a", "proj_repo");
+    // Same project, sibling directory: created, prompting, and turn
+    // lifecycle must all be dropped.
+    await plugin.event({
+      type: "session.created",
+      data: { sessionID: "ses_sibling", info: { projectID: "proj_repo", directory: "/repo/.worktrees/b", title: "Sibling" } },
+    });
+    await plugin.prompt({ sessionID: "ses_sibling", prompt: { text: "sibling turn" } });
+    await plugin.event({ type: "session.execution.started", data: { sessionID: "ses_sibling" } });
+    await plugin.event({ type: "session.execution.succeeded", data: { sessionID: "ses_sibling" } });
+    // A session in THIS instance's directory still forwards normally.
+    await plugin.event({
+      type: "session.created",
+      data: { sessionID: MAIN, info: { projectID: "proj_repo", directory: "/repo/.worktrees/a", title: "Mine" } },
+    });
+    await settle(h);
+
+    assert.deepEqual(h.events(), [
+      "session-start " + JSON.stringify({ cwd: "/repo/.worktrees/a", session_id: MAIN, source: "startup" }),
+      "session-title " + JSON.stringify({ cwd: "/repo/.worktrees/a", session_id: MAIN, title: "Mine" }),
+    ]);
+  } finally {
+    h.dispose();
+  }
+});
+
+// Defense in depth for the same takeover: if a foreign session's event
+// ever reaches resolution (a stale cache, an unattributable directory),
+// the single path match must not COMMIT the binding when the pane's own
+// title stamp proves it is still hosting its bound session — recording it
+// would re-point the pane onto the foreign session and permanently
+// misroute the session that actually lives here.
+test("a foreign event onto a single path match is routed uncommitted when the pane's stamp proves its own binding", async () => {
+  const h = await loadPlugin({
+    panes: "%2\topencode\t/repo/.worktrees/a\tses_live\tOC | Live session title\n",
+    titles: { ses_live: "Live session title", ses_foreign: "Foreign work" },
+  });
+  try {
+    process.env.TMUX_RECORD_ENV = "1";
+    const plugin = await h.init("/repo/.worktrees/a", undefined, "/repo/.worktrees/a");
+    await plugin.prompt({ sessionID: "ses_foreign", prompt: { text: "go" } });
+    await settle(h);
+
+    // Routed (the event has to land somewhere) but flagged bind=0 so the
+    // CLI never records ses_foreign's binding on ses_live's pane.
+    assert.match(h.events()[0], / env=%2 bind=0$/);
+  } finally {
+    delete process.env.TMUX_RECORD_ENV;
+    h.dispose();
+  }
+});

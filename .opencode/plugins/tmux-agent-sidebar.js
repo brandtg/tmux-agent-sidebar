@@ -32,6 +32,15 @@
 // have not seen created are attributed with a one-time `session.get`
 // lookup (cached per sessionID), so a foreign project's turn can never
 // touch the pane — not even after a service restart mid-session.
+// A shared projectID is not ownership: the project spans every worktree of
+// the repo, so sibling-worktree TUIs all pass the project check. The
+// session's own `directory` decides — an instance forwards only sessions
+// living in its directory (or a subdirectory of it, for opencode-managed
+// worktrees under the launch dir). Without that gate every sibling
+// instance forwarded each foreign session's events with its own cwd, and
+// resolution's single-path-match shortcut committed the foreign session's
+// identity onto that instance's pane — the newest session took over every
+// opencode row's title, binding, and run clock.
 //
 // Pane resolution: unlike Claude Code / Codex, OpenCode 2 does NOT run its
 // plugins inside the tmux pane that hosts the session — plugins execute in
@@ -309,7 +318,23 @@ async function resolvePaneId(cwd, sessionId) {
   let chosen = "";
   let committed = true;
   if (pathMatches.length === 1) {
-    chosen = pathMatches[0].id;
+    // A single path match is normally THE pane. But when that pane's own
+    // title stamp proves it is still hosting its bound session — a session
+    // other than this event's — the event is a foreign one (a stale cache
+    // entry, or a session the ownership gate could not attribute). Route it
+    // there so it still lands somewhere, but uncommitted: recording the
+    // binding would re-point the pane onto the foreign session and
+    // permanently misroute the session that actually lives here. The pane's
+    // own session restores the binding on its next event (its stamp no
+    // longer explains the foreign one), or the reclaim paths below take the
+    // pane once the bound session is provably gone.
+    const only = pathMatches[0];
+    if (await stampExplainedByOwnBinding(only, sessionId)) {
+      chosen = only.id;
+      committed = false;
+    } else {
+      chosen = only.id;
+    }
   } else if (pathMatches.length > 1) {
     // Title evidence first: the TUI actually hosting this session stamps
     // its title into the pane title. Sessions are titled lazily (auto-title
@@ -559,10 +584,24 @@ export default {
     const belongsToInstance = (info) => {
       if (!info) return true; // unknown session: keep the pre-gating behavior
       const { projectID, directory } = info;
-      if (projectID && myProjectID) return projectID === myProjectID;
+      if (projectID && myProjectID && projectID !== myProjectID) return false;
+      // A shared projectID is not ownership: it spans every worktree of the
+      // repo, so sibling-worktree TUIs all pass the project check. The
+      // session's own directory decides — an instance only forwards
+      // sessions living in its directory (or a subdirectory of it, for
+      // opencode-managed worktrees under the launch dir). Without this,
+      // every sibling instance forwarded each foreign session's events
+      // with its own cwd, and the single-path-match resolution committed
+      // the foreign session's identity onto that instance's pane — the
+      // newest session took over every opencode row's title and clock.
+      if (directory && myDirectory) {
+        return (
+          directory === myDirectory || directory.startsWith(`${myDirectory}/`)
+        );
+      }
+      if (projectID && myProjectID) return true; // same project, directory unknown on one side
       if (projectID || myProjectID) return false; // only one side known: cannot confirm
-      if (!directory || !myDirectory) return true;
-      return directory === myDirectory || directory.startsWith(`${myDirectory}/`);
+      return true;
     };
     const lookupSessionInfo = async (session_id) => {
       if (sessionProjects.has(session_id)) return sessionProjects.get(session_id);
