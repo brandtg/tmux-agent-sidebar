@@ -4,7 +4,7 @@ use std::path::PathBuf;
 
 use crate::git;
 use crate::tmux;
-use crate::worktree::{self, SpawnRequest};
+use crate::worktree::{self, SpawnKind, SpawnRequest};
 
 pub fn cmd_spawn(args: &[String]) -> i32 {
     if args.is_empty() {
@@ -41,7 +41,9 @@ pub fn cmd_spawn(args: &[String]) -> i32 {
         task_name: args.join(" "),
         session,
         agent,
-        mode: worktree::DEFAULT_MODE.into(),
+        // The CLI subcommand keeps its original contract: it always
+        // spawns a worktree. The folder spawn is a TUI-modal option.
+        kind: SpawnKind::Worktree,
     };
     match worktree::spawn(&req) {
         Ok(branch) => {

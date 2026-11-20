@@ -1005,15 +1005,15 @@ mod tests {
     #[test]
     fn q_types_into_spawn_input_without_requesting_quit() {
         // The spawn modal owns plain characters — typing `q` into the
-        // worktree task field must not tear down the whole sidebar.
+        // worktree name field must not tear down the whole sidebar.
         let mut state = state_with_three_panes();
         state.popup = PopupState::SpawnInput {
             input: String::new(),
             target_repo: "repo-a".into(),
             target_repo_root: "/tmp/repo-a".into(),
+            kind_idx: 1,
             agent_idx: 0,
-            mode_idx: 0,
-            field: SpawnField::Task,
+            field: SpawnField::Name,
             anchor_y: None,
             error: None,
             working: None,
@@ -1146,9 +1146,9 @@ mod tests {
             input: String::new(),
             target_repo: "repo-a".into(),
             target_repo_root: "/tmp/repo-a".into(),
+            kind_idx: 1,
             agent_idx: 0,
-            mode_idx: 0,
-            field: SpawnField::Task,
+            field: SpawnField::Name,
             anchor_y: None,
             error: None,
             working: None,
@@ -1168,7 +1168,8 @@ mod tests {
         let mut state = state_with_three_panes();
         state.popup = PopupState::RemoveConfirm {
             pane_id: "%1".into(),
-            branch: "agent/x".into(),
+            label: "agent/x".into(),
+            has_worktree: true,
             warning: Vec::new(),
             error: None,
             working: None,

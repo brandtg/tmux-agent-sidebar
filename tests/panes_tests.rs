@@ -755,3 +755,128 @@ fn snapshot_search_no_matches_empty_state() {
       no matches for zzz
     ");
 }
+
+// ─── Spawn modal snapshots ──────────────────────────────────────────
+
+#[test]
+fn snapshot_spawn_modal_folder_kind_hides_name_field() {
+    // Default kind is the folder spawn: MODE first, then AGENT, and no
+    // NAME row — the modal is one section shorter than the worktree one.
+    let mut state = make_state(vec![]);
+    state.open_spawn_input_for_repo("project".into(), "/home/u/project".into(), None);
+    state.focus_state.sidebar_focused = false;
+
+    insta::assert_snapshot!(render_to_string(&mut state, 40, 25), @"
+    ☰                                    ⓘ ▾
+        ╭ Spawn agent ─────────────────╮
+        │ MODE                         │
+        │ default                      │
+        │ AGENT                        │
+        │ claude                       │
+        ╰──────────────────────────────╯
+    ");
+}
+
+#[test]
+fn snapshot_spawn_modal_worktree_kind_shows_name_field() {
+    // Worktree kind adds the NAME row (last, per MODE → AGENT → NAME)
+    // with a text cursor while it has focus.
+    let mut state = make_state(vec![]);
+    state.open_spawn_input_for_repo("project".into(), "/home/u/project".into(), None);
+    if let tmux_agent_sidebar::state::PopupState::SpawnInput {
+        kind_idx, field, ..
+    } = &mut state.popup
+    {
+        *kind_idx = 1;
+        *field = tmux_agent_sidebar::state::SpawnField::Name;
+    }
+    state.focus_state.sidebar_focused = false;
+
+    insta::assert_snapshot!(render_to_string(&mut state, 40, 25), @"
+    ☰                                    ⓘ ▾
+        ╭ Spawn agent ─────────────────╮
+        │ MODE                         │
+        │ worktree                     │
+        │ AGENT                        │
+        │ claude                       │
+        │ NAME                         │
+        │ █                            │
+        ╰──────────────────────────────╯
+    ");
+}
+
+#[test]
+fn snapshot_spawn_modal_compact_folder_kind() {
+    // Compact layout (short terminal): MODE / AGENT rows only.
+    let mut state = make_state(vec![]);
+    state.open_spawn_input_for_repo("project".into(), "/home/u/project".into(), None);
+    state.focus_state.sidebar_focused = false;
+
+    insta::assert_snapshot!(render_to_string(&mut state, 40, 10), @"
+    ☰                                    ⓘ ▾
+        ╭ Spawn agent ─────────────────╮
+        │ default                      │
+        │ claude                       │
+        ╰──────────────────────────────╯
+    ");
+}
+
+// ─── Remove confirm snapshots ───────────────────────────────────────
+
+#[test]
+fn snapshot_remove_confirm_folder_spawn_offers_window_close_only() {
+    // Folder spawns have no worktree/branch: no [c] row, and the
+    // warning block spells out that only the window closes.
+    let mut state = make_state(vec![]);
+    state.popup = tmux_agent_sidebar::state::PopupState::RemoveConfirm {
+        pane_id: "%1".into(),
+        label: "project".into(),
+        has_worktree: false,
+        warning: vec!["Closes the window;".into(), "no worktree or branch".into()],
+        error: None,
+        working: None,
+        area: None,
+    };
+    state.focus_state.sidebar_focused = false;
+
+    insta::assert_snapshot!(render_to_string(&mut state, 40, 25), @"
+    ☰                                    ⓘ ▾
+          ╭ project ─────────────────╮
+          │[y] close window          │
+          │[n] cancel                │
+          │Closes the window;        │
+          │no worktree or branch     │
+          ╰──────────────────────────╯
+    ");
+}
+
+#[test]
+fn snapshot_remove_confirm_worktree_spawn_keeps_three_options() {
+    // Worktree spawns keep the full y/c/n dialog with the consequence
+    // block between the options and the title.
+    let mut state = make_state(vec![]);
+    state.popup = tmux_agent_sidebar::state::PopupState::RemoveConfirm {
+        pane_id: "%1".into(),
+        label: "add-login-form".into(),
+        has_worktree: true,
+        warning: vec![
+            "Deletes uncommitted".into(),
+            "changes, untracked files".into(),
+        ],
+        error: None,
+        working: None,
+        area: None,
+    };
+    state.focus_state.sidebar_focused = false;
+
+    insta::assert_snapshot!(render_to_string(&mut state, 40, 25), @"
+    ☰                                    ⓘ ▾
+          ╭ add-login-form ──────────╮
+          │[y] remove worktree       │
+          │[c] close window only     │
+          │[n] cancel                │
+          │Deletes uncommitted       │
+          │changes, untracked files  │
+          ╰──────────────────────────╯
+    ");
+}

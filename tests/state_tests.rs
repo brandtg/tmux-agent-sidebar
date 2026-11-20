@@ -976,33 +976,41 @@ fn open_spawn_input_initialises_fields_to_defaults() {
             input,
             target_repo,
             target_repo_root,
+            kind_idx,
             agent_idx,
-            mode_idx,
             field,
             ..
         } => {
             assert_eq!(input, "");
             assert_eq!(target_repo, "myproj");
             assert_eq!(target_repo_root, "/home/u/myproj");
+            assert_eq!(*kind_idx, 0, "default kind is the folder spawn");
             assert_eq!(*agent_idx, 0);
-            assert_eq!(*mode_idx, 0);
-            assert_eq!(*field, tmux_agent_sidebar::state::SpawnField::Task);
+            assert_eq!(*field, tmux_agent_sidebar::state::SpawnField::Mode);
         }
         _ => panic!("expected SpawnInput popup"),
     }
 }
 
 #[test]
-fn spawn_input_push_char_only_types_into_input_field() {
+fn spawn_input_push_char_only_types_into_name_field() {
     let mut state = spawn_state_with_repo();
+    // Worktree kind so the NAME field is focusable, then Tab to it.
+    if let PopupState::SpawnInput { kind_idx, .. } = &mut state.popup {
+        *kind_idx = 1;
+    }
+    state.spawn_input_next_field(); // Agent
+    state.spawn_input_next_field(); // Name
     state.spawn_input_push_char('h');
     state.spawn_input_push_char('i');
+    match &state.popup {
+        PopupState::SpawnInput { input, .. } => assert_eq!(input, "hi"),
+        _ => panic!(),
+    }
+
     // Move to agent field — pushing chars there must be a no-op.
-    state.spawn_input_next_field();
+    state.spawn_input_prev_field(); // Agent
     state.spawn_input_push_char('x');
-    // Back to mode field — still a no-op.
-    state.spawn_input_next_field();
-    state.spawn_input_push_char('y');
     match &state.popup {
         PopupState::SpawnInput { input, .. } => assert_eq!(input, "hi"),
         _ => panic!(),
@@ -1010,8 +1018,13 @@ fn spawn_input_push_char_only_types_into_input_field() {
 }
 
 #[test]
-fn spawn_input_pop_char_removes_trailing_char_only_on_input_field() {
+fn spawn_input_pop_char_removes_trailing_char_only_on_name_field() {
     let mut state = spawn_state_with_repo();
+    if let PopupState::SpawnInput { kind_idx, .. } = &mut state.popup {
+        *kind_idx = 1;
+    }
+    state.spawn_input_next_field(); // Agent
+    state.spawn_input_next_field(); // Name
     for c in "abc".chars() {
         state.spawn_input_push_char(c);
     }
@@ -1022,7 +1035,7 @@ fn spawn_input_pop_char_removes_trailing_char_only_on_input_field() {
     }
 
     // On a non-input field, pop is a no-op.
-    state.spawn_input_next_field();
+    state.spawn_input_prev_field(); // Agent
     state.spawn_input_pop_char();
     match &state.popup {
         PopupState::SpawnInput { input, .. } => assert_eq!(input, "ab"),
@@ -1033,38 +1046,64 @@ fn spawn_input_pop_char_removes_trailing_char_only_on_input_field() {
 #[test]
 fn spawn_input_field_wraps_forward_and_backward() {
     let mut state = spawn_state_with_repo();
+    // Folder kind (default): only MODE and AGENT exist, so Tab wraps
+    // between the two without ever landing on NAME.
     state.spawn_input_next_field();
-    state.spawn_input_next_field();
-    state.spawn_input_next_field(); // wraps back to Task
-    match &state.popup {
-        PopupState::SpawnInput { field, .. } => {
-            assert_eq!(*field, tmux_agent_sidebar::state::SpawnField::Task)
-        }
-        _ => panic!(),
-    }
-    state.spawn_input_prev_field(); // should land on Mode
+    state.spawn_input_next_field(); // wraps back to Mode
     match &state.popup {
         PopupState::SpawnInput { field, .. } => {
             assert_eq!(*field, tmux_agent_sidebar::state::SpawnField::Mode)
         }
         _ => panic!(),
     }
+    state.spawn_input_prev_field(); // should land on Agent
+    match &state.popup {
+        PopupState::SpawnInput { field, .. } => {
+            assert_eq!(*field, tmux_agent_sidebar::state::SpawnField::Agent)
+        }
+        _ => panic!(),
+    }
 }
 
 #[test]
-fn spawn_input_cycle_changes_agent_and_resets_mode() {
+fn spawn_input_field_wraps_through_name_for_worktree_kind() {
     let mut state = spawn_state_with_repo();
-    state.spawn_input_next_field(); // field = 1 (agent)
+    if let PopupState::SpawnInput { kind_idx, .. } = &mut state.popup {
+        *kind_idx = 1; // worktree: MODE → AGENT → NAME
+    }
+    state.spawn_input_next_field(); // Agent
+    state.spawn_input_next_field(); // Name
+    match &state.popup {
+        PopupState::SpawnInput { field, .. } => {
+            assert_eq!(*field, tmux_agent_sidebar::state::SpawnField::Name)
+        }
+        _ => panic!(),
+    }
+    state.spawn_input_next_field(); // wraps back to Mode
+    match &state.popup {
+        PopupState::SpawnInput { field, .. } => {
+            assert_eq!(*field, tmux_agent_sidebar::state::SpawnField::Mode)
+        }
+        _ => panic!(),
+    }
+    state.spawn_input_prev_field(); // Mode → Name
+    match &state.popup {
+        PopupState::SpawnInput { field, .. } => {
+            assert_eq!(*field, tmux_agent_sidebar::state::SpawnField::Name)
+        }
+        _ => panic!(),
+    }
+}
+
+#[test]
+fn spawn_input_cycle_changes_agent() {
+    let mut state = spawn_state_with_repo();
+    state.spawn_input_next_field(); // field = Agent
     // Cycle agent forward — expect agent_idx to advance.
     state.spawn_input_cycle(1);
     match &state.popup {
-        PopupState::SpawnInput {
-            agent_idx,
-            mode_idx,
-            ..
-        } => {
+        PopupState::SpawnInput { agent_idx, .. } => {
             assert_eq!(*agent_idx, 1, "agent should advance");
-            assert_eq!(*mode_idx, 0, "mode should reset when agent changes");
         }
         _ => panic!(),
     }
@@ -1077,38 +1116,42 @@ fn spawn_input_cycle_changes_agent_and_resets_mode() {
 }
 
 #[test]
-fn spawn_input_cycle_on_mode_field_increments_mode_only() {
+fn spawn_input_cycle_on_mode_field_toggles_kind() {
     let mut state = spawn_state_with_repo();
-    state.spawn_input_next_field(); // agent
-    state.spawn_input_next_field(); // mode
+    // Focus starts on MODE.
     state.spawn_input_cycle(1);
     match &state.popup {
         PopupState::SpawnInput {
+            kind_idx,
             agent_idx,
-            mode_idx,
             ..
         } => {
-            assert_eq!(*agent_idx, 0);
-            assert_eq!(*mode_idx, 1);
+            assert_eq!(*kind_idx, 1);
+            assert_eq!(*agent_idx, 0, "kind cycle must not touch the agent");
         }
         _ => panic!(),
     }
 }
 
 #[test]
-fn spawn_input_cycle_on_input_field_is_noop() {
+fn spawn_input_cycle_on_name_field_is_noop() {
     let mut state = spawn_state_with_repo();
-    // field 0 (input) — cycle should not touch agent/mode.
+    if let PopupState::SpawnInput { kind_idx, .. } = &mut state.popup {
+        *kind_idx = 1;
+    }
+    state.spawn_input_next_field(); // Agent
+    state.spawn_input_next_field(); // Name
+    // field Name — cycle should not touch agent/kind.
     state.spawn_input_cycle(1);
     state.spawn_input_cycle(-1);
     match &state.popup {
         PopupState::SpawnInput {
             agent_idx,
-            mode_idx,
+            kind_idx,
             ..
         } => {
             assert_eq!(*agent_idx, 0);
-            assert_eq!(*mode_idx, 0);
+            assert_eq!(*kind_idx, 1);
         }
         _ => panic!(),
     }
@@ -1138,31 +1181,19 @@ fn set_flash_and_take_flash_returns_then_clears_after_deadline() {
 }
 
 #[test]
-fn agent_cycle_keeps_mode_in_bounds_for_codex() {
-    // Codex has only 3 modes; cycling to codex with a high mode_idx
-    // should be safe because agent switch resets mode_idx to 0.
+fn agent_cycle_wraps_for_every_agent() {
+    // Cycling the agent past the end of the AGENTS table must wrap,
+    // never panic or index out of bounds.
     let mut state = spawn_state_with_repo();
-    state.spawn_input_next_field(); // mode moved away from 0? no, field=1 (agent)
-    // First cycle past the claude mode list (5 entries) to exercise
-    // wrapping, then jump to codex.
-    state.spawn_input_next_field(); // field = 2 (mode)
-    for _ in 0..worktree::CLAUDE_MODES.len() {
+    state.spawn_input_next_field(); // field = Agent
+    for _ in 0..worktree::AGENTS.len() * 2 {
         state.spawn_input_cycle(1);
-    }
-    // Now go back to agent field and pick codex.
-    state.spawn_input_prev_field(); // field = 1
-    state.spawn_input_cycle(1); // agent → codex
-    match &state.popup {
-        PopupState::SpawnInput {
-            agent_idx,
-            mode_idx,
-            ..
-        } => {
-            assert_eq!(*agent_idx, 1);
-            // Mode must have reset to 0 (< codex mode list length).
-            assert!(*mode_idx < worktree::CODEX_MODES.len());
+        match &state.popup {
+            PopupState::SpawnInput { agent_idx, .. } => {
+                assert!(*agent_idx < worktree::AGENTS.len());
+            }
+            _ => panic!(),
         }
-        _ => panic!(),
     }
 }
 

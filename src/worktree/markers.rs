@@ -25,11 +25,12 @@ pub fn spawn_markers_template() -> String {
 /// depends on. All fields are always present because
 /// `display-message` returns empty strings for missing keys —
 /// [`SpawnMarkers::is_spawned`] is the canonical check. The remove
-/// flow also requires `worktree_path`, `branch`, and `window_id` to
-/// be populated and errors out otherwise; `spawn_with` always writes
-/// all four markers atomically (with rollback on partial failure),
-/// so a pane in the wild either has the full set or the remove flow
-/// correctly refuses to touch it.
+/// flow also requires `window_id` to be populated and errors out
+/// otherwise. Worktree spawns always write all four markers atomically
+/// (with rollback on partial failure), so a pane in the wild either
+/// has the full set or the remove flow correctly refuses to touch it.
+/// Folder spawns write only `spawned` + `from_repo` — an empty
+/// `worktree_path` is the "no git cleanup" signal.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct SpawnMarkers {
     pub spawned: bool,

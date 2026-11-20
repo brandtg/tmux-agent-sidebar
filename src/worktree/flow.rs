@@ -8,24 +8,117 @@ use super::markers::{
 };
 use super::slug::{MAX_COLLISION_ATTEMPTS, pick_unique_slug, slugify, worktree_path_for};
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SpawnKind {
+    /// Launch the agent directly in the repo checkout: a new tmux
+    /// window at the repo root with the usual agent-pane layout, no git
+    /// side effects.
+    #[default]
+    Folder,
+    /// Create a git worktree + branch first, then launch the agent
+    /// inside it (the original spawn behaviour).
+    Worktree,
+}
+
+impl SpawnKind {
+    /// Map the spawn modal's `MODE` index ([`SPAWN_MODES`]) to a kind.
+    pub fn from_mode_index(idx: usize) -> Self {
+        match idx {
+            1 => Self::Worktree,
+            _ => Self::Folder,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct SpawnRequest {
     pub repo_root: PathBuf,
+    /// Slug source for the worktree/branch. Unused by [`SpawnKind::Folder`].
     pub task_name: String,
     pub session: String,
     pub agent: String,
-    pub mode: String,
+    pub kind: SpawnKind,
 }
 
-/// Create a worktree, open a new tmux window in it, launch the agent,
-/// and stash markers at window scope so the matching `x` flow can find
-/// it later. Returns the resulting branch name on success. On any
-/// failure past `git worktree add` the worktree is rolled back.
+/// Spawn an agent for `req`: either directly in the repo folder or in a
+/// fresh git worktree, depending on `req.kind`. Returns the resulting
+/// branch name (worktree) or window id (folder) on success.
 pub fn spawn(req: &SpawnRequest) -> Result<String, String> {
     spawn_with(&RealEnv, req)
 }
 
 pub(crate) fn spawn_with<E: SpawnEnv>(env: &E, req: &SpawnRequest) -> Result<String, String> {
+    match req.kind {
+        SpawnKind::Folder => spawn_folder(env, req),
+        SpawnKind::Worktree => spawn_worktree(env, req),
+    }
+}
+
+/// Folder spawn: open a new tmux window at the repo root, add the
+/// agent-pane split, stash the spawned markers (without worktree /
+/// branch — the remove flow treats those as "window only"), and launch
+/// the agent. No git operations at all.
+fn spawn_folder<E: SpawnEnv>(env: &E, req: &SpawnRequest) -> Result<String, String> {
+    let repo = req
+        .repo_root
+        .to_str()
+        .ok_or("repo root is not valid UTF-8")?;
+
+    let (pane_id, window_id) = env
+        .new_window(&req.session, repo, &req.agent)
+        .map_err(|e| format!("tmux: {e}"))?;
+
+    // Same layout as the worktree spawn: agent in a left one-third
+    // pane, original shell keeps the right two-thirds, and the
+    // after-new-window hook adds the sidebar pane on the far left. A
+    // failed split degrades to the single-pane layout.
+    let agent_pane = match env.split_window_left(&pane_id, repo, AGENT_PANE_PERCENT) {
+        Ok(pane) => pane,
+        Err(e) => {
+            crate::debug::log(&format!(
+                "spawn: agent-pane split failed, single-pane fallback: {e}"
+            ));
+            pane_id.clone()
+        }
+    };
+
+    // Window scope so sub panes (e.g. Claude Code subagents split from
+    // the original) inherit the markers via tmux's option fall-through.
+    // No worktree / branch markers: an empty worktree path is what tells
+    // the remove flow this pane has no git cleanup to do.
+    for (key, value) in [(SPAWNED_OPTION, "1"), (SPAWNED_FROM_OPTION, repo)] {
+        if let Err(e) = env.set_window_option(&window_id, key, value) {
+            let rb = rollback_folder_spawn(env, &window_id);
+            return Err(compose_spawn_error(
+                format!("tmux: failed to set {key}: {e}"),
+                rb,
+            ));
+        }
+    }
+
+    if let Err(e) = env.send_command(&agent_pane, &super::config::agent_command(&req.agent)) {
+        let rb = rollback_folder_spawn(env, &window_id);
+        return Err(compose_spawn_error(format!("tmux: {e}"), rb));
+    }
+
+    Ok(window_id)
+}
+
+/// Best-effort rollback after a partial folder spawn. There is no git
+/// state to clean up, so killing the window is the whole job.
+fn rollback_folder_spawn<E: SpawnEnv>(env: &E, window_id: &str) -> Vec<String> {
+    match env.kill_window(window_id) {
+        Ok(()) => Vec::new(),
+        Err(e) => vec![format!("kill_window: {e}")],
+    }
+}
+
+/// Worktree spawn: create a worktree, open a new tmux window in it,
+/// launch the agent, and stash markers at window scope so the matching
+/// `x` flow can find it later. Returns the resulting branch name on
+/// success. On any failure past `git worktree add` the worktree is
+/// rolled back.
+fn spawn_worktree<E: SpawnEnv>(env: &E, req: &SpawnRequest) -> Result<String, String> {
     let slug = slugify(&req.task_name);
     if slug.is_empty() {
         return Err("name is empty after slugification".into());
@@ -105,10 +198,7 @@ pub(crate) fn spawn_with<E: SpawnEnv>(env: &E, req: &SpawnRequest) -> Result<Str
         }
     }
 
-    if let Err(e) = env.send_command(
-        &agent_pane,
-        &super::config::agent_command(&req.agent, &req.mode),
-    ) {
+    if let Err(e) = env.send_command(&agent_pane, &super::config::agent_command(&req.agent)) {
         let rb = rollback_spawn(env, repo, worktree, &branch, Some(&window_id));
         return Err(compose_spawn_error(format!("tmux: {e}"), rb));
     }
@@ -206,6 +296,10 @@ pub fn removal_warnings(worktree_path: &str) -> Vec<String> {
 /// sidebar. Each git step is skipped when its target is already
 /// gone (`worktree_path_exists` / `branch_exists`), which lets
 /// retries after a partial-success failure converge.
+///
+/// Folder spawns (`SpawnKind::Folder`) carry no worktree / branch
+/// markers, so there is nothing to clean up and the whole flow
+/// degenerates to `kill_window` — every remove mode behaves the same.
 pub fn remove(pane_id: &str, mode: RemoveMode) -> Result<(), String> {
     remove_with(&RealEnv, pane_id, mode)
 }
@@ -219,17 +313,18 @@ pub(crate) fn remove_with<E: SpawnEnv>(
     if !markers.is_spawned() {
         return Err("pane was not created by sidebar spawn".into());
     }
-    if markers.worktree_path.is_empty() {
-        return Err("spawned worktree path is unset".into());
-    }
-    if markers.branch.is_empty() {
-        return Err("spawned branch is unset".into());
-    }
     if markers.window_id.is_empty() {
         return Err("could not resolve window id".into());
     }
+    // Empty worktree path = folder spawn (no git state). A worktree
+    // spawn always writes both markers, so a missing branch there is
+    // still a corruption error.
+    let folder_spawn = markers.worktree_path.is_empty();
+    if !folder_spawn && markers.branch.is_empty() {
+        return Err("spawned branch is unset".into());
+    }
 
-    if mode == RemoveMode::WindowAndWorktree {
+    if mode == RemoveMode::WindowAndWorktree && !folder_spawn {
         if env.worktree_path_exists(&markers.worktree_path) {
             env.worktree_remove(&markers.from_repo, &markers.worktree_path)
                 .map_err(|e| format!("git: {e}"))?;
@@ -386,12 +481,113 @@ mod env_tests {
             task_name: "task".into(),
             session: "sess".into(),
             agent: "claude".into(),
-            mode: "default".into(),
+            kind: SpawnKind::Worktree,
+        }
+    }
+
+    fn folder_req() -> SpawnRequest {
+        SpawnRequest {
+            kind: SpawnKind::Folder,
+            ..sample_req()
         }
     }
 
     fn has_call(calls: &[String], prefix: &str) -> bool {
         calls.iter().any(|c| c.starts_with(prefix))
+    }
+
+    #[test]
+    fn spawn_kind_from_mode_index_maps_both_rows() {
+        assert_eq!(SpawnKind::from_mode_index(0), SpawnKind::Folder);
+        assert_eq!(SpawnKind::from_mode_index(1), SpawnKind::Worktree);
+        // Out-of-range indices fall back to the no-worktree spawn.
+        assert_eq!(SpawnKind::from_mode_index(9), SpawnKind::Folder);
+    }
+
+    #[test]
+    fn folder_spawn_touches_no_git_and_sets_window_only_markers() {
+        let env = FakeEnv::default();
+        let got = spawn_with(&env, &folder_req()).expect("folder spawn should succeed");
+        assert_eq!(got, "@1", "folder spawn returns the new window id");
+        let calls = env.calls();
+        assert!(
+            !has_call(&calls, "worktree_add(")
+                && !has_call(&calls, "branch_delete(")
+                && !has_call(&calls, "worktree_remove("),
+            "folder spawn must not touch git: {calls:?}"
+        );
+        assert!(
+            has_call(&calls, "new_window(sess,/r,claude)"),
+            "window opens at the repo root, named after the agent: {calls:?}"
+        );
+        assert!(
+            has_call(&calls, "split_window_left(%1,/r,33)"),
+            "agent pane split left of the original shell: {calls:?}"
+        );
+        assert_eq!(
+            *env.set_option_calls.borrow(),
+            2,
+            "only spawned + from markers, no worktree/branch"
+        );
+        assert!(has_call(&calls, "send_command(%2,claude)"));
+        assert!(
+            !has_call(&calls, "kill_window("),
+            "no rollback on happy path"
+        );
+    }
+
+    #[test]
+    fn folder_spawn_rolls_back_the_window_when_a_marker_fails() {
+        let env = FakeEnv {
+            fail_set_option_at: Some(1),
+            ..FakeEnv::default()
+        };
+        let err = spawn_with(&env, &folder_req()).expect_err("marker failure must fail the spawn");
+        assert!(
+            err.contains(SPAWNED_FROM_OPTION),
+            "error mentions marker: {err}"
+        );
+        let calls = env.calls();
+        assert!(
+            has_call(&calls, "kill_window(@1)"),
+            "rollback kills the new window: {calls:?}"
+        );
+        assert!(
+            !has_call(&calls, "worktree_remove(") && !has_call(&calls, "branch_delete("),
+            "folder rollback must not touch git: {calls:?}"
+        );
+    }
+
+    #[test]
+    fn folder_spawn_rolls_back_the_window_when_send_command_fails() {
+        let env = FakeEnv {
+            fail_send_command: true,
+            ..FakeEnv::default()
+        };
+        let err = spawn_with(&env, &folder_req()).expect_err("send failure must fail the spawn");
+        assert!(err.contains("send_command failed"), "{err}");
+        assert!(
+            has_call(&env.calls(), "kill_window(@1)"),
+            "rollback kills the new window"
+        );
+    }
+
+    #[test]
+    fn remove_folder_spawn_skips_git_and_kills_the_window() {
+        // Folder spawns carry only the spawned + from markers; removal
+        // is a pure kill-window regardless of the requested mode.
+        let env = FakeEnv {
+            display_output: Some("1\n/r\n\n\n@7\n".into()),
+            ..FakeEnv::default()
+        };
+        remove_with(&env, "%1", RemoveMode::WindowAndWorktree)
+            .expect("folder spawn removal should succeed");
+        let calls = env.calls();
+        assert!(
+            !has_call(&calls, "worktree_remove(") && !has_call(&calls, "branch_delete("),
+            "folder spawn removal must not touch git: {calls:?}"
+        );
+        assert!(has_call(&calls, "kill_window(@7)"));
     }
 
     #[test]

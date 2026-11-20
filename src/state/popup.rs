@@ -1,34 +1,46 @@
 use super::AppState;
 
-/// Placeholder warning lines shown in the remove-confirm dialog while
-/// its pre-flight git probes run on a worker thread (see
-/// [`AppState::open_remove_confirm_for_pane`]).
+/// Placeholder warning lines shown in the remove-confirm dialog for
+/// worktree spawns while its pre-flight git probes run on a worker
+/// thread (see [`AppState::open_remove_confirm_for_pane`]).
 const REMOVE_CHECKING_WARNING: [&str; 2] = ["Checking worktree…", ""];
 
+/// Static warning lines for folder-spawned panes: there is no
+/// worktree or branch, so removal only closes the tmux window.
+const REMOVE_FOLDER_WARNING: [&str; 2] = ["Closes the window;", "no worktree or branch"];
+
 /// Focus target inside the spawn input popup. Tab / Shift+Tab / arrow
-/// keys cycle through these in order; only `Task` accepts text input.
+/// keys cycle through these in order; only `Name` accepts text input.
+/// The order matches the field order the user reads top to bottom:
+/// MODE → AGENT → NAME. `Name` is skipped entirely while the spawn
+/// kind is `default` (a folder spawn needs no name).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum SpawnField {
     #[default]
-    Task,
-    Agent,
     Mode,
+    Agent,
+    Name,
 }
 
 impl SpawnField {
-    pub fn next(self) -> Self {
+    /// Next field in Tab order. `has_name` is false for folder spawns,
+    /// where the NAME row is not rendered and must not be focusable.
+    pub fn next(self, has_name: bool) -> Self {
         match self {
-            Self::Task => Self::Agent,
+            Self::Mode => Self::Agent,
+            Self::Agent if has_name => Self::Name,
             Self::Agent => Self::Mode,
-            Self::Mode => Self::Task,
+            Self::Name => Self::Mode,
         }
     }
 
-    pub fn prev(self) -> Self {
+    /// Previous field in Shift+Tab order (inverse of [`Self::next`]).
+    pub fn prev(self, has_name: bool) -> Self {
         match self {
-            Self::Task => Self::Mode,
-            Self::Agent => Self::Task,
+            Self::Mode if has_name => Self::Name,
             Self::Mode => Self::Agent,
+            Self::Agent => Self::Mode,
+            Self::Name => Self::Agent,
         }
     }
 }
@@ -50,16 +62,18 @@ pub enum PopupState {
         repo_start: u16,
     },
     /// Modal text input shown when the user presses `n` (or clicks `+`)
-    /// to spawn a new worktree. `target_repo` / `target_repo_root` pin
-    /// the spawn target; `agent_idx` / `mode_idx` index into
-    /// [`crate::worktree::AGENTS`] / [`crate::worktree::modes_for`] so
-    /// arrow keys can cycle the user's agent and permission-mode picks.
+    /// to spawn a new agent. `target_repo` / `target_repo_root` pin
+    /// the spawn target; `kind_idx` indexes into
+    /// [`crate::worktree::SPAWN_MODES`] (default = spawn in the repo
+    /// folder, worktree = create a worktree first) and `agent_idx`
+    /// indexes into [`crate::worktree::AGENTS`] so arrow keys can cycle
+    /// the user's picks. The NAME field only exists for worktree spawns.
     SpawnInput {
         input: String,
         target_repo: String,
         target_repo_root: String,
+        kind_idx: usize,
         agent_idx: usize,
-        mode_idx: usize,
         field: SpawnField,
         /// Screen Y of the repo header row that owns the `+` button
         /// this modal was opened from. Renderer anchors the popup just
@@ -89,14 +103,18 @@ pub enum PopupState {
         viewport: u16,
     },
     /// Confirmation prompt shown when the user presses `x` on a
-    /// spawn-created pane. `pane_id` feeds `worktree::remove`; `branch`
-    /// is shown in the modal title; `warning` lines spell out what the
-    /// force-remove destroys (computed by a pre-flight git check on a
-    /// worker thread after the dialog opens — the dialog shows a
-    /// checking placeholder until it lands).
+    /// spawn-created pane. `pane_id` feeds `worktree::remove`; `label`
+    /// is shown in the modal title (the worktree directory name for
+    /// worktree spawns, the repo name for folder spawns); `warning`
+    /// lines spell out what the force-remove destroys (computed by a
+    /// pre-flight git check on a worker thread after the dialog opens —
+    /// the dialog shows a checking placeholder until it lands). Folder
+    /// spawns (`has_worktree: false`) have no git state, so the dialog
+    /// offers only a window close and the warning lines are static.
     RemoveConfirm {
         pane_id: String,
-        branch: String,
+        label: String,
+        has_worktree: bool,
         warning: Vec<String>,
         error: Option<String>,
         /// Set while the removal runs on a worker thread — same
@@ -340,9 +358,9 @@ impl AppState {
             input: String::new(),
             target_repo: repo_name,
             target_repo_root: repo_root,
+            kind_idx: 0,
             agent_idx: 0,
-            mode_idx: 0,
-            field: SpawnField::Task,
+            field: SpawnField::Mode,
             anchor_y,
             error: None,
             working: None,
@@ -434,27 +452,36 @@ impl AppState {
         }
     }
 
+    /// Whether the currently selected spawn kind renders the NAME
+    /// field: only worktree spawns need a name (folder spawns launch
+    /// the agent straight in the repo checkout).
+    fn spawn_input_has_name(&self) -> bool {
+        matches!(self.popup, PopupState::SpawnInput { kind_idx: 1, .. })
+    }
+
     pub fn spawn_input_next_field(&mut self) {
+        let has_name = self.spawn_input_has_name();
         if let PopupState::SpawnInput { field, error, .. } = &mut self.popup {
-            *field = field.next();
+            *field = field.next(has_name);
             *error = None;
         }
     }
 
     pub fn spawn_input_prev_field(&mut self) {
+        let has_name = self.spawn_input_has_name();
         if let PopupState::SpawnInput { field, error, .. } = &mut self.popup {
-            *field = field.prev();
+            *field = field.prev(has_name);
             *error = None;
         }
     }
 
-    /// Cycle the value under the focused agent or mode field. No-op on
-    /// the task input field so typing isn't interfered with.
+    /// Cycle the value under the focused field. No-op on the name
+    /// input field so typing isn't interfered with.
     pub fn spawn_input_cycle(&mut self, delta: isize) {
         let PopupState::SpawnInput {
             field,
+            kind_idx,
             agent_idx,
-            mode_idx,
             error,
             ..
         } = &mut self.popup
@@ -462,25 +489,17 @@ impl AppState {
             return;
         };
         match *field {
+            SpawnField::Mode => {
+                let len = crate::worktree::SPAWN_MODES.len() as isize;
+                *kind_idx = ((*kind_idx as isize + delta).rem_euclid(len)) as usize;
+                *error = None;
+            }
             SpawnField::Agent => {
                 let len = crate::worktree::AGENTS.len() as isize;
                 *agent_idx = ((*agent_idx as isize + delta).rem_euclid(len)) as usize;
-                // Mode list is agent-specific.
-                *mode_idx = 0;
                 *error = None;
             }
-            SpawnField::Mode => {
-                let agent = crate::worktree::AGENTS
-                    .get(*agent_idx)
-                    .copied()
-                    .unwrap_or("");
-                let len = crate::worktree::modes_for(agent).len() as isize;
-                if len > 0 {
-                    *mode_idx = ((*mode_idx as isize + delta).rem_euclid(len)) as usize;
-                    *error = None;
-                }
-            }
-            SpawnField::Task => {}
+            SpawnField::Name => {}
         }
     }
 
@@ -491,7 +510,7 @@ impl AppState {
             error,
             ..
         } = &mut self.popup
-            && *field == SpawnField::Task
+            && *field == SpawnField::Name
         {
             input.push(c);
             *error = None;
@@ -505,7 +524,7 @@ impl AppState {
             error,
             ..
         } = &mut self.popup
-            && *field == SpawnField::Task
+            && *field == SpawnField::Name
         {
             input.pop();
             *error = None;
@@ -648,13 +667,14 @@ impl AppState {
     /// see `pick_unique_slug` — which used to freeze the render loop).
     /// On success the popup closes when the result arrives; on failure
     /// the error is surfaced inside the popup and the modal stays open
-    /// so the user can retry.
+    /// so the user can retry. Folder spawns skip the name check —
+    /// the agent launches straight in the repo checkout.
     pub fn confirm_spawn_input(&mut self) {
         let PopupState::SpawnInput {
             input,
             target_repo_root,
+            kind_idx,
             agent_idx,
-            mode_idx,
             working,
             ..
         } = &self.popup
@@ -665,21 +685,21 @@ impl AppState {
         if working.is_some() {
             return;
         }
-        let task_name = input.trim().to_string();
-        if task_name.is_empty() {
-            self.set_spawn_error("name is empty");
-            return;
-        }
+        let kind = crate::worktree::SpawnKind::from_mode_index(*kind_idx);
         let agent = crate::worktree::AGENTS
             .get(*agent_idx)
             .copied()
             .unwrap_or(crate::worktree::DEFAULT_AGENT)
             .to_string();
-        let mode = crate::worktree::modes_for(&agent)
-            .get(*mode_idx)
-            .copied()
-            .unwrap_or(crate::worktree::DEFAULT_MODE)
-            .to_string();
+
+        // Worktree spawns slugify the name into the branch and worktree
+        // directory; folder spawns have neither, so an empty input is
+        // fine (the window is named after the agent instead).
+        let task_name = input.trim().to_string();
+        if kind == crate::worktree::SpawnKind::Worktree && task_name.is_empty() {
+            self.set_spawn_error("name is empty");
+            return;
+        }
         let repo_root = std::path::PathBuf::from(target_repo_root.clone());
 
         let Some(session) = crate::tmux::pane_session_name(&self.tmux_pane) else {
@@ -692,9 +712,13 @@ impl AppState {
             task_name,
             session,
             agent,
-            mode,
+            kind,
         };
-        self.start_popup_op("creating worktree…", move || {
+        let working_label = match kind {
+            crate::worktree::SpawnKind::Folder => "spawning agent…",
+            crate::worktree::SpawnKind::Worktree => "creating worktree…",
+        };
+        self.start_popup_op(working_label, move || {
             PopupOpResult::Spawn(crate::worktree::spawn(&req))
         });
     }
@@ -735,21 +759,44 @@ impl AppState {
             self.set_flash("remove: selected pane was not spawned by sidebar");
             return;
         }
-        let branch = std::path::Path::new(&markers.worktree_path)
-            .file_name()
-            .map(|s| s.to_string_lossy().into_owned())
-            .unwrap_or_default();
-        self.popup = PopupState::RemoveConfirm {
-            pane_id: pane_id.clone(),
-            branch,
-            warning: REMOVE_CHECKING_WARNING
+        // Folder spawns carry no worktree path: the dialog becomes a
+        // plain window-close confirm (no git probes, no branch in the
+        // title — the repo name identifies the pane instead).
+        let has_worktree = !markers.worktree_path.is_empty();
+        let label = if has_worktree {
+            std::path::Path::new(&markers.worktree_path)
+                .file_name()
+                .map(|s| s.to_string_lossy().into_owned())
+                .unwrap_or_default()
+        } else {
+            std::path::Path::new(&markers.from_repo)
+                .file_name()
+                .map(|s| s.to_string_lossy().into_owned())
+                .unwrap_or_default()
+        };
+        let warning: Vec<String> = if has_worktree {
+            REMOVE_CHECKING_WARNING
                 .iter()
                 .map(|l| l.to_string())
-                .collect(),
+                .collect()
+        } else {
+            REMOVE_FOLDER_WARNING
+                .iter()
+                .map(|l| l.to_string())
+                .collect()
+        };
+        self.popup = PopupState::RemoveConfirm {
+            pane_id: pane_id.clone(),
+            label,
+            has_worktree,
+            warning,
             error: None,
             working: None,
             area: None,
         };
+        if !has_worktree {
+            return;
+        }
         // The dirty/unpushed probes are two git spawns under a possibly
         // hung repo; they used to run inline while the dialog opened,
         // blocking the input thread (audit 2026-11-16 J5). The dialog
@@ -836,13 +883,24 @@ mod tests {
     // ─── SpawnField cycle ────────────────────────────────────────────
 
     #[test]
-    fn spawn_field_next_and_prev_cycle() {
-        assert_eq!(SpawnField::Task.next(), SpawnField::Agent);
-        assert_eq!(SpawnField::Agent.next(), SpawnField::Mode);
-        assert_eq!(SpawnField::Mode.next(), SpawnField::Task);
-        assert_eq!(SpawnField::Task.prev(), SpawnField::Mode);
-        assert_eq!(SpawnField::Agent.prev(), SpawnField::Task);
-        assert_eq!(SpawnField::Mode.prev(), SpawnField::Agent);
+    fn spawn_field_next_and_prev_cycle_with_name() {
+        // Worktree spawns render the NAME field: full three-field cycle.
+        assert_eq!(SpawnField::Mode.next(true), SpawnField::Agent);
+        assert_eq!(SpawnField::Agent.next(true), SpawnField::Name);
+        assert_eq!(SpawnField::Name.next(true), SpawnField::Mode);
+        assert_eq!(SpawnField::Mode.prev(true), SpawnField::Name);
+        assert_eq!(SpawnField::Agent.prev(true), SpawnField::Mode);
+        assert_eq!(SpawnField::Name.prev(true), SpawnField::Agent);
+    }
+
+    #[test]
+    fn spawn_field_cycle_skips_name_for_folder_spawns() {
+        // Folder spawns have no NAME field: Agent wraps straight back
+        // to Mode in both directions.
+        assert_eq!(SpawnField::Mode.next(false), SpawnField::Agent);
+        assert_eq!(SpawnField::Agent.next(false), SpawnField::Mode);
+        assert_eq!(SpawnField::Mode.prev(false), SpawnField::Agent);
+        assert_eq!(SpawnField::Agent.prev(false), SpawnField::Mode);
     }
 
     // ─── PopupState::set_*_area ──────────────────────────────────────
@@ -1049,8 +1107,8 @@ mod tests {
             input,
             target_repo,
             target_repo_root,
+            kind_idx,
             agent_idx,
-            mode_idx,
             field,
             anchor_y,
             error,
@@ -1061,9 +1119,9 @@ mod tests {
             assert!(input.is_empty());
             assert_eq!(target_repo, "alpha");
             assert_eq!(target_repo_root, "/tmp/alpha");
+            assert_eq!(*kind_idx, 0, "default spawn kind is folder");
             assert_eq!(*agent_idx, 0);
-            assert_eq!(*mode_idx, 0);
-            assert_eq!(*field, SpawnField::Task);
+            assert_eq!(*field, SpawnField::Mode, "focus starts on the MODE field");
             assert_eq!(*anchor_y, Some(7));
             assert!(error.is_none());
             assert!(working.is_none());
@@ -1090,6 +1148,7 @@ mod tests {
     fn spawn_input_next_prev_cycle_field() {
         let mut state = AppState::new("%99".into());
         state.open_spawn_input_for_repo("alpha".into(), "/tmp/alpha".into(), None);
+        // Default kind is folder (no NAME field): two-field cycle.
         state.spawn_input_next_field();
         assert!(matches!(
             state.popup,
@@ -1117,6 +1176,37 @@ mod tests {
     }
 
     #[test]
+    fn spawn_input_worktree_kind_unfocuses_name_when_switching_back() {
+        // Selecting the worktree kind adds the NAME field; cycling back
+        // to the folder kind must make it unreachable again.
+        let mut state = AppState::new("%99".into());
+        state.open_spawn_input_for_repo("alpha".into(), "/tmp/alpha".into(), None);
+        if let PopupState::SpawnInput { kind_idx, .. } = &mut state.popup {
+            *kind_idx = 1; // worktree
+        }
+        state.spawn_input_next_field(); // Agent
+        state.spawn_input_next_field(); // Name
+        assert!(matches!(
+            state.popup,
+            PopupState::SpawnInput {
+                field: SpawnField::Name,
+                ..
+            }
+        ));
+        if let PopupState::SpawnInput { kind_idx, .. } = &mut state.popup {
+            *kind_idx = 0; // folder
+        }
+        state.spawn_input_next_field(); // from Name: next skips to Mode
+        assert!(matches!(
+            state.popup,
+            PopupState::SpawnInput {
+                field: SpawnField::Mode,
+                ..
+            }
+        ));
+    }
+
+    #[test]
     fn spawn_input_field_change_clears_error() {
         let mut state = AppState::new("%99".into());
         state.open_spawn_input_for_repo("alpha".into(), "/tmp/alpha".into(), None);
@@ -1130,51 +1220,78 @@ mod tests {
     }
 
     #[test]
-    fn spawn_input_cycle_agent_wraps_and_resets_mode() {
+    fn spawn_input_cycle_agent_wraps() {
         let mut state = AppState::new("%99".into());
         state.open_spawn_input_for_repo("alpha".into(), "/tmp/alpha".into(), None);
-        // Switch field to Agent, bump mode_idx artificially, then cycle to
-        // verify mode_idx resets to 0 on agent change.
-        if let PopupState::SpawnInput {
-            field, mode_idx, ..
-        } = &mut state.popup
-        {
+        // Switch field to Agent, then cycle to verify agent_idx wraps.
+        if let PopupState::SpawnInput { field, .. } = &mut state.popup {
             *field = SpawnField::Agent;
-            *mode_idx = 1;
         }
         state.spawn_input_cycle(1);
-        if let PopupState::SpawnInput {
-            agent_idx,
-            mode_idx,
-            ..
-        } = &state.popup
-        {
+        if let PopupState::SpawnInput { agent_idx, .. } = &state.popup {
             assert_eq!(*agent_idx, 1 % crate::worktree::AGENTS.len());
-            assert_eq!(*mode_idx, 0);
+        }
+        state.spawn_input_cycle(-1);
+        if let PopupState::SpawnInput { agent_idx, .. } = &state.popup {
+            assert_eq!(*agent_idx, 0);
         }
     }
 
     #[test]
-    fn spawn_input_cycle_task_field_is_noop() {
+    fn spawn_input_cycle_mode_field_toggles_spawn_kind() {
         let mut state = AppState::new("%99".into());
         state.open_spawn_input_for_repo("alpha".into(), "/tmp/alpha".into(), None);
+        // Focus starts on MODE; cycle flips default ↔ worktree.
         state.spawn_input_cycle(1);
+        if let PopupState::SpawnInput { kind_idx, .. } = &state.popup {
+            assert_eq!(*kind_idx, 1, "forward cycle picks the worktree kind");
+        }
+        state.spawn_input_cycle(1);
+        if let PopupState::SpawnInput { kind_idx, .. } = &state.popup {
+            assert_eq!(*kind_idx, 0, "cycle wraps back to the folder kind");
+        }
+        state.spawn_input_cycle(-1);
+        if let PopupState::SpawnInput { kind_idx, .. } = &state.popup {
+            assert_eq!(*kind_idx, 1, "backward cycle wraps to the last kind");
+        }
+    }
+
+    #[test]
+    fn spawn_input_cycle_name_field_is_noop() {
+        let mut state = AppState::new("%99".into());
+        state.open_spawn_input_for_repo("alpha".into(), "/tmp/alpha".into(), None);
+        // Name field (only reachable for worktree spawns) ignores cycles.
+        if let PopupState::SpawnInput {
+            field, kind_idx, ..
+        } = &mut state.popup
+        {
+            *field = SpawnField::Name;
+            *kind_idx = 1;
+        }
+        state.spawn_input_cycle(1);
+        state.spawn_input_cycle(-1);
         if let PopupState::SpawnInput {
             agent_idx,
-            mode_idx,
+            kind_idx,
             ..
         } = &state.popup
         {
             assert_eq!(*agent_idx, 0);
-            assert_eq!(*mode_idx, 0);
+            assert_eq!(*kind_idx, 1);
         }
     }
 
     #[test]
-    fn spawn_input_push_pop_char_only_on_task_field() {
+    fn spawn_input_push_pop_char_only_on_name_field() {
         let mut state = AppState::new("%99".into());
         state.open_spawn_input_for_repo("alpha".into(), "/tmp/alpha".into(), None);
+        // Worktree kind so the NAME field is focusable.
+        if let PopupState::SpawnInput { kind_idx, .. } = &mut state.popup {
+            *kind_idx = 1;
+        }
 
+        state.spawn_input_next_field(); // Agent
+        state.spawn_input_next_field(); // Name
         state.spawn_input_push_char('h');
         state.spawn_input_push_char('i');
         if let PopupState::SpawnInput { input, .. } = &state.popup {
@@ -1182,7 +1299,7 @@ mod tests {
         }
 
         // Switch field — push/pop must have no effect on input text.
-        state.spawn_input_next_field();
+        state.spawn_input_next_field(); // wraps to Mode
         state.spawn_input_push_char('x');
         state.spawn_input_pop_char();
         if let PopupState::SpawnInput { input, .. } = &state.popup {
@@ -1204,11 +1321,36 @@ mod tests {
     fn confirm_spawn_input_empty_sets_error() {
         let mut state = AppState::new("%99".into());
         state.open_spawn_input_for_repo("alpha".into(), "/tmp/alpha".into(), None);
+        // Worktree spawns need a name (it becomes the branch slug).
+        if let PopupState::SpawnInput { kind_idx, .. } = &mut state.popup {
+            *kind_idx = 1;
+        }
         state.confirm_spawn_input();
         if let PopupState::SpawnInput { error, .. } = &state.popup {
             assert_eq!(error.as_deref(), Some("name is empty"));
         } else {
             panic!("popup must stay open on error");
+        }
+    }
+
+    #[test]
+    fn confirm_spawn_input_folder_kind_needs_no_name() {
+        // A folder spawn has no branch / worktree to name, so an empty
+        // input must pass the name check. Without a channel (test
+        // builds) dispatch is a no-op, and the session lookup fails in
+        // a bare test env — what matters is the error is NOT the name
+        // validation, i.e. the folder path never demands a name.
+        let mut state = AppState::new("%99".into());
+        state.open_spawn_input_for_repo("alpha".into(), "/tmp/alpha".into(), None);
+        state.confirm_spawn_input();
+        if let PopupState::SpawnInput { error, .. } = &state.popup {
+            assert_ne!(
+                error.as_deref(),
+                Some("name is empty"),
+                "folder spawns must not require a name"
+            );
+        } else {
+            panic!("expected SpawnInput popup");
         }
     }
 
@@ -1236,7 +1378,8 @@ mod tests {
         let mut state = AppState::new("%99".into());
         state.popup = PopupState::RemoveConfirm {
             pane_id: "%1".into(),
-            branch: "agent/x".into(),
+            label: "agent/x".into(),
+            has_worktree: true,
             warning: Vec::new(),
             error: None,
             working: None,
@@ -1255,7 +1398,8 @@ mod tests {
         let mut state = AppState::new("%99".into());
         state.popup = PopupState::RemoveConfirm {
             pane_id: "%1".into(),
-            branch: "agent/x".into(),
+            label: "agent/x".into(),
+            has_worktree: true,
             warning: REMOVE_CHECKING_WARNING
                 .iter()
                 .map(|l| l.to_string())
@@ -1301,7 +1445,8 @@ mod tests {
         state.popup_op_tx = Some(tx);
         state.popup = PopupState::RemoveConfirm {
             pane_id: "%1".into(),
-            branch: "agent/x".into(),
+            label: "agent/x".into(),
+            has_worktree: true,
             warning: Vec::new(),
             error: None,
             working: None,
@@ -1337,7 +1482,8 @@ mod tests {
         // editable state with the error inline.
         state.popup = PopupState::RemoveConfirm {
             pane_id: "%1".into(),
-            branch: "agent/x".into(),
+            label: "agent/x".into(),
+            has_worktree: true,
             warning: Vec::new(),
             error: None,
             working: Some("closing window…"),
@@ -1360,9 +1506,9 @@ mod tests {
             input: "task".into(),
             target_repo: "alpha".into(),
             target_repo_root: "/tmp/alpha".into(),
+            kind_idx: 1,
             agent_idx: 0,
-            mode_idx: 0,
-            field: SpawnField::Task,
+            field: SpawnField::Name,
             anchor_y: None,
             error: None,
             working: Some("creating worktree…"),
@@ -1373,7 +1519,8 @@ mod tests {
 
         state.popup = PopupState::RemoveConfirm {
             pane_id: "%1".into(),
-            branch: "agent/x".into(),
+            label: "agent/x".into(),
+            has_worktree: true,
             warning: Vec::new(),
             error: None,
             working: Some("removing worktree…"),
@@ -1410,7 +1557,8 @@ mod tests {
         let mut state = AppState::new("%99".into());
         state.popup = PopupState::RemoveConfirm {
             pane_id: "%1".into(),
-            branch: "feature/x".into(),
+            label: "feature/x".into(),
+            has_worktree: true,
             warning: Vec::new(),
             error: None,
             working: None,
