@@ -1,4 +1,4 @@
-use super::location::{pane_writes_allowed, sync_pane_location};
+use super::location::{pane_writes_allowed, pane_writes_allowed_with, sync_pane_location};
 use super::pending::PENDING_SESSION_END;
 use crate::event::WorktreeInfo;
 use crate::tmux;
@@ -32,8 +32,11 @@ pub(in crate::cli::hook) fn make_ctx<'a>(
 }
 
 pub(in crate::cli::hook) fn set_agent_meta(pane: &str, ctx: &AgentContext<'_>) {
-    // One batched spawn for the identity writes; the subagent guard read
-    // stays a probe (audit 2026-11-16 #5).
+    // One batched read for the subagent guard + the launch anchor's
+    // existing-value probe; `sync_pane_location` reuses it instead of
+    // re-reading `@pane_subagents` twice per identity event (audit
+    // 2026-11-16 #5, audit 2026-11-19 C2).
+    let identity = super::location::read_pane_identity(pane);
     let mut writes = vec![tmux::PaneOptionWrite::Set {
         key: tmux::PANE_AGENT,
         value: ctx.agent,
@@ -42,14 +45,14 @@ pub(in crate::cli::hook) fn set_agent_meta(pane: &str, ctx: &AgentContext<'_>) {
     // a different mode (e.g. plan vs. default) and overwriting the
     // parent's value here would flip the badge mid-session. Gate the
     // write behind the same subagent guard as the cwd/worktree fields.
-    if !ctx.permission_mode.is_empty() && pane_writes_allowed(pane) {
+    if !ctx.permission_mode.is_empty() && pane_writes_allowed_with(&identity.subagents) {
         writes.push(tmux::PaneOptionWrite::Set {
             key: tmux::PANE_PERMISSION_MODE,
             value: ctx.permission_mode,
         });
     }
     tmux::apply_pane_options(pane, &writes);
-    sync_pane_location(pane, ctx.cwd, ctx.worktree, ctx.session_id);
+    sync_pane_location(pane, ctx.cwd, ctx.worktree, ctx.session_id, &identity);
 }
 
 pub(in crate::cli::hook) fn clear_run_state(pane: &str) {

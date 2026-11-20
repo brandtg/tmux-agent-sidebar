@@ -83,10 +83,27 @@ fn launch_anchor_value(
     worktree: &Option<WorktreeInfo>,
     overwrite: bool,
 ) -> Option<String> {
+    let existing = if overwrite {
+        String::new()
+    } else {
+        tmux::get_pane_option_value(pane, tmux::PANE_LAUNCH_CWD)
+    };
+    launch_anchor_value_with(cwd, worktree, overwrite, &existing)
+}
+
+/// [`launch_anchor_value`] against a pre-read `@pane_launch_cwd` (the
+/// identity writers batch it with the subagent guard, audit 2026-11-19
+/// C2).
+fn launch_anchor_value_with(
+    cwd: &str,
+    worktree: &Option<WorktreeInfo>,
+    overwrite: bool,
+    existing_launch_cwd: &str,
+) -> Option<String> {
     if cwd.is_empty() {
         return None;
     }
-    if !overwrite && !tmux::get_pane_option_value(pane, tmux::PANE_LAUNCH_CWD).is_empty() {
+    if !overwrite && !existing_launch_cwd.is_empty() {
         return None;
     }
     Some(resolve_cwd(cwd, worktree).to_string())
@@ -145,20 +162,23 @@ pub(in crate::cli::hook) fn sync_pane_location(
     cwd: &str,
     worktree: &Option<WorktreeInfo>,
     session_id: &Option<String>,
+    identity: &PaneIdentityReads,
 ) {
     // Subagents share the parent's $TMUX_PANE and can fire their own hook
     // events with a different session_id, cwd, or worktree. While children
     // are active, every pane-scoped write must be skipped so the parent's
     // identity is preserved — including `@pane_worktree_*`, which used to
-    // leak through and misgroup the pane under the child's repo.
-    let current_subagents = tmux::get_pane_option_value(pane, tmux::PANE_SUBAGENTS);
-    if !should_update_cwd(&current_subagents) {
+    // leak through and misgroup the pane under the child's repo. The
+    // guard rides the caller's batched read instead of its own spawn
+    // (audit 2026-11-19 C2).
+    if !should_update_cwd(&identity.subagents) {
         return;
     }
     // Reads first, then a single batched write: each of these options is
     // otherwise its own tmux spawn, paid on every identity-bearing event
-    // (audit 2026-11-16 #5).
-    let anchor = launch_anchor_value(pane, cwd, worktree, false);
+    // (audit 2026-11-16 #5). The launch anchor's existing-value probe
+    // rides the same batch (audit 2026-11-19 C2).
+    let anchor = launch_anchor_value_with(cwd, worktree, false, &identity.launch_cwd);
     //
     // A bridge-guessed pane must not have its session identity rewritten:
     // the binding is what later events route by (see session_bind_allowed).
@@ -419,7 +439,31 @@ fn write_probe_cache(file: &mut std::fs::File, rows: &[(String, String, String, 
 /// child hook cannot clobber the parent pane's identity.
 pub(in crate::cli::hook) fn pane_writes_allowed(pane: &str) -> bool {
     let current_subagents = tmux::get_pane_option_value(pane, tmux::PANE_SUBAGENTS);
-    should_update_cwd(&current_subagents)
+    pane_writes_allowed_with(&current_subagents)
+}
+
+/// [`pane_writes_allowed`] against a pre-read `@pane_subagents` value —
+/// the identity writers fetch it once per event in a batched read
+/// (audit 2026-11-19 C2).
+pub(in crate::cli::hook) fn pane_writes_allowed_with(subagents: &str) -> bool {
+    should_update_cwd(subagents)
+}
+
+/// The pane metadata the identity writers need, read in one spawn (audit
+/// 2026-11-19 C2): `@pane_subagents` used to be read twice per identity
+/// event (the permission gate in `set_agent_meta` and this module's
+/// guard) and `@pane_launch_cwd` once more inside the anchor seed.
+pub(in crate::cli::hook) struct PaneIdentityReads {
+    pub subagents: String,
+    pub launch_cwd: String,
+}
+
+pub(in crate::cli::hook) fn read_pane_identity(pane: &str) -> PaneIdentityReads {
+    let values = tmux::get_pane_options(pane, &[tmux::PANE_SUBAGENTS, tmux::PANE_LAUNCH_CWD]);
+    PaneIdentityReads {
+        subagents: values.first().cloned().unwrap_or_default(),
+        launch_cwd: values.get(1).cloned().unwrap_or_default(),
+    }
 }
 
 #[cfg(test)]
@@ -631,6 +675,7 @@ mod tests {
             "/repo/child",
             &child_wt,
             &Some("child-session".into()),
+            &read_pane_identity(pane),
         );
 
         assert_eq!(
@@ -667,7 +712,13 @@ mod tests {
             original_repo_dir: "/repo".into(),
         });
 
-        sync_pane_location(pane, "/wt/feat-x", &wt, &Some("sess-1".into()));
+        sync_pane_location(
+            pane,
+            "/wt/feat-x",
+            &wt,
+            &Some("sess-1".into()),
+            &read_pane_identity(pane),
+        );
 
         assert_eq!(
             tmux::test_mock::get(pane, tmux::PANE_WORKTREE_NAME).as_deref(),
@@ -839,7 +890,13 @@ mod tests {
         tmux::test_mock::set(pane, tmux::PANE_SESSION_TITLE, "Live work");
         super::super::test_env::set_bind_override(Some(false));
 
-        sync_pane_location(pane, "/repo", &None, &Some("guessed-session".into()));
+        sync_pane_location(
+            pane,
+            "/repo",
+            &None,
+            &Some("guessed-session".into()),
+            &read_pane_identity(pane),
+        );
 
         super::super::test_env::set_bind_override(None);
         assert_eq!(

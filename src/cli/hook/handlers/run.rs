@@ -3,16 +3,15 @@ use crate::desktop_notification;
 use crate::desktop_notification::DesktopNotificationKind;
 use crate::tmux;
 
-use crate::time::now_epoch_secs;
+use crate::time::{now_epoch_millis, now_epoch_secs};
 
 use super::super::activity::write_activity_entry;
 use super::super::context::{
     AgentContext, clear_run_state, is_system_message, mark_task_reset, set_agent_meta,
 };
 use super::super::notifications::{
-    NotifyLabels, NotifyPayload, notification_run_id, notify_lifecycle, set_notification_run_id,
-    stop_body, stop_failure_body, stop_failure_fingerprint, task_completed_body,
-    task_completed_fingerprint,
+    NotifyLabels, NotifyPayload, notification_run_id, notify_lifecycle, stop_body,
+    stop_failure_body, stop_failure_fingerprint, task_completed_body, task_completed_fingerprint,
 };
 use super::status_priority::resolve_stop_status;
 use super::subagent::with_subagent_lock;
@@ -23,6 +22,20 @@ pub(in crate::cli::hook) fn on_user_prompt_submit(
     prompt: &str,
 ) -> i32 {
     set_agent_meta(pane, ctx);
+    // One batched read for the three options the promotion logic inspects
+    // (audit 2026-11-19 C2): status, wait reason, and the run clock used
+    // to be three separate spawns on the hottest hook event.
+    let reads = tmux::get_pane_options(
+        pane,
+        &[
+            tmux::PANE_STATUS,
+            tmux::PANE_WAIT_REASON,
+            tmux::PANE_STARTED_AT,
+        ],
+    );
+    let current_status = reads.first().map(String::as_str).unwrap_or_default();
+    let wait_reason = reads.get(1).map(String::as_str).unwrap_or_default();
+    let existing_started = reads.get(2).map(String::as_str).unwrap_or_default();
     // agy's `PreInvocation` maps here but fires before *every* model call
     // in a turn, not just the first — including the boot title-generation
     // call (empty recovered prompt) and calls that race an
@@ -33,33 +46,43 @@ pub(in crate::cli::hook) fn on_user_prompt_submit(
     // user submit and Claude's fires once per turn, so neither needs the
     // guard. A real agy turn still promotes: its recovered prompt is
     // non-empty, and its tool completions resume via the activity log.
-    let current_status = tmux::get_pane_option_value(pane, tmux::PANE_STATUS);
     let agy_background_call = ctx.agent == crate::tmux::ANTIGRAVITY_AGENT
         && ((current_status == "idle" && prompt.is_empty())
             || (current_status == "waiting"
-                && super::status_priority::is_pending_action_wait_reason(
-                    &tmux::get_pane_option_value(pane, tmux::PANE_WAIT_REASON),
-                )));
+                && super::status_priority::is_pending_action_wait_reason(wait_reason)));
     if !agy_background_call {
-        set_attention(pane, "clear");
+        // set_status("running") unsets @pane_attention inside its batch —
+        // the attention clear that used to precede it was the same write
+        // twice (audit 2026-11-19 C2).
         set_status(pane, "running");
     }
-    set_notification_run_id(pane);
-    if !prompt.is_empty() && !is_system_message(prompt) {
-        let p = sanitize_tmux_value(prompt);
-        tmux::apply_pane_options(
-            pane,
-            &[
-                tmux::PaneOptionWrite::Set {
-                    key: tmux::PANE_PROMPT,
-                    value: &p,
-                },
-                tmux::PaneOptionWrite::Set {
-                    key: tmux::PANE_PROMPT_SOURCE,
-                    value: "user",
-                },
-            ],
-        );
+    // One batched write for the notification stamp, the prompt, the run
+    // clock, and the wait-reason clear: four separate spawns before
+    // (audit 2026-11-19 C2).
+    let run_id = now_epoch_millis().to_string();
+    let prompt_value = if !prompt.is_empty() && !is_system_message(prompt) {
+        Some(sanitize_tmux_value(prompt))
+    } else {
+        None
+    };
+    let started_stamp = if !prompt.is_empty() || existing_started.is_empty() {
+        Some(now_epoch_secs().to_string())
+    } else {
+        None
+    };
+    let mut writes = vec![tmux::PaneOptionWrite::Set {
+        key: tmux::PANE_NOTIFICATION_RUN_ID,
+        value: &run_id,
+    }];
+    if let Some(p) = &prompt_value {
+        writes.push(tmux::PaneOptionWrite::Set {
+            key: tmux::PANE_PROMPT,
+            value: p,
+        });
+        writes.push(tmux::PaneOptionWrite::Set {
+            key: tmux::PANE_PROMPT_SOURCE,
+            value: "user",
+        });
     }
     // Only a real user turn restarts the run clock. Synthetic empty-prompt
     // submissions — OpenCode fires one per assistant response via
@@ -67,12 +90,18 @@ pub(in crate::cli::hook) fn on_user_prompt_submit(
     // elapsed timer resets on every response instead of spanning the turn.
     // An empty prompt still stamps a missing clock so recovery paths
     // (retry → busy with no chat.message) start timing.
-    if !prompt.is_empty() || tmux::get_pane_option_value(pane, tmux::PANE_STARTED_AT).is_empty() {
-        tmux::set_pane_option(pane, tmux::PANE_STARTED_AT, &now_epoch_secs().to_string());
+    if let Some(stamp) = &started_stamp {
+        writes.push(tmux::PaneOptionWrite::Set {
+            key: tmux::PANE_STARTED_AT,
+            value: stamp,
+        });
     }
     if !agy_background_call {
-        tmux::unset_pane_option(pane, tmux::PANE_WAIT_REASON);
+        writes.push(tmux::PaneOptionWrite::Unset {
+            key: tmux::PANE_WAIT_REASON,
+        });
     }
+    tmux::apply_pane_options(pane, &writes);
     0
 }
 
@@ -99,9 +128,12 @@ pub(in crate::cli::hook) fn on_tool_start(pane: &str, ctx: &AgentContext<'_>) ->
     if ctx.agent == crate::tmux::HERMES_AGENT {
         return 0;
     }
-    let current_status = tmux::get_pane_option_value(pane, tmux::PANE_STATUS);
+    let reads = tmux::get_pane_options(pane, &[tmux::PANE_STATUS, tmux::PANE_STARTED_AT]);
+    let current_status = reads.first().map(String::as_str).unwrap_or_default();
     // Mid-turn tool calls arrive with the pane already `running` — the
     // common case must stay a read-only probe, not a tmux write storm.
+    // The read is batched with the run-clock probe below (audit
+    // 2026-11-19 C2).
     if current_status == "running" {
         return 0;
     }
@@ -126,9 +158,15 @@ pub(in crate::cli::hook) fn on_tool_start(pane: &str, ctx: &AgentContext<'_>) ->
     // Same cleanup as the `handle_activity_log` resume: the reason row
     // renders for every status, so a stale `permission_denied` (or error
     // text stored by `on_stop_failure`) must go when the agent resumes.
-    tmux::unset_pane_option(pane, tmux::PANE_ATTENTION);
-    tmux::unset_pane_option(pane, tmux::PANE_WAIT_REASON);
-    let existing_started = tmux::get_pane_option_value(pane, tmux::PANE_STARTED_AT);
+    // set_status's batch already unset @pane_attention; the wait-reason
+    // clear is one batched write, not two spawns (audit 2026-11-19 C2).
+    tmux::apply_pane_options(
+        pane,
+        &[tmux::PaneOptionWrite::Unset {
+            key: tmux::PANE_WAIT_REASON,
+        }],
+    );
+    let existing_started = reads.get(1).map(String::as_str).unwrap_or_default();
     if existing_started.is_empty() {
         tmux::set_pane_option(pane, tmux::PANE_STARTED_AT, &now_epoch_secs().to_string());
     }
