@@ -786,10 +786,15 @@ fn spawn_opens_from_a_window_row_via_the_rows_git_info() {
         tmux_agent_sidebar::state::PopupState::SpawnInput {
             target_repo,
             target_repo_root,
+            target_session,
             ..
         } => {
             assert_eq!(target_repo, "project");
             assert_eq!(target_repo_root, "/home/user/project");
+            assert_eq!(
+                target_session, "main",
+                "the spawn targets the window row's tmux session, not the sidebar's"
+            );
         }
         other => panic!("expected SpawnInput popup, got {other:?}"),
     }

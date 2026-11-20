@@ -103,27 +103,32 @@ const SPAWN_MODAL_EXPANDED_MIN_HEIGHT: u16 = 12;
 /// Border rows contributed to the total popup height (top + bottom).
 const POPUP_BORDER_ROWS: u16 = 2;
 
-// Row offsets inside the inner area of the compact popup.
-const COMPACT_TASK_Y: u16 = 0;
+// Row offsets inside the inner area of the compact popup. MODE and
+// AGENT always render; NAME only for worktree spawns, so the folder
+// layout is one row shorter and the error/status row moves up.
+const COMPACT_MODE_Y: u16 = 0;
 const COMPACT_AGENT_Y: u16 = 1;
-const COMPACT_MODE_Y: u16 = 2;
+const COMPACT_NAME_Y: u16 = 2;
 const COMPACT_ERROR_Y: u16 = 3;
+const COMPACT_ERROR_FOLDER_Y: u16 = 2;
 
 // Row offsets inside the inner area of the expanded Vercel popup.
 // Each section is label → value with a blank spacer between them.
-const EXP_TASK_LABEL_Y: u16 = 1;
-const EXP_TASK_VALUE_Y: u16 = 2;
+// Same conditional-NAME rule as the compact layout.
+const EXP_MODE_LABEL_Y: u16 = 1;
+const EXP_MODE_VALUE_Y: u16 = 2;
 const EXP_AGENT_LABEL_Y: u16 = 4;
 const EXP_AGENT_VALUE_Y: u16 = 5;
-const EXP_MODE_LABEL_Y: u16 = 7;
-const EXP_MODE_VALUE_Y: u16 = 8;
+const EXP_NAME_LABEL_Y: u16 = 7;
+const EXP_NAME_VALUE_Y: u16 = 8;
 const EXP_ERROR_Y: u16 = 10;
+const EXP_ERROR_FOLDER_Y: u16 = 7;
 
 pub(super) fn render_spawn_input_popup(frame: &mut Frame, state: &mut AppState, area: Rect) {
     let PopupState::SpawnInput {
         input,
+        kind_idx,
         agent_idx,
-        mode_idx,
         field,
         anchor_y,
         error,
@@ -138,19 +143,28 @@ pub(super) fn render_spawn_input_popup(frame: &mut Frame, state: &mut AppState, 
     let anchor_y = *anchor_y;
     let error = error.clone();
     let working = *working;
-    let agent = crate::worktree::AGENTS
-        .get(*agent_idx)
+    let kind = crate::worktree::SPAWN_MODES
+        .get(*kind_idx)
         .copied()
         .unwrap_or("");
-    let mode = crate::worktree::modes_for(agent)
-        .get(*mode_idx)
+    let has_name = *kind_idx == 1;
+    let agent = crate::worktree::AGENTS
+        .get(*agent_idx)
         .copied()
         .unwrap_or("");
     let theme = &state.theme;
 
     let popup_width = area.width.min(32).max(area.width.min(14));
     let compact = area.height < SPAWN_MODAL_EXPANDED_MIN_HEIGHT;
-    let content_rows: u16 = if compact { 4 } else { 10 };
+    // The NAME row exists only for worktree spawns; the folder layout
+    // is one section shorter in both orientations.
+    let content_rows: u16 = if compact {
+        if has_name { 4 } else { 3 }
+    } else if has_name {
+        10
+    } else {
+        8
+    };
     // The bottom row is either the in-flight status or the inline error.
     let status_rows: u16 = u16::from(working.is_some() || error.is_some());
     let popup_height = content_rows + status_rows + POPUP_BORDER_ROWS;
@@ -162,10 +176,8 @@ pub(super) fn render_spawn_input_popup(frame: &mut Frame, state: &mut AppState, 
 
     frame.render_widget(Clear, popup_rect);
     paint_background(frame, theme, popup_rect);
-    let title_trunc = truncate_to_width(
-        " Spawn worktree ",
-        popup_rect.width.saturating_sub(2) as usize,
-    );
+    let title_trunc =
+        truncate_to_width(" Spawn agent ", popup_rect.width.saturating_sub(2) as usize);
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
@@ -211,13 +223,13 @@ pub(super) fn render_spawn_input_popup(frame: &mut Frame, state: &mut AppState, 
 
     let content_width = inner.width.saturating_sub(2) as usize;
     let visible_input = tail_fit(&input, content_width.saturating_sub(1));
-    let mut task_spans: Vec<Span<'_>> =
-        vec![Span::styled(visible_input, value_style(SpawnField::Task))];
-    if field == SpawnField::Task {
-        task_spans.push(Span::styled("█", Style::default().fg(theme.accent)));
+    let mut name_spans: Vec<Span<'_>> =
+        vec![Span::styled(visible_input, value_style(SpawnField::Name))];
+    if field == SpawnField::Name {
+        name_spans.push(Span::styled("█", Style::default().fg(theme.accent)));
     }
     let agent_value = truncate_to_width(agent, content_width);
-    let mode_value = truncate_to_width(mode, content_width);
+    let kind_value = truncate_to_width(kind, content_width);
     // A working status renders in the muted color at the same row the
     // inline error uses; the two never show together (dispatch clears
     // the error, and keys are swallowed until the result lands).
@@ -236,27 +248,38 @@ pub(super) fn render_spawn_input_popup(frame: &mut Frame, state: &mut AppState, 
     };
 
     if compact {
-        render_at(frame, COMPACT_TASK_Y, task_spans);
+        render_at(
+            frame,
+            COMPACT_MODE_Y,
+            vec![Span::styled(kind_value, value_style(SpawnField::Mode))],
+        );
         render_at(
             frame,
             COMPACT_AGENT_Y,
             vec![Span::styled(agent_value, value_style(SpawnField::Agent))],
         );
-        render_at(
-            frame,
-            COMPACT_MODE_Y,
-            vec![Span::styled(mode_value, value_style(SpawnField::Mode))],
-        );
+        if has_name {
+            render_at(frame, COMPACT_NAME_Y, name_spans);
+        }
         if let Some(status) = status_spans {
-            render_at(frame, COMPACT_ERROR_Y, status);
+            let error_y = if has_name {
+                COMPACT_ERROR_Y
+            } else {
+                COMPACT_ERROR_FOLDER_Y
+            };
+            render_at(frame, error_y, status);
         }
     } else {
         render_at(
             frame,
-            EXP_TASK_LABEL_Y,
-            vec![Span::styled("NAME", label_style(SpawnField::Task))],
+            EXP_MODE_LABEL_Y,
+            vec![Span::styled("MODE", label_style(SpawnField::Mode))],
         );
-        render_at(frame, EXP_TASK_VALUE_Y, task_spans);
+        render_at(
+            frame,
+            EXP_MODE_VALUE_Y,
+            vec![Span::styled(kind_value, value_style(SpawnField::Mode))],
+        );
         render_at(
             frame,
             EXP_AGENT_LABEL_Y,
@@ -267,18 +290,21 @@ pub(super) fn render_spawn_input_popup(frame: &mut Frame, state: &mut AppState, 
             EXP_AGENT_VALUE_Y,
             vec![Span::styled(agent_value, value_style(SpawnField::Agent))],
         );
-        render_at(
-            frame,
-            EXP_MODE_LABEL_Y,
-            vec![Span::styled("MODE", label_style(SpawnField::Mode))],
-        );
-        render_at(
-            frame,
-            EXP_MODE_VALUE_Y,
-            vec![Span::styled(mode_value, value_style(SpawnField::Mode))],
-        );
+        if has_name {
+            render_at(
+                frame,
+                EXP_NAME_LABEL_Y,
+                vec![Span::styled("NAME", label_style(SpawnField::Name))],
+            );
+            render_at(frame, EXP_NAME_VALUE_Y, name_spans);
+        }
         if let Some(status) = status_spans {
-            render_at(frame, EXP_ERROR_Y, status);
+            let error_y = if has_name {
+                EXP_ERROR_Y
+            } else {
+                EXP_ERROR_FOLDER_Y
+            };
+            render_at(frame, error_y, status);
         }
     }
 }
@@ -312,30 +338,39 @@ fn tail_fit(text: &str, max_width: usize) -> String {
 }
 
 pub(super) fn render_remove_confirm_popup(frame: &mut Frame, state: &mut AppState, area: Rect) {
-    let (branch, warning, error, working) = match &state.popup {
+    let (label, has_worktree, warning, error, working) = match &state.popup {
         PopupState::RemoveConfirm {
-            branch,
+            label,
+            has_worktree,
             warning,
             error,
             working,
             ..
-        } => (branch.clone(), warning.clone(), error.clone(), *working),
+        } => (
+            label.clone(),
+            *has_worktree,
+            warning.clone(),
+            error.clone(),
+            *working,
+        ),
         _ => return,
     };
     let theme = &state.theme;
 
-    // Narrow-friendly: put the branch in the title, keep option rows
-    // short enough to fit in ~16 columns. The consequence block grows
-    // the popup; an in-flight status or inline error reserves one more
-    // row (the two never show together — same contract as the spawn
-    // modal).
+    // Narrow-friendly: put the pane label in the title, keep option
+    // rows short enough to fit in ~16 columns. The consequence block
+    // grows the popup; an in-flight status or inline error reserves one
+    // more row (the two never show together — same contract as the
+    // spawn modal). Folder spawns have no worktree to remove, so the
+    // dialog degenerates to a plain window-close confirm.
+    let option_rows: u16 = if has_worktree { 3 } else { 2 };
     let popup_height: u16 =
-        5 + warning.len() as u16 + u16::from(error.is_some() || working.is_some());
+        option_rows + 2 + warning.len() as u16 + u16::from(error.is_some() || working.is_some());
     let popup_rect = center_popup(area, area.width.min(28), popup_height);
     state.popup.set_remove_confirm_area(Some(popup_rect));
     frame.render_widget(Clear, popup_rect);
     paint_background(frame, theme, popup_rect);
-    let title_text = format!(" {branch} ");
+    let title_text = format!(" {label} ");
     let title = truncate_to_width(&title_text, popup_rect.width.saturating_sub(2) as usize);
     let block = Block::default()
         .borders(Borders::ALL)
@@ -356,30 +391,46 @@ pub(super) fn render_remove_confirm_popup(frame: &mut Frame, state: &mut AppStat
         }
     };
 
-    render_row(
-        frame,
-        0,
-        "[y] remove worktree",
-        Style::default().fg(theme.status_error),
-    );
-    render_row(
-        frame,
-        1,
-        "[c] close window only",
-        Style::default().fg(theme.text_active),
-    );
-    render_row(
-        frame,
-        2,
-        "[n] cancel",
-        Style::default().fg(theme.text_muted),
-    );
+    if has_worktree {
+        render_row(
+            frame,
+            0,
+            "[y] remove worktree",
+            Style::default().fg(theme.status_error),
+        );
+        render_row(
+            frame,
+            1,
+            "[c] close window only",
+            Style::default().fg(theme.text_active),
+        );
+        render_row(
+            frame,
+            2,
+            "[n] cancel",
+            Style::default().fg(theme.text_muted),
+        );
+    } else {
+        render_row(
+            frame,
+            0,
+            "[y] close window",
+            Style::default().fg(theme.status_error),
+        );
+        render_row(
+            frame,
+            1,
+            "[n] cancel",
+            Style::default().fg(theme.text_muted),
+        );
+    }
     // Force-remove consequences (`worktree remove --force` + `branch -D`
     // run while the agent is still working) — the user must see what is
-    // unrecoverable before pressing y.
+    // unrecoverable before pressing y. Folder spawns instead show the
+    // static "window only" notice.
     let warning_style = Style::default().fg(theme.status_error);
     for (i, line) in warning.iter().enumerate() {
-        render_row(frame, 3 + i as u16, line, warning_style);
+        render_row(frame, option_rows + i as u16, line, warning_style);
     }
     // The bottom row is either the in-flight status or the inline error —
     // same contract as the spawn modal (dispatch clears the error before
@@ -387,12 +438,17 @@ pub(super) fn render_remove_confirm_popup(frame: &mut Frame, state: &mut AppStat
     if let Some(status) = working {
         render_row(
             frame,
-            3 + warning.len() as u16,
+            option_rows + warning.len() as u16,
             status,
             Style::default().fg(theme.text_muted),
         );
     } else if let Some(err) = error {
-        render_row(frame, 3 + warning.len() as u16, &err, warning_style);
+        render_row(
+            frame,
+            option_rows + warning.len() as u16,
+            &err,
+            warning_style,
+        );
     }
 }
 

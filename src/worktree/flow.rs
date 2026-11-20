@@ -8,24 +8,132 @@ use super::markers::{
 };
 use super::slug::{MAX_COLLISION_ATTEMPTS, pick_unique_slug, slugify, worktree_path_for};
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SpawnKind {
+    /// Launch the agent directly in the repo checkout: a new tmux
+    /// window at the repo root with the usual agent-pane layout, no git
+    /// side effects.
+    #[default]
+    Folder,
+    /// Create a git worktree + branch first, then launch the agent
+    /// inside it (the original spawn behaviour).
+    Worktree,
+}
+
+impl SpawnKind {
+    /// Map the spawn modal's `MODE` index ([`SPAWN_MODES`]) to a kind.
+    pub fn from_mode_index(idx: usize) -> Self {
+        match idx {
+            1 => Self::Worktree,
+            _ => Self::Folder,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct SpawnRequest {
     pub repo_root: PathBuf,
+    /// Slug source for the worktree/branch. Unused by [`SpawnKind::Folder`].
     pub task_name: String,
     pub session: String,
     pub agent: String,
-    pub mode: String,
+    pub kind: SpawnKind,
 }
 
-/// Create a worktree, open a new tmux window in it, launch the agent,
-/// and stash markers at window scope so the matching `x` flow can find
-/// it later. Returns the resulting branch name on success. On any
-/// failure past `git worktree add` the worktree is rolled back.
+/// Spawn an agent for `req`: either directly in the repo folder or in a
+/// fresh git worktree, depending on `req.kind`. Returns the resulting
+/// branch name (worktree) or window id (folder) on success.
 pub fn spawn(req: &SpawnRequest) -> Result<String, String> {
     spawn_with(&RealEnv, req)
 }
 
 pub(crate) fn spawn_with<E: SpawnEnv>(env: &E, req: &SpawnRequest) -> Result<String, String> {
+    match req.kind {
+        SpawnKind::Folder => spawn_folder(env, req),
+        SpawnKind::Worktree => spawn_worktree(env, req),
+    }
+}
+
+/// Pick the pane the agent command is sent to for a freshly created
+/// window, per the `@sidebar_spawn_layout` option. `full` (the
+/// default) hands the agent the whole window — the user makes their own
+/// splits; `split` keeps the classic layout: a left one-third agent
+/// pane beside a blank right shell (the after-new-window hook adds the
+/// sidebar pane by geometry either way). A failed split degrades to the
+/// single-pane layout — the agent takes over the original pane and the
+/// spawn still succeeds.
+fn agent_launch_pane<E: SpawnEnv>(env: &E, base_pane: &str, cwd: &str) -> String {
+    match super::config::spawn_layout(env.spawn_layout().as_deref()) {
+        super::config::SpawnLayout::Full => base_pane.to_string(),
+        super::config::SpawnLayout::Split => {
+            match env.split_window_left(base_pane, cwd, AGENT_PANE_PERCENT) {
+                Ok(pane) => pane,
+                Err(e) => {
+                    crate::debug::log(&format!(
+                        "spawn: agent-pane split failed, single-pane fallback: {e}"
+                    ));
+                    base_pane.to_string()
+                }
+            }
+        }
+    }
+}
+
+/// Folder spawn: open a new tmux window at the repo root, add the
+/// agent-pane split, stash the spawned markers (without worktree /
+/// branch — the remove flow treats those as "window only"), and launch
+/// the agent. No git operations at all.
+fn spawn_folder<E: SpawnEnv>(env: &E, req: &SpawnRequest) -> Result<String, String> {
+    let repo = req
+        .repo_root
+        .to_str()
+        .ok_or("repo root is not valid UTF-8")?;
+
+    let (pane_id, window_id) = env
+        .new_window(&req.session, repo, &req.agent)
+        .map_err(|e| format!("tmux: {e}"))?;
+
+    let agent_pane = agent_launch_pane(env, &pane_id, repo);
+
+    // Window scope so sub panes (e.g. Claude Code subagents split from
+    // the original) inherit the markers via tmux's option fall-through.
+    // No worktree / branch markers: an empty worktree path is what tells
+    // the remove flow this pane has no git cleanup to do.
+    for (key, value) in [(SPAWNED_OPTION, "1"), (SPAWNED_FROM_OPTION, repo)] {
+        if let Err(e) = env.set_window_option(&window_id, key, value) {
+            let rb = rollback_folder_spawn(env, &window_id);
+            return Err(compose_spawn_error(
+                format!("tmux: failed to set {key}: {e}"),
+                rb,
+            ));
+        }
+    }
+
+    if let Err(e) = env.send_command(&agent_pane, &super::config::agent_command(&req.agent)) {
+        let rb = rollback_folder_spawn(env, &window_id);
+        return Err(compose_spawn_error(format!("tmux: {e}"), rb));
+    }
+
+    switch_to_spawned_window(env, &req.session, &window_id);
+
+    Ok(window_id)
+}
+
+/// Best-effort rollback after a partial folder spawn. There is no git
+/// state to clean up, so killing the window is the whole job.
+fn rollback_folder_spawn<E: SpawnEnv>(env: &E, window_id: &str) -> Vec<String> {
+    match env.kill_window(window_id) {
+        Ok(()) => Vec::new(),
+        Err(e) => vec![format!("kill_window: {e}")],
+    }
+}
+
+/// Worktree spawn: create a worktree, open a new tmux window in it,
+/// launch the agent, and stash markers at window scope so the matching
+/// `x` flow can find it later. Returns the resulting branch name on
+/// success. On any failure past `git worktree add` the worktree is
+/// rolled back.
+fn spawn_worktree<E: SpawnEnv>(env: &E, req: &SpawnRequest) -> Result<String, String> {
     let slug = slugify(&req.task_name);
     if slug.is_empty() {
         return Err("name is empty after slugification".into());
@@ -71,22 +179,7 @@ pub(crate) fn spawn_with<E: SpawnEnv>(env: &E, req: &SpawnRequest) -> Result<Str
             compose_spawn_error(format!("tmux: {e}"), rb)
         })?;
 
-    // Three-pane layout: split the fresh window so the agent gets a
-    // one-third pane on the left and the original shell keeps the right
-    // two-thirds; the after-new-window hook then adds the sidebar pane
-    // left of the leftmost pane (it targets panes by geometry, not
-    // focus, so hook-vs-split ordering cannot misplace it). A failed
-    // split degrades to the single-pane layout — the agent takes over
-    // the original pane and the spawn still succeeds.
-    let agent_pane = match env.split_window_left(&pane_id, worktree, AGENT_PANE_PERCENT) {
-        Ok(pane) => pane,
-        Err(e) => {
-            crate::debug::log(&format!(
-                "spawn: agent-pane split failed, single-pane fallback: {e}"
-            ));
-            pane_id.clone()
-        }
-    };
+    let agent_pane = agent_launch_pane(env, &pane_id, worktree);
 
     // Window scope so sub panes (e.g. Claude Code subagents split from
     // the original) inherit the markers via tmux's option fall-through.
@@ -105,15 +198,28 @@ pub(crate) fn spawn_with<E: SpawnEnv>(env: &E, req: &SpawnRequest) -> Result<Str
         }
     }
 
-    if let Err(e) = env.send_command(
-        &agent_pane,
-        &super::config::agent_command(&req.agent, &req.mode),
-    ) {
+    if let Err(e) = env.send_command(&agent_pane, &super::config::agent_command(&req.agent)) {
         let rb = rollback_spawn(env, repo, worktree, &branch, Some(&window_id));
         return Err(compose_spawn_error(format!("tmux: {e}"), rb));
     }
 
+    switch_to_spawned_window(env, &req.session, &window_id);
+
     Ok(branch)
+}
+
+/// Best-effort client switch to the freshly spawned window. `new-window`
+/// only selects the new window within its own session, so a spawn that
+/// targets a session other than the sidebar's own would otherwise be
+/// invisible: the user stays put while the window appears elsewhere. A
+/// failure (e.g. no attached client when the sidebar runs detached) is
+/// logged and ignored — the spawn itself already succeeded.
+fn switch_to_spawned_window<E: SpawnEnv>(env: &E, session: &str, window_id: &str) {
+    if let Err(e) = env.switch_client_to_window(session, window_id) {
+        crate::debug::log(&format!(
+            "spawn: client switch to {session}:{window_id} failed: {e}"
+        ));
+    }
 }
 
 /// Best-effort rollback after a partial spawn. Kills the tmux window
@@ -206,6 +312,10 @@ pub fn removal_warnings(worktree_path: &str) -> Vec<String> {
 /// sidebar. Each git step is skipped when its target is already
 /// gone (`worktree_path_exists` / `branch_exists`), which lets
 /// retries after a partial-success failure converge.
+///
+/// Folder spawns (`SpawnKind::Folder`) carry no worktree / branch
+/// markers, so there is nothing to clean up and the whole flow
+/// degenerates to `kill_window` — every remove mode behaves the same.
 pub fn remove(pane_id: &str, mode: RemoveMode) -> Result<(), String> {
     remove_with(&RealEnv, pane_id, mode)
 }
@@ -219,17 +329,18 @@ pub(crate) fn remove_with<E: SpawnEnv>(
     if !markers.is_spawned() {
         return Err("pane was not created by sidebar spawn".into());
     }
-    if markers.worktree_path.is_empty() {
-        return Err("spawned worktree path is unset".into());
-    }
-    if markers.branch.is_empty() {
-        return Err("spawned branch is unset".into());
-    }
     if markers.window_id.is_empty() {
         return Err("could not resolve window id".into());
     }
+    // Empty worktree path = folder spawn (no git state). A worktree
+    // spawn always writes both markers, so a missing branch there is
+    // still a corruption error.
+    let folder_spawn = markers.worktree_path.is_empty();
+    if !folder_spawn && markers.branch.is_empty() {
+        return Err("spawned branch is unset".into());
+    }
 
-    if mode == RemoveMode::WindowAndWorktree {
+    if mode == RemoveMode::WindowAndWorktree && !folder_spawn {
         if env.worktree_path_exists(&markers.worktree_path) {
             env.worktree_remove(&markers.from_repo, &markers.worktree_path)
                 .map_err(|e| format!("git: {e}"))?;
@@ -258,6 +369,9 @@ mod env_tests {
         calls: RefCell<Vec<String>>,
         set_option_calls: RefCell<usize>,
         worktree_dir: Option<String>,
+        /// Raw `@sidebar_spawn_layout` value (`None` = unset,
+        /// which resolves to the default `full` layout).
+        spawn_layout: Option<String>,
         fail_set_option_at: Option<usize>,
         fail_split: bool,
         fail_kill_window: bool,
@@ -292,6 +406,9 @@ mod env_tests {
         }
         fn worktree_dir(&self) -> Option<String> {
             self.worktree_dir.clone()
+        }
+        fn spawn_layout(&self) -> Option<String> {
+            self.spawn_layout.clone()
         }
         fn branch_is_free(&self, _repo: &str, _branch: &str) -> bool {
             true
@@ -355,6 +472,10 @@ mod env_tests {
                 Ok(())
             }
         }
+        fn switch_client_to_window(&self, session: &str, window_id: &str) -> Result<(), String> {
+            self.log(format!("switch_client_to_window({session},{window_id})"));
+            Ok(())
+        }
         fn set_window_option(&self, window: &str, key: &str, _value: &str) -> Result<(), String> {
             let idx = *self.set_option_calls.borrow();
             *self.set_option_calls.borrow_mut() += 1;
@@ -386,12 +507,211 @@ mod env_tests {
             task_name: "task".into(),
             session: "sess".into(),
             agent: "claude".into(),
-            mode: "default".into(),
+            kind: SpawnKind::Worktree,
+        }
+    }
+
+    fn folder_req() -> SpawnRequest {
+        SpawnRequest {
+            kind: SpawnKind::Folder,
+            ..sample_req()
         }
     }
 
     fn has_call(calls: &[String], prefix: &str) -> bool {
         calls.iter().any(|c| c.starts_with(prefix))
+    }
+
+    #[test]
+    fn spawn_kind_from_mode_index_maps_both_rows() {
+        assert_eq!(SpawnKind::from_mode_index(0), SpawnKind::Folder);
+        assert_eq!(SpawnKind::from_mode_index(1), SpawnKind::Worktree);
+        // Out-of-range indices fall back to the no-worktree spawn.
+        assert_eq!(SpawnKind::from_mode_index(9), SpawnKind::Folder);
+    }
+
+    #[test]
+    fn folder_spawn_touches_no_git_and_sets_window_only_markers() {
+        let env = FakeEnv::default();
+        let got = spawn_with(&env, &folder_req()).expect("folder spawn should succeed");
+        assert_eq!(got, "@1", "folder spawn returns the new window id");
+        let calls = env.calls();
+        assert!(
+            !has_call(&calls, "worktree_add(")
+                && !has_call(&calls, "branch_delete(")
+                && !has_call(&calls, "worktree_remove("),
+            "folder spawn must not touch git: {calls:?}"
+        );
+        assert!(
+            has_call(&calls, "new_window(sess,/r,claude)"),
+            "window opens at the repo root, named after the agent: {calls:?}"
+        );
+        assert!(
+            !has_call(&calls, "split_window_left("),
+            "the default `full` layout gives the agent the whole window: {calls:?}"
+        );
+        assert_eq!(
+            *env.set_option_calls.borrow(),
+            2,
+            "only spawned + from markers, no worktree/branch"
+        );
+        assert!(
+            has_call(&calls, "send_command(%1,claude)"),
+            "agent command goes to the window's original pane: {calls:?}"
+        );
+        assert!(
+            !has_call(&calls, "kill_window("),
+            "no rollback on happy path"
+        );
+        assert!(
+            has_call(&calls, "switch_client_to_window(sess,@1)"),
+            "the client lands on the freshly spawned window: {calls:?}"
+        );
+    }
+
+    #[test]
+    fn split_layout_keeps_the_side_by_side_panes() {
+        // `@sidebar_spawn_layout split` restores the classic
+        // three-pane layout: agent in a left one-third pane, blank shell
+        // on the right, sidebar added by the hook.
+        let env = FakeEnv {
+            spawn_layout: Some("split".into()),
+            ..FakeEnv::default()
+        };
+        spawn_with(&env, &folder_req()).expect("split-layout spawn should succeed");
+        let calls = env.calls();
+        assert!(
+            has_call(&calls, "split_window_left(%1,/r,33)"),
+            "agent pane split left of the original shell: {calls:?}"
+        );
+        assert!(
+            has_call(&calls, "send_command(%2,claude)"),
+            "agent command goes to the split agent pane: {calls:?}"
+        );
+    }
+
+    #[test]
+    fn a_failed_client_switch_does_not_fail_the_spawn() {
+        // The window and agent exist by the time the switch runs; a
+        // failure there (e.g. sidebar started detached, no attached
+        // client) must only be logged, never rolled back.
+        #[derive(Default)]
+        struct SwitchFailingEnv(FakeEnv);
+        impl SpawnEnv for SwitchFailingEnv {
+            fn branch_prefix(&self) -> Option<String> {
+                self.0.branch_prefix()
+            }
+            fn worktree_dir(&self) -> Option<String> {
+                self.0.worktree_dir()
+            }
+            fn spawn_layout(&self) -> Option<String> {
+                self.0.spawn_layout()
+            }
+            fn branch_is_free(&self, r: &str, b: &str) -> bool {
+                self.0.branch_is_free(r, b)
+            }
+            fn branch_exists(&self, r: &str, b: &str) -> bool {
+                self.0.branch_exists(r, b)
+            }
+            fn worktree_path_is_free(&self, p: &Path) -> bool {
+                self.0.worktree_path_is_free(p)
+            }
+            fn worktree_path_exists(&self, p: &str) -> bool {
+                self.0.worktree_path_exists(p)
+            }
+            fn worktree_add(&self, r: &str, p: &str, b: &str) -> Result<(), String> {
+                self.0.worktree_add(r, p, b)
+            }
+            fn worktree_remove(&self, r: &str, p: &str) -> Result<(), String> {
+                self.0.worktree_remove(r, p)
+            }
+            fn branch_delete(&self, r: &str, b: &str) -> Result<(), String> {
+                self.0.branch_delete(r, b)
+            }
+            fn new_window(&self, s: &str, c: &str, n: &str) -> Result<(String, String), String> {
+                self.0.new_window(s, c, n)
+            }
+            fn split_window_left(&self, t: &str, c: &str, p: u32) -> Result<String, String> {
+                self.0.split_window_left(t, c, p)
+            }
+            fn kill_window(&self, w: &str) -> Result<(), String> {
+                self.0.kill_window(w)
+            }
+            fn switch_client_to_window(&self, _s: &str, _w: &str) -> Result<(), String> {
+                Err("no current client".into())
+            }
+            fn set_window_option(&self, w: &str, k: &str, v: &str) -> Result<(), String> {
+                self.0.set_window_option(w, k, v)
+            }
+            fn send_command(&self, t: &str, c: &str) -> Result<(), String> {
+                self.0.send_command(t, c)
+            }
+            fn display_message(&self, p: &str, t: &str) -> String {
+                self.0.display_message(p, t)
+            }
+        }
+
+        let env = SwitchFailingEnv::default();
+        let branch = spawn_with(&env, &sample_req()).expect("spawn must still succeed");
+        assert_eq!(branch, "agent/task");
+        assert!(
+            !has_call(&env.0.calls(), "kill_window("),
+            "a failed switch must not roll the spawn back"
+        );
+    }
+
+    #[test]
+    fn folder_spawn_rolls_back_the_window_when_a_marker_fails() {
+        let env = FakeEnv {
+            fail_set_option_at: Some(1),
+            ..FakeEnv::default()
+        };
+        let err = spawn_with(&env, &folder_req()).expect_err("marker failure must fail the spawn");
+        assert!(
+            err.contains(SPAWNED_FROM_OPTION),
+            "error mentions marker: {err}"
+        );
+        let calls = env.calls();
+        assert!(
+            has_call(&calls, "kill_window(@1)"),
+            "rollback kills the new window: {calls:?}"
+        );
+        assert!(
+            !has_call(&calls, "worktree_remove(") && !has_call(&calls, "branch_delete("),
+            "folder rollback must not touch git: {calls:?}"
+        );
+    }
+
+    #[test]
+    fn folder_spawn_rolls_back_the_window_when_send_command_fails() {
+        let env = FakeEnv {
+            fail_send_command: true,
+            ..FakeEnv::default()
+        };
+        let err = spawn_with(&env, &folder_req()).expect_err("send failure must fail the spawn");
+        assert!(err.contains("send_command failed"), "{err}");
+        assert!(
+            has_call(&env.calls(), "kill_window(@1)"),
+            "rollback kills the new window"
+        );
+    }
+
+    #[test]
+    fn remove_folder_spawn_skips_git_and_kills_the_window() {
+        // Folder spawns carry only the spawned + from markers; removal
+        // is a pure kill-window regardless of the requested mode.
+        let env = FakeEnv {
+            display_output: Some("1\n/r\n\n\n@7\n".into()),
+            ..FakeEnv::default()
+        };
+        remove_with(&env, "%1", RemoveMode::WindowAndWorktree)
+            .expect("folder spawn removal should succeed");
+        let calls = env.calls();
+        assert!(
+            !has_call(&calls, "worktree_remove(") && !has_call(&calls, "branch_delete("),
+            "folder spawn removal must not touch git: {calls:?}"
+        );
+        assert!(has_call(&calls, "kill_window(@7)"));
     }
 
     #[test]
@@ -406,23 +726,46 @@ mod env_tests {
         ));
         assert!(has_call(&calls, "new_window(sess,/r/.worktrees/task,task)"));
         assert!(
-            has_call(&calls, "split_window_left(%1,/r/.worktrees/task,33)"),
-            "agent pane split left of the original shell: {calls:?}"
+            !has_call(&calls, "split_window_left("),
+            "the default `full` layout gives the agent the whole window: {calls:?}"
         );
         assert_eq!(*env.set_option_calls.borrow(), 4);
         assert!(
-            has_call(&calls, "send_command(%2,claude"),
-            "agent command goes to the split agent pane: {calls:?}"
+            has_call(&calls, "send_command(%1,claude"),
+            "agent command goes to the window's original pane: {calls:?}"
         );
         assert!(
             !has_call(&calls, "kill_window("),
             "no rollback on happy path"
+        );
+        assert!(
+            has_call(&calls, "switch_client_to_window(sess,@1)"),
+            "the client lands on the freshly spawned window: {calls:?}"
+        );
+    }
+
+    #[test]
+    fn worktree_split_layout_keeps_the_side_by_side_panes() {
+        let env = FakeEnv {
+            spawn_layout: Some("split".into()),
+            ..FakeEnv::default()
+        };
+        spawn_with(&env, &sample_req()).expect("split-layout spawn should succeed");
+        let calls = env.calls();
+        assert!(
+            has_call(&calls, "split_window_left(%1,/r/.worktrees/task,33)"),
+            "agent pane split left of the original shell: {calls:?}"
+        );
+        assert!(
+            has_call(&calls, "send_command(%2,claude"),
+            "agent command goes to the split agent pane: {calls:?}"
         );
     }
 
     #[test]
     fn spawn_degrades_to_single_pane_when_the_split_fails() {
         let env = FakeEnv {
+            spawn_layout: Some("split".into()),
             fail_split: true,
             ..FakeEnv::default()
         };
@@ -650,6 +993,9 @@ mod env_tests {
             fn worktree_dir(&self) -> Option<String> {
                 self.0.worktree_dir()
             }
+            fn spawn_layout(&self) -> Option<String> {
+                self.0.spawn_layout()
+            }
             fn branch_is_free(&self, r: &str, b: &str) -> bool {
                 self.0.branch_is_free(r, b)
             }
@@ -680,6 +1026,9 @@ mod env_tests {
             }
             fn kill_window(&self, w: &str) -> Result<(), String> {
                 self.0.kill_window(w)
+            }
+            fn switch_client_to_window(&self, s: &str, w: &str) -> Result<(), String> {
+                self.0.switch_client_to_window(s, w)
             }
             fn set_window_option(&self, w: &str, k: &str, v: &str) -> Result<(), String> {
                 self.0.set_window_option(w, k, v)

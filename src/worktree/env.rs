@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use super::config::{BRANCH_PREFIX_OPTION, WORKTREE_DIR_OPTION};
+use super::config::{BRANCH_PREFIX_OPTION, SPAWN_LAYOUT_OPTION, WORKTREE_DIR_OPTION};
 use crate::{git, tmux};
 
 /// All side effects `spawn_with` / `remove_with` depend on, extracted
@@ -10,6 +10,9 @@ use crate::{git, tmux};
 pub(crate) trait SpawnEnv {
     fn branch_prefix(&self) -> Option<String>;
     fn worktree_dir(&self) -> Option<String>;
+    /// Raw `@sidebar_spawn_layout` option value; parsed by
+    /// [`super::config::spawn_layout`]. `None` = unset (default layout).
+    fn spawn_layout(&self) -> Option<String>;
     fn branch_is_free(&self, repo: &str, branch: &str) -> bool;
     /// Whether a branch currently exists in `repo`. Used by the
     /// remove flow to skip `git branch -D` when a previous partial
@@ -37,6 +40,12 @@ pub(crate) trait SpawnEnv {
         percent: u32,
     ) -> Result<String, String>;
     fn kill_window(&self, window_id: &str) -> Result<(), String>;
+    /// Move the invoking tmux client to `window_id` inside `session`.
+    /// Best-effort tail of the spawn flow: `new-window` only selects
+    /// the new window within its own session, so a spawn targeting a
+    /// session other than the sidebar's must switch the client over or
+    /// the user sees nothing happen.
+    fn switch_client_to_window(&self, session: &str, window_id: &str) -> Result<(), String>;
     fn set_window_option(&self, window: &str, key: &str, value: &str) -> Result<(), String>;
     fn send_command(&self, target: &str, command: &str) -> Result<(), String>;
     fn display_message(&self, pane_id: &str, template: &str) -> String;
@@ -53,6 +62,11 @@ impl SpawnEnv for RealEnv {
     fn worktree_dir(&self) -> Option<String> {
         tmux::get_all_global_options()
             .get(WORKTREE_DIR_OPTION)
+            .cloned()
+    }
+    fn spawn_layout(&self) -> Option<String> {
+        tmux::get_all_global_options()
+            .get(SPAWN_LAYOUT_OPTION)
             .cloned()
     }
     fn branch_is_free(&self, repo: &str, branch: &str) -> bool {
@@ -89,6 +103,9 @@ impl SpawnEnv for RealEnv {
     }
     fn kill_window(&self, window_id: &str) -> Result<(), String> {
         tmux::kill_window(window_id)
+    }
+    fn switch_client_to_window(&self, session: &str, window_id: &str) -> Result<(), String> {
+        tmux::switch_to_window(session, window_id)
     }
     fn set_window_option(&self, window: &str, key: &str, value: &str) -> Result<(), String> {
         tmux::set_window_option(window, key, value)

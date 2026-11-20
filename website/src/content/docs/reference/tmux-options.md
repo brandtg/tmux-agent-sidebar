@@ -37,6 +37,7 @@ Most options must be set **before** loading the plugin in your `tmux.conf`. Colo
 | Option                            | Default     | Description                                               |
 | --------------------------------- | ----------- | --------------------------------------------------------- |
 | `@agent-sidebar-default-agent`    | `claude`    | Agent launched by `n`&nbsp;(also accepts `codex`, `opencode`, `antigravity`) |
+| `@sidebar_spawn_layout`     | `full`      | Window layout for spawned / resumed agent windows: `full` gives the agent the whole window (make your own splits); `split` restores the side-by-side layout — agent in a left one-third pane beside a blank shell |
 | `@agent-sidebar-branch-prefix`    | `agent/`    | Branch prefix for new worktrees                           |
 | `@agent-sidebar-worktree-dir`     | `.worktrees` | Repo-relative directory for sidebar-spawned worktrees; absolute paths and `..` are rejected |
 

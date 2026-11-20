@@ -134,27 +134,40 @@ new-task line re-opens insert mode. The panel advertises nothing else —
 
 | Key | Action                                 |
 | --- | -------------------------------------- |
-| `n` | Spawn a new worktree + agent           |
+| `n` | Spawn an agent (folder or worktree)    |
 | `x` | Remove the selected spawn-created pane |
 
-## Spawn worktree modal
+## Spawn modal
 
 Opened with `n` on a repo.
 
 | Key                                | Action                                                                                           |
 | ---------------------------------- | ------------------------------------------------------------------------------------------------ |
-| Text keys                          | Type the name (used as the branch slug and tmux window name)                                     |
-| `↑` / `↓` / `Tab` / `Shift+Tab`    | Move focus between `NAME` / `AGENT` / `MODE` fields                                              |
-| `←` / `→`                          | Cycle the value when the agent or mode field has focus                                           |
-| `Enter`                            | Create the worktree + window and launch the agent                                                |
+| Text keys                          | Type the name (worktree mode only: used as the branch slug and tmux window name)                 |
+| `↑` / `↓` / `Tab` / `Shift+Tab`    | Move focus between `MODE` / `AGENT` / `NAME` fields                                              |
+| `←` / `→`                          | Cycle the value when the mode or agent field has focus                                           |
+| `Enter`                            | Create the window and launch the agent                                                           |
 | `Esc`                              | Cancel                                                                                           |
+
+`MODE` picks the spawn kind: `default` launches the agent directly in
+the repo folder (no git side effects, no `NAME` field); `worktree`
+creates a git worktree + branch first.
 
 ## Close pane modal
 
 Opened with `x` on a spawn-created pane.
+
+Worktree spawn:
 
 | Key             | Action                                                                                                    |
 | --------------- | --------------------------------------------------------------------------------------------------------- |
 | `y` / `Enter`   | Close the tmux window, remove the git worktree (`--force`), and delete the branch (`git branch -D`)       |
 | `c`             | Close the tmux window only, keep the worktree and branch on disk                                          |
 | `n` / `Esc`     | Cancel                                                                                                    |
+
+Folder spawn (no worktree or branch exists):
+
+| Key             | Action                                   |
+| --------------- | ---------------------------------------- |
+| `y` / `Enter`   | Close the tmux window                    |
+| `n` / `Esc`     | Cancel                                   |

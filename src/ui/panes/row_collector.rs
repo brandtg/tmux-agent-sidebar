@@ -13,7 +13,7 @@ use crate::ui::text::{display_width, truncate_to_width};
 pub(super) struct CollectedRows {
     pub lines: Vec<Line<'static>>,
     pub line_to_row: Vec<Option<usize>>,
-    pub pending_spawn: Vec<(usize, String, String)>,
+    pub pending_spawn: Vec<(usize, String, String, String)>,
     pub pending_remove: Vec<(usize, u16, String)>,
     /// `(line_idx, group_name)` for every rendered group header — the
     /// click target that folds the group. Expanded and collapsed
@@ -244,9 +244,22 @@ pub(super) fn collect(state: &AppState, width: u16) -> CollectedRows {
             .saturating_sub(shown_width)
             .saturating_sub(button_allowance);
         if let Some(ref root) = repo_root {
-            collected
-                .pending_spawn
-                .push((collected.lines.len(), group.name.clone(), root.clone()));
+            // The `+` click spawns into the group's own tmux session
+            // (the focused pane's, else the first pane's) — not the
+            // session the sidebar lives in.
+            let session = group
+                .panes
+                .iter()
+                .find(|(p, _)| p.pane_active)
+                .or_else(|| group.panes.first())
+                .map(|(p, _)| p.tmux_session.clone())
+                .unwrap_or_default();
+            collected.pending_spawn.push((
+                collected.lines.len(),
+                group.name.clone(),
+                root.clone(),
+                session,
+            ));
         }
         // The whole header row is a click target for folding the group
         // (both directions). Registered before the line is pushed so the
@@ -1348,10 +1361,12 @@ mod tests {
             is_worktree: false,
             ..Default::default()
         };
+        let mut pane = make_pane("%1", PaneStatus::Running);
+        pane.tmux_session = "other-sess".into();
         state.repo_groups = vec![RepoGroup {
             name: "repo".into(),
             has_focus: false,
-            panes: vec![(make_pane("%1", PaneStatus::Running), git_info)],
+            panes: vec![(pane, git_info)],
         }];
         let collected = collect(&state, 40);
         assert_eq!(
@@ -1361,6 +1376,10 @@ mod tests {
         );
         assert_eq!(collected.pending_spawn[0].1, "repo");
         assert_eq!(collected.pending_spawn[0].2, "/tmp/repo");
+        assert_eq!(
+            collected.pending_spawn[0].3, "other-sess",
+            "the spawn target carries the group's tmux session"
+        );
         // At least the header plus one pane row should have been pushed.
         assert!(!collected.lines.is_empty());
     }
