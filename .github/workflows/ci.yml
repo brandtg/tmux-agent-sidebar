@@ -79,14 +79,25 @@ jobs:
       - run: npm run build
 
   # RustSec advisory scan against the committed Cargo.lock. Advisory-only
-  # failures; Renovate's vulnerability alerts complement this with a PR flow.
+  # failures; Renovate's vulnerability alerts complement this with a PR
+  # flow. The prebuilt cargo-audit binary installs in seconds — the
+  # previous rustsec/audit-check action compiled cargo-audit from source
+  # on every run (multi-minute stall) and reported results through the
+  # Checks API, which flaked with a spurious 404 on the check-run update.
+  # A plain step here fails with cargo-audit's own exit code instead. The
+  # advisory DB is cached per day and refreshed only on its schedule.
   audit:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      checks: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: rustsec/audit-check@69366f33c96575abad1ee0dba8212993eecbe998 # v2.0.0
+      - uses: taiki-e/install-action@75a7c0f87bd666af3cdb75c5b9e9d03ab6044e6f # v2.90.6
         with:
-          token: ${{ secrets.GITHUB_TOKEN }}
+          tool: cargo-audit
+      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ~/.cargo/advisory-db
+          key: advisory-db-${{ runner.os }}-${{ github.run_id }}
+          restore-keys: advisory-db-${{ runner.os }}-
+      - run: cargo audit --file Cargo.lock --stale
