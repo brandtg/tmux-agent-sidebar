@@ -54,6 +54,31 @@ pub(crate) fn spawn_with<E: SpawnEnv>(env: &E, req: &SpawnRequest) -> Result<Str
     }
 }
 
+/// Pick the pane the agent command is sent to for a freshly created
+/// window, per the `@agent-sidebar-spawn-layout` option. `full` (the
+/// default) hands the agent the whole window — the user makes their own
+/// splits; `split` keeps the classic layout: a left one-third agent
+/// pane beside a blank right shell (the after-new-window hook adds the
+/// sidebar pane by geometry either way). A failed split degrades to the
+/// single-pane layout — the agent takes over the original pane and the
+/// spawn still succeeds.
+fn agent_launch_pane<E: SpawnEnv>(env: &E, base_pane: &str, cwd: &str) -> String {
+    match super::config::spawn_layout(env.spawn_layout().as_deref()) {
+        super::config::SpawnLayout::Full => base_pane.to_string(),
+        super::config::SpawnLayout::Split => {
+            match env.split_window_left(base_pane, cwd, AGENT_PANE_PERCENT) {
+                Ok(pane) => pane,
+                Err(e) => {
+                    crate::debug::log(&format!(
+                        "spawn: agent-pane split failed, single-pane fallback: {e}"
+                    ));
+                    base_pane.to_string()
+                }
+            }
+        }
+    }
+}
+
 /// Folder spawn: open a new tmux window at the repo root, add the
 /// agent-pane split, stash the spawned markers (without worktree /
 /// branch — the remove flow treats those as "window only"), and launch
@@ -68,19 +93,7 @@ fn spawn_folder<E: SpawnEnv>(env: &E, req: &SpawnRequest) -> Result<String, Stri
         .new_window(&req.session, repo, &req.agent)
         .map_err(|e| format!("tmux: {e}"))?;
 
-    // Same layout as the worktree spawn: agent in a left one-third
-    // pane, original shell keeps the right two-thirds, and the
-    // after-new-window hook adds the sidebar pane on the far left. A
-    // failed split degrades to the single-pane layout.
-    let agent_pane = match env.split_window_left(&pane_id, repo, AGENT_PANE_PERCENT) {
-        Ok(pane) => pane,
-        Err(e) => {
-            crate::debug::log(&format!(
-                "spawn: agent-pane split failed, single-pane fallback: {e}"
-            ));
-            pane_id.clone()
-        }
-    };
+    let agent_pane = agent_launch_pane(env, &pane_id, repo);
 
     // Window scope so sub panes (e.g. Claude Code subagents split from
     // the original) inherit the markers via tmux's option fall-through.
@@ -166,22 +179,7 @@ fn spawn_worktree<E: SpawnEnv>(env: &E, req: &SpawnRequest) -> Result<String, St
             compose_spawn_error(format!("tmux: {e}"), rb)
         })?;
 
-    // Three-pane layout: split the fresh window so the agent gets a
-    // one-third pane on the left and the original shell keeps the right
-    // two-thirds; the after-new-window hook then adds the sidebar pane
-    // left of the leftmost pane (it targets panes by geometry, not
-    // focus, so hook-vs-split ordering cannot misplace it). A failed
-    // split degrades to the single-pane layout — the agent takes over
-    // the original pane and the spawn still succeeds.
-    let agent_pane = match env.split_window_left(&pane_id, worktree, AGENT_PANE_PERCENT) {
-        Ok(pane) => pane,
-        Err(e) => {
-            crate::debug::log(&format!(
-                "spawn: agent-pane split failed, single-pane fallback: {e}"
-            ));
-            pane_id.clone()
-        }
-    };
+    let agent_pane = agent_launch_pane(env, &pane_id, worktree);
 
     // Window scope so sub panes (e.g. Claude Code subagents split from
     // the original) inherit the markers via tmux's option fall-through.
@@ -371,6 +369,9 @@ mod env_tests {
         calls: RefCell<Vec<String>>,
         set_option_calls: RefCell<usize>,
         worktree_dir: Option<String>,
+        /// Raw `@agent-sidebar-spawn-layout` value (`None` = unset,
+        /// which resolves to the default `full` layout).
+        spawn_layout: Option<String>,
         fail_set_option_at: Option<usize>,
         fail_split: bool,
         fail_kill_window: bool,
@@ -405,6 +406,9 @@ mod env_tests {
         }
         fn worktree_dir(&self) -> Option<String> {
             self.worktree_dir.clone()
+        }
+        fn spawn_layout(&self) -> Option<String> {
+            self.spawn_layout.clone()
         }
         fn branch_is_free(&self, _repo: &str, _branch: &str) -> bool {
             true
@@ -543,15 +547,18 @@ mod env_tests {
             "window opens at the repo root, named after the agent: {calls:?}"
         );
         assert!(
-            has_call(&calls, "split_window_left(%1,/r,33)"),
-            "agent pane split left of the original shell: {calls:?}"
+            !has_call(&calls, "split_window_left("),
+            "the default `full` layout gives the agent the whole window: {calls:?}"
         );
         assert_eq!(
             *env.set_option_calls.borrow(),
             2,
             "only spawned + from markers, no worktree/branch"
         );
-        assert!(has_call(&calls, "send_command(%2,claude)"));
+        assert!(
+            has_call(&calls, "send_command(%1,claude)"),
+            "agent command goes to the window's original pane: {calls:?}"
+        );
         assert!(
             !has_call(&calls, "kill_window("),
             "no rollback on happy path"
@@ -559,6 +566,27 @@ mod env_tests {
         assert!(
             has_call(&calls, "switch_client_to_window(sess,@1)"),
             "the client lands on the freshly spawned window: {calls:?}"
+        );
+    }
+
+    #[test]
+    fn split_layout_keeps_the_side_by_side_panes() {
+        // `@agent-sidebar-spawn-layout split` restores the classic
+        // three-pane layout: agent in a left one-third pane, blank shell
+        // on the right, sidebar added by the hook.
+        let env = FakeEnv {
+            spawn_layout: Some("split".into()),
+            ..FakeEnv::default()
+        };
+        spawn_with(&env, &folder_req()).expect("split-layout spawn should succeed");
+        let calls = env.calls();
+        assert!(
+            has_call(&calls, "split_window_left(%1,/r,33)"),
+            "agent pane split left of the original shell: {calls:?}"
+        );
+        assert!(
+            has_call(&calls, "send_command(%2,claude)"),
+            "agent command goes to the split agent pane: {calls:?}"
         );
     }
 
@@ -575,6 +603,9 @@ mod env_tests {
             }
             fn worktree_dir(&self) -> Option<String> {
                 self.0.worktree_dir()
+            }
+            fn spawn_layout(&self) -> Option<String> {
+                self.0.spawn_layout()
             }
             fn branch_is_free(&self, r: &str, b: &str) -> bool {
                 self.0.branch_is_free(r, b)
@@ -695,13 +726,13 @@ mod env_tests {
         ));
         assert!(has_call(&calls, "new_window(sess,/r/.worktrees/task,task)"));
         assert!(
-            has_call(&calls, "split_window_left(%1,/r/.worktrees/task,33)"),
-            "agent pane split left of the original shell: {calls:?}"
+            !has_call(&calls, "split_window_left("),
+            "the default `full` layout gives the agent the whole window: {calls:?}"
         );
         assert_eq!(*env.set_option_calls.borrow(), 4);
         assert!(
-            has_call(&calls, "send_command(%2,claude"),
-            "agent command goes to the split agent pane: {calls:?}"
+            has_call(&calls, "send_command(%1,claude"),
+            "agent command goes to the window's original pane: {calls:?}"
         );
         assert!(
             !has_call(&calls, "kill_window("),
@@ -714,8 +745,27 @@ mod env_tests {
     }
 
     #[test]
+    fn worktree_split_layout_keeps_the_side_by_side_panes() {
+        let env = FakeEnv {
+            spawn_layout: Some("split".into()),
+            ..FakeEnv::default()
+        };
+        spawn_with(&env, &sample_req()).expect("split-layout spawn should succeed");
+        let calls = env.calls();
+        assert!(
+            has_call(&calls, "split_window_left(%1,/r/.worktrees/task,33)"),
+            "agent pane split left of the original shell: {calls:?}"
+        );
+        assert!(
+            has_call(&calls, "send_command(%2,claude"),
+            "agent command goes to the split agent pane: {calls:?}"
+        );
+    }
+
+    #[test]
     fn spawn_degrades_to_single_pane_when_the_split_fails() {
         let env = FakeEnv {
+            spawn_layout: Some("split".into()),
             fail_split: true,
             ..FakeEnv::default()
         };
@@ -942,6 +992,9 @@ mod env_tests {
             }
             fn worktree_dir(&self) -> Option<String> {
                 self.0.worktree_dir()
+            }
+            fn spawn_layout(&self) -> Option<String> {
+                self.0.spawn_layout()
             }
             fn branch_is_free(&self, r: &str, b: &str) -> bool {
                 self.0.branch_is_free(r, b)

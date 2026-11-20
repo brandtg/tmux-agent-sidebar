@@ -26,7 +26,7 @@ Opened with `n` or by clicking the `+` button next to a repo header.
 
 The `MODE` field picks what the spawn creates:
 
-- **`default`** — open a new tmux window directly in the repo checkout with the usual agent-pane layout (agent left, shell right, sidebar far left). No git side effects. The window is named after the agent, and the `NAME` field is not shown.
+- **`default`** — open a new tmux window directly in the repo checkout and launch the agent in it. No git side effects. The window is named after the agent, and the `NAME` field is not shown.
 - **`worktree`** — create a git worktree + branch first, then launch the agent inside it.
 
 ### What gets created (worktree mode)
@@ -36,6 +36,13 @@ The modal's `NAME` field is slugified (lowercase, non-alphanumeric → `-`) and 
 - **Branch** — `<prefix><slug>`, where `<prefix>` defaults to `agent/` (e.g. `add login form` → `agent/add-login-form`). Colliding slugs get an incrementing suffix (`-2`, `-3`, …).
 - **Worktree path** — `<repo>/.worktrees/<slug>` by default. Change the repo-relative directory with `@agent-sidebar-worktree-dir`; absolute paths and `..` are rejected.
 - **tmux window** — the slug is used as the window name; the agent you picked in the modal (`claude` / `codex` / `opencode` / `antigravity`) launches inside it.
+
+### Window layout
+
+`@agent-sidebar-spawn-layout` picks how a freshly spawned (or resumed) agent window is laid out:
+
+- **`full`** (default) — the agent takes the whole window; make your own splits as needed. Best for laptops.
+- **`split`** — the agent gets a left one-third pane beside a blank shell (the sidebar pane sits on the far left). The original side-by-side layout.
 
 Defaults for the agent, branch prefix, and worktree directory live in tmux options — see [tmux options](/tmux-agent-sidebar/reference/tmux-options/) for the full list.
 

@@ -466,6 +466,9 @@ fn parse_first_cell(success: bool, stdout: &str) -> Option<String> {
 /// script tmux errors without a real server (same seam as SpawnEnv).
 pub(crate) trait ResumeEnv {
     fn new_window(&self, session: &str, cwd: &str, name: &str) -> Result<(String, String), String>;
+    /// Raw `@agent-sidebar-spawn-layout` option value (same seam as
+    /// [`crate::worktree::SpawnEnv`]); `None` = unset (default layout).
+    fn spawn_layout(&self) -> Option<String>;
     /// Split `target_pane` so the new pane sits to its left at `percent`
     /// of its width (same seam as [`crate::worktree::SpawnEnv`]).
     fn split_window_left(
@@ -484,6 +487,11 @@ struct RealResumeEnv;
 impl ResumeEnv for RealResumeEnv {
     fn new_window(&self, session: &str, cwd: &str, name: &str) -> Result<(String, String), String> {
         crate::tmux::new_window(session, cwd, name)
+    }
+    fn spawn_layout(&self) -> Option<String> {
+        crate::tmux::get_all_global_options()
+            .get(crate::worktree::SPAWN_LAYOUT_OPTION)
+            .cloned()
     }
     fn split_window_left(
         &self,
@@ -526,19 +534,25 @@ pub(crate) fn launch_resume<E: ResumeEnv>(env: &E, req: &LaunchRequest) -> Resul
     let (pane_id, window_id) = env
         .new_window(req.session, req.cwd, req.window_name)
         .map_err(|e| format!("tmux: {e}"))?;
-    // Same three-pane layout as the worktree spawn: the resumed agent
-    // gets a one-third pane left of a blank shell; the sidebar hook
-    // adds its pane by geometry. A failed split degrades to the
-    // single-pane layout — the resume command takes over the original
-    // pane and the launch still succeeds.
-    let agent_pane = match env.split_window_left(&pane_id, req.cwd, AGENT_PANE_PERCENT) {
-        Ok(pane) => pane,
-        Err(e) => {
-            crate::debug::log(&format!(
-                "resume: agent-pane split failed, single-pane fallback: {e}"
-            ));
-            pane_id.clone()
+    // Layout per `@agent-sidebar-spawn-layout`: `full` (the default)
+    // hands the resumed agent the whole window; `split` keeps the
+    // classic side-by-side (one-third agent pane left of a blank shell;
+    // the sidebar hook adds its pane by geometry). A failed split
+    // degrades to the single-pane layout — the resume command takes
+    // over the original pane and the launch still succeeds.
+    let agent_pane = match crate::worktree::spawn_layout(env.spawn_layout().as_deref()) {
+        crate::worktree::SpawnLayout::Split => {
+            match env.split_window_left(&pane_id, req.cwd, AGENT_PANE_PERCENT) {
+                Ok(pane) => pane,
+                Err(e) => {
+                    crate::debug::log(&format!(
+                        "resume: agent-pane split failed, single-pane fallback: {e}"
+                    ));
+                    pane_id.clone()
+                }
+            }
         }
+        crate::worktree::SpawnLayout::Full => pane_id.clone(),
     };
     for (key, value) in [
         (RESUMED_OPTION, req.session_id),
@@ -1134,6 +1148,9 @@ mod tests {
         fail_set_window_option: bool,
         fail_send_command: bool,
         fail_split: bool,
+        /// Raw `@agent-sidebar-spawn-layout` value (`None` = unset,
+        /// which resolves to the default `full` layout).
+        spawn_layout: Option<String>,
     }
 
     impl FakeEnv {
@@ -1143,6 +1160,7 @@ mod tests {
                 fail_set_window_option: false,
                 fail_send_command: false,
                 fail_split: false,
+                spawn_layout: None,
             }
         }
         fn log(&self, s: String) {
@@ -1162,6 +1180,9 @@ mod tests {
         ) -> Result<(String, String), String> {
             self.log(format!("new_window({session},{cwd},{name})"));
             Ok(("%9".into(), "@9".into()))
+        }
+        fn spawn_layout(&self) -> Option<String> {
+            self.spawn_layout.clone()
         }
         fn split_window_left(
             &self,
@@ -1218,17 +1239,34 @@ mod tests {
             calls,
             vec![
                 "new_window(sess,/repo,claude-resume-f4ac0121)".to_string(),
-                "split_window_left(%9,/repo,33)".to_string(),
+                // Default `full` layout: no split, the resume command
+                // takes over the whole window.
                 format!("set_window_option(@9,{RESUMED_OPTION}=f4ac0121-58e7)"),
                 format!("set_window_option(@9,{RESUME_AGENT_OPTION}=claude)"),
-                "send_command(%8,claude --resume f4ac0121)".to_string(),
+                "send_command(%9,claude --resume f4ac0121)".to_string(),
             ]
         );
     }
 
     #[test]
-    fn launch_degrades_to_single_pane_when_the_split_fails() {
+    fn split_layout_types_the_command_into_the_split_pane() {
         let env = FakeEnv {
+            spawn_layout: Some("split".into()),
+            ..FakeEnv::new()
+        };
+        launch_resume(&env, &launch_req("/repo")).unwrap();
+        let calls = env.calls();
+        assert!(calls.contains(&"split_window_left(%9,/repo,33)".to_string()));
+        assert!(
+            calls.contains(&"send_command(%8,claude --resume f4ac0121)".to_string()),
+            "resume command goes to the split agent pane: {calls:?}"
+        );
+    }
+
+    #[test]
+    fn split_layout_degrades_to_single_pane_when_the_split_fails() {
+        let env = FakeEnv {
+            spawn_layout: Some("split".into()),
             fail_split: true,
             ..FakeEnv::new()
         };
@@ -1293,7 +1331,7 @@ mod tests {
             calls
                 .last()
                 .unwrap()
-                .starts_with("send_command(%8,claude --resume f4ac0121-58e7)"),
+                .starts_with("send_command(%9,claude --resume f4ac0121-58e7)"),
             "the command is rebuilt, never item text: {calls:?}"
         );
     }

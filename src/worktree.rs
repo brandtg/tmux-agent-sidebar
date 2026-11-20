@@ -12,8 +12,9 @@ mod slug;
 
 pub use config::{
     AGENT_OPTION, AGENT_PANE_PERCENT, AGENTS, BRANCH_PREFIX_OPTION, DEFAULT_AGENT,
-    DEFAULT_BRANCH_PREFIX, DEFAULT_WORKTREE_DIR, RemoveMode, SPAWN_MODES, WORKTREE_DIR_OPTION,
-    agent_command,
+    DEFAULT_BRANCH_PREFIX, DEFAULT_SPAWN_LAYOUT, DEFAULT_WORKTREE_DIR, RemoveMode,
+    SPAWN_LAYOUT_FULL, SPAWN_LAYOUT_OPTION, SPAWN_LAYOUT_SPLIT, SPAWN_MODES, SpawnLayout,
+    WORKTREE_DIR_OPTION, agent_command, spawn_layout,
 };
 pub use flow::{SpawnKind, SpawnRequest, removal_warnings, remove, spawn};
 pub use markers::{
