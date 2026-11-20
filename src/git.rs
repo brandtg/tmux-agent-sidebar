@@ -131,6 +131,11 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("sidebar_git_root_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
+        // Canonicalize up front: on macOS /var/folders is a symlink to
+        // /private/var/folders, and `main_repo_root` returns canonicalized
+        // paths — comparing them against the raw temp_dir prefix would
+        // fail on the /private difference alone.
+        let dir = std::fs::canonicalize(&dir).unwrap();
         let run = |args: &[&str], cwd: &std::path::Path| {
             let out = Command::new("git")
                 .args(args)
