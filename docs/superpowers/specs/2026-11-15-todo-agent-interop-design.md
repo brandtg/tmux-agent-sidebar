@@ -43,9 +43,9 @@ What exists today, and what it means for this design:
   wiped by `clear_agent_pane_state` (src/tmux/query.rs) when the agent
   exits; Claude panes are cleaned by its SessionEnd hook.
 - There is no resume capability anywhere: no code constructs
-  `--resume`-style commands. docs/audit-2026-10-30.md lists
-  "Resume-on-death: capture the resume command per agent, offer
-  respawn from the sidebar" as an unbuilt roadmap item.
+  `--resume`-style commands. "Resume-on-death: capture the resume command
+  per agent, offer respawn from the sidebar" was flagged as an unbuilt
+  roadmap item in a past audit.
 - Spawn machinery (src/worktree/flow.rs) creates a worktree + window
   and types a command with literal send-keys; `SpawnRequest` carries no
   prompt, and no user text is ever embedded in a command today.
