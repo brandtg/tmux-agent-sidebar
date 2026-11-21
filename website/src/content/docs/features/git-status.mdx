@@ -14,7 +14,7 @@ Every agent row carries its own git context, resolved by a background worker so 
 
 Each agent row shows:
 
-- **Branch** — the branch checked out in the pane's working directory; worktrees render as `+ <name>: <branch>`
+- **Branch** — the branch checked out in the pane's working directory; worktrees render as `+ <name>: <branch>`, or just `+ <branch>` when the worktree has no name
 - **Ahead / behind** — `↑N` / `↓N` counts vs. the configured upstream
 - **Dirty count** — `~N` uncommitted paths (staged + unstaged + untracked) from `git status --porcelain`
 - **Ports** — listening dev-server ports detected in the pane's process tree

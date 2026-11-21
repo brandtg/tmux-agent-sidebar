@@ -320,7 +320,7 @@ pub(super) fn collect(state: &AppState, width: u16) -> CollectedRows {
         // Header lines map
         // to `None` in `line_to_row` like the group header, and are
         // emitted lazily per distinct window key so a window whose rows
-        // are all filtered out (search, status filter) leaves no empty
+        // are all filtered out (search, repo filter) leaves no empty
         // header behind.
         let window_headers = match state.global.group_by {
             crate::state::GroupBy::Repo => state.global.worktree_windows,
@@ -766,7 +766,7 @@ mod tests {
     fn collect_collapsed_badge_segments_reflect_status_counts() {
         // The badge describes what expanding would reveal under the
         // active filters: waiting/error segments only when nonzero, and
-        // under a status filter the total narrows to the matching rows.
+        // under a search filter the total narrows to the matching rows.
         let mut state = AppState::new("%0".into());
         state.repo_groups = vec![RepoGroup {
             name: "backend".into(),

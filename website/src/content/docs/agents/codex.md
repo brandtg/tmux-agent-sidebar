@@ -17,7 +17,7 @@ Codex exposes a smaller hook set than Claude Code, so some sidebar features are 
 ### Git
 
 - Branch display from the pane's `cwd`
-- PR number (needs `gh` CLI)
+- Worktree label when the pane runs in a linked worktree (resolved from the pane's live directory)
 
 ### Permission badges
 
@@ -38,10 +38,10 @@ Codex exposes a smaller hook set than Claude Code, so some sidebar features are 
 | ----------------------------------------- | ------------------------------------------------------------------- |
 | Waiting status + wait reason              | Needs `Notification`, `PermissionDenied`, `TeammateIdle` (Claude-only) |
 | Background shell state                    | Codex's Bash hook payload is schema-typed as `{ command: string }` and does not include a background flag |
-| API failure reason                        | Needs `StopFailure` (Claude-only)                                    |
+| API failure reason                        | Needs `StopFailure`, which Codex does not expose (Claude, OpenCode, and Antigravity wire it) |
 | Task progress counter                     | Needs non-Bash `PostToolUse` coverage                                |
 | Sub-agent tree                            | Needs `SubagentStart` / `SubagentStop`                               |
-| Worktree lifecycle tracking               | Needs `WorktreeCreate` / `WorktreeRemove`                            |
+| Worktree lifecycle tracking               | The `WorktreeCreate` / `WorktreeRemove` hooks no longer exist in the plugin (see [Worktrees](/tmux-agent-sidebar/features/worktree/)) |
 | `notification` / `task_completed` / `stop_failure` / `permission_denied` notifications | Those hooks don't exist in Codex                                     |
 
 ## Setup

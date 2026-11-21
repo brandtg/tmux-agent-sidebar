@@ -67,7 +67,7 @@ Antigravity's summaries store.
 | Background shell state      | `run_command`'s `RunPersistent` flag is not mapped |
 | Task progress counter       | No todo-style tool feeding the progress display |
 | Sub-agent display           | No subagent lifecycle hooks (`invoke_subagent` appears in the activity log only) |
-| Worktree lifecycle tracking | Antigravity does not emit worktree create/remove hooks |
+| Worktree lifecycle tracking | The `WorktreeCreate` / `WorktreeRemove` hooks no longer exist in the plugin (see [Worktrees](/tmux-agent-sidebar/features/worktree/)) |
 
 ## Setup
 

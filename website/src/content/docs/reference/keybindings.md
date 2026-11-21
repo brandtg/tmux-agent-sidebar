@@ -9,14 +9,14 @@ description: Every shortcut in the sidebar, the worktree spawn modal, and the cl
 | -------------- | ------------------------------------------------------------- |
 | `prefix + e`   | Toggle sidebar                                                |
 | `prefix + E`   | Toggle sidebar in all windows                                 |
-| `j` / `Down`   | Move selection down                                           |
-| `k` / `Up`     | Move selection up                                             |
-| `/`            | Search agents by session title, tmux session, or branch       |
+| `j` / `Down` / `Ctrl-n` | Move selection down                                   |
+| `k` / `Up` / `Ctrl-p`   | Move selection up                                     |
+| `/`            | Search agents by session title, tmux session, agent label, or branch |
 | `a`            | Jump to the next row that needs attention                     |
 | `g` / `G`      | Jump to the top / bottom of the list                          |
 | `[` / `]`      | Jump to the previous / next group header                      |
 | `z`            | Collapse / expand the selected group (clicking a group header folds it too) |
-| `Z`            | Expand every collapsed group                                  |
+| `Z`            | Fold or expand every group in one key: from a fully expanded list it collapses all; with anything folded it expands all |
 | `s`            | Toggle repo / tmux-session grouping                           |
 | `PageUp` / `PageDown` | Page the agent list by a viewport                      |
 | `r`            | Open repo filter popup                                        |
@@ -34,9 +34,10 @@ description: Every shortcut in the sidebar, the worktree spawn modal, and the cl
 
 Press `/` to filter the agent list without collapsing its groups. Matching is
 case-insensitive and checks each row's agent session title, tmux session name,
-and git branch. Typing a repo or tmux session name keeps the whole group
-visible; otherwise only rows whose own fields match are shown. Status counts
-in a collapsed group's badge follow the active query.
+agent label, and git branch. Typing a repo or tmux session name (the group's
+own name) keeps the whole group visible; otherwise only rows whose own fields
+match are shown. Status counts in a collapsed group's badge follow the active
+query.
 
 | Key          | Action                                          |
 | ------------ | ----------------------------------------------- |
@@ -54,18 +55,22 @@ list to its unfiltered state.
 
 ## Repo filter popup
 
-Opened with `r` or by clicking the repo filter button in the sidebar header.
+Opened with `r` or by clicking the menu button at the right edge of the
+sidebar header (`ⓘ` when something needs attention, `—` otherwise).
 
 | Key           | Action                                 |
 | ------------- | -------------------------------------- |
-| `j` / `Down`  | Move selection down                    |
-| `k` / `Up`    | Move selection up                      |
+| `j` / `Down` / `Ctrl-n` | Move selection down          |
+| `k` / `Up` / `Ctrl-p`   | Move selection up            |
 | `Enter`       | Confirm — filter the list to that repo |
 | `Esc`         | Cancel                                 |
 
-## Notices popup
+## Notices
 
-Opened by clicking the `ⓘ` badge shown when hooks or plugin setup are missing.
+There is no standalone notices popup: notices render as a section at the top
+of the repo filter popup, above the repo list. The popup opens with `r` or by
+clicking the `ⓘ` menu button in the sidebar header (shown when hooks or
+plugin setup need attention). Notice lines are click-to-copy.
 
 | Key   | Action          |
 | ----- | --------------- |
@@ -78,6 +83,8 @@ Opened with `?`; a keyboard reference for the shortcuts above.
 | Key       | Action          |
 | --------- | --------------- |
 | `?` / `Esc` | Close the popup |
+| `j` / `Down` / `k` / `Up` | Scroll one line |
+| `PageDown` / `PageUp` | Page the content |
 
 ## TODO panel
 
@@ -120,10 +127,17 @@ Space completes; Esc backs out without creating anything.
 | `r`             | Resume a resume-shaped item (`claude --resume <id>`, `codex resume <id>`, `opencode -s <id>`) in a new window |
 | `x` / `d`       | Delete the selected item                                      |
 | `D`             | Delete all completed items                                    |
-| `u` / `Ctrl-z`  | Undo the last delete / clear-completed (available for 4 s)    |
+| `u` / `Ctrl-z`  | Undo the last delete / clear-completed (4 s window; works from any focus while no text input or search is open) |
 | `a`             | Add a new item (insert mode); Esc ends entry                  |
 | `H`             | Collapse / expand the completed section (shared across open sidebars) |
 | `Esc`           | Stop editing without saving, end entry, or return focus to the agent list |
+
+Text entry uses the usual line-editor keys: `Home` / `End` (or `Ctrl-a` /
+`Ctrl-e`) to jump to the start / end of the line, `Ctrl-←` / `Ctrl-→` to move
+by word, `Delete` to drop the character after the cursor, `Ctrl-u` to clear
+the line, and `Ctrl-w` to delete the word before the cursor. While the panel
+has focus, `c` (compact), `w` (other windows), `?` (help), and `/` (search)
+stay live, and `q` quits.
 
 Clicking an item's checkbox toggles it; clicking its text selects it, and
 clicking the selected item again opens the editor; clicking the open
@@ -171,3 +185,16 @@ Folder spawn (no worktree or branch exists):
 | --------------- | ---------------------------------------- |
 | `y` / `Enter`   | Close the tmux window                    |
 | `n` / `Esc`     | Cancel                                   |
+
+## Mouse
+
+The sidebar is mouse-driven throughout:
+
+- Agent rows — click to select and jump to the pane.
+- Group headers — click to fold / unfold. Window headers — click to jump to the window.
+- `+` beside a repo opens the spawn modal; `×` on a spawn-created pane opens the close-pane modal.
+- Header row — `☰` (left edge) opens the overview grid, the chyron banner selects the pane it reports on, and `ⓘ` / `—` (right edge) toggles the repo popup.
+- Repo popup — click a repo to filter to it, click a notice line to copy it; clicking outside closes the popup.
+- Help, spawn, and close-pane popups — clicking outside closes them.
+- TODO panel — the checkbox toggles the item, its text selects it, clicking the selected item opens the editor, and clicking the input line re-opens entry mode.
+- Mouse wheel scrolls the list (3 lines per notch, 1 in compact mode).

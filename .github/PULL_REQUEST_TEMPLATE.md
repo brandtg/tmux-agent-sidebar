@@ -4,7 +4,7 @@
 
 ## Motivation
 
-<!-- Why: the problem, the linked issue, or the track/batch this belongs to (docs/oss-hygiene.md, docs/tmux-3.8.md, docs/audit-*.md). -->
+<!-- Why: the problem, the linked issue, or the track/batch this belongs to (docs/tmux-3.8.md, docs/superpowers/*.md). -->
 
 ## How tested
 

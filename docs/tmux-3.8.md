@@ -87,8 +87,7 @@ bash/zsh need shell integration.
 
 This can retire the per-command bash DEBUG trap in shell-exit.sh for modern
 shells — the trap whose cost a prior audit flagged, and which still leaves the
-cosmetic `_unlink_marks` first-`@pane_last_cmd` residue (audit-2026-11-16.md,
-"Previously-flagged items" table).
+cosmetic `_unlink_marks` first-`@pane_last_cmd` residue.
 
 - [ ] Spike first (T0): confirm event payloads and cadence.
 - [ ] Wire the new hooks to the same `@pane_last_cmd` / `@pane_last_exit`

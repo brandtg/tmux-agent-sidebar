@@ -2,10 +2,10 @@ use super::AppState;
 
 /// Local, per-sidebar search state.
 ///
-/// Deliberately not part of [`super::GlobalState`]: the status and repo
-/// filters are shared across sidebar instances through tmux options, but a
-/// search query is transient and must not broadcast a refresh to every
-/// other sidebar on every keystroke.
+/// Deliberately not part of [`super::GlobalState`]: the repo filter is
+/// shared across sidebar instances through tmux options, but a search
+/// query is transient and must not broadcast a refresh to every other
+/// sidebar on every keystroke.
 #[derive(Debug, Clone, Default)]
 pub struct SearchState {
     pub query: String,

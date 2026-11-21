@@ -31,7 +31,7 @@ Claude Code, Codex, and OpenCode work as upstream built them — OpenCode still 
 
 ### Configuration
 
-New tmux options include `@sidebar_width_max`, `@sidebar_preview_lines`, `@sidebar_popup_max_width`, `@sidebar_default_view`, `@sidebar_group_by`, `@sidebar_icon_set`, the `@sidebar_todo_*` options, and the Hermes/Antigravity colors. Upstream options keep working, except a handful tied to the removed bottom panel; the full list is in [tmux options](/tmux-agent-sidebar/reference/tmux-options/).
+New tmux options include `@sidebar_width_max`, `@sidebar_preview_lines`, `@sidebar_popup_max_width`, `@sidebar_default_compact_view`, `@sidebar_default_show_windows`, `@sidebar_default_todo_visible`, `@sidebar_default_todo_hide_completed`, `@sidebar_group_by`, `@sidebar_icon_set`, the `@sidebar_todo_*` options, and the Hermes/Antigravity colors. Upstream options keep working, except a handful tied to the removed bottom panel; the full list is in [tmux options](/tmux-agent-sidebar/reference/tmux-options/).
 
 ## Relationship to upstream
 

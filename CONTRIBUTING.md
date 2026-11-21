@@ -107,10 +107,10 @@ from commit subjects between tags. Well-written subjects are the policy.
 ## Project docs
 
 - User docs live in `website/src/content/docs` (Starlight site).
-- `docs/` holds internal engineering notes: dated audits, the state-management
-  deep-dive, and the two living work tracks (`oss-hygiene.md`,
-  `tmux-3.8.md`). Update a track's checkboxes and progress log when you land
-  work from it.
+- `docs/` holds internal engineering notes: the state-management deep-dive, the
+  tmux-3.8 work track, the overview-grid spike, and design specs under
+  `docs/superpowers/`. Update the track's checkboxes and progress log when you
+  land work from it.
 - All documentation is written in English.
 
 ## License

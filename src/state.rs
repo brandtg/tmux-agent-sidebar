@@ -57,7 +57,7 @@ pub struct AppState {
     pub flash: Option<(String, Instant)>,
     pub spinner_frame: usize,
     /// Frame-scoped render output (pane_row_targets, line_to_row,
-    /// repo_button_col, hyperlink_overlays). Rewritten every frame by
+    /// menu_button_col, hyperlink_overlays). Rewritten every frame by
     /// the UI layer; consumed by mouse/keyboard handlers before the
     /// next render.
     pub layout: FrameLayout,
