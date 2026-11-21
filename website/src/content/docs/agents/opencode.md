@@ -10,15 +10,30 @@ surface is similar to Codex but with a different event source.
 
 ### Status and prompts
 
-- Live status from `session.created` / `session.status` / `session.idle`
+- Live status from `session.execution.started` / `succeeded` / `interrupted` /
+  `failed` — the v1-era `session.idle` / `session.status` events are still
+  understood as a legacy fallback, but a current OpenCode server never emits
+  them
 - Prompt text from the `prompt` session hook
 - Response preview from `stop`
 - Elapsed time for the current turn: starts at the last user prompt and keeps counting across responses, retries, and permission waits until OpenCode goes idle. Subagent runs (the `task` tool spawns them in child sessions) are part of the same turn — their lifecycle events are filtered out so they cannot stop the clock mid-turn or restart it after the turn ends
 
+### Session titles
+
+- Titles arrive through the bridge: `session.created` sends the initial title
+  and `session.renamed` / `session.updated` updates carry renames; both
+  forward as a `session-title` hook event that writes `@pane_session_title`
+- As a self-healing path, the sidebar also polls OpenCode's `opencode.db`
+  session store every ~10 s, so renames the bridge missed still show up
+
 ### Attention cues
 
-- Waiting status + wait reason from `permission.asked` and `form.created` (OpenCode 2 surfaces the `question` tool as a form)
-- The wait clears when OpenCode emits `permission.replied` / `form.replied` / `form.cancelled`. While a prompt is open the pane stays `waiting` even if a parallel tool call finishes, so the cue cannot be missed
+- Waiting status + wait reason from `permission.asked` (`permission`) and
+  `question.asked` (`question`)
+- The wait clears when OpenCode emits `permission.replied` / `question.replied`
+  / `question.rejected` — the bridge re-submits an empty prompt so the pane
+  returns to running. While a prompt is open the pane stays `waiting` even if
+  a parallel tool call finishes, so the cue cannot be missed
 - API failure reason from `session.execution.failed`
 - `notification` desktop alerts for permission and question prompts
 
@@ -38,7 +53,7 @@ surface is similar to Codex but with a different event source.
 | Background shell state     | OpenCode does not currently document a background Bash flag |
 | Task progress counter      | The bridge does not map a task-progress event |
 | Sub-agent tree             | OpenCode does not emit Claude-style sub-agent hooks |
-| Worktree lifecycle tracking | OpenCode does not emit `WorktreeCreate` / `WorktreeRemove` |
+| Worktree lifecycle tracking | The `WorktreeCreate` / `WorktreeRemove` hooks no longer exist in the plugin (see [Worktrees](/tmux-agent-sidebar/features/worktree/)) |
 
 ## Setup
 

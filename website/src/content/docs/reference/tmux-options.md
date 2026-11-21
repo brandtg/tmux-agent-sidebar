@@ -19,8 +19,9 @@ Most options must be set **before** loading the plugin in your `tmux.conf`. Colo
 | `@sidebar_worktree_windows`      | `off`   | Repo-mode window level: the worktree counterpart of `@sidebar_session_windows` — when the panel is grouped by `repo`, each window's rows render under a muted `index:name` header (the `Repo > Window > agent|process` hierarchy). The header takes the accent color while a pane in that window holds the terminal. Set it in tmux.conf; there is no runtime toggle |
 | `@sidebar_worktree_titles`       | `off`   | Title agent rows by the linked worktree they work in: a session without a user-given name (`/rename`) shows the worktree's name instead of the agent's auto-derived one (Claude's `<dir>-<hex>`), and the branch line then shows just the branch. Sessions outside a worktree keep the agent label. Read on every sync; there is no runtime toggle |
 | `@sidebar_preview_lines`         | `2`     | Maximum lines (1–10) for the agent message preview — the prompt / response body wrapped under the status row. Set `3` for the older taller preview |
-| `@sidebar_default_compact_view`  | `off`   | Whether a newly opened sidebar starts in compact mode — one line per agent. Toggle live with `c` inside the sidebar; the toggle syncs across open sidebars but is not restored on reopen |
-| `@sidebar_default_todo_hide_completed` | `off` | Whether a newly opened sidebar starts with the completed TODO section collapsed in the manual TODO panel (opened with `t`). By default completed items stay visible, struck through at the bottom. Toggle live with `H` while the panel has focus; the setting syncs across open sidebars |
+| `@sidebar_default_compact_view`  | `off`   | Whether a newly opened sidebar starts in compact mode — one line per agent. Toggle live with `c` inside the sidebar; the toggle syncs across open sidebars and is restored on reopen — once any sidebar has toggled, the shared value wins over this default |
+| `@sidebar_default_show_windows` | `off` | Whether a newly opened sidebar starts with non-agent panes listed (the `w` toggle). Toggle live with `w`; the toggle syncs across open sidebars and is restored on reopen |
+| `@sidebar_default_todo_hide_completed` | `on` | Whether a newly opened sidebar starts with the completed TODO section collapsed in the manual TODO panel (opened with `t`). The bundled `agent-sidebar.conf` seeds this on, so completed items start hidden (unhidden they render struck through at the bottom). Toggle live with `H` while the panel has focus; the setting syncs across open sidebars |
 | `@sidebar_default_todo_visible` | `off` | Whether a newly opened sidebar starts with the manual TODO panel open. Toggle live with `t`; once any sidebar has toggled, the shared value wins |
 | `@sidebar_todo_scope`            | `global` | Whether the TODO panel's open/closed state is shared across every sidebar (`global`) or kept per sidebar (`local`). The item list itself is always shared through `~/.local/state/tmux-agent-sidebar/todos.txt` |
 | `@sidebar_auto_create`           | `on`    | Auto-create the sidebar on new windows and sessions (set `off` to disable). Consulted at window/session-create time, and only while no `@sidebar_mode` is recorded — a toggle-all sweep overrides it until the next toggle-all |
@@ -45,11 +46,13 @@ Most options must be set **before** loading the plugin in your `tmux.conf`. Colo
 
 | Option                            | Default         | What it paints                                                    |
 | --------------------------------- | --------------- | ----------------------------------------------------------------- |
-| `@sidebar_color_running`          | `114`&nbsp;(green)   | Running/background pane status and the done chyron flash           |
-| `@sidebar_color_waiting`          | `221`&nbsp;(yellow)  | Waiting pane status and the waiting chyron flash, version banner  |
+| `@sidebar_color_running`          | `114`&nbsp;(green)   | Running and background pane status text                             |
+| `@sidebar_color_waiting`          | `221`&nbsp;(yellow)  | Waiting pane status text, the `ⓘ` menu-button label, and the notification attention flag |
 | `@sidebar_color_idle`             | `110`&nbsp;(soft blue) | Idle pane status                                                |
-| `@sidebar_color_error`            | `167`&nbsp;(soft red) | Error pane status and the failed chyron flash                    |
+| `@sidebar_color_error`            | `167`&nbsp;(soft red) | Error pane status text                    |
 | `@sidebar_color_filter_inactive`  | `245`&nbsp;(mid gray) | Resting chyron text and dimmed metadata                          |
+
+The done / waiting / failed chyron flash — the banner that fires when a turn finishes or needs attention — uses fixed built-in color ramps and does not follow these options; they paint row text only.
 
 ## Structural colors
 
@@ -98,6 +101,16 @@ Most options must be set **before** loading the plugin in your `tmux.conf`. Colo
 | `@sidebar_color_diff_added`     | `114`&nbsp;(green)      | Ahead arrows        |
 | `@sidebar_color_diff_deleted`   | `174`&nbsp;(terracotta) | Behind arrows       |
 
+## Row markers and reserved colors
+
+| Option                                | Default              | What it paints      |
+| ------------------------------------- | -------------------- | ------------------- |
+| `@sidebar_color_flag`                 | `208`&nbsp;(orange)  | Left-gutter marker on flagged rows (the `f` toggle) — wins over the active-pane accent |
+| `@sidebar_color_commit_hash`          | `221`&nbsp;(yellow)  | Reserved — parsed but not rendered yet |
+| `@sidebar_color_file_change`          | `221`&nbsp;(yellow)  | Reserved — parsed but not rendered yet |
+| `@sidebar_color_pr_link`              | `117`&nbsp;(light blue) | Reserved — parsed but not rendered yet |
+| `@sidebar_color_activity_timestamp`   | `109`&nbsp;(teal)    | Reserved — parsed but not rendered yet |
+
 ## Section titles
 
 | Option                                | Default      | What it paints      |
@@ -115,7 +128,7 @@ palette at once:
 
 | Value   | Icons                                                                                          |
 | ------- | ---------------------------------------------------------------------------------------------- |
-| `nerd`  | Nerd Fonts glyphs (`nf-fa-bars`, `nf-fa-circle`, `nf-fa-bullseye`, `nf-fa-adjust`, `nf-fa-circle-o`, `nf-fa-times`, `nf-fa-circle-thin`) — fitted to the cell by the patched font, so they don't overflow |
+| `nerd`  | Nerd Fonts glyphs (`nf-fa-circle` running, `nf-fa-bullseye` background, `nf-fa-adjust` waiting, `nf-fa-circle-o` idle, `nf-fa-times` error, `nf-fa-circle-thin` unknown, `nf-fa-check` done) — fitted to the cell by the patched font, so they don't overflow |
 | `ascii` | Plain ASCII (`=` `*` `+` `~` `-` `x` `.`) — renders identically in every font                   |
 
 Per-icon options below always win over the preset.
@@ -138,6 +151,15 @@ Written and maintained by the plugin itself; no need to touch them.
 | ------------------------------- | ------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
 | `@sidebar_last_window_width`    | window  | Last `window_width` observed by the `maintain-width` hook, so the auto-hide/restore decisions only fire on an actual crossing of the popup threshold |
 | `@sidebar_auto_hidden`          | window  | Set after the `maintain-width` auto-hide closes a window's sidebar, cleared by every other close path; the same hook's restore direction reopens the split only while it is set |
+| `@sidebar_saved_layout`         | window  | Layout snapshot taken before the sidebar split; replayed when the sidebar pane closes so the window's original arrangement returns |
+| `@sidebar_pid`                  | pane    | PID of the running sidebar process — the focus hook signals only panes whose PID is alive |
+| `@sidebar_cursor`               | global  | Shared cursor row, written (debounced) as the selection moves and adopted at startup so every sidebar reopens on the same row |
+| `@sidebar_repo_filter`          | global  | Shared repo filter — the active filter persists across sidebars and reopen |
+| `@sidebar_compact`              | global  | Shared compact-mode value written by the `c` toggle |
+| `@sidebar_show_windows`         | global  | Shared other-windows value written by the `w` toggle |
+| `@sidebar_collapsed_groups`     | global  | JSON array of collapsed group keys written by `z` / `Z` |
+| `@sidebar_todo_visible`         | global  | Shared TODO-panel visibility written by the `t` toggle (`@sidebar_todo_scope global` only) |
+| `@sidebar_todo_hide_completed`  | global  | Shared hide-completed value written by the `H` toggle |
 
 ## Example config
 

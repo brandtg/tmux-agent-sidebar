@@ -30,7 +30,8 @@ Claude Code is the reference agent for the sidebar — every feature is wired th
 ### Git and worktrees
 
 - Branch display, updated dynamically via `CwdChanged`
-- PR number (needs `gh` CLI)
+- Worktree label when the session runs in a linked worktree — sidebar-spawned
+  or manual (resolved from the hook payload or the pane's live directory)
 
 ### Notifications
 

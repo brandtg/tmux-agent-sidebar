@@ -16,6 +16,8 @@ with a few Hermes-specific gaps.
 - Prompt text from `pre_llm_call`'s `user_message`
 - Response preview from `post_llm_call`'s `assistant_response`
 - Elapsed time for the current turn
+- Background shell state: a detached `terminal(background=true)` spawn marks
+  the pane `background` until the process exits (tracked by PID)
 
 ### Attention cues
 
@@ -47,10 +49,9 @@ with a few Hermes-specific gaps.
 | Feature                     | Why |
 | --------------------------- | --- |
 | Permission badge            | Hermes payloads carry no permission-mode field |
-| Background shell state      | Hermes background processes have no sidebar-visible flag |
 | API failure reason          | No `StopFailure` equivalent is wired (`api_request_error` is per-provider-attempt, too noisy) |
 | Task progress counter       | Hermes has no todo-style tool feeding the progress display |
-| Worktree lifecycle tracking | Hermes does not emit worktree create/remove hooks |
+| Worktree lifecycle tracking | The `WorktreeCreate` / `WorktreeRemove` hooks no longer exist in the plugin (see [Worktrees](/tmux-agent-sidebar/features/worktree/)) |
 
 Note that `on_session_end` fires after every turn and is deliberately not
 wired; `on_session_finalize` drives cleanup instead. Crashes and killed panes

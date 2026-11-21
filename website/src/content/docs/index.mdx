@@ -3,7 +3,7 @@ title: tmux-agent-sidebar
 description: tmux-agent-sidebar — one tmux sidebar that tracks every Claude Code, Codex, and OpenCode pane across every session and window. See status, background shells, prompts, Git state, activity, and worktrees without switching windows.
 template: splash
 hero:
-  tagline: 'Every <span class="hero-agent"><img src="/tmux-agent-sidebar/brands/claude.ico" alt="" aria-hidden="true" width="16" height="16" />Claude Code</span>, <span class="hero-agent"><img src="/tmux-agent-sidebar/brands/codex.png" alt="" aria-hidden="true" width="16" height="16" />Codex</span>, and <span class="hero-agent"><img src="/tmux-agent-sidebar/brands/opencode.svg" alt="" aria-hidden="true" width="16" height="20" />OpenCode</span> pane across every tmux session and window — status, background shells, prompts, Git, and activity in one sidebar.'
+  tagline: 'Every <span class="hero-agent"><img src="/tmux-agent-sidebar/brands/claude.ico" alt="" aria-hidden="true" width="16" height="16" />Claude Code</span>, <span class="hero-agent"><img src="/tmux-agent-sidebar/brands/codex.png" alt="" aria-hidden="true" width="16" height="16" />Codex</span>, <span class="hero-agent"><img src="/tmux-agent-sidebar/brands/opencode.svg" alt="" aria-hidden="true" width="16" height="20" />OpenCode</span>, Hermes, and Antigravity pane across every tmux session and window — status, background shells, prompts, Git, and activity in one sidebar.'
   image:
     alt: tmux-agent-sidebar screenshot
     file: ../../assets/captures/hero.png
@@ -56,9 +56,11 @@ install wizard downloads a pre-built binary or builds from source.
 Next, wire up your agent hooks — [Claude Code](/tmux-agent-sidebar/getting-started/claude-code/)
 installs as a plugin, [Codex](/tmux-agent-sidebar/getting-started/codex/) is a
 one-paste setup inside its own pane, [OpenCode](/tmux-agent-sidebar/getting-started/opencode/)
-uses the bundled plugin bridge, and [Hermes](/tmux-agent-sidebar/getting-started/hermes/)
-and [Antigravity](/tmux-agent-sidebar/getting-started/antigravity/) merge a generated hook
-block into their configs.
+uses the bundled plugin bridge, [Hermes](/tmux-agent-sidebar/getting-started/hermes/)
+merges a generated hook block into its config, and
+[Antigravity](/tmux-agent-sidebar/getting-started/antigravity/) is wired
+automatically on every plugin load (the manual `hooks.json` merge is the
+fallback).
 
 This is a fork of [hiroppy/tmux-agent-sidebar](https://github.com/hiroppy/tmux-agent-sidebar) —
 see [about this fork](/tmux-agent-sidebar/getting-started/fork/) for what's different and why.

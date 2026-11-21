@@ -44,7 +44,9 @@ click drops a menu with the notices sections — new version,
 `Plugin / claude`, missing hooks with per-agent `[copy]` / `[prompt]`
 buttons — above a `Repos` section listing the repo filter. With no
 notice, the menu is just the repo list. `j` / `k` and `Enter` navigate
-the repo list; the notice rows are click-to-copy.
+the repo list; the notice rows are click-to-copy. The header's left edge
+holds a `☰` button that opens the fullscreen agent overview grid — the
+same view as the `o` key.
 
 ### Search
 
@@ -61,7 +63,9 @@ query, so leaving the sidebar always returns the list to its unfiltered state.
 `a` cycles to the next row that needs attention, `g` / `G` jump to the top and
 bottom, and `[` / `]` jump between group headers. `z` collapses the selected
 group to a single header line (its waiting / error segments collapse into the
-badge) and `Z` expands every collapsed group. `s` toggles grouping between
+badge) and `Z` folds or expands every group in one key: from a fully
+expanded list it collapses all, and with anything folded it expands all.
+`s` toggles grouping between
 repository and tmux session; the choice is written to `@sidebar_group_by` and
 shared by every open sidebar.
 
@@ -74,6 +78,7 @@ shared by every open sidebar.
 - `◐` waiting
 - `○` idle
 - `✕` error
+- `·` unknown — the pane has no recognizable status value yet
 
 When multiple signals compete on the same pane, the sidebar resolves them in this order:
 
