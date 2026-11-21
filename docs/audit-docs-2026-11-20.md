@@ -13,6 +13,29 @@ verification (noted in Appendix B).
 
 Ground truth: main @ 8a4aa7c, v1.4.1.
 
+## Handoff notes for the next session
+
+This report is the plan of record; work happens in this worktree
+(~/Projects/brandtg/brandtg/audit-docs). A duplicate uncommitted copy of this file may
+sit in the main checkout's docs/ — this committed copy is authoritative, and the main
+one can be deleted.
+
+- This is a snapshot: every finding was verified against main @ 8a4aa7c (v1.4.1). If
+  code has moved since, re-verify any High finding before editing the doc it describes.
+- Website content is Markdown + MDX: the four features pages are .mdx, everything else
+  under website/src/content/docs/ is .md. Globs for *.md alone will miss them (this
+  fooled one audit lane).
+- Verify the website pass with npm run build in website/ (node_modules is symlinked at
+  the repo root; CI runs the same build). No astro check script exists — the build is
+  the gate.
+- Verify the state-management.md rewrite against the module map in AGENTS.md
+  (src/state.rs + src/state/). Fix the three stale src comments named in the
+  cross-cutting note in the same commit as the doc.
+- Open decisions encoded in Part 3: delete vs docs/history/ for the three archive
+  candidates; whether to fold the nvim handoff's UI-contract bullets into
+  state-management.md before deleting it; when to flip deploy-website.yml from
+  workflow_dispatch to push (only after Pages is enabled on the repo).
+
 ## Summary
 
 - Audited: 38 documents (21 website pages, 17 docs/ files) plus astro.config.mjs and the
