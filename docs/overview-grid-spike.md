@@ -1,7 +1,8 @@
 # Agent Overview Grid — Findings and Spike Design
 
 Date: 2026-11-15
-Status: spike (exploratory, not wired into the plugin yet)
+Status: shipped — the `overview` subcommand and grid popup are wired in
+(opened with `o`, the `☰` header button, and documented in the help overlay)
 
 ## Goal
 
