@@ -368,6 +368,12 @@ always. Cheap either way; the flag is more honest about the invariant.
 
 ## F-7. `last_globals_sync` is reset unconditionally, including on a failed fetch
 
+Status (2026-11-21): fixed as proposed, both arms. The clock restarts only when a map was
+actually applied: the `Some(opts)` arm resets on fold; the failed-worker-fetch arm now goes
+through `try_get_all_global_options` (its honest failure signal) via a bool-returning
+`reload_shared_options_without_cursor`, and resets only when tmux answered. A broken `show -g`
+leaves the 5 s floor running, so the next tick retries instead of buying a full silence.
+
 In the reload branch (src/app.rs:278):
 
     last_globals_sync = std::time::Instant::now();

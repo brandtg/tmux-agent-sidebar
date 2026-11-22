@@ -216,10 +216,26 @@ pub fn run(
             if reloaded {
                 let previous_group_by = state.global.group_by;
                 match &raw.global_options {
-                    Some(opts) => state.global.apply_shared_options_without_cursor(opts),
-                    None => state.global.reload_shared_options_without_cursor(),
+                    Some(opts) => {
+                        state.global.apply_shared_options_without_cursor(opts);
+                        // The clock restarts only on a sync that actually
+                        // delivered a map. The None arm below is the
+                        // failed-`show -g` path: restarting the 5 s floor
+                        // there means the very event that proves the
+                        // fetch is broken buys itself the full silence,
+                        // so leave it running and let the next tick retry
+                        // immediately (audit 2026-11-21 F-7).
+                        last_globals_sync = std::time::Instant::now();
+                    }
+                    // The direct read gets the honest failure signal
+                    // from `try_get_all_global_options`: only a tmux that
+                    // actually answered restarts the floor.
+                    None => {
+                        if state.global.reload_shared_options_without_cursor() {
+                            last_globals_sync = std::time::Instant::now();
+                        }
+                    }
                 }
-                last_globals_sync = std::time::Instant::now();
                 // Group names are mode-specific (repo names vs session
                 // names). A collapse set from the previous mode would
                 // otherwise hide an unrelated group that happens to share

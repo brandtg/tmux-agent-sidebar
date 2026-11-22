@@ -548,10 +548,16 @@ impl GlobalState {
     /// direct-spawn twin of the worker-fetched fold in
     /// [`Self::apply_shared_options_without_cursor`], used when a window
     /// regains visibility without a globals-bearing snapshot in hand.
-    /// Never adopts the shared cursor (see there for why).
-    pub fn reload_shared_options_without_cursor(&mut self) {
-        let opts = tmux::get_all_global_options();
+    /// Never adopts the shared cursor (see there for why). Returns
+    /// whether tmux actually answered: a failed `show -g` reports false
+    /// so the caller does not restart the resync floor on a sync that
+    /// synced nothing (audit 2026-11-21 F-7).
+    pub fn reload_shared_options_without_cursor(&mut self) -> bool {
+        let Some(opts) = tmux::try_get_all_global_options() else {
+            return false;
+        };
         self.apply_shared_options_without_cursor(&opts);
+        true
     }
 
     /// Parse `@sidebar_default_compact_view` into the landing compact
