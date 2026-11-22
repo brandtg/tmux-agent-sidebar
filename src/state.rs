@@ -115,7 +115,10 @@ pub struct AppState {
     /// keeps the cursor line inside a closed fold, so `z` keeps
     /// toggling the right fold. Set when a fold takes the cursor's
     /// group; cleared by `rebuild_row_targets` the moment the cursor is
-    /// back on a visible row. Transient, like the cursor itself.
+    /// back on a visible row, and across an empty list it survives only
+    /// while the emptiness is fold-made (a filter- or search-emptied
+    /// list clears it — audit 2026-11-21 F-13). Transient, like the
+    /// cursor itself.
     pub collapsed_cursor_group: Option<String>,
     /// Manual TODO list panel: shared item list (backed by a file) plus
     /// selection and add-line buffer. Panel visibility follows the shared

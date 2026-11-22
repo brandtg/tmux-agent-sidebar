@@ -584,6 +584,19 @@ Proposed change: `queue_cursor_save()` in `confirm_repo_popup` after the rebuild
 
 ## F-13. The empty-list branch of the rebuild preserves a stale parked group
 
+Status (2026-11-21): fixed on the proposed rule. `rebuild_row_targets` now records *why*
+groups dropped out (folded away vs filtered away — repo filter miss, or a visible group a
+search emptied) and the `len == 0` exit keeps `collapsed_cursor_group` only while the
+emptiness is fold-made (`folded_away && !filtered_away`); any filter contribution — or no
+groups at all — clears it, so a park hidden by a filter can no longer ride one tick past its
+usefulness and die silently on the next refill. The `len > 0` exit is unchanged. Four new
+tests in src/state/layout.rs pin survive/clear/mixed/no-groups; the field's doc comment and
+the `collapsed_cursor_group` row in docs/state-management.md state the rule. Note the
+residual from the audit's named sequence stays real: a tick where a *new* (unfolded) group
+refills the list still clears the park via the `len > 0` exit — the audit accepted that exit
+as correct ("the cursor ends up on a visible row from here on"), and `z` re-parks from the
+live cursor from then on.
+
 `rebuild_row_targets` has two exits and they disagree about `collapsed_cursor_group`:
 
 - `len == 0` (src/state/layout.rs:276-285): reset `selected_pane_row = 0` and return,
