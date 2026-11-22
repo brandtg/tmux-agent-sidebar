@@ -542,6 +542,11 @@ act on: today, a change to one side's filtering has to be reasoned about twice.
 
 ## F-11. Two stale lines in docs/state-management.md about the synchronous refresh
 
+Status (2026-11-21): fixed as proposed. Both sentences now read "runs only at startup; the
+`s` regroup requests a worker snapshot via `snapshot_now` and folds it on the next tick."
+Verified against source: `refresh()` has exactly one caller (src/app/setup.rs) and the `s`
+handler sets `snapshot_now` (src/app/input.rs).
+
 docs/state-management.md:67-68: "The synchronous `refresh()` runs only at startup and on an
 explicit `s` regroup." docs/state-management.md:229-231 repeats it inside the data-flow
 diagram.

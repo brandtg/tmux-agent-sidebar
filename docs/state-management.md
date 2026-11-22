@@ -69,8 +69,9 @@ persisted to `@sidebar_cursor`.
 Written by `cli/hook.rs` on agent events, read back every **1 second** by the
 snapshot worker's single `tmux list-panes -a` query (`fetch_pane_listing`)
 and folded into state on the render thread (`apply_session_refresh` →
-`apply_snapshot`). The synchronous `refresh()` runs only at startup and on
-an explicit `s` regroup.
+`apply_snapshot`). The synchronous `refresh()` runs only at startup; the `s`
+regroup requests a worker snapshot via `snapshot_now` and folds it on the
+next tick.
 
 Each pane's runtime data is split into two buckets:
 
@@ -231,8 +232,9 @@ TUI main loop (app::run in app.rs; submodules app/{setup,workers,input,render})
   → every 1s: SnapshotRequest → snapshot_poll_loop (app/workers.rs)
     → fetch_pane_listing() (tmux.rs) ← reads @pane_* via `tmux list-panes -a`
     → apply_session_refresh() / apply_snapshot() (state/refresh.rs)
-      (the synchronous refresh() runs only at startup and on an explicit
-       `s` regroup)
+      (the synchronous refresh() runs only at startup; the `s` regroup
+       requests a worker snapshot via `snapshot_now` and folds it on the
+       next tick)
     → group_panes_by_repo() (group.rs)
     → rebuild_row_targets()          ← applies GlobalState filters
     → refresh_task_progress()        ← updates PaneRuntimeState.task_progress
