@@ -812,7 +812,11 @@ impl AppState {
         {
             self.jump_to_window(&session_name, window_index);
             // Same Panes-focus rule as the group header above: the
-            // click acted inside the agents panel.
+            // click acted inside the agents panel. No cursor save, and
+            // no cursor move to save — window headers are client
+            // navigation, not selection; the destination window's
+            // sidebar owns and reconciles its own cursor
+            // (docs/state-management.md; audit 2026-11-21 F-14).
             if self.todos.editing.is_none() && self.todos.adding.is_none() {
                 self.focus_state.focus = Focus::Panes;
             }

@@ -43,7 +43,12 @@ window's list — the startup pass lands it on the window's context pane
 instead (when that pane is unknown or filtered out, the adopted row rides
 along, which is the intended landing behavior). A focus event is not a
 user choice, so the selection is not
-persisted to `@sidebar_cursor`.
+persisted to `@sidebar_cursor`. Window headers (the `index:name` rows under
+a group title) are client-navigation, not selection: they map to `None` in
+`line_to_row`, `jump_to_window` deliberately does not touch the cursor, and
+their click persists nothing on purpose — it switches the tmux client and
+stamps `focus_written_at`; the destination window's own sidebar owns its
+cursor and reconciles it on the resulting focus event, in its own process.
 
 | Field | Tmux Variable | Update Trigger | Description |
 |-------|--------------|----------------|-------------|

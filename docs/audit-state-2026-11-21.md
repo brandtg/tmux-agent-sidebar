@@ -624,6 +624,12 @@ that, document that `z` is inert after a filter-empties-then-refills cycle.
 
 ## F-14. Window-header clicks and keyboard navigation disagree about the cursor
 
+Status (2026-11-21): documented, as proposed. docs/state-management.md now records next to
+the focus-event note that window headers are client-navigation, not selection, that
+`jump_to_window` does not touch the cursor and their clicks persist nothing on purpose, and
+that the destination window's sidebar owns its cursor. The click site in
+src/state/layout.rs carries a pointer to that decision.
+
 Window headers (`index:name` under a group title, gated on
 `@sidebar_session_windows` for session mode and `@sidebar_worktree_windows` for repo mode,
 src/ui/panes/row_collector.rs:325-331) are not rows: they map to `None` in `line_to_row`, so
