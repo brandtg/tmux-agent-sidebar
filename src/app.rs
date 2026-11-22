@@ -188,6 +188,64 @@ pub fn run(
         if let Ok(raw) = snapshot_rx.try_recv() {
             snapshot_in_flight = false;
             let previous_sidebar_focused = state.focus_state.sidebar_focused;
+            // Reload shared global options (compact, filters) when the
+            // tick was signal-driven or on the periodic resync — the
+            // request asked the worker to fetch them, because a broadcast
+            // from another sidebar has to land on *inactive* instances
+            // too (those are exactly the stale ones) — and when an
+            // inactive window regains visibility (≥2 inactive ticks) as
+            // the missed-signal safety net. When globals rode a failed
+            // `show -g` (`globals_requested` without a map) the reload
+            // runs directly instead of being silently skipped: the
+            // signal that asked for this sync must not die here.
+            // The shared cursor is deliberately NOT adopted here: an index
+            // written against another window's list is meaningless in this
+            // one, and while the sidebar is focused it would drag the
+            // visible selection highlight onto an unrelated agent.
+            // Adoption runs *ahead* of the snapshot fold (audit
+            // 2026-11-21 F-6): adopting afterwards meant the fold's
+            // `rebuild_row_targets` grouped and filtered with last-tick's
+            // options and a second rebuild on the same tick existed
+            // purely to undo it. With the values in place first, the
+            // fold's single pass is correct. The window-active trigger
+            // reads the last applied value — the fold updates it below —
+            // so that net fires at worst one tick late.
+            let reloaded = raw.globals_requested
+                || raw.global_options.is_some()
+                || (state.focus_state.window_active && window_inactive_count >= 2);
+            if reloaded {
+                let previous_group_by = state.global.group_by;
+                match &raw.global_options {
+                    Some(opts) => state.global.apply_shared_options_without_cursor(opts),
+                    None => state.global.reload_shared_options_without_cursor(),
+                }
+                last_globals_sync = std::time::Instant::now();
+                // Group names are mode-specific (repo names vs session
+                // names). A collapse set from the previous mode would
+                // otherwise hide an unrelated group that happens to share
+                // a name, so start the new mode fully expanded. The mode
+                // changer persists the cleared set when it toggles; an
+                // observer only writes when the shared option still
+                // carries the previous mode's names — the changer's clear
+                // did not land and the first successful observer repairs
+                // it. When tmux already holds the cleared set the sync
+                // adopted it, and stamping the marker locally keeps the
+                // echo guard honest without one shared write and one
+                // broadcast per observing sidebar per `s` press (audit
+                // 2026-11-21 F-3).
+                if state.global.group_by != previous_group_by {
+                    if state.global.shared_collapsed_still_folded() {
+                        state.global.persist_cleared_collapsed_groups();
+                    } else {
+                        state.global.clear_collapsed_groups_local();
+                    }
+                    state.collapsed_cursor_group = None;
+                }
+            }
+            // Whether this tick's snapshot was applied (the fold ran and
+            // rebuilt the targets). Captured before the match below
+            // consumes `panes_output`.
+            let folded = raw.panes_output.is_some();
             let is_window_active = match raw.panes_output {
                 Some(output) => {
                     state.apply_session_refresh(&output, raw.process_snapshot, raw.fetched_at)
@@ -252,55 +310,16 @@ pub fn run(
                 let _ = git_info_tx.send(paths);
             }
             needs_redraw = true;
-            // Reload shared global options (compact, filters) when the
-            // tick was signal-driven or on the periodic resync — the
-            // request asked the worker to fetch them, because a broadcast
-            // from another sidebar has to land on *inactive* instances
-            // too (those are exactly the stale ones) — and when an
-            // inactive window regains visibility (≥2 inactive ticks) as
-            // the missed-signal safety net. When globals rode a failed
-            // `show -g` (`globals_requested` without a map) the reload
-            // runs directly instead of being silently skipped: the
-            // signal that asked for this sync must not die here.
-            // The shared cursor is deliberately NOT adopted here: an index
-            // written against another window's list is meaningless in this
-            // one, and while the sidebar is focused it would drag the
-            // visible selection highlight onto an unrelated agent.
-            if raw.globals_requested
-                || raw.global_options.is_some()
-                || (is_window_active && window_inactive_count >= 2)
-            {
-                let previous_group_by = state.global.group_by;
-                match &raw.global_options {
-                    Some(opts) => state.global.apply_shared_options_without_cursor(opts),
-                    None => state.global.reload_shared_options_without_cursor(),
+            if reloaded {
+                // The fold rebuilt the targets with the options adopted
+                // at the head of this block; only a tick whose snapshot
+                // failed to apply (no fold) still needs the rebuild here
+                // — and its repo-filter flush (audit 2026-11-21 F-2)
+                // pairs with that rebuild.
+                if !folded {
+                    state.rebuild_row_targets();
+                    state.global.flush_pending_repo_filter_reset();
                 }
-                last_globals_sync = std::time::Instant::now();
-                // Group names are mode-specific (repo names vs session
-                // names). A collapse set from the previous mode would
-                // otherwise hide an unrelated group that happens to share
-                // a name, so start the new mode fully expanded. The mode
-                // changer persists the cleared set when it toggles; an
-                // observer only writes when the shared option still
-                // carries the previous mode's names — the changer's clear
-                // did not land and the first successful observer repairs
-                // it. When tmux already holds the cleared set the sync
-                // adopted it, and stamping the marker locally keeps the
-                // echo guard honest without one shared write and one
-                // broadcast per observing sidebar per `s` press (audit
-                // 2026-11-21 F-3).
-                if state.global.group_by != previous_group_by {
-                    if state.global.shared_collapsed_still_folded() {
-                        state.global.persist_cleared_collapsed_groups();
-                    } else {
-                        state.global.clear_collapsed_groups_local();
-                    }
-                    state.collapsed_cursor_group = None;
-                }
-                state.rebuild_row_targets();
-                // Shared-state owner: persist a stale repo-filter reset
-                // the rebuild recorded locally (audit 2026-11-21 F-2).
-                state.global.flush_pending_repo_filter_reset();
                 // The hide-completed setting may have changed in another
                 // sidebar; keep the TODO selection on a visible item. The
                 // panel's shared visibility may have changed too (another
@@ -322,7 +341,10 @@ pub fn run(
                 // reconciles the cursor on arrival. Parking the offset at
                 // the top here used to make the viewport jump back down
                 // to the preserved cursor on refocus when the context
-                // pane was unknown (audit 2026-11-16).
+                // pane was unknown (audit 2026-11-16). An open search is
+                // the one thing that moves the cursor here — and it moves
+                // it back to the pre-`/` position the search had
+                // displaced (audit 2026-11-21 F-5).
                 if !state.focus_state.sidebar_focused {
                     state.cancel_search();
                 }

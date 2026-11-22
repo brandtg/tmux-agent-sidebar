@@ -336,6 +336,17 @@ the re-anchor produced.
 
 ## F-6. `rebuild_row_targets` runs twice per tick, and the `w` toggle does it a third time
 
+Status (2026-11-21): fixed with a third shape — adopt-before-fold. The shared-option adoption
+(and the group-by observer branch) moved to the head of the snapshot block in src/app.rs,
+ahead of `apply_session_refresh`, so the fold's single rebuild already groups and filters
+with the values this tick adopted. The reload branch keeps a rebuild only for the case where
+the snapshot did not apply (failed `list-panes`, no fold), and the F-2 flush pairs with it.
+Side effects: a cross-instance `s` now regroups on the same tick (the fold regroups with the
+adopted `group_by` instead of one tick late), and the per-tick double rebuild is gone. The
+window-inactive reload trigger reads the last applied `window_active` — that net fires at
+worst one tick late, acceptable for a coarse safety net. The `w` toggle's inline rebuild is
+kept (immediate feedback; the next fold's rebuild is driven by new data).
+
 `apply_session_snapshot` ends with `rebuild_row_targets()` (src/state/refresh.rs:183). When
 the tick also carries a shared-option reload, the event loop calls it again
 (src/app.rs:291), immediately after `apply_shared_options_without_cursor`. Nothing between
