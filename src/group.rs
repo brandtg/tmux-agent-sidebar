@@ -372,9 +372,13 @@ impl<'a> GroupRow<'a> {
 /// window the agent panes (in pane order) first, then the non-agent
 /// rows (in pane order). Rows carrying no window position (unit-test
 /// panes) keep their input order, agents before windows.
-pub fn ordered_group_rows<'a>(
-    panes: &'a [&'a (PaneInfo, PaneGitInfo)],
-    windows: &'a [&'a OtherWindow],
+///
+/// The rows borrow the referents (`'a`), not the holding vectors
+/// (`'s`), so a [`GroupRowPlan`] can own the filtered vectors and the
+/// row order together.
+pub fn ordered_group_rows<'s, 'a>(
+    panes: &'s [&'a (PaneInfo, PaneGitInfo)],
+    windows: &'s [&'a OtherWindow],
 ) -> Vec<GroupRow<'a>> {
     let mut rows: Vec<GroupRow<'a>> = panes.iter().copied().map(GroupRow::Agent).collect();
     rows.extend(windows.iter().copied().map(GroupRow::Window));
@@ -383,6 +387,93 @@ pub fn ordered_group_rows<'a>(
         GroupRow::Window(w) => (w.session_name.as_str(), w.window_index, 1u8),
     });
     rows
+}
+
+/// One group's visibility decision — the single source of the
+/// row-index contract between the two consumers that must agree exactly:
+/// the cursor's target list (`AppState::rebuild_row_targets`) and the
+/// render pass (`ui::panes::row_collector::collect`). The cursor index
+/// is a position into the list the renderer draws, and `line_to_row`
+/// maps screen lines back into that same coordinate space, so the four
+/// rules — repo filter, fold, search (a group-name hit keeps the whole
+/// group, otherwise each row's own fields decide), and the group's
+/// window bucket under [`group_window_key`] when `show_windows` is on —
+/// have to be applied identically, or the selection renders on one row
+/// and activates another while clicks land on the pane above the
+/// pointer, silently. Both sides carried their own lowering of this
+/// query, and a change to one kept the other's tests green (audit
+/// 2026-11-21 F-10).
+#[derive(Debug)]
+pub struct GroupRowPlan<'a> {
+    /// The repo filter keeps the group at all (header and rows).
+    pub passes_repo_filter: bool,
+    /// The group is folded to its header row. The renderer still draws
+    /// the header — with the fold badge summarizing the filtered rows —
+    /// while the target list drops the group entirely.
+    pub collapsed: bool,
+    /// Agents surviving the search filter, in pane-encounter order.
+    pub filtered_panes: Vec<&'a (PaneInfo, PaneGitInfo)>,
+    /// The group's non-agent window rows surviving the search filter;
+    /// empty while `show_windows` is off. The fold badge's window
+    /// segment reads this directly.
+    pub matched_windows: Vec<&'a OtherWindow>,
+    /// The agreed row order: [`ordered_group_rows`] over the two vectors
+    /// above. This is the coordinate space both consumers share.
+    pub rows: Vec<GroupRow<'a>>,
+}
+
+/// Everything a [`GroupRowPlan`] needs beyond the group itself and the
+/// row matchers — built once per pass by each consumer.
+#[derive(Debug)]
+pub struct RowPlanContext<'f> {
+    pub repo_filter: &'f crate::state::RepoFilter,
+    pub collapsed_groups: &'f std::collections::HashSet<String>,
+    pub group_by: crate::state::GroupBy,
+    pub show_windows: bool,
+    pub all_windows: &'f IndexMap<String, Vec<OtherWindow>>,
+}
+
+/// Compute a [`GroupRowPlan`] for one group. The caller supplies the
+/// group-name search hit and the per-row matchers — both consumers pass
+/// the same lowered query through the `AppState::search_matches_*`
+/// helpers — so this function stays free of search state.
+pub fn plan_group_rows<'a, P, W>(
+    group: &'a RepoGroup,
+    ctx: &RowPlanContext<'a>,
+    group_name_hit: bool,
+    pane_matches: P,
+    window_matches: W,
+) -> GroupRowPlan<'a>
+where
+    P: Fn(&PaneInfo, &PaneGitInfo) -> bool,
+    W: Fn(&OtherWindow) -> bool,
+{
+    let filtered_panes: Vec<_> = group
+        .panes
+        .iter()
+        .filter(|(pane, git)| group_name_hit || pane_matches(pane, git))
+        .collect();
+    let matched_windows: Vec<_> = if ctx.show_windows {
+        ctx.all_windows
+            .get(&group_window_key(ctx.group_by, group))
+            .map(|windows| {
+                windows
+                    .iter()
+                    .filter(|window| group_name_hit || window_matches(window))
+                    .collect()
+            })
+            .unwrap_or_default()
+    } else {
+        Vec::new()
+    };
+    let rows = ordered_group_rows(&filtered_panes, &matched_windows);
+    GroupRowPlan {
+        passes_repo_filter: ctx.repo_filter.matches_group(&group.name),
+        collapsed: ctx.collapsed_groups.contains(&group.name),
+        filtered_panes,
+        matched_windows,
+        rows,
+    }
 }
 
 /// Last path segment of `path`, or the whole path when it has no
@@ -1564,6 +1655,116 @@ mod tests {
 
         let rows = ordered_group_rows(&pane_refs, &window_refs);
         assert_eq!(row_ids(&rows), vec!["%2", "%11", "%10", "%1"]);
+    }
+
+    #[test]
+    fn plan_group_rows_keeps_the_whole_group_on_a_name_hit() {
+        // Audit 2026-11-21 F-10: the four rules of the row-index
+        // contract live here, once. A group-name hit keeps every row
+        // regardless of the per-row matchers.
+        let group = RepoGroup {
+            name: "backend".into(),
+            has_focus: false,
+            panes: vec![
+                agent_pane("%1", "backend", 0),
+                agent_pane("%2", "backend", 1),
+            ],
+        };
+        let filter = crate::state::RepoFilter::All;
+        let collapsed = std::collections::HashSet::new();
+        let windows: IndexMap<String, Vec<OtherWindow>> = IndexMap::new();
+
+        let plan = plan_group_rows(
+            &group,
+            &RowPlanContext {
+                repo_filter: &filter,
+                collapsed_groups: &collapsed,
+                group_by: crate::state::GroupBy::Session,
+                show_windows: false,
+                all_windows: &windows,
+            },
+            true,
+            |_, _| false,
+            |_| false,
+        );
+        assert!(plan.passes_repo_filter);
+        assert!(!plan.collapsed);
+        assert_eq!(row_ids(&plan.rows), vec!["%1", "%2"]);
+    }
+
+    #[test]
+    fn plan_group_rows_filters_rows_buckets_windows_and_flags_the_fold() {
+        // A group-name miss falls back to each row's own fields; the
+        // window set comes from the group's `group_window_key` bucket
+        // under `show_windows`; the fold flag is part of the plan so
+        // both consumers read the same answer.
+        let group = RepoGroup {
+            name: "backend".into(),
+            has_focus: false,
+            panes: vec![
+                agent_pane("%1", "backend", 0),
+                agent_pane("%2", "backend", 1),
+            ],
+        };
+        let mut windows: IndexMap<String, Vec<OtherWindow>> = IndexMap::new();
+        windows.insert("backend".into(), vec![other_window("%10", "backend", 0)]);
+        let filter = crate::state::RepoFilter::All;
+        let mut collapsed = std::collections::HashSet::new();
+        collapsed.insert("backend".to_string());
+
+        let plan = plan_group_rows(
+            &group,
+            &RowPlanContext {
+                repo_filter: &filter,
+                collapsed_groups: &collapsed,
+                group_by: crate::state::GroupBy::Session,
+                show_windows: true,
+                all_windows: &windows,
+            },
+            false,
+            |pane, _| pane.pane_id == "%2",
+            |_| true,
+        );
+        assert!(plan.collapsed);
+        assert_eq!(plan.filtered_panes.len(), 1);
+        // The agreed order: window 0 (the non-agent row) before
+        // window 1's surviving agent.
+        assert_eq!(row_ids(&plan.rows), vec!["%10", "%2"]);
+    }
+
+    #[test]
+    fn plan_group_rows_respects_show_windows_off_and_the_repo_filter() {
+        let group = RepoGroup {
+            name: "backend".into(),
+            has_focus: false,
+            panes: vec![agent_pane("%1", "backend", 0)],
+        };
+        let mut windows: IndexMap<String, Vec<OtherWindow>> = IndexMap::new();
+        windows.insert("backend".into(), vec![other_window("%10", "backend", 0)]);
+        let filter = crate::state::RepoFilter::Repo("other".into());
+        let collapsed = std::collections::HashSet::new();
+
+        let plan = plan_group_rows(
+            &group,
+            &RowPlanContext {
+                repo_filter: &filter,
+                collapsed_groups: &collapsed,
+                group_by: crate::state::GroupBy::Session,
+                show_windows: false,
+                all_windows: &windows,
+            },
+            false,
+            |_, _| true,
+            |_| true,
+        );
+        assert!(
+            !plan.passes_repo_filter,
+            "a repo filter naming another group drops it wholesale"
+        );
+        assert!(
+            plan.matched_windows.is_empty(),
+            "no window rows while show_windows is off"
+        );
     }
 
     #[test]

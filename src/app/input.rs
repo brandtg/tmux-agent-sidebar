@@ -156,17 +156,25 @@ pub(super) fn handle_key_event(key: KeyEvent, state: &mut AppState) -> bool {
             KeyCode::Enter => state.finish_search(),
             KeyCode::Backspace => state.search_pop_char(),
             // Navigate the filtered list without leaving the input line.
+            // These move the cursor like every other binding, so they
+            // queue the shared save with it (audit 2026-11-21 F-5): the
+            // row the user is about to Enter on should be the row every
+            // other sidebar would show.
             KeyCode::Up => {
                 state.move_pane_selection(-1);
+                state.global.queue_cursor_save();
             }
             KeyCode::Down => {
                 state.move_pane_selection(1);
+                state.global.queue_cursor_save();
             }
             KeyCode::Char('n') if ctrl => {
                 state.move_pane_selection(1);
+                state.global.queue_cursor_save();
             }
             KeyCode::Char('p') if ctrl => {
                 state.move_pane_selection(-1);
+                state.global.queue_cursor_save();
             }
             KeyCode::Char('u') if ctrl => state.clear_search_query(),
             KeyCode::Char('w') if ctrl => state.search_pop_word(),
@@ -240,7 +248,12 @@ pub(super) fn handle_key_event(key: KeyEvent, state: &mut AppState) -> bool {
         // iteration later instead of on this keypress — the old inline
         // `refresh()` blocked the input thread on `list-panes` *and* the
         // process snapshot's `ps`, the worst single-keystroke stall in
-        // the app (audit 2026-11-16 J5).
+        // the app (audit 2026-11-16 J5). No inline `rebuild_row_targets`
+        // either: `repo_groups` still carries the previous mode's
+        // grouping (regrouping is the fold's job), so an inline rebuild
+        // would only re-anchor the cursor into a list about to be
+        // discarded. The one-iteration regroup lag is accepted (audit
+        // 2026-11-21 F-9 feedback half).
         KeyCode::Char('s') => {
             state.global.toggle_group_by();
             // Names are mode-specific; drop the parked cursor group too
@@ -248,6 +261,12 @@ pub(super) fn handle_key_event(key: KeyEvent, state: &mut AppState) -> bool {
             // new mode fully expanded.
             state.collapsed_cursor_group = None;
             state.global.persist_cleared_collapsed_groups();
+            // The cursor is a raw index into a list the whole reshape
+            // replaces; the fold re-anchors it and the shared option
+            // must catch up like under every other cursor-moving path
+            // (audit 2026-11-21 F-9). The debounce normally flushes
+            // after the regroup fold, persisting the re-anchored index.
+            state.global.queue_cursor_save();
             state.snapshot_now = true;
         }
         KeyCode::PageDown => page_scroll(state, 1),
@@ -291,7 +310,12 @@ pub(super) fn handle_key_event(key: KeyEvent, state: &mut AppState) -> bool {
         }
         KeyCode::Char('w') if !ctrl => {
             state.global.toggle_show_windows();
+            // Inserting or removing every window row reshapes the list;
+            // the rebuild re-anchors the cursor, and the shared option
+            // must catch up like under every other cursor-moving path
+            // (audit 2026-11-21 F-9).
             state.rebuild_row_targets();
+            state.global.queue_cursor_save();
         }
         KeyCode::Char('t') if !ctrl => {
             state.toggle_todo_panel();
@@ -443,7 +467,10 @@ fn handle_todo_key(key: KeyEvent, state: &mut AppState) -> bool {
         KeyCode::Char('c') if !ctrl => state.global.toggle_compact(),
         KeyCode::Char('w') if !ctrl => {
             state.global.toggle_show_windows();
+            // Rebuild re-anchors the reshaped list; the shared cursor
+            // must follow (audit 2026-11-21 F-9).
             state.rebuild_row_targets();
+            state.global.queue_cursor_save();
         }
         KeyCode::Char('?') => state.toggle_help_popup(),
         KeyCode::Char('/') => state.open_search(),

@@ -37,8 +37,18 @@ selects the row of the pane that held focus in this window just before the
 jump (`select_focused_context_row`), so the list opens on the agent matching
 the current tmux context — with the auto-scroll bringing that row into view.
 Popups get the same treatment at startup, pinned to the pane they were
-opened from. A focus event is not a user choice, so the selection is not
-persisted to `@sidebar_cursor`.
+opened from, and so does a pane-mode sidebar: it opens unfocused, so the
+shared cursor row it adopted is only a placeholder indexing another
+window's list — the startup pass lands it on the window's context pane
+instead (when that pane is unknown or filtered out, the adopted row rides
+along, which is the intended landing behavior). A focus event is not a
+user choice, so the selection is not
+persisted to `@sidebar_cursor`. Window headers (the `index:name` rows under
+a group title) are client-navigation, not selection: they map to `None` in
+`line_to_row`, `jump_to_window` deliberately does not touch the cursor, and
+their click persists nothing on purpose — it switches the tmux client and
+stamps `focus_written_at`; the destination window's own sidebar owns its
+cursor and reconciles it on the resulting focus event, in its own process.
 
 | Field | Tmux Variable | Update Trigger | Description |
 |-------|--------------|----------------|-------------|
@@ -64,8 +74,9 @@ persisted to `@sidebar_cursor`.
 Written by `cli/hook.rs` on agent events, read back every **1 second** by the
 snapshot worker's single `tmux list-panes -a` query (`fetch_pane_listing`)
 and folded into state on the render thread (`apply_session_refresh` →
-`apply_snapshot`). The synchronous `refresh()` runs only at startup and on
-an explicit `s` regroup.
+`apply_snapshot`). The synchronous `refresh()` runs only at startup; the `s`
+regroup requests a worker snapshot via `snapshot_now` and folds it on the
+next tick.
 
 Each pane's runtime data is split into two buckets:
 
@@ -131,12 +142,12 @@ Per-pane file-based state:
 | `focus_state.focused_pane_id` | Every 1s, plus immediately on user-initiated pane jumps | Currently focused agent pane |
 | `focus_state.proxy_focused_pane_id` | Every 1s, cleared immediately on user-initiated pane jumps | Agent pane standing in for the cursor while it sits on a non-agent pane whose row is hidden: the first agent sharing the cursor's window. Applied by the render layer only while the `w` toggle keeps window rows hidden |
 | `focus_state.sidebar_focused` | Every 1s | Whether sidebar pane itself has focus |
-| `focus_state.focus` | On user input | UI focus: `Panes` / `Todos`; input also triggers an immediate redraw so focus changes appear without waiting for the next poll tick |
+| `focus_state.focus` | On user input | UI focus: `Panes` / `Todos`; input also triggers an immediate redraw so focus changes appear without waiting for the next poll tick. `Todos` survives a sidebar blur/refocus — coming back restores the keyboard context the user left, the same philosophy as the preserved cursor; the release path is the panel closing (locally or via a shared-visibility adoption), which hands focus back to `Panes` |
 | `focus_state.prev_focused_pane_id` | Every 1s | Previous focused pane ID (for detecting focus changes) |
 | `now` | Every 1s | Current Unix epoch |
 | `scrolls.panes` | On user input / render | Agent list scroll position |
-| `search` | On user input | Per-sidebar `/` query and whether the input line is open. Not broadcast: the query is transient |
-| `collapsed_cursor_group` | On fold/unfold via `rebuild_row_targets` | Group that swallowed the cursor when every row is hidden behind folds; lets `z` keep resolving the right fold with nothing visible. Transient, like the cursor |
+| `search` | On user input | Per-sidebar `/` query and whether the input line is open. Not broadcast: the query is transient. The cursor the user had before `/` is captured on a fresh open and restored by pane id on Esc; a jump or a plain navigation move supersedes the capture |
+| `collapsed_cursor_group` | On fold/unfold via `rebuild_row_targets` | Group that swallowed the cursor when every row is hidden behind folds; lets `z` keep resolving the right fold with nothing visible. Across an empty list it survives only while the emptiness is fold-made — a repo-filter- or search-emptied list clears it, so a park hidden by a filter cannot silently die on the next refill. Transient, like the cursor |
 | `theme` | Once at startup | Color theme from tmux `@sidebar_color_*` variables |
 | `popup` | On user input / render | `PopupState` enum: `None` / `Repo` / `SpawnInput` / `Help` / `RemoveConfirm`. Enforces "at most one popup open" via the type system |
 | `layout` | Every frame (render) | `FrameLayout` sub-struct bundling the ephemeral fields the UI rewrites every frame for click hit-testing: `pane_row_targets`, `group_starts` (visible group headers and their first row, used by `[` / `]`), `line_to_row`, `toolbar_row`, `header_width`, `menu_button_col` (the merged `ⓘ` menu button in the header row), `repo_spawn_targets`, `spawn_remove_targets`, `group_header_targets` (fold toggles), `window_header_targets` (`index:name` rows jump the tmux client to that window), `hyperlink_overlays`, `todo_row_targets`, `todo_input_rect`, `todo_area`, `flash_rect` |
@@ -226,8 +237,9 @@ TUI main loop (app::run in app.rs; submodules app/{setup,workers,input,render})
   → every 1s: SnapshotRequest → snapshot_poll_loop (app/workers.rs)
     → fetch_pane_listing() (tmux.rs) ← reads @pane_* via `tmux list-panes -a`
     → apply_session_refresh() / apply_snapshot() (state/refresh.rs)
-      (the synchronous refresh() runs only at startup and on an explicit
-       `s` regroup)
+      (the synchronous refresh() runs only at startup; the `s` regroup
+       requests a worker snapshot via `snapshot_now` and folds it on the
+       next tick)
     → group_panes_by_repo() (group.rs)
     → rebuild_row_targets()          ← applies GlobalState filters
     → refresh_task_progress()        ← updates PaneRuntimeState.task_progress

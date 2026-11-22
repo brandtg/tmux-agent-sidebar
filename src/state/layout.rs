@@ -164,11 +164,17 @@ pub(super) fn point_in_rect(row: u16, col: u16, rect: ratatui::layout::Rect) -> 
 
 impl AppState {
     pub fn rebuild_row_targets(&mut self) {
-        // Reset stale repo filter if the repo no longer exists, and
-        // persist the reset back to tmux so fresh sidebar instances do
-        // not reload the dead repo name on startup. Uses the same match
-        // rule as the renderer (`matches_group`) so a bare name typed
-        // for a `⎇`-titled worktree group is not mistaken for stale.
+        // Reset stale repo filter if the repo no longer exists. The local
+        // reset must happen here — the list this frame renders is wrong
+        // otherwise — but the shared write is deferred to the snapshot
+        // fold / reload branch (see `flush_pending_repo_filter_reset`):
+        // this builder also runs from per-keystroke paths, and a tmux
+        // write from here lets one instance's momentarily-empty grouping
+        // flip the shared filter for everyone, per rebuild (audit
+        // 2026-11-21 F-2). Fresh sidebar instances still land clean, one
+        // tick later. Uses the same match rule as the renderer
+        // (`matches_group`) so a bare name typed for a `⎇`-titled
+        // worktree group is not mistaken for stale.
         let stale = matches!(self.global.repo_filter, RepoFilter::Repo(_))
             && !self
                 .repo_groups
@@ -176,7 +182,7 @@ impl AppState {
                 .any(|g| self.global.repo_filter.matches_group(&g.name));
         if stale {
             self.global.repo_filter = RepoFilter::All;
-            self.global.save_repo_filter();
+            self.global.mark_repo_filter_reset_pending();
         }
 
         // Remember which pane the cursor was on before the target list is
@@ -206,51 +212,54 @@ impl AppState {
         // Lowered once for the whole pass, mirroring row_collector::collect
         // (audit 2026-11-19 B6).
         let query_lower = self.search.lowercased_query();
+        // Single source for the four row-index rules, shared with
+        // `row_collector::collect` (audit 2026-11-21 F-10).
+        let plan_ctx = crate::group::RowPlanContext {
+            repo_filter: &self.global.repo_filter,
+            collapsed_groups: &self.global.collapsed_groups,
+            group_by: self.global.group_by,
+            show_windows: self.global.show_windows,
+            all_windows: &self.other_windows,
+        };
+        // The two exits must agree on `collapsed_cursor_group` (audit
+        // 2026-11-21 F-13). The park exists so `z` can resolve a fold
+        // when every row is hidden *behind folds* — it earns survival
+        // only from that. Track why groups dropped out this pass:
+        // folded away (park-worthy) versus filtered away by the repo
+        // filter or a search that emptied them (not park-worthy — a
+        // parked name behind a filter points into a hidden list, and the
+        // filter-empties-then-refills cycle cleared it silently a tick
+        // later anyway).
+        let mut folded_away = false;
+        let mut filtered_away = false;
         for group in &self.repo_groups {
-            if !self.global.repo_filter.matches_group(&group.name) {
+            // The per-row matchers are the same `search_matches_*` the
+            // renderer passes, over the same lowered query.
+            let plan = crate::group::plan_group_rows(
+                group,
+                &plan_ctx,
+                self.search_matches_group(&query_lower, group),
+                |pane, git| self.search_matches_pane(&query_lower, pane, git),
+                |window| self.search_matches_window(&query_lower, window),
+            );
+            if !plan.passes_repo_filter {
+                filtered_away = true;
                 continue;
             }
             // Collapsed groups render their header but no rows. They are
             // not selectable and contribute nothing to the target list or
             // the header counts.
-            if self.is_group_collapsed(&group.name) {
+            if plan.collapsed {
+                folded_away = true;
                 continue;
             }
-            // A group-name hit keeps every row in the group visible; a
-            // miss falls back to each row's own fields. This mirrors the
-            // renderer's rule in `row_collector::collect`.
-            let group_matches_search = self.search_matches_group(&query_lower, group);
-            let filtered_panes: Vec<_> = group
-                .panes
-                .iter()
-                .filter(|(pane, git)| {
-                    group_matches_search || self.search_matches_pane(&query_lower, pane, git)
-                })
-                .collect();
-
-            // The same window set as the renderer, so the target order
-            // mirrors the render order in `row_collector::collect` — the
-            // selection index is a position into `pane_row_targets`, and
-            // `row_index` counts rendered rows, so the two paths must
-            // agree on the order.
-            let matched_windows: Vec<&crate::group::OtherWindow> = if self.global.show_windows
-                && let Some(windows) = self
-                    .other_windows
-                    .get(&crate::group::group_window_key(self.global.group_by, group))
-                && !windows.is_empty()
-            {
-                windows
-                    .iter()
-                    .filter(|window| {
-                        group_matches_search || self.search_matches_window(&query_lower, window)
-                    })
-                    .collect()
-            } else {
-                Vec::new()
-            };
-
-            let rows = crate::group::ordered_group_rows(&filtered_panes, &matched_windows);
+            // The agreed row order — `ordered_group_rows` over the
+            // plan's filtered sets — is the coordinate space both this
+            // builder and `row_collector::collect` use, so the selection
+            // index and the rendered `row_index` cannot drift.
+            let rows = plan.rows;
             if rows.is_empty() {
+                filtered_away = true;
                 continue;
             }
             self.layout.group_starts.push(GroupStart {
@@ -276,9 +285,18 @@ impl AppState {
         if len == 0 {
             // No rows to select — reset the cursor so a later, larger view
             // cannot inherit a stale index and auto-scroll down to it. The
-            // parked group survives: with nothing visible it is the only
-            // way `z` can still resolve a fold.
+            // parked group survives only while the emptiness is fold-made:
+            // with everything behind folds the park is the only way `z`
+            // can still resolve a fold; when a filter or a search emptied
+            // the list (or there are no groups at all), the parked name
+            // belongs to a view that is not coming back on this list, and
+            // keeping it alive only set up the silent clear on the next
+            // refill (audit 2026-11-21 F-13).
             self.global.selected_pane_row = 0;
+            let fold_made = folded_away && !filtered_away;
+            if !fold_made {
+                self.collapsed_cursor_group = None;
+            }
             return;
         }
         // The cursor ends up on a visible row from here on, so a group
@@ -491,13 +509,13 @@ impl AppState {
                 self.collapsed_cursor_group = Some(name);
             }
             self.global.collapsed_groups.extend(visible);
-            self.global.save_collapsed_groups();
+            self.global.queue_collapsed_save();
             self.rebuild_row_targets();
             return true;
         }
         let parked = self.collapsed_cursor_group.clone();
         self.global.collapsed_groups.clear();
-        self.global.save_collapsed_groups();
+        self.global.queue_collapsed_save();
         self.rebuild_row_targets();
         if let Some(name) = parked
             && let Some(start) = self
@@ -546,7 +564,7 @@ impl AppState {
         if !self.global.collapsed_groups.remove(name) {
             self.global.collapsed_groups.insert(name.to_string());
         }
-        self.global.save_collapsed_groups();
+        self.global.queue_collapsed_save();
         self.rebuild_row_targets();
         if reopen_parked
             && let Some(start) = self
@@ -794,7 +812,11 @@ impl AppState {
         {
             self.jump_to_window(&session_name, window_index);
             // Same Panes-focus rule as the group header above: the
-            // click acted inside the agents panel.
+            // click acted inside the agents panel. No cursor save, and
+            // no cursor move to save — window headers are client
+            // navigation, not selection; the destination window's
+            // sidebar owns and reconciles its own cursor
+            // (docs/state-management.md; audit 2026-11-21 F-14).
             if self.todos.editing.is_none() && self.todos.adding.is_none() {
                 self.focus_state.focus = Focus::Panes;
             }
@@ -978,6 +1000,105 @@ mod tests {
         state.handle_mouse_click(2, 7);
         assert!(!state.is_group_collapsed("backend"));
         assert_eq!(state.layout.pane_row_targets.len(), 2);
+    }
+
+    #[test]
+    fn a_stale_repo_filter_reset_defers_its_shared_write() {
+        // Audit 2026-11-21 F-2: the rebuild resets the filter locally so
+        // this frame's list is right, but the tmux write is deferred to
+        // the flush on the shared-state owners' ticks — a rebuild from a
+        // keystroke or a snapshot fold must not spawn a `set -g` on the
+        // spot, and repeated rebuilds of one reset must not queue a
+        // write each.
+        let mut state = two_group_state();
+        state.global.repo_filter = RepoFilter::Repo("ghost".into());
+
+        state.rebuild_row_targets();
+        assert_eq!(state.global.repo_filter, RepoFilter::All);
+        assert!(state.global.has_pending_repo_filter_reset());
+
+        // Neighboring rebuilds (collapse toggles, search edits) re-run
+        // the builder, but the already-reset filter is not stale again,
+        // so the pending marker rides unchanged until an owner flushes.
+        state.rebuild_row_targets();
+        state.rebuild_row_targets();
+        assert!(state.global.has_pending_repo_filter_reset());
+
+        state.global.flush_pending_repo_filter_reset();
+        assert!(!state.global.has_pending_repo_filter_reset());
+    }
+
+    #[test]
+    fn a_matching_repo_filter_is_left_alone_by_the_rebuild() {
+        let mut state = two_group_state();
+        state.global.repo_filter = RepoFilter::Repo("backend".into());
+
+        state.rebuild_row_targets();
+
+        assert_eq!(state.global.repo_filter, RepoFilter::Repo("backend".into()));
+        assert!(!state.global.has_pending_repo_filter_reset());
+        // A flush with nothing pending is inert.
+        state.global.flush_pending_repo_filter_reset();
+        assert!(!state.global.has_pending_repo_filter_reset());
+    }
+
+    #[test]
+    fn a_fold_emptied_list_keeps_the_parked_group() {
+        // Audit 2026-11-21 F-13: the fold-made empty list is exactly
+        // what the park survives for — `z` still resolves the fold.
+        let mut state = two_group_state();
+        state.collapsed_cursor_group = Some("backend".into());
+        state.global.collapsed_groups.insert("backend".into());
+        state.global.collapsed_groups.insert("frontend".into());
+
+        state.rebuild_row_targets();
+
+        assert!(state.layout.pane_row_targets.is_empty());
+        assert_eq!(state.collapsed_cursor_group.as_deref(), Some("backend"));
+    }
+
+    #[test]
+    fn a_search_emptied_list_clears_the_parked_group() {
+        let mut state = two_group_state();
+        state.collapsed_cursor_group = Some("backend".into());
+        state.search.query = "zzz-no-match".into();
+
+        state.rebuild_row_targets();
+
+        assert!(state.layout.pane_row_targets.is_empty());
+        assert_eq!(
+            state.collapsed_cursor_group, None,
+            "a park whose group is filtered away, not folded, is stale"
+        );
+    }
+
+    #[test]
+    fn park_does_not_survive_a_filter_emptied_group_alongside_the_folds() {
+        let mut state = two_group_state();
+        state.collapsed_cursor_group = Some("backend".into());
+        state.global.collapsed_groups.insert("backend".into());
+        // frontend is filtered out while backend sits folded: the list
+        // is empty partly by filter, so the park is not fold-protected.
+        state.global.repo_filter = RepoFilter::Repo("backend".into());
+
+        state.rebuild_row_targets();
+
+        assert!(state.layout.pane_row_targets.is_empty());
+        assert_eq!(state.collapsed_cursor_group, None);
+    }
+
+    #[test]
+    fn an_empty_grouping_clears_the_parked_group() {
+        let mut state = two_group_state();
+        state.collapsed_cursor_group = Some("backend".into());
+        state.repo_groups.clear();
+
+        state.rebuild_row_targets();
+
+        assert_eq!(
+            state.collapsed_cursor_group, None,
+            "with no groups there is no fold for the park to resolve"
+        );
     }
 
     #[test]

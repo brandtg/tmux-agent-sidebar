@@ -251,6 +251,15 @@ impl AppState {
         self.popup = PopupState::None;
         self.global.save_repo_filter();
         self.rebuild_row_targets();
+        // The rebuild can and routinely does move the cursor: the list
+        // shrinks to one repo's rows and the previous pane is usually not
+        // among them, so it lands on the group anchor or the clamp. That
+        // new row is this sidebar's selection and must reach the shared
+        // option like under every other cursor-moving path (audit
+        // 2026-11-21 F-12). Without it, every other sidebar and every
+        // future startup keeps the pre-filter index into a list that no
+        // longer has that shape.
+        self.global.queue_cursor_save();
     }
 
     pub fn close_repo_popup(&mut self) {
@@ -992,6 +1001,46 @@ mod tests {
         assert!(!state.is_repo_popup_open());
         assert_eq!(state.layout.pane_row_targets.len(), 1);
         assert_eq!(state.layout.pane_row_targets[0].pane_id, "%2");
+    }
+
+    #[test]
+    fn confirm_repo_popup_persists_the_cursor_the_rebuild_moved() {
+        // Audit 2026-11-21 F-12: the filter rebuild re-anchors the cursor
+        // (here: off the pane that just vanished from the list), and that
+        // new row must reach the shared option like under every other
+        // cursor-moving path.
+        let mut state = AppState::new("%99".into());
+        state.repo_groups = vec![
+            RepoGroup {
+                name: "app".into(),
+                has_focus: false,
+                panes: vec![(test_pane("%1"), PaneGitInfo::default())],
+            },
+            RepoGroup {
+                name: "beta".into(),
+                has_focus: false,
+                panes: vec![(test_pane("%2"), PaneGitInfo::default())],
+            },
+        ];
+        state.rebuild_row_targets();
+        state.global.selected_pane_row = 1; // on beta's row
+
+        state.popup = PopupState::Repo {
+            selected: 1,
+            area: None,
+            repo_start: 0,
+        };
+        state.confirm_repo_popup();
+
+        assert_eq!(state.global.repo_filter, RepoFilter::Repo("app".into()));
+        assert_eq!(
+            state.global.selected_pane_row, 0,
+            "the rebuild re-anchored the cursor"
+        );
+        assert!(
+            state.global.has_pending_cursor_save(),
+            "the moved cursor is queued for the shared write"
+        );
     }
 
     #[test]

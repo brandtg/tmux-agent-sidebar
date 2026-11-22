@@ -71,48 +71,42 @@ pub(super) fn collect(state: &AppState, width: u16) -> CollectedRows {
     let mut first_group = true;
     let mut row_index: usize = 0;
 
+    // The same plan the cursor's target list consumes from
+    // `group::plan_group_rows` (audit 2026-11-21 F-10): repo filter,
+    // fold, search lowering (a group-name hit keeps the whole group,
+    // otherwise each row's own fields decide), and the window bucket
+    // are decided once, so `line_to_row` and the selection index can
+    // never disagree about which pane a row is.
+    let plan_ctx = crate::group::RowPlanContext {
+        repo_filter: &state.global.repo_filter,
+        collapsed_groups: &state.global.collapsed_groups,
+        group_by: state.global.group_by,
+        show_windows: state.global.show_windows,
+        all_windows: &state.other_windows,
+    };
     for group in &state.repo_groups {
-        if !state.global.repo_filter.matches_group(&group.name) {
+        let plan = crate::group::plan_group_rows(
+            group,
+            &plan_ctx,
+            state.search_matches_group(&query_lower, group),
+            |pane, git| state.search_matches_pane(&query_lower, pane, git),
+            |window| state.search_matches_window(&query_lower, window),
+        );
+        if !plan.passes_repo_filter {
             continue;
         }
-        // Same rule as `rebuild_row_targets`: a group-name hit keeps the
-        // whole group; otherwise each row must match on its own fields.
-        let group_matches_search = state.search_matches_group(&query_lower, group);
-        let filtered_panes: Vec<_> = group
-            .panes
-            .iter()
-            .filter(|(pane, git)| {
-                group_matches_search || state.search_matches_pane(&query_lower, pane, git)
-            })
-            .collect();
-
+        let filtered_panes = plan.filtered_panes;
+        let matched_windows = plan.matched_windows;
         // A group with no matching agent panes is skipped entirely —
         // unless one of its non-agent window panes still matches the
         // search (a finished task, a failed run, an idle shell), in
         // which case the group header and window section render without
         // agent rows.
-        let matched_windows: Vec<&crate::group::OtherWindow> = if state.global.show_windows {
-            let key = crate::group::group_window_key(state.global.group_by, group);
-            state
-                .other_windows
-                .get(&key)
-                .map(|windows| {
-                    windows
-                        .iter()
-                        .filter(|window| {
-                            group_matches_search
-                                || state.search_matches_window(&query_lower, window)
-                        })
-                        .collect()
-                })
-                .unwrap_or_default()
-        } else {
-            Vec::new()
-        };
         if filtered_panes.is_empty() && matched_windows.is_empty() {
             continue;
         }
-        let collapsed = state.is_group_collapsed(&group.name);
+        let collapsed = plan.collapsed;
+        let ordered_rows = plan.rows;
 
         if !first_group {
             // Separate repo groups, but do not add a leading blank before
@@ -327,7 +321,7 @@ pub(super) fn collect(state: &AppState, width: u16) -> CollectedRows {
             crate::state::GroupBy::Session => state.global.session_windows,
         };
         let mut current_window: Option<(&str, i64)> = None;
-        for row in crate::group::ordered_group_rows(&filtered_panes, &matched_windows) {
+        for row in ordered_rows {
             if window_headers {
                 let key = row.window_key();
                 if current_window != Some(key) {
