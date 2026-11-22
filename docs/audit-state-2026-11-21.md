@@ -243,6 +243,17 @@ shared option already cleared by the changer.
 
 ## F-4. `save_collapsed_groups` is one-shot; cursor saves are queued
 
+Status (2026-11-21): fixed as proposed. The fold toggles (`toggle_group_collapse`,
+`toggle_all_groups` — hence `z`/`Z` and header clicks) now call `queue_collapsed_save()`;
+`flush_pending_collapsed_save(debounce)` runs beside `flush_pending_cursor_save` in the event
+loop, keeps the pending marker on a failed write, and drops it silently when an intervening
+sync reconciled the set (marker equals current) so the retry never echoes the shared value
+back. `save_collapsed_groups` returns success; the revert anchor (stamp only on success) is
+unchanged. The changer-side `persist_cleared_collapsed_groups` stays synchronous — the F-3
+observer repair condition reads the shared value the moment it adopts, and a delayed
+changer write would misroute every observer into a repair write. Pinned by two new tests in
+src/state/global.rs.
+
 Two shared view fields, two different failure policies.
 
 Cursor: every navigation path calls `queue_cursor_save()` (src/state/global.rs:236-238), the

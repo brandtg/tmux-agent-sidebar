@@ -172,6 +172,12 @@ pub struct GlobalState {
     last_observed_collapsed_groups: Option<std::collections::HashSet<String>>,
     /// When the selected cursor was last changed and still needs persisting.
     pending_cursor_save_since: Option<Instant>,
+    /// When the collapsed set was last changed and still needs persisting.
+    /// The queue is what keeps a transient tmux failure from silently
+    /// reverting a fold (audit 2026-11-21 F-4): the flush keeps the
+    /// marker on a failed write and retries, while the revert anchor
+    /// (`last_saved_collapsed_groups` stamped only on success) stays.
+    pending_collapsed_save_since: Option<Instant>,
     /// A stale repo filter that `rebuild_row_targets` reset locally but
     /// whose shared write has not landed in tmux yet. The flush belongs
     /// to the shared-state owners — the per-snapshot fold and the event
@@ -211,6 +217,7 @@ impl GlobalState {
             last_saved_collapsed_groups: None,
             last_observed_collapsed_groups: None,
             pending_cursor_save_since: None,
+            pending_collapsed_save_since: None,
             repo_filter_reset_pending: false,
         }
     }
@@ -316,16 +323,57 @@ impl GlobalState {
     }
 
     /// Save the collapsed-group set to tmux as a JSON array, then
-    /// broadcast the change to every other open sidebar. A failed write
-    /// leaves `last_saved_collapsed_groups` untouched so the next sync
-    /// reverts this sidebar to the shared value instead of diverging.
-    pub fn save_collapsed_groups(&mut self) {
+    /// broadcast the change to every open sidebar. Returns `true` when
+    /// tmux accepted the write so callers can decide whether to clear a
+    /// queued save or keep retrying. A failed write leaves
+    /// `last_saved_collapsed_groups` untouched so the next sync reverts
+    /// this sidebar to the shared value instead of diverging.
+    pub fn save_collapsed_groups(&mut self) -> bool {
         let Ok(json) = serde_json::to_string(&self.collapsed_groups) else {
-            return;
+            return false;
         };
         if tmux::run_tmux(&["set", "-g", tmux::SIDEBAR_COLLAPSED_GROUPS, &json]).is_some() {
             self.last_saved_collapsed_groups = Some(self.collapsed_groups.clone());
             self.broadcast_change();
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Mark the collapsed set as dirty so the main loop persists it once
+    /// the user pauses folding — the same debounce-and-retry policy the
+    /// cursor queue uses (audit 2026-11-21 F-4).
+    pub fn queue_collapsed_save(&mut self) {
+        self.pending_collapsed_save_since = Some(Instant::now());
+    }
+
+    /// Persist a queued collapsed-set update after it has been idle for
+    /// at least the requested debounce duration. Returns true when the
+    /// queue was consumed.
+    pub fn flush_pending_collapsed_save(&mut self, debounce: std::time::Duration) -> bool {
+        let Some(queued_at) = self.pending_collapsed_save_since else {
+            return false;
+        };
+        if queued_at.elapsed() < debounce {
+            return false;
+        }
+        // A sync between the toggle and this flush may have reconciled
+        // the set — adopting the shared value also stamps the marker — in
+        // which case there is nothing left to write and the retry must
+        // not echo the shared set straight back at it.
+        if self.last_saved_collapsed_groups.as_ref() == Some(&self.collapsed_groups) {
+            self.pending_collapsed_save_since = None;
+            return true;
+        }
+        // Only clear the pending marker on successful tmux write —
+        // otherwise a transient failure would silently drop the queued
+        // save instead of retrying on the next flush tick.
+        if self.save_collapsed_groups() {
+            self.pending_collapsed_save_since = None;
+            true
+        } else {
+            false
         }
     }
 
@@ -766,6 +814,42 @@ mod tests {
         cleared.insert(tmux::SIDEBAR_COLLAPSED_GROUPS.to_string(), "[]".to_string());
         global.apply_all(&cleared);
         assert!(global.collapsed_groups.is_empty());
+    }
+
+    #[test]
+    fn queued_collapsed_save_retries_after_a_failed_write() {
+        // Audit 2026-11-21 F-4: a fold toggle queues its write, and the
+        // flush keeps the pending marker when tmux refuses — the retry
+        // policy that stops a transient failure from silently dropping
+        // the fold (the cursor queue's contract, now shared).
+        let mut global = GlobalState::new("%99".into());
+        global.collapsed_groups.insert("backend".to_string());
+        global.queue_collapsed_save();
+
+        // The tmux write cannot succeed under test (the IPC gate refuses
+        // every spawn), so the marker must survive the flush attempt.
+        assert!(!global.flush_pending_collapsed_save(std::time::Duration::ZERO));
+        assert!(global.pending_collapsed_save_since.is_some());
+    }
+
+    #[test]
+    fn queued_collapsed_save_is_dropped_when_a_sync_reconciles_it() {
+        let mut global = GlobalState::new("%99".into());
+        global.collapsed_groups.insert("backend".to_string());
+        global.queue_collapsed_save();
+
+        // The same set adopted from the shared option stamps the marker,
+        // so the queued toggle has nothing left to persist — and the
+        // retry must not fire an echo write (and broadcast) back.
+        let mut opts = HashMap::new();
+        opts.insert(
+            tmux::SIDEBAR_COLLAPSED_GROUPS.to_string(),
+            r#"["backend"]"#.to_string(),
+        );
+        global.apply_all(&opts);
+
+        assert!(global.flush_pending_collapsed_save(std::time::Duration::ZERO));
+        assert!(global.pending_collapsed_save_since.is_none());
     }
 
     #[test]

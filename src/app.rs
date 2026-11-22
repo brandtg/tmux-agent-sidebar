@@ -375,5 +375,12 @@ pub fn run(
         state
             .global
             .flush_pending_cursor_save(std::time::Duration::from_millis(120));
+        // Folds ride the same debounce-and-retry queue as the cursor: a
+        // transient tmux failure keeps the pending marker and the next
+        // tick retries, instead of the fold silently reverting on the
+        // next sync (audit 2026-11-21 F-4).
+        state
+            .global
+            .flush_pending_collapsed_save(std::time::Duration::from_millis(120));
     }
 }

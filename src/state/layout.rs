@@ -497,13 +497,13 @@ impl AppState {
                 self.collapsed_cursor_group = Some(name);
             }
             self.global.collapsed_groups.extend(visible);
-            self.global.save_collapsed_groups();
+            self.global.queue_collapsed_save();
             self.rebuild_row_targets();
             return true;
         }
         let parked = self.collapsed_cursor_group.clone();
         self.global.collapsed_groups.clear();
-        self.global.save_collapsed_groups();
+        self.global.queue_collapsed_save();
         self.rebuild_row_targets();
         if let Some(name) = parked
             && let Some(start) = self
@@ -552,7 +552,7 @@ impl AppState {
         if !self.global.collapsed_groups.remove(name) {
             self.global.collapsed_groups.insert(name.to_string());
         }
-        self.global.save_collapsed_groups();
+        self.global.queue_collapsed_save();
         self.rebuild_row_targets();
         if reopen_parked
             && let Some(start) = self
