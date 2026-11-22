@@ -445,6 +445,14 @@ right now it reads as an oversight next to the search cancel three lines above i
 
 ## F-9. `s` and `w` neither park nor persist the cursor, and `s` defers its rebuild
 
+Status (2026-11-21): persistence half implemented — `queue_cursor_save()` on `s`
+(src/app/input.rs) and both `w` arms (Panes-focus and TODO-focus), matching every other
+cursor-moving path. Feedback half: the one-iteration regroup lag on `s` is accepted and
+documented rather than papered over with an inline rebuild — `repo_groups` still carries the
+previous mode's grouping until the fold regroups, so an inline `rebuild_row_targets()` on `s`
+would only re-anchor the cursor into a list about to be discarded (the audit's "or accept the
+lag and document it" branch).
+
 `s` (group-by toggle, src/app/input.rs:244-253) does: `toggle_group_by()`, clear
 `collapsed_cursor_group`, `persist_cleared_collapsed_groups()`, `snapshot_now = true`. It
 does not touch `selected_pane_row`, does not call `rebuild_row_targets()` (by design — the
