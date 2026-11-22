@@ -37,7 +37,12 @@ selects the row of the pane that held focus in this window just before the
 jump (`select_focused_context_row`), so the list opens on the agent matching
 the current tmux context — with the auto-scroll bringing that row into view.
 Popups get the same treatment at startup, pinned to the pane they were
-opened from. A focus event is not a user choice, so the selection is not
+opened from, and so does a pane-mode sidebar: it opens unfocused, so the
+shared cursor row it adopted is only a placeholder indexing another
+window's list — the startup pass lands it on the window's context pane
+instead (when that pane is unknown or filtered out, the adopted row rides
+along, which is the intended landing behavior). A focus event is not a
+user choice, so the selection is not
 persisted to `@sidebar_cursor`.
 
 | Field | Tmux Variable | Update Trigger | Description |

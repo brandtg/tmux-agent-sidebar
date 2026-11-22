@@ -81,6 +81,12 @@ Ordered by risk if left alone.
 
 ## F-1. The shared cursor is adopted at startup in pane mode with no context reconciliation
 
+Status (2026-11-21): fixed, first proposal. `select_focused_context_row()` is now called
+unconditionally at the end of `init_state` (src/app/setup.rs); the `apply_all` doc comment
+(src/state/global.rs) and docs/state-management.md describe the startup reconciliation.
+Tests unchanged — the semantics of the call (including its no-op when the context pane is
+unknown or filtered out) were already pinned in src/state/scroll.rs.
+
 The documented contract for `@sidebar_cursor` is in src/state/global.rs:517-524: the startup
 variant "rides along so a fresh sidebar lands where the user last navigated." In pane mode
 that is not what happens, and nothing reconciles it until the user first jumps into the

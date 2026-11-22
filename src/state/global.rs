@@ -517,7 +517,10 @@ impl GlobalState {
     /// Apply all global options from tmux (cursor, repo filter, etc.).
     ///
     /// The startup/full variant: the shared cursor row rides along so a
-    /// fresh sidebar lands where the user last navigated. The per-tick
+    /// fresh sidebar lands where the user last navigated, except that a
+    /// startup `select_focused_context_row` pass (`app::setup`) overrides
+    /// it with this window's context pane when that pane is in the list.
+    /// The per-tick
     /// snapshot fold must use
     /// [`Self::apply_shared_options_without_cursor`] instead — at runtime
     /// the cursor is owned by whoever holds focus, and an index written

@@ -38,15 +38,19 @@ pub(super) fn init_state(tmux_pane: String) -> AppState {
     state.sessions.derived = scanned.derived;
     state.refresh();
 
-    // A popup never sees the event loop's focus-gain transition: it has
-    // no pane of its own, `TMUX_PANE` is pinned to the window's active
-    // pane at popup-open time, and `refresh` forces `sidebar_focused`
-    // true from this first pass on. Select the tmux context (the pane
-    // the popup was opened from) here instead — the same treatment a
-    // pane-mode sidebar gets when the user jumps into it.
-    if state.popup_mode {
-        state.select_focused_context_row();
-    }
+    // Reconcile the cursor against this window's tmux context, in every
+    // mode. A popup needs it because it never sees the event loop's
+    // focus-gain transition: it has no pane of its own, `TMUX_PANE` is
+    // pinned to the window's active pane at popup-open time, and
+    // `refresh` forces `sidebar_focused` true from this first pass on.
+    // Pane mode needs it because the sidebar opens unfocused (`toggle`
+    // restores focus to the pre-split pane), so the row adopted from the
+    // shared `@sidebar_cursor` is just a placeholder indexing some other
+    // window's list — reconciling here keeps it from ever being the
+    // cursor this sidebar carries. When the context pane is unknown or
+    // filtered out the call is a no-op and the adopted shared row rides
+    // along, which is the intended landing behavior.
+    state.select_focused_context_row();
 
     // Resolve the installed Claude Code plugin status once at startup,
     // matching the version_notice pattern. Restart the sidebar after a
