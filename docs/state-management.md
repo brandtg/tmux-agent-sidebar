@@ -136,7 +136,7 @@ Per-pane file-based state:
 | `focus_state.focused_pane_id` | Every 1s, plus immediately on user-initiated pane jumps | Currently focused agent pane |
 | `focus_state.proxy_focused_pane_id` | Every 1s, cleared immediately on user-initiated pane jumps | Agent pane standing in for the cursor while it sits on a non-agent pane whose row is hidden: the first agent sharing the cursor's window. Applied by the render layer only while the `w` toggle keeps window rows hidden |
 | `focus_state.sidebar_focused` | Every 1s | Whether sidebar pane itself has focus |
-| `focus_state.focus` | On user input | UI focus: `Panes` / `Todos`; input also triggers an immediate redraw so focus changes appear without waiting for the next poll tick |
+| `focus_state.focus` | On user input | UI focus: `Panes` / `Todos`; input also triggers an immediate redraw so focus changes appear without waiting for the next poll tick. `Todos` survives a sidebar blur/refocus — coming back restores the keyboard context the user left, the same philosophy as the preserved cursor; the release path is the panel closing (locally or via a shared-visibility adoption), which hands focus back to `Panes` |
 | `focus_state.prev_focused_pane_id` | Every 1s | Previous focused pane ID (for detecting focus changes) |
 | `now` | Every 1s | Current Unix epoch |
 | `scrolls.panes` | On user input / render | Agent list scroll position |

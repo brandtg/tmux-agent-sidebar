@@ -122,6 +122,15 @@ pub fn run(
             state
                 .todos
                 .refresh_if_changed(state.global.todo_hide_completed);
+            // The TODO file converges every tick; the panel's shared
+            // visibility now rides the same unconditional pass instead of
+            // waiting for a reload-branch tick (audit 2026-11-21 F-8).
+            // Pure comparison against the cached `global.todo_visible` —
+            // the value itself still lands through the shared-option
+            // adoption (signal-driven, or the 5 s floor when a signal is
+            // lost); a per-tick get-option spawn was considered and
+            // rejected as the cost the floor exists to avoid.
+            state.sync_todo_visibility();
             let request = workers::SnapshotRequest {
                 include_globals: signal_pending || globals_due,
             };
@@ -360,7 +369,11 @@ pub fn run(
                 // pane was unknown (audit 2026-11-16). An open search is
                 // the one thing that moves the cursor here — and it moves
                 // it back to the pre-`/` position the search had
-                // displaced (audit 2026-11-21 F-5).
+                // displaced (audit 2026-11-21 F-5). TODO panel focus
+                // deliberately does NOT end on blur, unlike the search:
+                // the panel is a mode the user parked in, not a transient
+                // aid, and returning restores it (docs/state-management.md,
+                // `focus_state.focus`; audit 2026-11-21 F-8).
                 if !state.focus_state.sidebar_focused {
                     state.cancel_search();
                 }

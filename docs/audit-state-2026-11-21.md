@@ -402,6 +402,19 @@ deserves the same silence as a successful one; I could not construct a reason.
 
 ## F-8. TODO panel shared visibility is adopted only in the reload branch and at startup
 
+Status (2026-11-21): first half implemented, with one correction to the proposal's premise.
+`sync_todo_visibility()` is now also called from the `refresh_due` block beside
+`refresh_if_changed` (src/app.rs) — pure comparison against the cached value, no spawn. But
+that cached value itself only refreshes through the shared-option adoption in the reload
+branch, so the lost-signal latency stays bounded by the 5 s floor for the *value*; the per-tick
+call removes the second wait (adopted value waiting for the next reload-branch tick to be
+synced into the panel), and keeps panel state converging whenever adoption moves out of the
+reload branch. Closing the remaining band to one tick would need a per-tick get-option
+spawn, which the floor exists to avoid. Second half: `Focus::Todos` survival is decided
+intentional (the panel is a mode the user parked in, unlike the search that cancels on blur)
+and documented — the `focus_state.focus` row in docs/state-management.md and a contrast note
+at the blur-cancel site in src/app.rs.
+
 The TODO file is re-read every tick (`todos.refresh_if_changed(hide_completed)`,
 src/app.rs:121-125 → src/state/todo.rs:137-157), so item changes converge in ≤1 s. Panel
 visibility — also shared, via `@sidebar_todo_visible` — is not: `sync_todo_visibility()`
