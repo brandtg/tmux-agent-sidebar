@@ -21,9 +21,9 @@ Ground truth: main @ 8eff345 ("docs: execute the 2026-11-20 docs audit (#152)"),
 
 ## Handoff notes for the next session
 
-This report is the plan of record. F-1 through F-10 are implemented (see the Status notes
-on those findings; branch brandtg/fix-state-bugs, one commit per finding); the remaining
-items in Part 3 are proposals only, and each needs an explicit go-ahead before code changes.
+This report is the plan of record. All fourteen findings (F-1 through F-14) are
+implemented — one commit per finding on branch brandtg/fix-state-bugs, each with a Status
+note above its body recording any deviation from the proposal.
 
 - This is a snapshot. If code has moved since 8eff345, re-verify any High finding against
   source before acting on it.
