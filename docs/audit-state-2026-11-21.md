@@ -21,8 +21,9 @@ Ground truth: main @ 8eff345 ("docs: execute the 2026-11-20 docs audit (#152)"),
 
 ## Handoff notes for the next session
 
-This report is the plan of record. Nothing has been implemented — the change set in Part 3
-is proposals only, and each item needs an explicit go-ahead before code changes.
+This report is the plan of record. F-1 and F-2 are implemented (see the Status notes on
+those findings); the rest of the change set in Part 3 is proposals only, and each item
+needs an explicit go-ahead before code changes.
 
 - This is a snapshot. If code has moved since 8eff345, re-verify any High finding against
   source before acting on it.
@@ -133,6 +134,13 @@ control flow and removes a class of "the cursor was on the wrong row" reports; t
 honest and free. Recommend the first, with the second as the fallback.
 
 ## F-2. `rebuild_row_targets` writes tmux from a render-side path
+
+Status (2026-11-21): fixed as proposed. The local stale reset stays in
+`rebuild_row_targets` (src/state/layout.rs), which now only marks
+`repo_filter_reset_pending` on `GlobalState`; `flush_pending_repo_filter_reset()` is called
+from the two shared-state owners — `apply_session_snapshot` (src/state/refresh.rs, beside
+its `rebuild_row_targets` call) and the event loop's reload branch (src/app.rs). Pinned by
+two new tests in src/state/layout.rs.
 
 `rebuild_row_targets` is the target-list builder. It is called from three places:
 `apply_session_snapshot` (src/state/refresh.rs:183, once per snapshot), the event loop's

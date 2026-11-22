@@ -164,11 +164,17 @@ pub(super) fn point_in_rect(row: u16, col: u16, rect: ratatui::layout::Rect) -> 
 
 impl AppState {
     pub fn rebuild_row_targets(&mut self) {
-        // Reset stale repo filter if the repo no longer exists, and
-        // persist the reset back to tmux so fresh sidebar instances do
-        // not reload the dead repo name on startup. Uses the same match
-        // rule as the renderer (`matches_group`) so a bare name typed
-        // for a `⎇`-titled worktree group is not mistaken for stale.
+        // Reset stale repo filter if the repo no longer exists. The local
+        // reset must happen here — the list this frame renders is wrong
+        // otherwise — but the shared write is deferred to the snapshot
+        // fold / reload branch (see `flush_pending_repo_filter_reset`):
+        // this builder also runs from per-keystroke paths, and a tmux
+        // write from here lets one instance's momentarily-empty grouping
+        // flip the shared filter for everyone, per rebuild (audit
+        // 2026-11-21 F-2). Fresh sidebar instances still land clean, one
+        // tick later. Uses the same match rule as the renderer
+        // (`matches_group`) so a bare name typed for a `⎇`-titled
+        // worktree group is not mistaken for stale.
         let stale = matches!(self.global.repo_filter, RepoFilter::Repo(_))
             && !self
                 .repo_groups
@@ -176,7 +182,7 @@ impl AppState {
                 .any(|g| self.global.repo_filter.matches_group(&g.name));
         if stale {
             self.global.repo_filter = RepoFilter::All;
-            self.global.save_repo_filter();
+            self.global.mark_repo_filter_reset_pending();
         }
 
         // Remember which pane the cursor was on before the target list is
@@ -978,6 +984,46 @@ mod tests {
         state.handle_mouse_click(2, 7);
         assert!(!state.is_group_collapsed("backend"));
         assert_eq!(state.layout.pane_row_targets.len(), 2);
+    }
+
+    #[test]
+    fn a_stale_repo_filter_reset_defers_its_shared_write() {
+        // Audit 2026-11-21 F-2: the rebuild resets the filter locally so
+        // this frame's list is right, but the tmux write is deferred to
+        // the flush on the shared-state owners' ticks — a rebuild from a
+        // keystroke or a snapshot fold must not spawn a `set -g` on the
+        // spot, and repeated rebuilds of one reset must not queue a
+        // write each.
+        let mut state = two_group_state();
+        state.global.repo_filter = RepoFilter::Repo("ghost".into());
+
+        state.rebuild_row_targets();
+        assert_eq!(state.global.repo_filter, RepoFilter::All);
+        assert!(state.global.has_pending_repo_filter_reset());
+
+        // Neighboring rebuilds (collapse toggles, search edits) re-run
+        // the builder, but the already-reset filter is not stale again,
+        // so the pending marker rides unchanged until an owner flushes.
+        state.rebuild_row_targets();
+        state.rebuild_row_targets();
+        assert!(state.global.has_pending_repo_filter_reset());
+
+        state.global.flush_pending_repo_filter_reset();
+        assert!(!state.global.has_pending_repo_filter_reset());
+    }
+
+    #[test]
+    fn a_matching_repo_filter_is_left_alone_by_the_rebuild() {
+        let mut state = two_group_state();
+        state.global.repo_filter = RepoFilter::Repo("backend".into());
+
+        state.rebuild_row_targets();
+
+        assert_eq!(state.global.repo_filter, RepoFilter::Repo("backend".into()));
+        assert!(!state.global.has_pending_repo_filter_reset());
+        // A flush with nothing pending is inert.
+        state.global.flush_pending_repo_filter_reset();
+        assert!(!state.global.has_pending_repo_filter_reset());
     }
 
     #[test]

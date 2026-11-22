@@ -289,6 +289,9 @@ pub fn run(
                     state.collapsed_cursor_group = None;
                 }
                 state.rebuild_row_targets();
+                // Shared-state owner: persist a stale repo-filter reset
+                // the rebuild recorded locally (audit 2026-11-21 F-2).
+                state.global.flush_pending_repo_filter_reset();
                 // The hide-completed setting may have changed in another
                 // sidebar; keep the TODO selection on a visible item. The
                 // panel's shared visibility may have changed too (another

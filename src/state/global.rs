@@ -166,6 +166,12 @@ pub struct GlobalState {
     last_saved_collapsed_groups: Option<std::collections::HashSet<String>>,
     /// When the selected cursor was last changed and still needs persisting.
     pending_cursor_save_since: Option<Instant>,
+    /// A stale repo filter that `rebuild_row_targets` reset locally but
+    /// whose shared write has not landed in tmux yet. The flush belongs
+    /// to the shared-state owners — the per-snapshot fold and the event
+    /// loop's shared-option reload — not to the target-list builder
+    /// (audit 2026-11-21 F-2).
+    repo_filter_reset_pending: bool,
 }
 
 impl Default for GlobalState {
@@ -198,6 +204,7 @@ impl GlobalState {
             last_saved_repo_filter: RepoFilter::All,
             last_saved_collapsed_groups: None,
             pending_cursor_save_since: None,
+            repo_filter_reset_pending: false,
         }
     }
 
@@ -255,6 +262,34 @@ impl GlobalState {
         } else {
             false
         }
+    }
+
+    /// Record that a stale repo filter was reset locally by
+    /// [`AppState::rebuild_row_targets`]; the shared write is deferred to
+    /// the next [`Self::flush_pending_repo_filter_reset`] on a tick owned
+    /// by the shared-state paths.
+    pub fn mark_repo_filter_reset_pending(&mut self) {
+        self.repo_filter_reset_pending = true;
+    }
+
+    /// Whether a stale repo-filter reset is awaiting its shared write.
+    pub fn has_pending_repo_filter_reset(&self) -> bool {
+        self.repo_filter_reset_pending
+    }
+
+    /// Persist a stale repo filter reset recorded by
+    /// [`Self::mark_repo_filter_reset_pending`]. Called from the snapshot
+    /// fold and the event loop's shared-option reload — the two paths
+    /// that own shared state — so the write runs at most once per
+    /// reset-detecting rebuild rather than once per rebuild, and one
+    /// instance's momentarily-empty grouping cannot stampede every other
+    /// sidebar with per-tick `set -g` spawns (audit 2026-11-21 F-2).
+    pub fn flush_pending_repo_filter_reset(&mut self) {
+        if !self.repo_filter_reset_pending {
+            return;
+        }
+        self.repo_filter_reset_pending = false;
+        self.save_repo_filter();
     }
 
     /// Save repo filter to tmux global variable, then broadcast the

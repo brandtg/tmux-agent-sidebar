@@ -181,6 +181,9 @@ impl AppState {
         self.refresh_window_tasks(&other_panes);
         self.prune_pane_states_to_current_panes();
         self.rebuild_row_targets();
+        // Shared-state owner: persist a stale repo-filter reset the
+        // rebuild recorded locally (audit 2026-11-21 F-2).
+        self.global.flush_pending_repo_filter_reset();
         self.find_focused_pane_from(&sidebar_window_panes, fetched_at);
         self.mark_active_window_panes_seen();
         self.resolve_proxy_focus();
