@@ -163,6 +163,7 @@ impl AppState {
         let next = self.global.selected_pane_row as isize + delta;
         if next >= 0 && next < len {
             self.global.selected_pane_row = next as usize;
+            self.supersede_pre_search_cursor();
             true
         } else {
             false
@@ -188,7 +189,20 @@ impl AppState {
             return false;
         }
         self.global.selected_pane_row = next as usize;
+        self.supersede_pre_search_cursor();
         true
+    }
+
+    /// A user-driven move outside the `/` input line is a new choice: it
+    /// supersedes the pre-search restore point, so a later Esc returns to
+    /// where the user most recently stood rather than to a position they
+    /// have since walked away from. Moves while the input owns the
+    /// keyboard are search navigation and keep the restore point.
+    fn supersede_pre_search_cursor(&mut self) {
+        if !self.search.is_active() {
+            self.search.pre_search_row = None;
+            self.search.pre_search_pane_id = None;
+        }
     }
 
     pub fn activate_selected_pane(&mut self) {
@@ -205,8 +219,10 @@ impl AppState {
         // to the full list. Jumping to another window already looked
         // cleared because that window's sidebar is a separate instance
         // with its own search state; clearing here makes a jump inside
-        // the same window behave the same way.
-        self.cancel_search();
+        // the same window behave the same way. No cursor restore here —
+        // the jumped-to row is the user's newest choice, taken from the
+        // post-search cursor (the Esc path restores; this one discards).
+        self.cancel_search_for_jump();
 
         // Update the sidebar immediately so the active marker and
         // repo header highlight move without waiting for the next

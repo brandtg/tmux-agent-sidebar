@@ -282,6 +282,16 @@ revert is at least attributed to tmux rather than to the app.
 
 ## F-5. The search cursor contract is not implemented — no capture, no restore, no save
 
+Status (2026-11-21): fixed on the capture/restore reading. `open_search` captures the
+cursor's row and pane id when the query is empty (reopening to refine keeps the original
+capture); `cancel_search` re-anchors by pane id against the unfiltered list and falls back to
+the captured index under the normal clamp. The jump path uses a no-restore cancel
+(`cancel_search_for_jump`) — the jumped-to row supersedes the capture — and user-driven moves
+outside the input line (`move_pane_selection`, `page_pane_selection`) supersede it too, so a
+stale capture never teleports. The search-active Up/Down/Ctrl-n/Ctrl-p arms now
+`queue_cursor_save()` like every sibling binding. Pinned by five new tests in
+src/state/search.rs.
+
 docs/state-management.md describes the cursor as the user's selection, preserved across
 unfocused reloads (docs/state-management.md:30-34, :45) and reconciled on focus gain. Search is the one mode
 where the cursor is repeatedly moved by the system rather than the user, and it has no

@@ -140,7 +140,7 @@ Per-pane file-based state:
 | `focus_state.prev_focused_pane_id` | Every 1s | Previous focused pane ID (for detecting focus changes) |
 | `now` | Every 1s | Current Unix epoch |
 | `scrolls.panes` | On user input / render | Agent list scroll position |
-| `search` | On user input | Per-sidebar `/` query and whether the input line is open. Not broadcast: the query is transient |
+| `search` | On user input | Per-sidebar `/` query and whether the input line is open. Not broadcast: the query is transient. The cursor the user had before `/` is captured on a fresh open and restored by pane id on Esc; a jump or a plain navigation move supersedes the capture |
 | `collapsed_cursor_group` | On fold/unfold via `rebuild_row_targets` | Group that swallowed the cursor when every row is hidden behind folds; lets `z` keep resolving the right fold with nothing visible. Transient, like the cursor |
 | `theme` | Once at startup | Color theme from tmux `@sidebar_color_*` variables |
 | `popup` | On user input / render | `PopupState` enum: `None` / `Repo` / `SpawnInput` / `Help` / `RemoveConfirm`. Enforces "at most one popup open" via the type system |

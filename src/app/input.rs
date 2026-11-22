@@ -156,17 +156,25 @@ pub(super) fn handle_key_event(key: KeyEvent, state: &mut AppState) -> bool {
             KeyCode::Enter => state.finish_search(),
             KeyCode::Backspace => state.search_pop_char(),
             // Navigate the filtered list without leaving the input line.
+            // These move the cursor like every other binding, so they
+            // queue the shared save with it (audit 2026-11-21 F-5): the
+            // row the user is about to Enter on should be the row every
+            // other sidebar would show.
             KeyCode::Up => {
                 state.move_pane_selection(-1);
+                state.global.queue_cursor_save();
             }
             KeyCode::Down => {
                 state.move_pane_selection(1);
+                state.global.queue_cursor_save();
             }
             KeyCode::Char('n') if ctrl => {
                 state.move_pane_selection(1);
+                state.global.queue_cursor_save();
             }
             KeyCode::Char('p') if ctrl => {
                 state.move_pane_selection(-1);
+                state.global.queue_cursor_save();
             }
             KeyCode::Char('u') if ctrl => state.clear_search_query(),
             KeyCode::Char('w') if ctrl => state.search_pop_word(),
