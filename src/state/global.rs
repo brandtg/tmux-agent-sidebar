@@ -258,6 +258,11 @@ impl GlobalState {
         self.pending_cursor_save_since = Some(Instant::now());
     }
 
+    /// Whether a cursor update is queued for the next flush.
+    pub fn has_pending_cursor_save(&self) -> bool {
+        self.pending_cursor_save_since.is_some()
+    }
+
     /// Persist a queued cursor update after it has been idle for at least the
     /// requested debounce duration. Returns true when the queue was consumed.
     pub fn flush_pending_cursor_save(&mut self, debounce: std::time::Duration) -> bool {

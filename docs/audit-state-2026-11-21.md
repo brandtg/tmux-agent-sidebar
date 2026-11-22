@@ -562,6 +562,13 @@ snapshot via `snapshot_now` and folds it on the next tick."
 
 ## F-12. `confirm_repo_popup` changes the filter and never saves the cursor
 
+Status (2026-11-21): fixed — `queue_cursor_save()` after the rebuild in
+`confirm_repo_popup` (src/state/popup.rs), pinned by a new test that asserts the
+re-anchored cursor is queued (via a small `has_pending_cursor_save()` accessor). The second
+half of the finding does not hold against the current source: `close_repo_popup` sets
+`popup = None` and nothing else — it does not change the filter and does not rebuild, so
+there is no cursor move to persist on the close path.
+
 `confirm_repo_popup` (src/state/popup.rs:241-255) sets `repo_filter`, closes the popup,
 `save_repo_filter()`, `rebuild_row_targets()`. The rebuild can and routinely does move the
 cursor: the list shrinks to one repo's rows, the previous pane usually is not in it, the
