@@ -491,6 +491,18 @@ Two separate questions here:
 
 ## F-10. The row-index contract is implemented twice
 
+Status (2026-11-21): fixed as the structural proposal. `group::plan_group_rows` (src/group.rs,
+beside `ordered_group_rows`) is the single lowering of the four rules — repo filter, fold,
+search (group-name hit vs per-row fields), and the window bucket under `group_window_key`
+under `show_windows` — returning a `GroupRowPlan` (the filter/fold flags plus the filtered
+pane/window sets plus the `ordered_group_rows` sequence, which is the coordinate space).
+`rebuild_row_targets` and `row_collector::collect` both consume it; the matchers are passed
+as closures so group.rs stays free of search state. Supporting change: `ordered_group_rows`
+now borrows elements (`'a`) independently of the holding slices (`'s`) so the plan can own
+both. The old mirror-commitments in both call sites' comments are gone, replaced by three
+new tests pinning the rules at their single home; all pre-existing interleave and
+`line_to_row` pins stayed green through the move.
+
 `pane_row_targets` is the cursor's coordinate space, and `line_to_row` is the render's map
 from screen line to that space. They must agree exactly, on four independent rules, or clicks
 and selection land on the wrong pane.

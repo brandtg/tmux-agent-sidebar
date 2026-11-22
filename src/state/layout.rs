@@ -212,50 +212,39 @@ impl AppState {
         // Lowered once for the whole pass, mirroring row_collector::collect
         // (audit 2026-11-19 B6).
         let query_lower = self.search.lowercased_query();
+        // Single source for the four row-index rules, shared with
+        // `row_collector::collect` (audit 2026-11-21 F-10).
+        let plan_ctx = crate::group::RowPlanContext {
+            repo_filter: &self.global.repo_filter,
+            collapsed_groups: &self.global.collapsed_groups,
+            group_by: self.global.group_by,
+            show_windows: self.global.show_windows,
+            all_windows: &self.other_windows,
+        };
         for group in &self.repo_groups {
-            if !self.global.repo_filter.matches_group(&group.name) {
+            // The per-row matchers are the same `search_matches_*` the
+            // renderer passes, over the same lowered query.
+            let plan = crate::group::plan_group_rows(
+                group,
+                &plan_ctx,
+                self.search_matches_group(&query_lower, group),
+                |pane, git| self.search_matches_pane(&query_lower, pane, git),
+                |window| self.search_matches_window(&query_lower, window),
+            );
+            if !plan.passes_repo_filter {
                 continue;
             }
             // Collapsed groups render their header but no rows. They are
             // not selectable and contribute nothing to the target list or
             // the header counts.
-            if self.is_group_collapsed(&group.name) {
+            if plan.collapsed {
                 continue;
             }
-            // A group-name hit keeps every row in the group visible; a
-            // miss falls back to each row's own fields. This mirrors the
-            // renderer's rule in `row_collector::collect`.
-            let group_matches_search = self.search_matches_group(&query_lower, group);
-            let filtered_panes: Vec<_> = group
-                .panes
-                .iter()
-                .filter(|(pane, git)| {
-                    group_matches_search || self.search_matches_pane(&query_lower, pane, git)
-                })
-                .collect();
-
-            // The same window set as the renderer, so the target order
-            // mirrors the render order in `row_collector::collect` — the
-            // selection index is a position into `pane_row_targets`, and
-            // `row_index` counts rendered rows, so the two paths must
-            // agree on the order.
-            let matched_windows: Vec<&crate::group::OtherWindow> = if self.global.show_windows
-                && let Some(windows) = self
-                    .other_windows
-                    .get(&crate::group::group_window_key(self.global.group_by, group))
-                && !windows.is_empty()
-            {
-                windows
-                    .iter()
-                    .filter(|window| {
-                        group_matches_search || self.search_matches_window(&query_lower, window)
-                    })
-                    .collect()
-            } else {
-                Vec::new()
-            };
-
-            let rows = crate::group::ordered_group_rows(&filtered_panes, &matched_windows);
+            // The agreed row order — `ordered_group_rows` over the
+            // plan's filtered sets — is the coordinate space both this
+            // builder and `row_collector::collect` use, so the selection
+            // index and the rendered `row_index` cannot drift.
+            let rows = plan.rows;
             if rows.is_empty() {
                 continue;
             }
