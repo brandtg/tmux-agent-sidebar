@@ -280,12 +280,21 @@ pub fn run(
                 // names). A collapse set from the previous mode would
                 // otherwise hide an unrelated group that happens to share
                 // a name, so start the new mode fully expanded. The mode
-                // changer persists the cleared set when it toggles, but
-                // an instance that missed that broadcast would keep the
-                // previous mode's names in tmux and fold them back in on
-                // the next sync, so every observer writes the clear too.
+                // changer persists the cleared set when it toggles; an
+                // observer only writes when the shared option still
+                // carries the previous mode's names — the changer's clear
+                // did not land and the first successful observer repairs
+                // it. When tmux already holds the cleared set the sync
+                // adopted it, and stamping the marker locally keeps the
+                // echo guard honest without one shared write and one
+                // broadcast per observing sidebar per `s` press (audit
+                // 2026-11-21 F-3).
                 if state.global.group_by != previous_group_by {
-                    state.global.persist_cleared_collapsed_groups();
+                    if state.global.shared_collapsed_still_folded() {
+                        state.global.persist_cleared_collapsed_groups();
+                    } else {
+                        state.global.clear_collapsed_groups_local();
+                    }
                     state.collapsed_cursor_group = None;
                 }
                 state.rebuild_row_targets();

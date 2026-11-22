@@ -164,6 +164,12 @@ pub struct GlobalState {
     last_saved_repo_filter: RepoFilter,
     /// Last collapsed-group set successfully written to tmux.
     last_saved_collapsed_groups: Option<std::collections::HashSet<String>>,
+    /// Last collapsed-group set parsed from tmux on a sync, whether or
+    /// not it was adopted. Tells the group-by-change observer whether the
+    /// shared option still carries the previous mode's names (the
+    /// changer's clear did not land; a repair write is wanted) or is
+    /// already cleared (stamp locally, no spawn — audit 2026-11-21 F-3).
+    last_observed_collapsed_groups: Option<std::collections::HashSet<String>>,
     /// When the selected cursor was last changed and still needs persisting.
     pending_cursor_save_since: Option<Instant>,
     /// A stale repo filter that `rebuild_row_targets` reset locally but
@@ -203,6 +209,7 @@ impl GlobalState {
             last_saved_cursor: 0,
             last_saved_repo_filter: RepoFilter::All,
             last_saved_collapsed_groups: None,
+            last_observed_collapsed_groups: None,
             pending_cursor_save_since: None,
             repo_filter_reset_pending: false,
         }
@@ -323,17 +330,42 @@ impl GlobalState {
     }
 
     /// Clear the collapsed set locally *and* persist the cleared set to
-    /// the shared option. Used when the grouping mode changed and the
-    /// persisted names belong to the previous mode: every instance that
-    /// observes the change writes the clear, so the shared option matches
-    /// what everyone now displays and `last_saved_collapsed_groups`
-    /// stays an honest "did I write this?" marker. A purely local clear
-    /// would leave the echo guard comparing tmux's (stale-mode) value
-    /// against a set this sidebar no longer reconciles with, letting the
-    /// old names fold back in later.
+    /// the shared option. Used by the instance that *changes* the grouping
+    /// mode (the `s` key), and by an observer that saw the mode change but
+    /// found the shared option still carrying the previous mode's names —
+    /// the changer's clear did not land, and the first observer whose
+    /// write succeeds repairs it. Without that repair the echo guard would
+    /// compare tmux's (stale-mode) value against a set this sidebar no
+    /// longer reconciles with, letting the old names fold back in later.
+    /// An observer whose sync already shows the cleared set uses
+    /// [`Self::clear_collapsed_groups_local`] instead — every instance
+    /// writing the same empty set is the per-press stampede that audit
+    /// 2026-11-21 F-3 calls out.
     pub fn persist_cleared_collapsed_groups(&mut self) {
         self.collapsed_groups.clear();
         self.save_collapsed_groups();
+    }
+
+    /// Clear the collapsed set locally and stamp the write marker (and
+    /// the observed-value record) to match the already-cleared shared
+    /// option — no spawn, no broadcast. This is the observer's half of a
+    /// group-by change when tmux already holds the cleared set the
+    /// changer wrote: the echo guard now matches the shared value, so the
+    /// old names cannot fold back in, and nothing needs to be written.
+    pub fn clear_collapsed_groups_local(&mut self) {
+        self.collapsed_groups.clear();
+        self.last_saved_collapsed_groups = Some(std::collections::HashSet::new());
+        self.last_observed_collapsed_groups = Some(std::collections::HashSet::new());
+    }
+
+    /// Whether the last shared collapsed set seen on a sync was a
+    /// non-empty (previous-mode) fold — the condition under which an
+    /// observer of a group-by change must write the clear rather than
+    /// just stamp it locally.
+    pub fn shared_collapsed_still_folded(&self) -> bool {
+        self.last_observed_collapsed_groups
+            .as_ref()
+            .is_some_and(|names| !names.is_empty())
     }
 
     /// Flip compact mode and broadcast the new value to every open
@@ -646,15 +678,22 @@ impl GlobalState {
         if let Some(collapsed_str) = opts.get(tmux::SIDEBAR_COLLAPSED_GROUPS)
             && let Ok(names) =
                 serde_json::from_str::<std::collections::HashSet<String>>(collapsed_str)
-            && Some(&names) != self.last_saved_collapsed_groups.as_ref()
         {
-            // A set this sidebar itself just wrote equals its
-            // `last_saved` copy and is skipped (the same echo-guard
-            // pattern `last_saved_cursor` uses); anything else (another
-            // sidebar's fold, a restored value at startup) is adopted
-            // wholesale.
-            self.collapsed_groups = names.clone();
-            self.last_saved_collapsed_groups = Some(names);
+            // Recorded before the echo guard: the group-by-change branch
+            // in the event loop asks whether the *shared* option still
+            // holds the previous mode's names, regardless of what this
+            // instance adopted.
+            self.last_observed_collapsed_groups = Some(names.clone());
+            if Some(&names) != self.last_saved_collapsed_groups.as_ref() {
+                // A set this sidebar itself just wrote equals its
+                // `last_saved` copy and is skipped (the same echo-guard
+                // pattern `last_saved_cursor` uses); anything else
+                // (another sidebar's fold, a restored value at startup)
+                // is adopted wholesale, and the marker follows so the
+                // next sync treats the shared value as known.
+                self.collapsed_groups = names.clone();
+                self.last_saved_collapsed_groups = Some(names);
+            }
         }
     }
 }
@@ -694,6 +733,65 @@ mod tests {
             global.last_saved_collapsed_groups.as_ref(),
             Some(&["backend".to_string()].into_iter().collect()),
             "a failed write leaves last_saved as the revert anchor"
+        );
+    }
+
+    #[test]
+    fn clear_collapsed_groups_local_stamps_the_echo_guard() {
+        // Audit 2026-11-21 F-3: the observer of a group-by change clears
+        // folds and stamps the marker to match the already-cleared shared
+        // option — no write, and the old fold does not come back.
+        let mut global = GlobalState::new("%99".into());
+        let mut opts = HashMap::new();
+        opts.insert(
+            tmux::SIDEBAR_COLLAPSED_GROUPS.to_string(),
+            r#"["backend"]"#.to_string(),
+        );
+        global.apply_all(&opts);
+        assert!(global.collapsed_groups.contains("backend"));
+        assert!(global.shared_collapsed_still_folded());
+
+        global.clear_collapsed_groups_local();
+        assert!(global.collapsed_groups.is_empty());
+        assert_eq!(
+            global.last_saved_collapsed_groups,
+            Some(std::collections::HashSet::new()),
+            "the marker is stamped as if the clear had been written"
+        );
+        assert!(!global.shared_collapsed_still_folded());
+
+        // The shared cleared set now matches the marker: the echo guard
+        // skips it and nothing re-adopts the fold.
+        let mut cleared = HashMap::new();
+        cleared.insert(tmux::SIDEBAR_COLLAPSED_GROUPS.to_string(), "[]".to_string());
+        global.apply_all(&cleared);
+        assert!(global.collapsed_groups.is_empty());
+    }
+
+    #[test]
+    fn shared_collapsed_still_folded_tracks_the_last_observed_set() {
+        // The observer's repair-write condition: only a shared option that
+        // still carries names is "folded"; unset or empty means the
+        // changer's clear landed and a local stamp is enough.
+        let mut global = GlobalState::new("%99".into());
+        assert!(
+            !global.shared_collapsed_still_folded(),
+            "never having observed the option reads as cleared"
+        );
+
+        let mut opts = HashMap::new();
+        opts.insert(tmux::SIDEBAR_COLLAPSED_GROUPS.to_string(), "[]".to_string());
+        global.apply_all(&opts);
+        assert!(!global.shared_collapsed_still_folded());
+
+        opts.insert(
+            tmux::SIDEBAR_COLLAPSED_GROUPS.to_string(),
+            r#"["stale-mode"]"#.to_string(),
+        );
+        global.apply_all(&opts);
+        assert!(
+            global.shared_collapsed_still_folded(),
+            "a shared set the changer failed to clear is detected for the repair write"
         );
     }
 

@@ -21,7 +21,7 @@ Ground truth: main @ 8eff345 ("docs: execute the 2026-11-20 docs audit (#152)"),
 
 ## Handoff notes for the next session
 
-This report is the plan of record. F-1 and F-2 are implemented (see the Status notes on
+This report is the plan of record. F-1, F-2 and F-3 are implemented (see the Status notes on
 those findings); the rest of the change set in Part 3 is proposals only, and each item
 needs an explicit go-ahead before code changes.
 
@@ -189,6 +189,17 @@ shared-option reload rather than once per rebuild. Same observable behavior, one
 per-tick spawning.
 
 ## F-3. Every sidebar that observes a group-by change re-writes the cleared collapsed set
+
+Status (2026-11-21): fixed, with one refinement over the proposal. The observer branch
+(src/app.rs) now picks its variant by condition, not unconditionally: `clear_collapsed_groups_local()`
+(clear + stamp `last_saved_collapsed_groups = Some({})`, no spawn) when the sync's shared
+option already holds the cleared set, and the persisting `persist_cleared_collapsed_groups()`
+when `shared_collapsed_still_folded()` — the shared option still carries the previous mode's
+names, i.e. the changer's write failed and the first successful observer must repair it
+(the scenario the old `persist_cleared_collapsed_groups` doc comment defended). The condition
+needs the adopted-or-not shared value, so `apply_options` now records
+`last_observed_collapsed_groups` before the echo guard. Pinned by two new tests in
+src/state/global.rs.
 
 `s` (toggle group_by) is implemented as: changer writes the shared option, clears folds
 locally and in tmux, broadcasts (src/app/input.rs:244-253 →
