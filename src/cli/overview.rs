@@ -6,7 +6,8 @@
 //! so a smaller viewer resizes the real agent). Instead each cell mirrors a
 //! pane by polling `capture-pane -p -e` and painting the captured styled
 //! grid into a ratatui buffer, reusing the vte parser from the `capture`
-//! subcommand. Read-only by construction; the originals are untouched.
+//! subcommand. The mirror itself is read-only; the only writes to a real
+//! pane are the explicit interaction actions below.
 //!
 //! Presentation rules that make the grid an instrument instead of a
 //! wallpaper:
@@ -19,9 +20,11 @@
 //!   summarizes the counts.
 //! - Enter zooms the selected cell fullscreen (still a capture — read-only);
 //!   Esc collapses back to the grid.
-//!
-//! Spike scope: popup container (`--popup`), single-threaded refresh in the
-//! event loop. Not yet registered in agent-sidebar.conf.
+//! - Interaction ladder (docs/overview-grid-spike.md): `p` opens an inline
+//!   prompt bar that types into the target pane with `send-keys` (no attach,
+//!   no resize side effects); `f` — or Enter again while zoomed — closes the
+//!   popup and focuses the real pane via `select_pane`. The target is the
+//!   zoomed cell when zoomed, else the selected cell.
 
 use std::collections::{HashMap, HashSet};
 use std::io;
@@ -75,6 +78,76 @@ struct OverviewPane {
     /// `None` when the capture failed (pane gone, tmux error, ...).
     grid: Option<Vec<Vec<StyledCell>>>,
     err: Option<String>,
+}
+
+/// The inline prompt bar: text typed here goes to the named pane with
+/// `send-keys` when Enter is pressed (see [`PromptAction::Send`]). While
+/// open it owns the keyboard — every key is editing, never a grid command.
+struct PromptInput {
+    pane_id: String,
+    /// `agent · repo` label before the caret, so the user can see at a
+    /// glance which pane the text will land in.
+    label: String,
+    text: String,
+    /// Last `send-keys` failure, shown on the bar; the next edit clears it.
+    err: Option<String>,
+}
+
+/// What a key press inside the prompt bar asks the caller to do.
+enum PromptAction {
+    /// The bar consumed the key; keep editing.
+    Stay,
+    /// Dismiss the bar without sending (Esc, or Enter on an empty bar).
+    Close,
+    /// Enter with text: the caller sends it to the bar's pane.
+    Send(String),
+}
+
+/// Edit the prompt bar from one key press. Pure — the tmux round trip for
+/// [`PromptAction::Send`] stays with the caller, so this needs no server.
+fn handle_prompt_key(
+    input: &mut PromptInput,
+    code: KeyCode,
+    modifiers: KeyModifiers,
+) -> PromptAction {
+    // Any keystroke retires a stale send failure; if this send fails too,
+    // the caller restores the text and the error.
+    input.err = None;
+    match code {
+        KeyCode::Esc => PromptAction::Close,
+        KeyCode::Backspace => {
+            input.text.pop();
+            PromptAction::Stay
+        }
+        KeyCode::Enter => {
+            let text = std::mem::take(&mut input.text);
+            if text.trim().is_empty() {
+                PromptAction::Close
+            } else {
+                PromptAction::Send(text)
+            }
+        }
+        // Control/Alt chords would smuggle control bytes into the agent's
+        // input line; plain (shifted) characters are the only accepted text.
+        KeyCode::Char(c) if !modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) => {
+            input.text.push(c);
+            PromptAction::Stay
+        }
+        _ => PromptAction::Stay,
+    }
+}
+
+/// The pane the keyboard interactions act on: the zoomed cell while reading
+/// one agent fullscreen, else the selected grid cell. The id is verified
+/// against the current listing, so a pane that vanished between ticks is no
+/// longer a target.
+fn target_pane<'a>(
+    panes: &'a [OverviewPane],
+    zoomed: Option<&str>,
+    selected: Option<&str>,
+) -> Option<&'a OverviewPane> {
+    let id = zoomed.or(selected)?;
+    panes.iter().find(|p| p.info.pane_id == id)
 }
 
 pub fn cmd_overview(args: &[String]) -> i32 {
@@ -231,6 +304,9 @@ fn run_tui(interval: Duration) -> io::Result<i32> {
         // silently move the selection onto a different agent.
         let mut selected: Option<String> = None;
         let mut zoomed: Option<String> = None;
+        // The inline prompt bar, open while the user composes a message for
+        // one pane (see handle_prompt_key).
+        let mut prompt: Option<PromptInput> = None;
         // Refresh on the first iteration: the elapsed time starts "in the past".
         let mut last_refresh = Instant::now() - interval;
 
@@ -255,6 +331,13 @@ fn run_tui(interval: Duration) -> io::Result<i32> {
                 {
                     zoomed = None;
                 }
+                // A prompt bar whose target pane vanished closes itself.
+                if prompt
+                    .as_ref()
+                    .is_some_and(|input| !panes.iter().any(|p| p.info.pane_id == input.pane_id))
+                {
+                    prompt = None;
+                }
                 last_refresh = Instant::now();
             }
 
@@ -265,8 +348,8 @@ fn run_tui(interval: Duration) -> io::Result<i32> {
                 .as_ref()
                 .and_then(|id| panes.iter().position(|p| &p.info.pane_id == id));
             terminal.draw(|f| match zoom_idx {
-                Some(i) => draw_zoomed(f, &panes, i, &theme),
-                None => draw_grid(f, &panes, selected_idx, &theme),
+                Some(i) => draw_zoomed(f, &panes, i, prompt.as_ref(), &theme),
+                None => draw_grid(f, &panes, selected_idx, prompt.as_ref(), &theme),
             })?;
 
             let budget = interval
@@ -276,29 +359,90 @@ fn run_tui(interval: Duration) -> io::Result<i32> {
             if event::poll(budget)? {
                 match event::read()? {
                     Event::Key(key) if key.kind == KeyEventKind::Press => {
-                        match key.code {
-                            KeyCode::Char('q') => return Ok(0),
-                            KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                                return Ok(0);
+                        // While the prompt bar is open it owns the keyboard.
+                        let mut dismiss = false;
+                        if let Some(input) = prompt.as_mut() {
+                            match handle_prompt_key(&mut *input, key.code, key.modifiers) {
+                                PromptAction::Stay => {}
+                                PromptAction::Close => dismiss = true,
+                                PromptAction::Send(text) => {
+                                    let pane_id = input.pane_id.clone();
+                                    match tmux::send_command(&pane_id, &text) {
+                                        Ok(()) => dismiss = true,
+                                        Err(e) => {
+                                            // Keep the bar open with the text
+                                            // intact so the user can retry or
+                                            // bail; the failure shows on the bar.
+                                            input.text = text;
+                                            input.err = Some(e);
+                                        }
+                                    }
+                                }
                             }
-                            // Zoom collapses first; Esc only quits from the grid.
-                            KeyCode::Esc => {
-                                if zoomed.take().is_none() {
+                        } else {
+                            match key.code {
+                                KeyCode::Char('q') => return Ok(0),
+                                KeyCode::Char('c')
+                                    if key.modifiers.contains(KeyModifiers::CONTROL) =>
+                                {
                                     return Ok(0);
                                 }
-                            }
-                            KeyCode::Enter => {
-                                if let Some(idx) = selected_idx {
-                                    zoomed = Some(panes[idx].info.pane_id.clone());
+                                // Zoom collapses first; Esc only quits from the grid.
+                                KeyCode::Esc => {
+                                    if zoomed.take().is_none() {
+                                        return Ok(0);
+                                    }
                                 }
+                                KeyCode::Enter => {
+                                    // In the grid, Enter zooms. Already zoomed,
+                                    // Enter steps into the real pane: read it
+                                    // first, then work in it.
+                                    if zoomed.is_some() {
+                                        if let Some(pane) = target_pane(
+                                            &panes,
+                                            zoomed.as_deref(),
+                                            selected.as_deref(),
+                                        ) {
+                                            tmux::select_pane(&pane.info.pane_id);
+                                            return Ok(0);
+                                        }
+                                    } else if let Some(idx) = selected_idx {
+                                        zoomed = Some(panes[idx].info.pane_id.clone());
+                                    }
+                                }
+                                KeyCode::Char('p') => {
+                                    if let Some(pane) =
+                                        target_pane(&panes, zoomed.as_deref(), selected.as_deref())
+                                    {
+                                        prompt = Some(PromptInput {
+                                            pane_id: pane.info.pane_id.clone(),
+                                            label: prompt_label(&pane.info),
+                                            text: String::new(),
+                                            err: None,
+                                        });
+                                    }
+                                }
+                                KeyCode::Char('f') => {
+                                    // Focus: close the popup and hand the
+                                    // client to the agent's real pane.
+                                    if let Some(pane) =
+                                        target_pane(&panes, zoomed.as_deref(), selected.as_deref())
+                                    {
+                                        tmux::select_pane(&pane.info.pane_id);
+                                        return Ok(0);
+                                    }
+                                }
+                                KeyCode::Right | KeyCode::Tab | KeyCode::Char('j') => {
+                                    selected = step_selection(&panes, selected, 1);
+                                }
+                                KeyCode::Left | KeyCode::BackTab | KeyCode::Char('k') => {
+                                    selected = step_selection(&panes, selected, -1);
+                                }
+                                _ => {}
                             }
-                            KeyCode::Right | KeyCode::Tab | KeyCode::Char('j') => {
-                                selected = step_selection(&panes, selected, 1);
-                            }
-                            KeyCode::Left | KeyCode::BackTab | KeyCode::Char('k') => {
-                                selected = step_selection(&panes, selected, -1);
-                            }
-                            _ => {}
+                        }
+                        if dismiss {
+                            prompt = None;
                         }
                     }
                     Event::Mouse(mouse)
@@ -519,6 +663,7 @@ fn draw_grid(
     f: &mut Frame,
     panes: &[OverviewPane],
     selected_idx: Option<usize>,
+    prompt: Option<&PromptInput>,
     theme: &ColorTheme,
 ) {
     let area = f.area();
@@ -542,9 +687,13 @@ fn draw_grid(
         return;
     }
 
+    let mut constraints = vec![Constraint::Length(1), Constraint::Fill(1)];
+    if prompt.is_some() {
+        constraints.push(Constraint::Length(1));
+    }
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Length(1), Constraint::Fill(1)])
+        .constraints(constraints)
         .split(area);
     let width = area.width;
     let counts = header_line(panes, theme, false, width);
@@ -569,23 +718,39 @@ fn draw_grid(
             idx += 1;
         }
     }
+    if let Some(input) = prompt {
+        f.render_widget(Paragraph::new(prompt_line(input, theme)), chunks[2]);
+    }
 }
 
 /// Zoomed view: the selected pane's capture rendered into one fullscreen
 /// cell. Same renderer, same rules — just no cropping pressure.
-fn draw_zoomed(f: &mut Frame, panes: &[OverviewPane], idx: usize, theme: &ColorTheme) {
+fn draw_zoomed(
+    f: &mut Frame,
+    panes: &[OverviewPane],
+    idx: usize,
+    prompt: Option<&PromptInput>,
+    theme: &ColorTheme,
+) {
     let area = f.area();
     if area.width < 4 || area.height < 3 {
         return;
     }
+    let mut constraints = vec![Constraint::Length(1), Constraint::Fill(1)];
+    if prompt.is_some() {
+        constraints.push(Constraint::Length(1));
+    }
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Length(1), Constraint::Fill(1)])
+        .constraints(constraints)
         .split(area);
     let width = area.width;
     let counts = header_line(panes, theme, true, width);
     f.render_widget(Paragraph::new(counts), chunks[0]);
     draw_cell(f, chunks[1], &panes[idx], true, theme);
+    if let Some(input) = prompt {
+        f.render_widget(Paragraph::new(prompt_line(input, theme)), chunks[2]);
+    }
 }
 
 /// Pick columns/rows for `n` panes: as many columns as fit at the minimum
@@ -688,12 +853,33 @@ fn header_line(
             ));
         }
     }
-    let hints = if zoomed {
-        "esc grid · q quit"
+    // Key hints degrade by dropping whole segments when the row gets tight;
+    // `q quit` is the one everyone needs, so it survives even when the rest
+    // is squeezed out, and the `✕` keeps its pinned columns at any width.
+    let optional: &[&str] = if zoomed {
+        &["esc grid", "enter go", "p prompt"]
     } else {
-        "tab move · enter zoom · q quit"
+        &["tab move", "enter zoom", "p prompt", "f go"]
     };
-    spans.push(Span::styled(hints, muted));
+    const REQUIRED: &str = "q quit";
+    use unicode_width::UnicodeWidthStr as _;
+    let used_prefix: usize = spans.iter().map(|s| s.width()).sum();
+    let hint_budget = (width as usize)
+        .saturating_sub(used_prefix)
+        .saturating_sub(" ✕".width());
+    let mut shown: Vec<&str> = Vec::new();
+    let mut hints_width = REQUIRED.width();
+    for hint in optional {
+        // Each extra segment costs its own width plus the " · " separator.
+        let cost = hint.width() + 3;
+        if hints_width + cost > hint_budget {
+            break;
+        }
+        shown.push(hint);
+        hints_width += cost;
+    }
+    shown.push(REQUIRED);
+    spans.push(Span::styled(shown.join(" · "), muted));
     // The close button owns the row's last two columns in every state —
     // the same contract the mouse handler uses for its hit zone.
     let used: usize = spans.iter().map(|s| s.width()).sum();
@@ -732,6 +918,38 @@ fn repo_label(info: &PaneInfo) -> String {
     } else {
         format!("{base} ⎇ {}", info.worktree.name)
     }
+}
+
+/// `agent · repo` label for the prompt bar, from the same vocabulary as the
+/// cell title so the bar names the pane the way the grid labels it.
+fn prompt_label(info: &PaneInfo) -> String {
+    let repo = repo_label(info);
+    if repo.is_empty() {
+        info.agent.label().to_string()
+    } else {
+        format!("{} · {repo}", info.agent.label())
+    }
+}
+
+/// The prompt bar line: caret, target label, typed text, block cursor. A
+/// failed send appends its message in the error color — the text stays so
+/// the user can retry or dismiss with Esc.
+fn prompt_line(input: &PromptInput, theme: &ColorTheme) -> Line<'static> {
+    let label = Style::default()
+        .fg(theme.accent)
+        .add_modifier(Modifier::BOLD);
+    let mut spans = vec![
+        Span::styled(format!(" ❯ {} ", input.label), label),
+        Span::raw(input.text.clone()),
+        Span::styled("█", Style::default().fg(theme.accent)),
+    ];
+    if let Some(err) = &input.err {
+        spans.push(Span::styled(
+            format!("  {err}"),
+            Style::default().fg(theme.status_error),
+        ));
+    }
+    Line::from(spans)
 }
 
 /// One-line status under the title: the wait reason for waiting/error panes,
@@ -878,22 +1096,34 @@ mod tests {
         ansi::parse_ansi(text.as_bytes(), 40, 24)
     }
 
-    fn render_frame(panes: &[OverviewPane], selected_idx: Option<usize>, w: u16, h: u16) -> String {
+    fn render_frame(
+        panes: &[OverviewPane],
+        selected_idx: Option<usize>,
+        prompt: Option<&PromptInput>,
+        w: u16,
+        h: u16,
+    ) -> String {
         let theme = ColorTheme::default();
         let backend = TestBackend::new(w, h);
         let mut terminal = Terminal::new(backend).unwrap();
         terminal
-            .draw(|f| draw_grid(f, panes, selected_idx, &theme))
+            .draw(|f| draw_grid(f, panes, selected_idx, prompt, &theme))
             .unwrap();
         buffer_to_string(terminal.backend().buffer())
     }
 
-    fn render_zoom(panes: &[OverviewPane], idx: usize, w: u16, h: u16) -> String {
+    fn render_zoom(
+        panes: &[OverviewPane],
+        idx: usize,
+        prompt: Option<&PromptInput>,
+        w: u16,
+        h: u16,
+    ) -> String {
         let theme = ColorTheme::default();
         let backend = TestBackend::new(w, h);
         let mut terminal = Terminal::new(backend).unwrap();
         terminal
-            .draw(|f| draw_zoomed(f, panes, idx, &theme))
+            .draw(|f| draw_zoomed(f, panes, idx, prompt, &theme))
             .unwrap();
         buffer_to_string(terminal.backend().buffer())
     }
@@ -982,7 +1212,7 @@ mod tests {
             grid: Some(grid_padded("\x1b[32m[claude] line one\x1b[0m")),
             err: None,
         };
-        insta::assert_snapshot!(render_frame(&[pane], None, 40, 10), @"
+        insta::assert_snapshot!(render_frame(&[pane], None, None, 40, 10), @"
         «   ●1tab move · enter zoom · q quit   ✕
         ┌ ● claude · project───────────────────┐
         │ Editing src/main.rs …                │
@@ -1017,8 +1247,8 @@ mod tests {
         // %1 is passed as selected but the waiting pane must sort first.
         let mut panes = panes;
         sort_for_grid(&mut panes);
-        insta::assert_snapshot!(render_frame(&panes, Some(0), 80, 12), @"
-        «   ◐1 ●1tab move · enter zoom · q quit                                        ✕
+        insta::assert_snapshot!(render_frame(&panes, Some(0), None, 80, 12), @"
+        «   ◐1 ●1tab move · enter zoom · p prompt · f go · q quit                      ✕
         ┌ ◐ claude · project───────────────────┐┌ ● claude · project───────────────────┐
         │ Waiting · permission                 ││ Reviewing the diff …                 │
         │                                      ││                                      │
@@ -1040,7 +1270,7 @@ mod tests {
             grid: None,
             err: Some("pane vanished".into()),
         };
-        insta::assert_snapshot!(render_frame(&[pane], None, 40, 6), @"
+        insta::assert_snapshot!(render_frame(&[pane], None, None, 40, 6), @"
         «   ✕1tab move · enter zoom · q quit   ✕
         ┌ ✕ hermes · project───────────────────┐
         │ Error · failed                       │
@@ -1059,8 +1289,8 @@ mod tests {
             grid: Some(grid_padded("\x1b[34m[codex] waiting for input\x1b[0m")),
             err: None,
         };
-        insta::assert_snapshot!(render_zoom(&[pane], 0, 40, 12), @"
-        «   ●1esc grid · q quit                ✕
+        insta::assert_snapshot!(render_zoom(&[pane], 0, None, 40, 12), @"
+        «   ●1esc grid · enter go · q quit     ✕
         ┌ ● codex · project────────────────────┐
         │ Refactoring the export path …        │
         │                                      │
@@ -1175,7 +1405,7 @@ mod tests {
 
     #[test]
     fn snapshot_empty_state() {
-        insta::assert_snapshot!(render_frame(&[], None, 40, 6), @"
+        insta::assert_snapshot!(render_frame(&[], None, None, 40, 6), @"
 
 
 
@@ -1224,7 +1454,7 @@ mod tests {
         let backend = TestBackend::new(w, h);
         let mut terminal = Terminal::new(backend).unwrap();
         terminal
-            .draw(|f| draw_grid(f, panes, selected_idx, &theme))
+            .draw(|f| draw_grid(f, panes, selected_idx, None, &theme))
             .unwrap();
         terminal.backend().buffer().clone()
     }
@@ -1247,7 +1477,7 @@ mod tests {
         let backend = TestBackend::new(80, 12);
         let mut terminal = Terminal::new(backend).unwrap();
         terminal
-            .draw(|f| draw_grid(f, &panes, None, &theme))
+            .draw(|f| draw_grid(f, &panes, None, None, &theme))
             .unwrap();
         let buf = terminal.backend().buffer().clone();
         // Border columns of both cells (the grid area starts below the
@@ -1261,5 +1491,170 @@ mod tests {
                 );
             }
         }
+    }
+
+    fn make_prompt(text: &str, err: Option<&str>) -> PromptInput {
+        PromptInput {
+            pane_id: "%1".into(),
+            label: "claude · project".into(),
+            text: text.into(),
+            err: err.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn prompt_bar_edits_and_sends() {
+        let mut input = make_prompt("", None);
+        // Plain characters accumulate, shifted ones included; control/alt
+        // chords are ignored so no control byte reaches the agent's line.
+        assert!(matches!(
+            handle_prompt_key(&mut input, KeyCode::Char('h'), KeyModifiers::NONE),
+            PromptAction::Stay
+        ));
+        handle_prompt_key(&mut input, KeyCode::Char('i'), KeyModifiers::NONE);
+        handle_prompt_key(&mut input, KeyCode::Char('C'), KeyModifiers::SHIFT);
+        handle_prompt_key(&mut input, KeyCode::Char('x'), KeyModifiers::CONTROL);
+        assert_eq!(input.text, "hiC");
+        handle_prompt_key(&mut input, KeyCode::Backspace, KeyModifiers::NONE);
+        assert_eq!(input.text, "hi");
+        // Enter with text hands it to the caller and empties the bar.
+        assert!(matches!(
+            handle_prompt_key(&mut input, KeyCode::Enter, KeyModifiers::NONE),
+            PromptAction::Send(ref t) if t == "hi"
+        ));
+        assert!(input.text.is_empty());
+        // Enter on an empty bar dismisses without sending; Esc always does.
+        assert!(matches!(
+            handle_prompt_key(&mut input, KeyCode::Enter, KeyModifiers::NONE),
+            PromptAction::Close
+        ));
+        input.text = "draft".into();
+        assert!(matches!(
+            handle_prompt_key(&mut input, KeyCode::Esc, KeyModifiers::NONE),
+            PromptAction::Close
+        ));
+        // Whitespace-only is no prompt either.
+        input.text = "  ".into();
+        assert!(matches!(
+            handle_prompt_key(&mut input, KeyCode::Enter, KeyModifiers::NONE),
+            PromptAction::Close
+        ));
+    }
+
+    #[test]
+    fn prompt_bar_editing_clears_a_send_failure() {
+        let mut input = make_prompt("retry", Some("send-keys failed"));
+        handle_prompt_key(&mut input, KeyCode::Char('!'), KeyModifiers::NONE);
+        assert_eq!(input.err, None);
+        assert_eq!(input.text, "retry!");
+    }
+
+    #[test]
+    fn interactions_target_the_zoomed_cell_then_the_selection() {
+        let panes = vec![
+            OverviewPane {
+                info: make_pane(AgentType::Claude, PaneStatus::Running, "%1"),
+                grid: None,
+                err: None,
+            },
+            OverviewPane {
+                info: make_pane(AgentType::Codex, PaneStatus::Idle, "%2"),
+                grid: None,
+                err: None,
+            },
+        ];
+        // Nothing selected: no target, so p/f/enter-go are all inert.
+        assert!(target_pane(&panes, None, None).is_none());
+        // From the grid the selection is the target; while zoomed, the
+        // zoomed cell wins so typing lands on the pane being read.
+        assert_eq!(
+            target_pane(&panes, None, Some("%2")).unwrap().info.pane_id,
+            "%2"
+        );
+        assert_eq!(
+            target_pane(&panes, Some("%1"), Some("%2"))
+                .unwrap()
+                .info
+                .pane_id,
+            "%1"
+        );
+        // A vanished pane is not a target, even if its id is remembered.
+        assert!(target_pane(&panes, Some("%9"), None).is_none());
+    }
+
+    #[test]
+    fn prompt_label_names_the_pane_like_the_cell_title() {
+        let mut info = make_pane(AgentType::Claude, PaneStatus::Waiting, "%1");
+        assert_eq!(prompt_label(&info), "claude · project");
+        info.worktree.name = "fix-login".into();
+        assert_eq!(prompt_label(&info), "claude · project ⎇ fix-login");
+    }
+
+    #[test]
+    fn snapshot_grid_with_prompt_bar() {
+        let mut info = make_pane(AgentType::Claude, PaneStatus::Running, "%1");
+        info.prompt = "Editing src/main.rs".into();
+        let pane = OverviewPane {
+            info,
+            grid: Some(grid_padded("\x1b[32m[claude] line one\x1b[0m")),
+            err: None,
+        };
+        let prompt = make_prompt("run the tests", None);
+        insta::assert_snapshot!(render_frame(&[pane], Some(0), Some(&prompt), 40, 9), @"
+        «   ●1tab move · enter zoom · q quit   ✕
+        ┌ ● claude · project───────────────────┐
+        │ Editing src/main.rs …                │
+        │                                      │
+        │                                      │
+        │                                      │
+        │[claude] line one                     │
+        └──────────────────────────────────────┘
+         ❯ claude · project run the tests█
+        ");
+    }
+
+    #[test]
+    fn snapshot_prompt_bar_shows_a_send_failure() {
+        let pane = OverviewPane {
+            info: make_pane(AgentType::Claude, PaneStatus::Waiting, "%1"),
+            grid: None,
+            err: None,
+        };
+        let prompt = make_prompt("yes, go ahead", Some("send-keys failed"));
+        insta::assert_snapshot!(render_frame(&[pane], Some(0), Some(&prompt), 56, 7), @"
+        «   ◐1tab move · enter zoom · p prompt · f go · q quit ✕
+        ┌ ◐ claude · project───────────────────────────────────┐
+        │ Waiting · input                                      │
+        │(pane gone)                                           │
+        │                                                      │
+        └──────────────────────────────────────────────────────┘
+         ❯ claude · project yes, go ahead█  send-keys failed
+        ");
+    }
+
+    #[test]
+    fn snapshot_zoomed_with_prompt_bar() {
+        let mut info = make_pane(AgentType::Codex, PaneStatus::Running, "%1");
+        info.prompt = "Refactoring the export path".into();
+        let pane = OverviewPane {
+            info,
+            grid: Some(grid_padded("\x1b[34m[codex] waiting for input\x1b[0m")),
+            err: None,
+        };
+        let prompt = make_prompt("add a test", None);
+        insta::assert_snapshot!(render_zoom(&[pane], 0, Some(&prompt), 40, 12), @"
+        «   ●1esc grid · enter go · q quit     ✕
+        ┌ ● codex · project────────────────────┐
+        │ Refactoring the export path …        │
+        │                                      │
+        │                                      │
+        │                                      │
+        │                                      │
+        │                                      │
+        │                                      │
+        │[codex] waiting for input             │
+        └──────────────────────────────────────┘
+         ❯ claude · project add a test█
+        ");
     }
 }

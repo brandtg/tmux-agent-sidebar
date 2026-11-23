@@ -112,10 +112,15 @@ differs):
 Interaction ladder:
 
 - v1 (spike): read-only by construction; zoom to read.
-- Focus: close the container and `select_pane` to the cell's pane
-  (src/tmux/commands.rs — the agent-jump path already does this).
-- Typing (v3): `send-keys -t` to the real pane — interactive without
-  attaching, zero resize side effects.
+- Focus (shipped): `f` targets the zoomed cell when zoomed, else the
+  selected cell — closes the container and `select_pane`s to the real pane
+  (src/tmux/commands.rs — the same primitive as the sidebar's agent-jump
+  path). Enter while zoomed does the same, so zoom-then-Enter steps from
+  reading an agent to working in it.
+- Typing (shipped): `p` opens an inline prompt bar on the target cell;
+  Enter sends the typed line with `send-keys -t` via tmux::send_command —
+  interactive without attaching, zero resize side effects. Esc dismisses
+  the bar; a failed send keeps the text and shows the error on the bar.
 - Per-cell scrollback: `capture-pane -S` offsets.
 
 ## Spike scope
@@ -201,7 +206,11 @@ target/release/tmux-agent-sidebar overview --popup
 
 Keys: nothing is selected until you move; arrows/tab (or j/k) select and
 move with wraparound, Enter zooms the selected cell fullscreen, Esc
-collapses zoom (and quits from the grid), q quits.
+collapses zoom (and quits from the grid), q quits. On the targeted cell —
+the zoomed one when zoomed, else the selected one — `p` opens a prompt bar
+(type and Enter to send the line straight into that agent, Esc to cancel),
+and `f` — or Enter again while zoomed — closes the popup and focuses the
+agent's real pane.
 Refresh interval defaults to 500ms (`--interval-ms N` to change).
 
 ## Open questions
