@@ -224,6 +224,21 @@ pub fn send_command(target: &str, command: &str) -> Result<(), String> {
     run_tmux_capture(&["send-keys", "-t", target, "Enter"]).map(|_| ())
 }
 
+/// Deliver a user-typed prompt to an agent TUI: literal text, then Enter
+/// after a short pause. The pause matters — agent TUIs (opencode, at
+/// least) batch a fast input burst as a paste, and an Enter arriving in
+/// the same batch is swallowed with the text, leaving the prompt sitting
+/// unsubmitted in the input box. Two back-to-back tmux spawns land well
+/// inside that batch window; 80 ms clears it while staying imperceptible
+/// from the overview's key loop. Unlike [`send_command`] (agent launches
+/// into a plain shell, where immediacy is the right contract), this is
+/// the send-a-prompt path.
+pub fn send_prompt(target: &str, text: &str) -> Result<(), String> {
+    run_tmux_capture(&["send-keys", "-t", target, "-l", text])?;
+    std::thread::sleep(Duration::from_millis(80));
+    run_tmux_capture(&["send-keys", "-t", target, "Enter"]).map(|_| ())
+}
+
 /// Kill the tmux window identified by `window_id` (e.g. `@7`).
 pub fn kill_window(window_id: &str) -> Result<(), String> {
     run_tmux_capture(&["kill-window", "-t", window_id]).map(|_| ())

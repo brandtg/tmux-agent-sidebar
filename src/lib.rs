@@ -8,6 +8,7 @@ pub mod desktop_notification;
 pub mod event;
 pub mod git;
 pub mod group;
+pub mod line_edit;
 pub mod park;
 pub(crate) mod paths;
 pub mod port;

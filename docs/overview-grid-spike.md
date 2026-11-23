@@ -82,10 +82,16 @@ Rendering rules:
   screen — the top of the screen is stale history) and left-anchored.
   Cursor-following or scrollable crops are follow-ups (`cursor_x`/
   `cursor_y` can be added to the listing format).
-- Status-first: cells sort waiting/error → running → idle, waiting/error
-  get bold borders and a wait-reason strip, idle fades to grey, and a
-  header row shows per-status counts. The overview must answer "does
-  anything need me?" in one glance and "what is this one doing?" per cell.
+- Ordering: the default is sidebar order — cells sort exactly like the
+  sidebar's rows (repo groups alphabetically, or session groups under
+  `@sidebar_group_by session`, then session name → window index → tmux
+  line order, reusing src/group.rs's own grouping and git resolver) so
+  the two views share one mental map and cells don't jump when an agent
+  starts working. `s` toggles status-first: cells sort waiting/error →
+  running → idle, waiting/error get bold borders and a wait-reason strip,
+  idle fades to grey. A header row shows per-status counts either way.
+  The overview must answer "does anything need me?" in one glance and
+  "what is this one doing?" per cell.
 - Enter zooms the selected cell fullscreen (still a capture — read-only);
   Esc collapses back to the grid. Without zoom, truncated cells are dead
   ends; with it, the grid is a scanner.
@@ -112,10 +118,23 @@ differs):
 Interaction ladder:
 
 - v1 (spike): read-only by construction; zoom to read.
-- Focus: close the container and `select_pane` to the cell's pane
-  (src/tmux/commands.rs — the agent-jump path already does this).
-- Typing (v3): `send-keys -t` to the real pane — interactive without
-  attaching, zero resize side effects.
+- Focus (shipped): `f` targets the zoomed cell when zoomed, else the
+  selected cell — closes the container and `select_pane`s to the real pane
+  (src/tmux/commands.rs — the same primitive as the sidebar's agent-jump
+  path). Enter while zoomed does the same, so zoom-then-Enter steps from
+  reading an agent to working in it.
+- Typing (shipped): `p` opens an inline prompt bar on the target cell;
+  Enter sends the typed line with `send-keys -t` via tmux::send_prompt —
+  literal text, an 80 ms pause, then Enter, so agent TUIs that batch a
+  fast input burst as a paste (opencode) don't swallow the submitting
+  Enter. The bar edits like the TODO line editor (Ctrl/Alt-Backspace and
+  Ctrl-w kill words, Ctrl/Alt-arrows jump words, Ctrl-a/e/u, arrows,
+  Home/End) via the shared src/line_edit.rs, and windows long drafts
+  around the cursor instead of clipping them. A send is refused — draft
+  kept, reason on the bar — unless the pane's foreground is still an
+  agent, so text can never execute in a shell left by an exited agent.
+  Esc dismisses the bar. Interactive without attaching, zero resize side
+  effects.
 - Per-cell scrollback: `capture-pane -S` offsets.
 
 ## Spike scope
@@ -199,9 +218,24 @@ standalone invocation also works:
 target/release/tmux-agent-sidebar overview --popup
 ```
 
+For a key outside the sidebar, set `set -g @sidebar_overview_key O` in
+`tmux.conf` (before the plugin loads): the shipped conf then binds
+`prefix + O` to `overview --popup --popup-client <pressing client>` —
+opt-in, no default key is claimed. Bind the command by hand for anything
+else (any `run-shell` gets `TMUX_PANE`, so `--popup-client` is optional
+there).
+
 Keys: nothing is selected until you move; arrows/tab (or j/k) select and
 move with wraparound, Enter zooms the selected cell fullscreen, Esc
-collapses zoom (and quits from the grid), q quits.
+collapses zoom (and quits from the grid), q quits. Click a cell to select
+it; click the selected cell again to zoom it (the grid layout feeding the
+render also drives the click hit-test, so they cannot drift). `s` toggles
+the cell order between the sidebar's row order (default) and status-first.
+On the targeted cell — the zoomed one when zoomed, else the selected one —
+`p` opens a prompt bar
+(type and Enter to send the line straight into that agent, Esc to cancel),
+and `f` — or Enter again while zoomed — closes the popup and focuses the
+agent's real pane.
 Refresh interval defaults to 500ms (`--interval-ms N` to change).
 
 ## Open questions
