@@ -11,6 +11,7 @@ Most options must be set **before** loading the plugin in your `tmux.conf`. Colo
 | -------------------------------- | ------- | --------------------------------------------------------------------------------------- |
 | `@sidebar_key`                   | `e`     | Prefix-triggered keybinding to toggle the sidebar in the current window                 |
 | `@sidebar_key_all`               | `E`     | Prefix-triggered keybinding to toggle the sidebar in all windows                        |
+| `@sidebar_overview_key`          | unset   | Optional keybinding that opens the fullscreen agent overview popup from anywhere — no sidebar focus needed. Unset claims no key; the sidebar's own `o` always opens it. The popup pins to the pressing client |
 | `@sidebar_width`                 | `15%`   | Width in columns or as a percentage                                                     |
 | `@sidebar_width_max`             | unset   | Upper bound on the resolved width, in columns — caps a percentage width on very wide screens, including window resizes while the sidebar is open. Unset or `0` means no cap |
 | `@sidebar_position`              | `left`  | Sidebar placement (`left` or `right`)                                                   |

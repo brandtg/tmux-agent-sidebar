@@ -218,6 +218,13 @@ standalone invocation also works:
 target/release/tmux-agent-sidebar overview --popup
 ```
 
+For a key outside the sidebar, set `set -g @sidebar_overview_key O` in
+`tmux.conf` (before the plugin loads): the shipped conf then binds
+`prefix + O` to `overview --popup --popup-client <pressing client>` —
+opt-in, no default key is claimed. Bind the command by hand for anything
+else (any `run-shell` gets `TMUX_PANE`, so `--popup-client` is optional
+there).
+
 Keys: nothing is selected until you move; arrows/tab (or j/k) select and
 move with wraparound, Enter zooms the selected cell fullscreen, Esc
 collapses zoom (and quits from the grid), q quits. Click a cell to select

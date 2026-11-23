@@ -53,6 +53,25 @@ query.
 Jumping to a pane clears the query, so leaving the sidebar always returns the
 list to its unfiltered state.
 
+## Agent overview grid
+
+Opened with `o` (or the header `☰`) inside the sidebar. From anywhere, set
+`@sidebar_overview_key` in `tmux.conf` (before loading the plugin) to bind
+it globally, e.g. `set -g @sidebar_overview_key O` gives `prefix + O`.
+The underlying command is bindable by hand too:
+`tmux-agent-sidebar overview --popup --popup-client "#{client_name}"`.
+
+| Key            | Action                                                        |
+| -------------- | ------------------------------------------------------------- |
+| `Tab` / `→` / `j` | Select the next cell                                      |
+| `BackTab` / `←` / `k` | Select the previous cell                              |
+| Mouse click    | Select a cell; click the selected cell again to zoom it       |
+| `Enter`        | Zoom the selected cell; while zoomed, step into the real pane |
+| `p`            | Prompt bar: type a prompt, `Enter` sends it to that pane, `Esc` cancels (supports the TODO editor's keys — `Ctrl-w`, `Ctrl-arrows`, `Ctrl-a/e/u`) |
+| `f`            | Close the popup and focus that agent's real pane              |
+| `s`            | Toggle cell order: sidebar order (default) / status-first     |
+| `q` / `Esc`    | Quit (Esc collapses zoom first)                               |
+
 ## Repo filter popup
 
 Opened with `r` or by clicking the menu button at the right edge of the
