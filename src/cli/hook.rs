@@ -236,6 +236,9 @@ fn handle_event(pane: &str, agent_name: &str, event: AgentEvent) -> i32 {
             pane,
             &context::make_ctx(&agent, &cwd, &permission_mode, &worktree, &session_id),
         ),
+        AgentEvent::ToolFailure {
+            tool_name, error, ..
+        } => handlers::on_tool_failure(pane, &tool_name, &error),
         AgentEvent::ActivityLog {
             tool_name,
             tool_input,

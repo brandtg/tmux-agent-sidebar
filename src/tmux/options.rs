@@ -92,6 +92,14 @@ pub const PANE_STATUS: &str = "@pane_status";
 /// Non-empty ⇒ the pane is hosting subagent events and writes
 /// from their hooks must be filtered out of parent metadata.
 pub const PANE_SUBAGENTS: &str = "@pane_subagents";
+/// Comma-separated `Type:id` list of subagent session ids this pane has
+/// spawned, kept for hook routing after the liveness guard
+/// ([`PANE_SUBAGENTS`]) closes. Async subagent hosts and bg-pty-host
+/// continuations outlive the parent's Stop and their own SubagentStop
+/// while still firing env-scrubbed hook events; those events carry the
+/// child's session id and route through this list (see
+/// `cli::hook::resolve`). Cleared only on real session teardown.
+pub const PANE_SUBAGENT_ROUTES: &str = "@pane_subagent_routes";
 /// Reason the pane is in `waiting` status (`permission`,
 /// `session_resumed`, etc.).
 pub const PANE_WAIT_REASON: &str = "@pane_wait_reason";

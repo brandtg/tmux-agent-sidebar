@@ -147,6 +147,117 @@ fn notification_idle_prompt_is_meta_only() {
 }
 
 #[test]
+fn permission_request_forces_the_permission_prompt_wait_reason() {
+    // The `PermissionRequest` trigger resolves to the Notification
+    // handler under its own CLI event name: the payload has no
+    // `notification_type`, so the wait reason is forced here. It fires
+    // the moment a prompt appears, ~6s before upstream's
+    // `permission_prompt` Notification would.
+    let adapter = ClaudeAdapter;
+    let input = json!({
+        "cwd": "/tmp",
+        "permission_mode": "default",
+        "hook_event_name": "PermissionRequest",
+        "tool_name": "Bash",
+        "tool_input": {"command": "rm -rf node_modules"}
+    });
+    let event = adapter.parse("permission-request", &input).unwrap();
+    assert_eq!(
+        event,
+        AgentEvent::Notification {
+            agent: "claude".into(),
+            cwd: "/tmp".into(),
+            permission_mode: "default".into(),
+            wait_reason: "permission_prompt".into(),
+            meta_only: false,
+            worktree: None,
+            agent_id: None,
+            session_id: None,
+        }
+    );
+}
+
+#[test]
+fn elicitation_forces_the_elicitation_dialog_wait_reason() {
+    // Same aliasing as permission-request, for MCP elicitation dialogs.
+    let adapter = ClaudeAdapter;
+    let input = json!({
+        "cwd": "/tmp",
+        "permission_mode": "default",
+        "hook_event_name": "Elicitation",
+        "mcp_server_name": "my-mcp-server",
+        "message": "Please provide your username",
+        "mode": "form"
+    });
+    let event = adapter.parse("elicitation", &input).unwrap();
+    assert_eq!(
+        event,
+        AgentEvent::Notification {
+            agent: "claude".into(),
+            cwd: "/tmp".into(),
+            permission_mode: "default".into(),
+            wait_reason: "elicitation_dialog".into(),
+            meta_only: false,
+            worktree: None,
+            agent_id: None,
+            session_id: None,
+        }
+    );
+}
+
+#[test]
+fn aliased_triggers_embed_their_own_cli_event_name() {
+    // Two triggers share the Notification kind; the generated hook
+    // commands must stay distinguishable or the adapter could not
+    // recover the wait reason.
+    for (trigger, expected) in [
+        ("PermissionRequest", "permission-request"),
+        ("Elicitation", "elicitation"),
+        ("Notification", "notification"),
+    ] {
+        let reg = ClaudeAdapter::HOOK_REGISTRATIONS
+            .iter()
+            .find(|r| r.trigger == trigger)
+            .unwrap_or_else(|| panic!("{trigger} missing from HOOK_REGISTRATIONS"));
+        assert_eq!(reg.cli_event_name(), expected);
+    }
+}
+
+#[test]
+fn tool_failure_round_trip() {
+    let adapter = ClaudeAdapter;
+    let input = json!({
+        "cwd": "/tmp",
+        "permission_mode": "auto",
+        "tool_name": "Bash",
+        "error": "Exit code 1\nError: Cannot find module 'express'",
+        "is_interrupt": false,
+        "duration_ms": 4187,
+        "session_id": "abc123"
+    });
+    let event = adapter.parse("tool-failure", &input).unwrap();
+    assert_eq!(
+        event,
+        AgentEvent::ToolFailure {
+            agent: "claude".into(),
+            cwd: "/tmp".into(),
+            permission_mode: "auto".into(),
+            tool_name: "Bash".into(),
+            error: "Exit code 1\nError: Cannot find module 'express'".into(),
+            worktree: None,
+            agent_id: None,
+            session_id: Some("abc123".into()),
+        }
+    );
+}
+
+#[test]
+fn tool_failure_without_tool_name_is_dropped() {
+    let adapter = ClaudeAdapter;
+    assert!(adapter.parse("tool-failure", &json!({})).is_none());
+}
+
+#[test]
 fn stop() {
     let adapter = ClaudeAdapter;
     let input =

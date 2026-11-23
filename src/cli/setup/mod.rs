@@ -84,7 +84,7 @@ pub(crate) fn build_agent_snippet(agent: &str, hook_script: &str) -> Option<serd
     let mut hooks = serde_json::Map::new();
     for reg in table {
         let matcher = reg.matcher.unwrap_or("");
-        let command = format_hook_command(hook_script, agent, reg.kind.external_name());
+        let command = format_hook_command(hook_script, agent, reg.cli_event_name());
         let entry = serde_json::json!({
             "matcher": matcher,
             "hooks": [
@@ -125,7 +125,7 @@ fn is_antigravity_matcher_trigger(trigger: &str) -> bool {
 pub(crate) fn build_antigravity_snippet(hook_script: &str) -> serde_json::Value {
     let mut events = serde_json::Map::new();
     for reg in AntigravityAdapter::HOOK_REGISTRATIONS {
-        let command = format_hook_command(hook_script, ANTIGRAVITY_AGENT, reg.kind.external_name());
+        let command = format_hook_command(hook_script, ANTIGRAVITY_AGENT, reg.cli_event_name());
         let entry = if is_antigravity_matcher_trigger(reg.trigger) {
             serde_json::json!([
                 {
@@ -171,7 +171,7 @@ fn yaml_quote(s: &str) -> String {
 pub(crate) fn build_hermes_yaml_snippet(hook_script: &str) -> String {
     let mut out = String::from("hooks:\n");
     for reg in HermesAdapter::HOOK_REGISTRATIONS {
-        let command = format_hook_command(hook_script, "hermes", reg.kind.external_name());
+        let command = format_hook_command(hook_script, "hermes", reg.cli_event_name());
         out.push_str(&format!(
             "  {}:\n    - command: {}\n",
             reg.trigger,
@@ -383,8 +383,8 @@ pub(crate) fn build_setup_output(hook_script: &str) -> serde_json::Value {
             serde_json::json!({
                 "trigger": reg.trigger,
                 "matcher": serde_json::Value::Null,
-                "event": reg.kind.external_name(),
-                "command": format_hook_command(hook_script, "hermes", reg.kind.external_name()),
+                "event": reg.cli_event_name(),
+                "command": format_hook_command(hook_script, "hermes", reg.cli_event_name()),
             })
         }).collect::<Vec<_>>(),
         "snippet": build_agent_snippet("hermes", hook_script)
@@ -401,8 +401,8 @@ pub(crate) fn build_setup_output(hook_script: &str) -> serde_json::Value {
             serde_json::json!({
                 "trigger": reg.trigger,
                 "matcher": serde_json::Value::Null,
-                "event": reg.kind.external_name(),
-                "command": format_hook_command(hook_script, ANTIGRAVITY_AGENT, reg.kind.external_name()),
+                "event": reg.cli_event_name(),
+                "command": format_hook_command(hook_script, ANTIGRAVITY_AGENT, reg.cli_event_name()),
             })
         }).collect::<Vec<_>>(),
         "snippet": build_antigravity_snippet(hook_script),
@@ -429,14 +429,14 @@ fn build_agent_entry(
     let hooks: Vec<serde_json::Value> = table
         .iter()
         .map(|reg| {
-            let command = format_hook_command(hook_script, agent, reg.kind.external_name());
+            let command = format_hook_command(hook_script, agent, reg.cli_event_name());
             serde_json::json!({
                 "trigger": reg.trigger,
                 "matcher": match reg.matcher {
                     Some(m) => serde_json::Value::String(m.to_string()),
                     None => serde_json::Value::Null,
                 },
-                "event": reg.kind.external_name(),
+                "event": reg.cli_event_name(),
                 "command": command,
             })
         })

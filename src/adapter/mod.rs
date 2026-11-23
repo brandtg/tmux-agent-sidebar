@@ -169,6 +169,19 @@ impl EventBase {
         }
     }
 
+    pub(crate) fn tool_failure(self, tool_name: String, error: String) -> AgentEvent {
+        AgentEvent::ToolFailure {
+            agent: self.agent.into(),
+            cwd: self.cwd,
+            permission_mode: self.permission_mode,
+            tool_name,
+            error,
+            worktree: self.worktree,
+            agent_id: self.agent_id,
+            session_id: self.session_id,
+        }
+    }
+
     pub(crate) fn cwd_changed(self) -> AgentEvent {
         AgentEvent::CwdChanged {
             cwd: self.cwd,
@@ -212,6 +225,22 @@ pub struct HookRegistration {
     pub kind: AgentEventKind,
 }
 
+impl HookRegistration {
+    /// The event name embedded in the generated hook command. Usually the
+    /// kind's external name — but two Claude triggers resolve to
+    /// `Notification` (`PermissionRequest` and `Elicitation`), and the
+    /// adapter can only recover the upstream trigger from the CLI event
+    /// argument, so each needs its own name to force the right wait
+    /// reason. Keep in sync with the `parse()` arms.
+    pub fn cli_event_name(&self) -> &'static str {
+        match (self.trigger, self.kind) {
+            ("PermissionRequest", AgentEventKind::Notification) => "permission-request",
+            ("Elicitation", AgentEventKind::Notification) => "elicitation",
+            _ => self.kind.external_name(),
+        }
+    }
+}
+
 #[cfg(test)]
 pub(crate) fn minimal_payload(kind: AgentEventKind) -> serde_json::Value {
     use serde_json::json;
@@ -223,6 +252,7 @@ pub(crate) fn minimal_payload(kind: AgentEventKind) -> serde_json::Value {
             "toolCall": {"name": "Read", "args": {}}
         }),
         AgentEventKind::ToolStart => json!({"tool_name": "Bash"}),
+        AgentEventKind::ToolFailure => json!({"tool_name": "Bash", "error": "Exit code 1"}),
         AgentEventKind::SubagentStart | AgentEventKind::SubagentStop => {
             json!({"agent_type": "Explore"})
         }
@@ -236,9 +266,11 @@ pub(crate) fn assert_table_drift_free(agent: &str, table: &[HookRegistration]) {
     let adapter = resolve_adapter(agent).expect("adapter should exist");
 
     // Table → parse: every registration must be accepted by `parse()` and
-    // produce an `AgentEvent` whose kind matches the registration.
+    // produce an `AgentEvent` whose kind matches the registration. Uses
+    // `cli_event_name()` so trigger-aliased names (two triggers on one
+    // kind) verify their own parse arms, not just the kind's.
     for reg in table {
-        let event_name = reg.kind.external_name();
+        let event_name = reg.cli_event_name();
         let payload = minimal_payload(reg.kind);
         let produced = adapter.parse(event_name, &payload).unwrap_or_else(|| {
             panic!(

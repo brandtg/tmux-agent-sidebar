@@ -69,7 +69,7 @@ fn plugin_hooks_json_commands_use_expected_event_names() {
             .and_then(|v| v.as_str())
             .unwrap_or_else(|| panic!("trigger {} command must be a string", reg.trigger));
 
-        let expected_event = reg.kind.external_name();
+        let expected_event = reg.cli_event_name();
         let expected_suffix = format!("claude {expected_event}");
         assert!(
             cmd.ends_with(&expected_suffix),
