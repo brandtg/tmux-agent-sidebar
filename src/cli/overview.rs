@@ -367,7 +367,7 @@ fn run_tui(interval: Duration) -> io::Result<i32> {
                                 PromptAction::Close => dismiss = true,
                                 PromptAction::Send(text) => {
                                     let pane_id = input.pane_id.clone();
-                                    match tmux::send_command(&pane_id, &text) {
+                                    match tmux::send_prompt(&pane_id, &text) {
                                         Ok(()) => dismiss = true,
                                         Err(e) => {
                                             // Keep the bar open with the text

@@ -118,9 +118,12 @@ Interaction ladder:
   path). Enter while zoomed does the same, so zoom-then-Enter steps from
   reading an agent to working in it.
 - Typing (shipped): `p` opens an inline prompt bar on the target cell;
-  Enter sends the typed line with `send-keys -t` via tmux::send_command —
-  interactive without attaching, zero resize side effects. Esc dismisses
-  the bar; a failed send keeps the text and shows the error on the bar.
+  Enter sends the typed line with `send-keys -t` via tmux::send_prompt —
+  literal text, an 80 ms pause, then Enter, so agent TUIs that batch a
+  fast input burst as a paste (opencode) don't swallow the submitting
+  Enter. Interactive without attaching, zero resize side effects. Esc
+  dismisses the bar; a failed send keeps the text and shows the error on
+  the bar.
 - Per-cell scrollback: `capture-pane -S` offsets.
 
 ## Spike scope
