@@ -22,9 +22,13 @@
 //!   Esc collapses back to the grid.
 //! - Interaction ladder (docs/overview-grid-spike.md): `p` opens an inline
 //!   prompt bar that types into the target pane with `send-keys` (no attach,
-//!   no resize side effects); `f` — or Enter again while zoomed — closes the
-//!   popup and focuses the real pane via `select_pane`. The target is the
-//!   zoomed cell when zoomed, else the selected cell.
+//!   no resize side effects). The bar edits like the TODO line editor
+//!   (Ctrl-w/Alt-Backspace kill words, Ctrl-arrows jump words, Ctrl-a/e/u)
+//!   and windows long drafts around the cursor. A send is refused unless
+//!   the pane's foreground is still the agent — text must never reach a
+//!   shell. `f` — or Enter again while zoomed — closes the popup and
+//!   focuses the real pane via `select_pane`. The target is the zoomed
+//!   cell when zoomed, else the selected cell.
 
 use std::collections::{HashMap, HashSet};
 use std::io;
@@ -32,8 +36,8 @@ use std::time::{Duration, Instant};
 
 use crossterm::{
     event::{
-        self, EnableMouseCapture, Event, KeyCode, KeyEventKind, KeyModifiers, MouseButton,
-        MouseEventKind,
+        self, EnableMouseCapture, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers,
+        MouseButton, MouseEventKind,
     },
     execute,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
@@ -50,6 +54,7 @@ use ratatui::{
 
 use crate::cli::capture::ansi::{self, StyledCell, palette_rgb};
 use crate::cli::capture::tmux_probe::capture_pane;
+use crate::line_edit::LineEdit;
 use crate::tmux::{self, AgentType, PaneInfo, PaneStatus};
 use crate::ui::colors::ColorTheme;
 
@@ -83,13 +88,16 @@ struct OverviewPane {
 /// The inline prompt bar: text typed here goes to the named pane with
 /// `send-keys` when Enter is pressed (see [`PromptAction::Send`]). While
 /// open it owns the keyboard — every key is editing, never a grid command.
+/// The buffer is a [`LineEdit`], so the bar edits like the TODO panel's
+/// input (readline word moves and kills).
 struct PromptInput {
     pane_id: String,
     /// `agent · repo` label before the caret, so the user can see at a
     /// glance which pane the text will land in.
     label: String,
-    text: String,
-    /// Last `send-keys` failure, shown on the bar; the next edit clears it.
+    edit: LineEdit,
+    /// Last refused or failed send, shown on the bar; the next edit clears
+    /// it.
     err: Option<String>,
 }
 
@@ -103,37 +111,66 @@ enum PromptAction {
     Send(String),
 }
 
-/// Edit the prompt bar from one key press. Pure — the tmux round trip for
+/// Edit the prompt bar from one key press, on the same key vocabulary as
+/// the TODO panel's line editor. Pure — the tmux round trip for
 /// [`PromptAction::Send`] stays with the caller, so this needs no server.
-fn handle_prompt_key(
-    input: &mut PromptInput,
-    code: KeyCode,
-    modifiers: KeyModifiers,
-) -> PromptAction {
-    // Any keystroke retires a stale send failure; if this send fails too,
-    // the caller restores the text and the error.
+fn handle_prompt_key(input: &mut PromptInput, key: KeyEvent) -> PromptAction {
+    // Any keystroke retires a stale refusal; if this send fails too, the
+    // caller restores the draft and the message.
     input.err = None;
-    match code {
-        KeyCode::Esc => PromptAction::Close,
-        KeyCode::Backspace => {
-            input.text.pop();
-            PromptAction::Stay
-        }
+    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+    let alt = key.modifiers.contains(KeyModifiers::ALT);
+    match key.code {
+        KeyCode::Esc => return PromptAction::Close,
         KeyCode::Enter => {
-            let text = std::mem::take(&mut input.text);
-            if text.trim().is_empty() {
+            let text = input.edit.take();
+            return if text.trim().is_empty() {
                 PromptAction::Close
             } else {
                 PromptAction::Send(text)
-            }
+            };
         }
+        // Alt-Backspace / Ctrl-Backspace kill the word before the cursor;
+        // plain Backspace deletes one character.
+        KeyCode::Backspace if ctrl || alt => input.edit.pop_word(),
+        KeyCode::Backspace => input.edit.backspace(),
+        KeyCode::Delete => input.edit.delete(),
+        // Ctrl/Alt arrows jump a whole word; plain arrows step one char.
+        KeyCode::Left if ctrl || alt => input.edit.cursor_word_left(),
+        KeyCode::Right if ctrl || alt => input.edit.cursor_word_right(),
+        KeyCode::Left => input.edit.left(),
+        KeyCode::Right => input.edit.right(),
+        // Plain Home/End and their readline aliases. Separate arms, not an
+        // or-pattern with a guard: a guard on an or-pattern applies to
+        // every alternative (the trap documented in app/input.rs).
+        KeyCode::Home => input.edit.home(),
+        KeyCode::Char('a') if ctrl => input.edit.home(),
+        KeyCode::End => input.edit.end(),
+        KeyCode::Char('e') if ctrl => input.edit.end(),
+        KeyCode::Char('u') if ctrl => input.edit.clear(),
+        KeyCode::Char('w') if ctrl => input.edit.pop_word(),
         // Control/Alt chords would smuggle control bytes into the agent's
         // input line; plain (shifted) characters are the only accepted text.
-        KeyCode::Char(c) if !modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) => {
-            input.text.push(c);
-            PromptAction::Stay
-        }
-        _ => PromptAction::Stay,
+        KeyCode::Char(c) if !ctrl && !alt => input.edit.push(c),
+        _ => {}
+    }
+    PromptAction::Stay
+}
+
+/// Refuse a send whose text would land in a shell instead of an agent.
+/// Panes deliberately survive in the listing after their agent exits —
+/// hook-clear races with detection (query.rs keeps claude/opencode panes
+/// alive on a shell foreground) — and `send-keys` + Enter into a bare
+/// shell executes the prompt as a command line. `None` means the pane is
+/// live under an agent and the send may proceed.
+fn send_refusal(panes: &[OverviewPane], pane_id: &str) -> Option<String> {
+    match panes.iter().find(|p| p.info.pane_id == pane_id) {
+        None => Some("pane is gone — nothing sent".to_string()),
+        Some(p) if tmux::is_shell_command(&p.info.current_command) => Some(format!(
+            "no agent in the foreground ({}) — nothing sent",
+            p.info.current_command
+        )),
+        Some(_) => None,
     }
 }
 
@@ -362,19 +399,27 @@ fn run_tui(interval: Duration) -> io::Result<i32> {
                         // While the prompt bar is open it owns the keyboard.
                         let mut dismiss = false;
                         if let Some(input) = prompt.as_mut() {
-                            match handle_prompt_key(&mut *input, key.code, key.modifiers) {
+                            match handle_prompt_key(&mut *input, key) {
                                 PromptAction::Stay => {}
                                 PromptAction::Close => dismiss = true,
                                 PromptAction::Send(text) => {
                                     let pane_id = input.pane_id.clone();
-                                    match tmux::send_prompt(&pane_id, &text) {
-                                        Ok(()) => dismiss = true,
-                                        Err(e) => {
-                                            // Keep the bar open with the text
-                                            // intact so the user can retry or
-                                            // bail; the failure shows on the bar.
-                                            input.text = text;
-                                            input.err = Some(e);
+                                    // Refuse sends that would land in a
+                                    // shell: the draft stays on the bar
+                                    // with the reason, nothing executes.
+                                    if let Some(reason) = send_refusal(&panes, &pane_id) {
+                                        input.edit.set(&text);
+                                        input.err = Some(reason);
+                                    } else {
+                                        match tmux::send_prompt(&pane_id, &text) {
+                                            Ok(()) => dismiss = true,
+                                            Err(e) => {
+                                                // Keep the bar open with the text
+                                                // intact so the user can retry or
+                                                // bail; the failure shows on the bar.
+                                                input.edit.set(&text);
+                                                input.err = Some(e);
+                                            }
                                         }
                                     }
                                 }
@@ -417,7 +462,7 @@ fn run_tui(interval: Duration) -> io::Result<i32> {
                                         prompt = Some(PromptInput {
                                             pane_id: pane.info.pane_id.clone(),
                                             label: prompt_label(&pane.info),
-                                            text: String::new(),
+                                            edit: LineEdit::new(),
                                             err: None,
                                         });
                                     }
@@ -719,7 +764,10 @@ fn draw_grid(
         }
     }
     if let Some(input) = prompt {
-        f.render_widget(Paragraph::new(prompt_line(input, theme)), chunks[2]);
+        f.render_widget(
+            Paragraph::new(prompt_line(input, chunks[2].width, theme)),
+            chunks[2],
+        );
     }
 }
 
@@ -749,7 +797,10 @@ fn draw_zoomed(
     f.render_widget(Paragraph::new(counts), chunks[0]);
     draw_cell(f, chunks[1], &panes[idx], true, theme);
     if let Some(input) = prompt {
-        f.render_widget(Paragraph::new(prompt_line(input, theme)), chunks[2]);
+        f.render_widget(
+            Paragraph::new(prompt_line(input, chunks[2].width, theme)),
+            chunks[2],
+        );
     }
 }
 
@@ -931,18 +982,36 @@ fn prompt_label(info: &PaneInfo) -> String {
     }
 }
 
-/// The prompt bar line: caret, target label, typed text, block cursor. A
-/// failed send appends its message in the error color — the text stays so
-/// the user can retry or dismiss with Esc.
-fn prompt_line(input: &PromptInput, theme: &ColorTheme) -> Line<'static> {
+/// The prompt bar line: caret, target label, and a cursor-positioned view
+/// of the draft. The text is windowed to the row (`LineEdit::visible_window`)
+/// so a long prompt scrolls around the cursor instead of being clipped past
+/// the edge. A refused or failed send appends its message in the error
+/// color — the draft stays so the user can fix and retry, or Esc to drop it.
+fn prompt_line(input: &PromptInput, width: u16, theme: &ColorTheme) -> Line<'static> {
+    use unicode_width::UnicodeWidthStr as _;
     let label = Style::default()
         .fg(theme.accent)
         .add_modifier(Modifier::BOLD);
-    let mut spans = vec![
-        Span::styled(format!(" ❯ {} ", input.label), label),
-        Span::raw(input.text.clone()),
-        Span::styled("█", Style::default().fg(theme.accent)),
-    ];
+    let prefix = format!(" ❯ {} ", input.label);
+    let mut spans = vec![Span::styled(prefix.clone(), label)];
+    let avail = (width as usize).saturating_sub(prefix.width());
+    let (start, end) = input.edit.visible_window(avail);
+    let chars = input.edit.chars();
+    let cursor = input.edit.cursor().min(input.edit.len());
+    if cursor >= end {
+        // Cursor past the last character: the block follows the window.
+        spans.push(Span::raw(chars[start..end].iter().collect::<String>()));
+        spans.push(Span::styled("█", Style::default().fg(theme.accent)));
+    } else {
+        // Cursor mid-draft: reverse the character under it, so editing in
+        // the middle shows exactly where the next keystroke lands.
+        spans.push(Span::raw(chars[start..cursor].iter().collect::<String>()));
+        spans.push(Span::styled(
+            chars[cursor].to_string(),
+            Style::default().bg(theme.accent).fg(Color::Black),
+        ));
+        spans.push(Span::raw(chars[cursor + 1..end].iter().collect::<String>()));
+    }
     if let Some(err) = &input.err {
         spans.push(Span::styled(
             format!("  {err}"),
@@ -1497,46 +1566,66 @@ mod tests {
         PromptInput {
             pane_id: "%1".into(),
             label: "claude · project".into(),
-            text: text.into(),
+            edit: LineEdit::from_str(text),
             err: err.map(str::to_string),
         }
+    }
+
+    fn key(code: KeyCode, modifiers: KeyModifiers) -> KeyEvent {
+        KeyEvent::new(code, modifiers)
     }
 
     #[test]
     fn prompt_bar_edits_and_sends() {
         let mut input = make_prompt("", None);
         // Plain characters accumulate, shifted ones included; control/alt
-        // chords are ignored so no control byte reaches the agent's line.
+        // chords never insert text.
         assert!(matches!(
-            handle_prompt_key(&mut input, KeyCode::Char('h'), KeyModifiers::NONE),
+            handle_prompt_key(&mut input, key(KeyCode::Char('h'), KeyModifiers::NONE)),
             PromptAction::Stay
         ));
-        handle_prompt_key(&mut input, KeyCode::Char('i'), KeyModifiers::NONE);
-        handle_prompt_key(&mut input, KeyCode::Char('C'), KeyModifiers::SHIFT);
-        handle_prompt_key(&mut input, KeyCode::Char('x'), KeyModifiers::CONTROL);
-        assert_eq!(input.text, "hiC");
-        handle_prompt_key(&mut input, KeyCode::Backspace, KeyModifiers::NONE);
-        assert_eq!(input.text, "hi");
+        handle_prompt_key(&mut input, key(KeyCode::Char('i'), KeyModifiers::NONE));
+        handle_prompt_key(&mut input, key(KeyCode::Char('C'), KeyModifiers::SHIFT));
+        handle_prompt_key(&mut input, key(KeyCode::Char('x'), KeyModifiers::CONTROL));
+        assert_eq!(input.edit.content(), "hiC");
+        // Ctrl-w kills the word before the cursor, same as the TODO editor.
+        handle_prompt_key(&mut input, key(KeyCode::Char('w'), KeyModifiers::CONTROL));
+        assert_eq!(input.edit.content(), "");
+        // Word moves and word-kills from the middle of a draft.
+        input.edit.set("run the tests");
+        handle_prompt_key(&mut input, key(KeyCode::Left, KeyModifiers::CONTROL));
+        assert_eq!(input.edit.cursor(), 8, "at the start of 'tests'");
+        handle_prompt_key(&mut input, key(KeyCode::Backspace, KeyModifiers::ALT));
+        assert_eq!(
+            input.edit.content(),
+            "run tests",
+            "killed 'the', kept the tail"
+        );
+        handle_prompt_key(&mut input, key(KeyCode::Backspace, KeyModifiers::ALT));
+        assert_eq!(input.edit.content(), "tests", "killed 'run' and its space");
+        handle_prompt_key(&mut input, key(KeyCode::Char('u'), KeyModifiers::CONTROL));
+        assert!(input.edit.is_empty());
         // Enter with text hands it to the caller and empties the bar.
+        input.edit.set("hi");
         assert!(matches!(
-            handle_prompt_key(&mut input, KeyCode::Enter, KeyModifiers::NONE),
+            handle_prompt_key(&mut input, key(KeyCode::Enter, KeyModifiers::NONE)),
             PromptAction::Send(ref t) if t == "hi"
         ));
-        assert!(input.text.is_empty());
+        assert!(input.edit.is_empty());
         // Enter on an empty bar dismisses without sending; Esc always does.
         assert!(matches!(
-            handle_prompt_key(&mut input, KeyCode::Enter, KeyModifiers::NONE),
+            handle_prompt_key(&mut input, key(KeyCode::Enter, KeyModifiers::NONE)),
             PromptAction::Close
         ));
-        input.text = "draft".into();
+        input.edit.set("draft");
         assert!(matches!(
-            handle_prompt_key(&mut input, KeyCode::Esc, KeyModifiers::NONE),
+            handle_prompt_key(&mut input, key(KeyCode::Esc, KeyModifiers::NONE)),
             PromptAction::Close
         ));
         // Whitespace-only is no prompt either.
-        input.text = "  ".into();
+        input.edit.set("  ");
         assert!(matches!(
-            handle_prompt_key(&mut input, KeyCode::Enter, KeyModifiers::NONE),
+            handle_prompt_key(&mut input, key(KeyCode::Enter, KeyModifiers::NONE)),
             PromptAction::Close
         ));
     }
@@ -1544,9 +1633,40 @@ mod tests {
     #[test]
     fn prompt_bar_editing_clears_a_send_failure() {
         let mut input = make_prompt("retry", Some("send-keys failed"));
-        handle_prompt_key(&mut input, KeyCode::Char('!'), KeyModifiers::NONE);
+        handle_prompt_key(&mut input, key(KeyCode::Char('!'), KeyModifiers::NONE));
         assert_eq!(input.err, None);
-        assert_eq!(input.text, "retry!");
+        assert_eq!(input.edit.content(), "retry!");
+    }
+
+    #[test]
+    fn sends_are_refused_before_the_text_reaches_a_shell() {
+        let mut live = make_pane(AgentType::OpenCode, PaneStatus::Waiting, "%1");
+        live.current_command = "opencode".into();
+        let mut stale = make_pane(AgentType::Claude, PaneStatus::Idle, "%2");
+        stale.current_command = "zsh".into();
+        let panes = vec![
+            OverviewPane {
+                info: live,
+                grid: None,
+                err: None,
+            },
+            OverviewPane {
+                info: stale,
+                grid: None,
+                err: None,
+            },
+        ];
+        // A live agent foreground sends.
+        assert_eq!(send_refusal(&panes, "%1"), None);
+        // An exited agent (shell back in the foreground) is refused, and
+        // the message names the process so the user sees why.
+        let refused = send_refusal(&panes, "%2").expect("shell foreground must refuse");
+        assert!(
+            refused.contains("zsh") && refused.contains("nothing sent"),
+            "{refused}"
+        );
+        // A pane that vanished between ticks is refused too.
+        assert!(send_refusal(&panes, "%9").is_some());
     }
 
     #[test]
@@ -1629,6 +1749,29 @@ mod tests {
         │                                                      │
         └──────────────────────────────────────────────────────┘
          ❯ claude · project yes, go ahead█  send-keys failed
+        ");
+    }
+
+    #[test]
+    fn snapshot_prompt_bar_windows_a_long_prompt_around_the_cursor() {
+        // A 120+ char draft on a 40-column row: the bar must scroll to
+        // keep the cursor visible instead of clipping at the edge.
+        let pane = OverviewPane {
+            info: make_pane(AgentType::Claude, PaneStatus::Running, "%1"),
+            grid: None,
+            err: None,
+        };
+        let mut prompt = make_prompt("", None);
+        prompt.edit.set(&format!("{}tail", "x".repeat(120)));
+        insta::assert_snapshot!(render_frame(&[pane], Some(0), Some(&prompt), 40, 8), @"
+        «   ●1tab move · enter zoom · q quit   ✕
+        ┌ ● claude · project───────────────────┐
+        │ Running                              │
+        │(pane gone)                           │
+        │                                      │
+        │                                      │
+        └──────────────────────────────────────┘
+         ❯ claude · project xxxxxxxxxxxxxxxtail█
         ");
     }
 

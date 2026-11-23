@@ -121,9 +121,14 @@ Interaction ladder:
   Enter sends the typed line with `send-keys -t` via tmux::send_prompt —
   literal text, an 80 ms pause, then Enter, so agent TUIs that batch a
   fast input burst as a paste (opencode) don't swallow the submitting
-  Enter. Interactive without attaching, zero resize side effects. Esc
-  dismisses the bar; a failed send keeps the text and shows the error on
-  the bar.
+  Enter. The bar edits like the TODO line editor (Ctrl/Alt-Backspace and
+  Ctrl-w kill words, Ctrl/Alt-arrows jump words, Ctrl-a/e/u, arrows,
+  Home/End) via the shared src/line_edit.rs, and windows long drafts
+  around the cursor instead of clipping them. A send is refused — draft
+  kept, reason on the bar — unless the pane's foreground is still an
+  agent, so text can never execute in a shell left by an exited agent.
+  Esc dismisses the bar. Interactive without attaching, zero resize side
+  effects.
 - Per-cell scrollback: `capture-pane -S` offsets.
 
 ## Spike scope
