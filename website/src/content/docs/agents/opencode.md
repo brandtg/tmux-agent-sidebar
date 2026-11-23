@@ -29,9 +29,13 @@ surface is similar to Codex but with a different event source.
 ### Attention cues
 
 - Waiting status + wait reason from `permission.asked` (`permission`) and
-  `question.asked` (`question`)
-- The wait clears when OpenCode emits `permission.replied` / `question.replied`
-  / `question.rejected` — the bridge re-submits an empty prompt so the pane
+  blocking form asks — the `question` tool's `form.created` (`question`,
+  with the request nested under `data.form`) and other forms such as MCP
+  elicitations (`elicitation_dialog`). On 2.0.x daemons the dedicated
+  `question.asked` (`question`) events are used instead
+- The wait clears when OpenCode emits `permission.replied` /
+  `form.replied` / `form.cancelled` (or the legacy `question.replied` /
+  `question.rejected`) — the bridge re-submits an empty prompt so the pane
   returns to running. While a prompt is open the pane stays `waiting` even if
   a parallel tool call finishes, so the cue cannot be missed
 - API failure reason from `session.execution.failed`
