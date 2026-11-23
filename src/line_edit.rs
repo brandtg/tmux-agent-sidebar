@@ -20,7 +20,7 @@ impl LineEdit {
         Self::default()
     }
 
-    pub fn from_str(text: &str) -> Self {
+    pub fn from_text(text: &str) -> Self {
         let chars: Vec<char> = text.chars().collect();
         let cursor = chars.len();
         Self { chars, cursor }
@@ -183,7 +183,7 @@ mod tests {
     use super::*;
 
     fn edit(text: &str, cursor: usize) -> LineEdit {
-        let mut e = LineEdit::from_str(text);
+        let mut e = LineEdit::from_text(text);
         e.cursor = cursor;
         e
     }
@@ -265,7 +265,7 @@ mod tests {
 
     #[test]
     fn take_empties_and_clear_resets() {
-        let mut e = LineEdit::from_str("draft");
+        let mut e = LineEdit::from_text("draft");
         assert_eq!(e.take(), "draft");
         assert!(e.is_empty());
         assert!(e.is_blank());

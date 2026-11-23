@@ -82,10 +82,16 @@ Rendering rules:
   screen — the top of the screen is stale history) and left-anchored.
   Cursor-following or scrollable crops are follow-ups (`cursor_x`/
   `cursor_y` can be added to the listing format).
-- Status-first: cells sort waiting/error → running → idle, waiting/error
-  get bold borders and a wait-reason strip, idle fades to grey, and a
-  header row shows per-status counts. The overview must answer "does
-  anything need me?" in one glance and "what is this one doing?" per cell.
+- Ordering: the default is sidebar order — cells sort exactly like the
+  sidebar's rows (repo groups alphabetically, or session groups under
+  `@sidebar_group_by session`, then session name → window index → tmux
+  line order, reusing src/group.rs's own grouping and git resolver) so
+  the two views share one mental map and cells don't jump when an agent
+  starts working. `s` toggles status-first: cells sort waiting/error →
+  running → idle, waiting/error get bold borders and a wait-reason strip,
+  idle fades to grey. A header row shows per-status counts either way.
+  The overview must answer "does anything need me?" in one glance and
+  "what is this one doing?" per cell.
 - Enter zooms the selected cell fullscreen (still a capture — read-only);
   Esc collapses back to the grid. Without zoom, truncated cells are dead
   ends; with it, the grid is a scanner.
@@ -214,8 +220,12 @@ target/release/tmux-agent-sidebar overview --popup
 
 Keys: nothing is selected until you move; arrows/tab (or j/k) select and
 move with wraparound, Enter zooms the selected cell fullscreen, Esc
-collapses zoom (and quits from the grid), q quits. On the targeted cell —
-the zoomed one when zoomed, else the selected one — `p` opens a prompt bar
+collapses zoom (and quits from the grid), q quits. Click a cell to select
+it; click the selected cell again to zoom it (the grid layout feeding the
+render also drives the click hit-test, so they cannot drift). `s` toggles
+the cell order between the sidebar's row order (default) and status-first.
+On the targeted cell — the zoomed one when zoomed, else the selected one —
+`p` opens a prompt bar
 (type and Enter to send the line straight into that agent, Esc to cancel),
 and `f` — or Enter again while zoomed — closes the popup and focuses the
 agent's real pane.

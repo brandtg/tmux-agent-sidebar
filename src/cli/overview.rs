@@ -15,9 +15,13 @@
 //! - Bottom-anchored capture: agent TUIs draw their current state at the
 //!   bottom of the screen, so a cell shorter than its source pane keeps the
 //!   LAST rows (the live part) and drops the top.
-//! - Status-first ordering: waiting/error cells sort to the front, get loud
-//!   borders and a wait-reason strip; idle cells fade to grey. A header row
-//!   summarizes the counts.
+//! - Ordering: sidebar order is the default — cells sort exactly like the
+//!   sidebar's rows (repo/session groups alphabetically, then
+//!   session → window → pane), so the two views share one mental map and
+//!   cells don't jump when an agent starts working. `s` toggles the
+//!   status-first order: waiting/error cells lead, get loud borders and a
+//!   wait-reason strip; idle cells fade to grey. A header row summarizes
+//!   the counts.
 //! - Enter zooms the selected cell fullscreen (still a capture — read-only);
 //!   Esc collapses back to the grid.
 //! - Interaction ladder (docs/overview-grid-spike.md): `p` opens an inline
@@ -54,8 +58,12 @@ use ratatui::{
 
 use crate::cli::capture::ansi::{self, StyledCell, palette_rgb};
 use crate::cli::capture::tmux_probe::capture_pane;
+use crate::group::{
+    PaneGitInfo, group_panes_by_repo, group_panes_by_session, resolve_pane_git_info,
+};
 use crate::line_edit::LineEdit;
-use crate::tmux::{self, AgentType, PaneInfo, PaneStatus};
+use crate::state::GroupBy;
+use crate::tmux::{self, AgentType, PaneInfo, PaneStatus, SessionInfo};
 use crate::ui::colors::ColorTheme;
 
 const DEFAULT_INTERVAL_MS: u64 = 500;
@@ -341,6 +349,10 @@ fn run_tui(interval: Duration) -> io::Result<i32> {
         // silently move the selection onto a different agent.
         let mut selected: Option<String> = None;
         let mut zoomed: Option<String> = None;
+        // Grid order: the sidebar's own row order by default, `s` to
+        // status-first. The git cache backs the sidebar grouping.
+        let mut sort_mode = SortMode::Sidebar;
+        let mut git_cache: HashMap<String, PaneGitInfo> = HashMap::new();
         // The inline prompt bar, open while the user composes a message for
         // one pane (see handle_prompt_key).
         let mut prompt: Option<PromptInput> = None;
@@ -351,7 +363,7 @@ fn run_tui(interval: Duration) -> io::Result<i32> {
             if last_refresh.elapsed() >= interval {
                 // A failed listing keeps the previous frame instead of
                 // blanking the grid on one transient tmux hiccup.
-                if let Some(next) = refresh_panes() {
+                if let Some(next) = refresh_panes(sort_mode, &mut git_cache) {
                     panes = next;
                 }
                 // A selection whose pane vanished clears entirely: the
@@ -386,7 +398,7 @@ fn run_tui(interval: Duration) -> io::Result<i32> {
                 .and_then(|id| panes.iter().position(|p| &p.info.pane_id == id));
             terminal.draw(|f| match zoom_idx {
                 Some(i) => draw_zoomed(f, &panes, i, prompt.as_ref(), &theme),
-                None => draw_grid(f, &panes, selected_idx, prompt.as_ref(), &theme),
+                None => draw_grid(f, &panes, selected_idx, prompt.as_ref(), sort_mode, &theme),
             })?;
 
             let budget = interval
@@ -477,6 +489,12 @@ fn run_tui(interval: Duration) -> io::Result<i32> {
                                         return Ok(0);
                                     }
                                 }
+                                KeyCode::Char('s') => {
+                                    sort_mode = sort_mode.toggled();
+                                    // Re-order on the next tick instead of
+                                    // waiting out the interval.
+                                    last_refresh = Instant::now() - interval;
+                                }
                                 KeyCode::Right | KeyCode::Tab | KeyCode::Char('j') => {
                                     selected = step_selection(&panes, selected, 1);
                                 }
@@ -496,6 +514,24 @@ fn run_tui(interval: Duration) -> io::Result<i32> {
                         let size = terminal.size()?;
                         if header_close_hit(mouse.row, mouse.column, size.width) {
                             return Ok(0);
+                        }
+                        // Grid-body click selects; clicking the already-
+                        // selected cell zooms it (Esc collapses). While the
+                        // prompt bar owns the keyboard, body clicks stay
+                        // inert.
+                        if prompt.is_none() && zoomed.is_none() {
+                            let area = Rect::new(0, 0, size.width, size.height);
+                            let body = grid_body(area, false);
+                            if let Some(idx) = cell_at(panes.len(), body, mouse.row, mouse.column) {
+                                if let Some(pane) = panes.get(idx) {
+                                    let id = pane.info.pane_id.clone();
+                                    if selected.as_deref() == Some(id.as_str()) {
+                                        zoomed = Some(id);
+                                    } else {
+                                        selected = Some(id);
+                                    }
+                                }
+                            }
                         }
                     }
                     _ => {}
@@ -552,9 +588,19 @@ fn step_selection(panes: &[OverviewPane], current: Option<String>, delta: i32) -
 /// One refresh cycle: the standard single `list-panes -a` sync for the agent
 /// set, one geometry query, then one capture per agent pane. `None` when the
 /// listing itself failed (caller keeps the previous frame).
-fn refresh_panes() -> Option<Vec<OverviewPane>> {
+fn refresh_panes(
+    sort_mode: SortMode,
+    git_cache: &mut HashMap<String, PaneGitInfo>,
+) -> Option<Vec<OverviewPane>> {
     let listing = tmux::fetch_pane_listing()?;
     let snapshot = tmux::build_session_snapshot(&listing, "%overview-none");
+    // Resolved per tick so flipping the sidebar's grouping mode (s in the
+    // sidebar, or a tmux.conf change) lands on the next grid refresh.
+    let group_by = GroupBy::from_label(
+        tmux::run_tmux(&["show-options", "-g", "@sidebar_group_by"])
+            .unwrap_or_default()
+            .trim(),
+    );
 
     let mut infos = Vec::new();
     let mut seen = HashSet::new();
@@ -588,13 +634,79 @@ fn refresh_panes() -> Option<Vec<OverviewPane>> {
             }
         })
         .collect();
-    sort_for_grid(&mut panes);
+    match sort_mode {
+        SortMode::Status => sort_for_grid(&mut panes),
+        SortMode::Sidebar => sort_like_sidebar(&mut panes, &snapshot.sessions, group_by, git_cache),
+    }
     Some(panes)
 }
 
 /// Status-first cell order (see status_rank); stable within a class.
 fn sort_for_grid(panes: &mut [OverviewPane]) {
     panes.sort_by_key(|p| status_rank(&p.info.status));
+}
+
+/// Which order the grid lays cells out in. Sidebar order is the default:
+/// position is memory — the cell you just prompted stays where you left
+/// it. Status-first is opt-in (`s`) for the "does anything need me?"
+/// glance the spike designed around.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SortMode {
+    Sidebar,
+    Status,
+}
+
+impl SortMode {
+    fn toggled(self) -> Self {
+        match self {
+            SortMode::Sidebar => SortMode::Status,
+            SortMode::Status => SortMode::Sidebar,
+        }
+    }
+}
+
+/// Order the cells exactly like the sidebar's agent rows: reuse the
+/// sidebar's own grouping (repo groups — or session groups under
+/// `@sidebar_group_by session` — sorted by display name) and its within-
+/// group key (session name, then window index, stable so panes keep tmux
+/// line order inside a window). Panes the grouping never lists (removed
+/// between the listing and now) fall back to their encounter order at the
+/// end, so the grid never drops a cell over ordering alone.
+///
+/// Grouping needs the same git metadata the sidebar's background worker
+/// caches; the overview has no worker, so the cache is filled here — one
+/// resolve per new grouping anchor, then free.
+fn sort_like_sidebar(
+    panes: &mut [OverviewPane],
+    sessions: &[SessionInfo],
+    group_by: GroupBy,
+    git_cache: &mut HashMap<String, PaneGitInfo>,
+) {
+    for pane in panes.iter() {
+        let anchor = pane.info.grouping_anchor().to_string();
+        if !git_cache.contains_key(&anchor) {
+            git_cache.insert(anchor.clone(), resolve_pane_git_info(&anchor));
+        }
+    }
+    let groups = match group_by {
+        GroupBy::Repo => group_panes_by_repo(sessions, git_cache),
+        GroupBy::Session => group_panes_by_session(sessions, &[], git_cache, false),
+    };
+    let mut rank: HashMap<String, usize> = HashMap::new();
+    let mut next_rank = 0usize;
+    for group in groups {
+        let mut members: Vec<&PaneInfo> = group.panes.iter().map(|(info, _)| info).collect();
+        // Same comparator as group::ordered_group_rows, minus the
+        // non-agent window rows the grid never shows.
+        members.sort_by_key(|p| (p.tmux_session.as_str(), p.window_index));
+        for info in members {
+            if !rank.contains_key(&info.pane_id) {
+                rank.insert(info.pane_id.clone(), next_rank);
+                next_rank += 1;
+            }
+        }
+    }
+    panes.sort_by_key(|p| rank.get(&p.info.pane_id).copied().unwrap_or(usize::MAX));
 }
 
 /// Sort priority for grid cells: the states that can demand the user's
@@ -704,11 +816,57 @@ fn indexed_luminance(color: u8) -> f32 {
     (0.2126 * r as f32 + 0.7152 * g as f32 + 0.0722 * b as f32) / 255.0
 }
 
+/// The grid body area: everything under the single-line header. An open
+/// prompt bar claims one more row off the bottom.
+fn grid_body(size: Rect, prompt_open: bool) -> Rect {
+    let header = 1u16.min(size.height);
+    let bar = u16::from(prompt_open).min(size.height.saturating_sub(header));
+    Rect {
+        x: size.x,
+        y: size.y + header,
+        width: size.width,
+        height: size.height.saturating_sub(header + bar),
+    }
+}
+
+/// Every cell's rect in the grid body, in pane order. One derivation is
+/// shared by rendering and click hit-testing, so where a cell draws and
+/// where its click lands can never drift apart.
+fn cell_rects(n: usize, body: Rect) -> Vec<Rect> {
+    if n == 0 {
+        return Vec::new();
+    }
+    let (cols, rows) = grid_dims(n, body);
+    let row_rects = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints(vec![Constraint::Fill(1); rows as usize])
+        .split(body);
+    let mut rects = Vec::with_capacity(n);
+    for row_rect in row_rects.iter() {
+        let col_rects = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints(vec![Constraint::Fill(1); cols as usize])
+            .split(*row_rect);
+        rects.extend(col_rects.iter().copied());
+    }
+    rects.truncate(n);
+    rects
+}
+
+/// The cell under a grid-mode mouse position, borders included — the
+/// click-to-select hit test. None outside the grid body.
+fn cell_at(n: usize, body: Rect, row: u16, col: u16) -> Option<usize> {
+    cell_rects(n, body)
+        .into_iter()
+        .position(|rect| rect.contains(Position::new(col, row)))
+}
+
 fn draw_grid(
     f: &mut Frame,
     panes: &[OverviewPane],
     selected_idx: Option<usize>,
     prompt: Option<&PromptInput>,
+    sort_mode: SortMode,
     theme: &ColorTheme,
 ) {
     let area = f.area();
@@ -741,27 +899,12 @@ fn draw_grid(
         .constraints(constraints)
         .split(area);
     let width = area.width;
-    let counts = header_line(panes, theme, false, width);
+    let counts = header_line(panes, theme, grid_hints(sort_mode), width);
     f.render_widget(Paragraph::new(counts), chunks[0]);
 
-    let (cols, rows) = grid_dims(panes.len(), chunks[1]);
-    let row_rects = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints(vec![Constraint::Fill(1); rows as usize])
-        .split(chunks[1]);
-    let mut idx = 0;
-    for row in row_rects.iter() {
-        let col_rects = Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints(vec![Constraint::Fill(1); cols as usize])
-            .split(*row);
-        for cell_area in col_rects.iter() {
-            if idx >= panes.len() {
-                return;
-            }
-            draw_cell(f, *cell_area, &panes[idx], selected_idx == Some(idx), theme);
-            idx += 1;
-        }
+    let rects = cell_rects(panes.len(), chunks[1]);
+    for (idx, cell_area) in rects.iter().enumerate() {
+        draw_cell(f, *cell_area, &panes[idx], selected_idx == Some(idx), theme);
     }
     if let Some(input) = prompt {
         f.render_widget(
@@ -793,7 +936,7 @@ fn draw_zoomed(
         .constraints(constraints)
         .split(area);
     let width = area.width;
-    let counts = header_line(panes, theme, true, width);
+    let counts = header_line(panes, theme, ZOOM_HINTS, width);
     f.render_widget(Paragraph::new(counts), chunks[0]);
     draw_cell(f, chunks[1], &panes[idx], true, theme);
     if let Some(input) = prompt {
@@ -870,13 +1013,26 @@ fn draw_cell(f: &mut Frame, area: Rect, pane: &OverviewPane, selected: bool, the
     }
 }
 
+/// Header key-hint segments for grid mode, in degradation order (the tail
+/// drops first when the row narrows). The last segment is the sort toggle
+/// pointing at the mode you do not have.
+fn grid_hints(sort_mode: SortMode) -> &'static [&'static str] {
+    match sort_mode {
+        SortMode::Sidebar => &["tab move", "enter zoom", "p prompt", "f go", "s status"],
+        SortMode::Status => &["tab move", "enter zoom", "p prompt", "f go", "s sidebar"],
+    }
+}
+
+/// Header key-hint segments for zoomed mode.
+const ZOOM_HINTS: &[&str] = &["esc grid", "enter go", "p prompt"];
+
 /// Header row: per-status counts (only non-zero classes) so "does anything
 /// need me?" is one glance, plus the key hints and a clickable `✕` pinned
 /// to the last two columns for closing with the mouse.
 fn header_line(
     panes: &[OverviewPane],
     theme: &ColorTheme,
-    zoomed: bool,
+    optional_hints: &[&str],
     width: u16,
 ) -> Line<'static> {
     let muted = Style::default().fg(theme.border_inactive);
@@ -907,11 +1063,6 @@ fn header_line(
     // Key hints degrade by dropping whole segments when the row gets tight;
     // `q quit` is the one everyone needs, so it survives even when the rest
     // is squeezed out, and the `✕` keeps its pinned columns at any width.
-    let optional: &[&str] = if zoomed {
-        &["esc grid", "enter go", "p prompt"]
-    } else {
-        &["tab move", "enter zoom", "p prompt", "f go"]
-    };
     const REQUIRED: &str = "q quit";
     use unicode_width::UnicodeWidthStr as _;
     let used_prefix: usize = spans.iter().map(|s| s.width()).sum();
@@ -920,7 +1071,7 @@ fn header_line(
         .saturating_sub(" ✕".width());
     let mut shown: Vec<&str> = Vec::new();
     let mut hints_width = REQUIRED.width();
-    for hint in optional {
+    for hint in optional_hints {
         // Each extra segment costs its own width plus the " · " separator.
         let cost = hint.width() + 3;
         if hints_width + cost > hint_budget {
@@ -1169,6 +1320,7 @@ mod tests {
         panes: &[OverviewPane],
         selected_idx: Option<usize>,
         prompt: Option<&PromptInput>,
+        sort_mode: SortMode,
         w: u16,
         h: u16,
     ) -> String {
@@ -1176,7 +1328,7 @@ mod tests {
         let backend = TestBackend::new(w, h);
         let mut terminal = Terminal::new(backend).unwrap();
         terminal
-            .draw(|f| draw_grid(f, panes, selected_idx, prompt, &theme))
+            .draw(|f| draw_grid(f, panes, selected_idx, prompt, sort_mode, &theme))
             .unwrap();
         buffer_to_string(terminal.backend().buffer())
     }
@@ -1281,7 +1433,7 @@ mod tests {
             grid: Some(grid_padded("\x1b[32m[claude] line one\x1b[0m")),
             err: None,
         };
-        insta::assert_snapshot!(render_frame(&[pane], None, None, 40, 10), @"
+        insta::assert_snapshot!(render_frame(&[pane], None, None, SortMode::Sidebar, 40, 10), @"
         «   ●1tab move · enter zoom · q quit   ✕
         ┌ ● claude · project───────────────────┐
         │ Editing src/main.rs …                │
@@ -1316,8 +1468,8 @@ mod tests {
         // %1 is passed as selected but the waiting pane must sort first.
         let mut panes = panes;
         sort_for_grid(&mut panes);
-        insta::assert_snapshot!(render_frame(&panes, Some(0), None, 80, 12), @"
-        «   ◐1 ●1tab move · enter zoom · p prompt · f go · q quit                      ✕
+        insta::assert_snapshot!(render_frame(&panes, Some(0), None, SortMode::Status, 80, 12), @"
+        «   ◐1 ●1tab move · enter zoom · p prompt · f go · s sidebar · q quit          ✕
         ┌ ◐ claude · project───────────────────┐┌ ● claude · project───────────────────┐
         │ Waiting · permission                 ││ Reviewing the diff …                 │
         │                                      ││                                      │
@@ -1339,7 +1491,7 @@ mod tests {
             grid: None,
             err: Some("pane vanished".into()),
         };
-        insta::assert_snapshot!(render_frame(&[pane], None, None, 40, 6), @"
+        insta::assert_snapshot!(render_frame(&[pane], None, None, SortMode::Sidebar, 40, 6), @"
         «   ✕1tab move · enter zoom · q quit   ✕
         ┌ ✕ hermes · project───────────────────┐
         │ Error · failed                       │
@@ -1450,7 +1602,12 @@ mod tests {
             grid: None,
             err: None,
         };
-        let line = header_line(&[pane], &ColorTheme::default(), false, 40);
+        let line = header_line(
+            &[pane],
+            &ColorTheme::default(),
+            grid_hints(SortMode::Sidebar),
+            40,
+        );
         let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
         assert!(
             text.starts_with("«  "),
@@ -1474,7 +1631,7 @@ mod tests {
 
     #[test]
     fn snapshot_empty_state() {
-        insta::assert_snapshot!(render_frame(&[], None, None, 40, 6), @"
+        insta::assert_snapshot!(render_frame(&[], None, None, SortMode::Sidebar, 40, 6), @"
 
 
 
@@ -1523,7 +1680,7 @@ mod tests {
         let backend = TestBackend::new(w, h);
         let mut terminal = Terminal::new(backend).unwrap();
         terminal
-            .draw(|f| draw_grid(f, panes, selected_idx, None, &theme))
+            .draw(|f| draw_grid(f, panes, selected_idx, None, SortMode::Sidebar, &theme))
             .unwrap();
         terminal.backend().buffer().clone()
     }
@@ -1546,7 +1703,7 @@ mod tests {
         let backend = TestBackend::new(80, 12);
         let mut terminal = Terminal::new(backend).unwrap();
         terminal
-            .draw(|f| draw_grid(f, &panes, None, None, &theme))
+            .draw(|f| draw_grid(f, &panes, None, None, SortMode::Sidebar, &theme))
             .unwrap();
         let buf = terminal.backend().buffer().clone();
         // Border columns of both cells (the grid area starts below the
@@ -1566,7 +1723,7 @@ mod tests {
         PromptInput {
             pane_id: "%1".into(),
             label: "claude · project".into(),
-            edit: LineEdit::from_str(text),
+            edit: LineEdit::from_text(text),
             err: err.map(str::to_string),
         }
     }
@@ -1720,7 +1877,9 @@ mod tests {
             err: None,
         };
         let prompt = make_prompt("run the tests", None);
-        insta::assert_snapshot!(render_frame(&[pane], Some(0), Some(&prompt), 40, 9), @"
+        insta::assert_snapshot!(
+            render_frame(&[pane], Some(0), Some(&prompt), SortMode::Sidebar, 40, 9),
+            @"
         «   ●1tab move · enter zoom · q quit   ✕
         ┌ ● claude · project───────────────────┐
         │ Editing src/main.rs …                │
@@ -1741,7 +1900,9 @@ mod tests {
             err: None,
         };
         let prompt = make_prompt("yes, go ahead", Some("send-keys failed"));
-        insta::assert_snapshot!(render_frame(&[pane], Some(0), Some(&prompt), 56, 7), @"
+        insta::assert_snapshot!(
+            render_frame(&[pane], Some(0), Some(&prompt), SortMode::Sidebar, 56, 7),
+            @"
         «   ◐1tab move · enter zoom · p prompt · f go · q quit ✕
         ┌ ◐ claude · project───────────────────────────────────┐
         │ Waiting · input                                      │
@@ -1763,7 +1924,9 @@ mod tests {
         };
         let mut prompt = make_prompt("", None);
         prompt.edit.set(&format!("{}tail", "x".repeat(120)));
-        insta::assert_snapshot!(render_frame(&[pane], Some(0), Some(&prompt), 40, 8), @"
+        insta::assert_snapshot!(
+            render_frame(&[pane], Some(0), Some(&prompt), SortMode::Sidebar, 40, 8),
+            @"
         «   ●1tab move · enter zoom · q quit   ✕
         ┌ ● claude · project───────────────────┐
         │ Running                              │
@@ -1799,5 +1962,182 @@ mod tests {
         └──────────────────────────────────────┘
          ❯ claude · project add a test█
         ");
+    }
+
+    fn cells(infos: Vec<PaneInfo>) -> Vec<OverviewPane> {
+        infos
+            .into_iter()
+            .map(|info| OverviewPane {
+                info,
+                grid: None,
+                err: None,
+            })
+            .collect()
+    }
+
+    fn ids(panes: &[OverviewPane]) -> Vec<&str> {
+        panes.iter().map(|p| p.info.pane_id.as_str()).collect()
+    }
+
+    fn window(id: &str, panes: Vec<PaneInfo>) -> crate::tmux::WindowInfo {
+        crate::tmux::WindowInfo {
+            window_id: id.into(),
+            window_name: String::new(),
+            window_active: false,
+            auto_rename: false,
+            panes,
+        }
+    }
+
+    /// A pane in repo `repo`, session `session`, window `window`.
+    fn located(
+        agent: AgentType,
+        status: PaneStatus,
+        pane_id: &str,
+        repo: &str,
+        session: &str,
+        window_index: i64,
+    ) -> PaneInfo {
+        let mut info = make_pane(agent, status, pane_id);
+        info.path = format!("/src/{repo}");
+        info.tmux_session = session.into();
+        info.window_index = window_index;
+        info
+    }
+
+    #[test]
+    fn sidebar_order_matches_the_sidebars_group_then_position_sort() {
+        // Repos beta/alpha sort by display name; inside a group it is
+        // session name, then window index, then tmux line order. Statuses
+        // are deliberately adversarial (waiting cells late, running first)
+        // to prove they never enter the key.
+        let infos = vec![
+            located(
+                AgentType::Claude,
+                PaneStatus::Running,
+                "%1",
+                "beta",
+                "work",
+                3,
+            ),
+            located(
+                AgentType::Claude,
+                PaneStatus::Waiting,
+                "%2",
+                "beta",
+                "work",
+                1,
+            ),
+            located(AgentType::Codex, PaneStatus::Idle, "%3", "alpha", "work", 2),
+            located(
+                AgentType::Codex,
+                PaneStatus::Waiting,
+                "%4",
+                "alpha",
+                "zeta",
+                1,
+            ),
+            located(
+                AgentType::OpenCode,
+                PaneStatus::Error,
+                "%5",
+                "alpha",
+                "work",
+                2,
+            ),
+        ];
+        let mut panes = cells(infos);
+        // Pre-seed the git cache: default info groups each pane under its
+        // raw anchor; seeding keeps the test subprocess-free.
+        let mut cache = HashMap::new();
+        for repo in ["alpha", "beta"] {
+            cache.insert(format!("/src/{repo}"), PaneGitInfo::default());
+        }
+        let sessions = vec![
+            SessionInfo {
+                session_name: "work".into(),
+                windows: vec![
+                    window(
+                        "@1",
+                        vec![
+                            panes[1].info.clone(),
+                            panes[2].info.clone(),
+                            panes[4].info.clone(),
+                        ],
+                    ),
+                    window("@3", vec![panes[0].info.clone()]),
+                ],
+            },
+            SessionInfo {
+                session_name: "zeta".into(),
+                windows: vec![window("@4", vec![panes[3].info.clone()])],
+            },
+        ];
+        sort_like_sidebar(&mut panes, &sessions, GroupBy::Repo, &mut cache);
+        // alpha group first: %3, %5 (same window, tmux line order), then
+        // %4 (same group, session zeta after work); then beta: %2, %1.
+        assert_eq!(ids(&panes), vec!["%3", "%5", "%4", "%2", "%1"]);
+
+        // Status-first still floats the loud cells — it is one `s` away.
+        // Stable within a class, so the two waiting cells keep their
+        // sidebar-relative order (%4 ahead of %2 as the sort sees them).
+        sort_for_grid(&mut panes);
+        assert_eq!(ids(&panes)[0], "%4", "waiting leads");
+        assert_eq!(SortMode::Sidebar.toggled(), SortMode::Status);
+        assert_eq!(SortMode::Status.toggled(), SortMode::Sidebar);
+    }
+
+    #[test]
+    fn unknown_panes_keep_encounter_order_at_the_end() {
+        let infos = vec![
+            located(
+                AgentType::Claude,
+                PaneStatus::Running,
+                "%1",
+                "beta",
+                "work",
+                1,
+            ),
+            located(
+                AgentType::Claude,
+                PaneStatus::Idle,
+                "%9",
+                "ghost",
+                "work",
+                1,
+            ),
+        ];
+        let mut panes = cells(infos);
+        let mut cache = HashMap::new();
+        cache.insert("/src/beta".into(), PaneGitInfo::default());
+        let sessions = vec![SessionInfo {
+            session_name: "work".into(),
+            windows: vec![window("@1", vec![panes[0].info.clone()])],
+        }];
+        sort_like_sidebar(&mut panes, &sessions, GroupBy::Repo, &mut cache);
+        assert_eq!(
+            ids(&panes),
+            vec!["%1", "%9"],
+            "unranked cell trails, never dropped"
+        );
+    }
+
+    #[test]
+    fn grid_body_click_hits_the_cell_under_it() {
+        // 4 panes across an 80x20 body starting at row 1: 2 cols x 2 rows
+        // of 40x10 cells (cell_rects is the single layout source of truth
+        // shared by drawing and hit-testing).
+        let body = Rect::new(0, 1, 80, 20);
+        assert_eq!(cell_at(4, body, 1, 0), Some(0));
+        assert_eq!(cell_at(4, body, 1, 39), Some(0));
+        assert_eq!(cell_at(4, body, 1, 40), Some(1));
+        assert_eq!(cell_at(4, body, 15, 79), Some(3));
+        assert_eq!(cell_at(4, body, 11, 0), Some(2));
+        // The header row and below-the-body rows hit no cell.
+        assert_eq!(cell_at(4, body, 0, 10), None);
+        assert_eq!(cell_at(4, body, 21, 10), None);
+        // Empty grid and degenerate sizes are inert.
+        assert_eq!(cell_at(0, body, 1, 1), None);
+        assert_eq!(cell_at(2, Rect::new(0, 1, 80, 0), 5, 5), None);
     }
 }
