@@ -21,9 +21,14 @@
 // `session.idle` alone left panes running forever. Title changes arrive as
 // `session.renamed` (2.0.32+: flat `data: { sessionID, title }`; 2.0.32 no
 // longer emits `session.updated` at all — older daemons titled via
-// `session.updated` with `data.info.title`, still handled), and the
-// question tool surfaces as `question.asked` / `question.replied` /
-// `question.rejected` with a flat `data.sessionID`.
+// `session.updated` with `data.info.title`, still handled). Blocking asks
+// changed shape in 2.1.x: the dedicated `question.asked` / `question.replied`
+// / `question.rejected` events are gone — the `question` tool now asks via
+// the form surface (`form.created` with the request nested under `data.form`,
+// `metadata.kind: "question"`), MCP elicitations ride the same events
+// (`kind: "mcp"`, owned by the non-session `"global"` sentinel), and the
+// wait clears via `form.replied` / `form.cancelled`. The legacy `question.*`
+// events are still handled so 2.0.x daemons keep working.
 //
 // The bus is server-global: a plugin instance receives events for every
 // session on the service, including other projects. `session.created`
@@ -463,7 +468,7 @@ async function resolvePaneId(cwd, sessionId) {
   return { pane: chosen, committed };
 }
 
-const hook = (eventName, payload) => {
+const hook = (eventName, payload, opts = {}) => {
   hookChain = hookChain.then(async () => {
     // Child-session events ride under the parent's identity so they cannot
     // rebind the pane or wipe its title (see routeSessionId). Unknown ids
@@ -481,7 +486,11 @@ const hook = (eventName, payload) => {
     // environment unchanged so non-daemon setups behave exactly as before.
     // A guessed resolution (every candidate bound, none provably stale)
     // flags the spawn so the CLI does not record the session binding on a
-    // pane that may belong to another live session.
+    // pane that may belong to another live session. `opts.unbind` forces
+    // the same flag for payloads whose session id is not a real session
+    // (the form surface's "global" elicitation owner): resolution may pick
+    // the pane by cwd, but the CLI must never record that id as the pane's
+    // binding.
     const resolved = await resolvePaneId(payload?.cwd, payload?.session_id ?? "");
     // A committed resolution is about to write this session's binding on
     // the pane: cached resolutions captured before that write are stale
@@ -510,7 +519,7 @@ const hook = (eventName, payload) => {
         : {
             ...process.env,
             TMUX_PANE: resolved.pane,
-            ...(resolved.committed
+            ...(resolved.committed && !opts.unbind
               ? {}
               : { TMUX_AGENT_SIDEBAR_BIND_SESSION: "0" }),
           };
@@ -932,8 +941,52 @@ export default {
             hook("notification", { cwd, session_id, wait_reason: "permission" });
             continue;
 
+          // Blocking asks. 2.0.x dedicated question events (`question.asked`
+          // with a flat `data.sessionID`) are still handled below for older
+          // daemons; 2.1.x asks through the form surface instead —
+          // `form.created` nests the request under `data.form`, where the
+          // `question` tool sets `metadata.kind: "question"` and MCP
+          // elicitations arrive as `kind: "mcp"` owned by the non-session
+          // `"global"` sentinel. Both block the turn on the user exactly
+          // like a permission ask, so they map to the same waiting
+          // notification; a mid-turn subagent ask still flags the pane
+          // (the whole turn is blocked on the answer), while between turns
+          // only main-session asks are forwarded so a background subagent
+          // cannot yank an idle pane around.
+          case "form.created": {
+            const form =
+              data.form && typeof data.form === "object" ? data.form : data;
+            const form_session = sessionIdOf(form?.sessionID);
+            if (!(await knownSessionBelongs(form_session))) {
+              continue;
+            }
+            if (!isMainSession(form_session) && !turnActiveFor(form_session)) {
+              continue;
+            }
+            // The question tool's form is a question; every other form
+            // (MCP elicitation, provider auth) is a dialog waiting on a
+            // selection. The `"global"` owner is not a real session — the
+            // spawn is flagged unbind so resolution may still pick the pane
+            // by cwd, but the CLI never records that id as the pane's
+            // session binding.
+            hook(
+              "notification",
+              {
+                cwd,
+                session_id: form_session,
+                wait_reason:
+                  form?.metadata?.kind === "question"
+                    ? "question"
+                    : "elicitation_dialog",
+              },
+              { unbind: form_session === "" || form_session === "global" },
+            );
+            continue;
+          }
+
           // OpenCode's `question` tool blocks the turn on a user answer
-          // the same way a permission prompt does. Without this the pane
+          // the same way a permission prompt does (2.0.x wire shape; 2.1.x
+          // replaced it with `form.created` above). Without this the pane
           // stayed `running` while the agent waited for the answer. The
           // sessionID is flat on the event data.
           case "question.asked": {
@@ -951,22 +1004,30 @@ export default {
             continue;
           }
 
-          // The user answered (or rejected) a permission/question prompt.
-          // Re-submit an empty prompt to clear the wait and mark the pane
-          // running again — the same synthetic-resume signal the `busy`
-          // branch uses for retry recovery. The activity-log handler keeps
-          // a pending-action wait sticky, so a concurrent tool's result
-          // cannot clear it; this reply is what resumes the pane.
+          // The user answered (or rejected / dismissed) a permission,
+          // question, or form ask. Re-submit an empty prompt to clear the
+          // wait and mark the pane running again — the same
+          // synthetic-resume signal the `busy` branch uses for retry
+          // recovery. The activity-log handler keeps a pending-action wait
+          // sticky, so a concurrent tool's result cannot clear it; this
+          // reply is what resumes the pane. A `"global"` form reply is not
+          // a real session's: flagged unbind like its ask above.
           case "permission.replied":
           case "question.replied":
           case "question.rejected":
+          case "form.replied":
+          case "form.cancelled":
             if (!(await knownSessionBelongs(session_id))) {
               continue;
             }
             if (!isMainSession(session_id) && !turnActiveFor(session_id)) {
               continue;
             }
-            hook("user-prompt-submit", { cwd, session_id, prompt: "" });
+            hook(
+              "user-prompt-submit",
+              { cwd, session_id, prompt: "" },
+              { unbind: session_id === "global" },
+            );
             continue;
         }
       }

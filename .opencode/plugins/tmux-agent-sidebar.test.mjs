@@ -396,6 +396,114 @@ test("permission and question replies resume the pane", async () => {
   }
 });
 
+// 2.1.x removed the dedicated question events: the `question` tool now
+// asks via `form.created` (request nested under `data.form`, metadata.kind
+// "question") and clears via `form.replied` / `form.cancelled`. Without the
+// form mapping the pane stayed `running` (solid/flashing green) for as
+// long as the agent waited on the answer — the ask was invisible.
+test("2.1.x form asks map to waiting notifications like the question tool", async () => {
+  const h = await loadPlugin();
+  try {
+    const plugin = await h.init("/repo");
+    await plugin.event({ type: "session.created", data: { sessionID: MAIN, title: "Main" } });
+    await plugin.event({ type: "session.created", data: { sessionID: CHILD, parentID: MAIN, title: "subagent" } });
+    await plugin.prompt({ sessionID: MAIN, prompt: { text: "go" } });
+    // Mid-turn child question form passes (the whole turn is blocked).
+    await plugin.event({
+      type: "form.created",
+      data: {
+        form: {
+          id: "frm_1",
+          sessionID: CHILD,
+          title: "Questions",
+          metadata: { kind: "question", tool: { messageID: "msg_1", id: "call_1" } },
+          fields: [],
+        },
+      },
+    });
+    await plugin.event({ type: "session.idle", data: { sessionID: MAIN } });
+    // Between turns a child form is dropped, a main form passes.
+    await plugin.event({
+      type: "form.created",
+      data: { form: { id: "frm_2", sessionID: CHILD, title: "Questions", metadata: { kind: "question" }, fields: [] } },
+    });
+    await plugin.event({
+      type: "form.created",
+      data: { form: { id: "frm_3", sessionID: MAIN, title: "Questions", metadata: { kind: "question" }, fields: [] } },
+    });
+    await settle(h);
+
+    assert.deepEqual(h.events(), [
+      "session-start " + JSON.stringify({ cwd: "/repo", session_id: MAIN, source: "startup" }),
+      "session-title " + JSON.stringify({ cwd: "/repo", session_id: MAIN, title: "Main" }),
+      "user-prompt-submit " + JSON.stringify({ cwd: "/repo", session_id: MAIN, prompt: "go" }),
+      // Same parent-id routing as permission asks.
+      "notification " + JSON.stringify({ cwd: "/repo", session_id: MAIN, wait_reason: "question" }),
+      "stop " + JSON.stringify({ cwd: "/repo", session_id: MAIN, last_message: "" }),
+      "notification " + JSON.stringify({ cwd: "/repo", session_id: MAIN, wait_reason: "question" }),
+    ]);
+  } finally {
+    h.dispose();
+  }
+});
+
+test("non-question forms flag an elicitation dialog and never bind the global owner", async () => {
+  const h = await loadPlugin({ panes: "%2\topencode\t/repo\t\n" });
+  try {
+    process.env.TMUX_RECORD_ENV = "1";
+    const plugin = await h.init("/repo");
+    await plugin.prompt({ sessionID: MAIN, prompt: { text: "go" } });
+    // MCP elicitations are owned by the non-session "global" sentinel:
+    // mid-turn they still flag the pane (the turn is blocked on the
+    // answer) but must never record "global" as the pane's session
+    // binding (bind=0), or every later real-session event would have to
+    // heal the pane's identity.
+    await plugin.event({
+      type: "form.created",
+      data: { form: { id: "frm_1", sessionID: "global", title: "Authorize", metadata: { kind: "mcp" }, fields: [] } },
+    });
+    // A real-session non-question form (provider auth) binds normally.
+    await plugin.event({
+      type: "form.created",
+      data: { form: { id: "frm_2", sessionID: MAIN, title: "Connect", metadata: { kind: "provider" }, fields: [] } },
+    });
+    // The "global" form's reply is likewise unbind-flagged.
+    await plugin.event({ type: "form.replied", data: { sessionID: "global", id: "frm_1", answer: { authorization: "ok" } } });
+    await settle(h);
+
+    assert.deepEqual(h.events(), [
+      "user-prompt-submit " + JSON.stringify({ cwd: "/repo", session_id: MAIN, prompt: "go" }) + " env=%2 bind=unset",
+      "notification " + JSON.stringify({ cwd: "/repo", session_id: "global", wait_reason: "elicitation_dialog" }) + " env=%2 bind=0",
+      "notification " + JSON.stringify({ cwd: "/repo", session_id: MAIN, wait_reason: "elicitation_dialog" }) + " env=%2 bind=unset",
+      "user-prompt-submit " + JSON.stringify({ cwd: "/repo", session_id: "global", prompt: "" }) + " env=%2 bind=0",
+    ]);
+  } finally {
+    delete process.env.TMUX_RECORD_ENV;
+    h.dispose();
+  }
+});
+
+test("form replies and cancellations resume the pane", async () => {
+  const h = await loadPlugin();
+  try {
+    const plugin = await h.init("/repo");
+    await plugin.prompt({ sessionID: MAIN, prompt: { text: "go" } });
+    await plugin.event({ type: "form.replied", data: { sessionID: MAIN, id: "frm_1", answer: { q0: ["once"] } } });
+    await plugin.event({ type: "form.cancelled", data: { sessionID: MAIN, id: "frm_2" } });
+    await settle(h);
+
+    assert.deepEqual(h.events(), [
+      "user-prompt-submit " + JSON.stringify({ cwd: "/repo", session_id: MAIN, prompt: "go" }),
+      // Each reply re-submits an empty prompt: the synthetic resume that
+      // clears the sticky wait and flips the pane back to running.
+      "user-prompt-submit " + JSON.stringify({ cwd: "/repo", session_id: MAIN, prompt: "" }),
+      "user-prompt-submit " + JSON.stringify({ cwd: "/repo", session_id: MAIN, prompt: "" }),
+    ]);
+  } finally {
+    h.dispose();
+  }
+});
+
 test("session.execution.failed ends the turn and re-arms gating for the next one", async () => {
   const h = await loadPlugin();
   try {

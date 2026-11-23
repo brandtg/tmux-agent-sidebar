@@ -26,8 +26,10 @@ pub(in crate::cli::hook) fn is_permission_wait_reason(wait_reason: &str) -> bool
 }
 
 /// Wait reasons whose agent does not clear the wait from a tool result.
-/// OpenCode emits an explicit reply event (`permission.asked` /
-/// `question.asked`); Antigravity's waiting state is maintained and
+/// OpenCode emits an explicit reply event (`permission.replied`, and 2.1.x
+/// `form.replied` / `form.cancelled` for the question tool and MCP
+/// elicitation forms — `elicitation_dialog` is a form ask that is not the
+/// question tool); Antigravity's waiting state is maintained and
 /// cleared by the sidebar's approval-prompt scan worker. While one of
 /// these is pending the pane must stay `waiting`: a concurrent tool
 /// result is not the resume signal and must not flip it back to
@@ -35,7 +37,10 @@ pub(in crate::cli::hook) fn is_permission_wait_reason(wait_reason: &str) -> bool
 /// resume signal — so its reasons are absent here and its
 /// activity-log transitions are unchanged.
 pub(in crate::cli::hook) fn is_pending_action_wait_reason(wait_reason: &str) -> bool {
-    matches!(wait_reason, "permission" | "question")
+    matches!(
+        wait_reason,
+        "permission" | "question" | "elicitation_dialog"
+    )
 }
 
 /// Status `Stop` should land in.
@@ -78,12 +83,14 @@ mod tests {
     fn is_pending_action_wait_reason_allowlist() {
         assert!(is_pending_action_wait_reason("permission"));
         assert!(is_pending_action_wait_reason("question"));
+        // OpenCode 2.1.x form asks that are not the question tool (MCP
+        // elicitation, provider auth) clear via an explicit form reply.
+        assert!(is_pending_action_wait_reason("elicitation_dialog"));
 
         // Claude's reasons clear via PostToolUse, not a reply event, so
         // they must not be sticky.
         assert!(!is_pending_action_wait_reason("permission_prompt"));
         assert!(!is_pending_action_wait_reason("permission_denied"));
-        assert!(!is_pending_action_wait_reason("elicitation_dialog"));
         assert!(!is_pending_action_wait_reason("auth_success"));
         assert!(!is_pending_action_wait_reason(""));
     }
