@@ -241,7 +241,14 @@ fn find_window_sidebar(window_id: &str) -> Option<String> {
 /// window and `select-layout` would reject it.
 fn close_sidebar(sidebar_pane: &str, window_id: &str) {
     let _ = tmux::run_tmux(&["kill-pane", "-t", sidebar_pane]);
-    restore_window_layout(window_id);
+    // A window with a recorded sidebar-aware layout base restores by
+    // rebuilding that builtin at the current window size — size-correct
+    // by construction, and it replays the user's chosen arrangement
+    // rather than whatever geometry predated the sidebar. Windows that
+    // never used the layout keys keep the snapshot path.
+    if !crate::cli::layouts::restore_base_builtin(window_id) {
+        restore_window_layout(window_id);
+    }
     // Whatever closed this sidebar — the manual toggle, the toggle-all
     // sweep, the popup view's session sweep, the duplicate collapse —
     // the auto-hide restore must not second-guess it. The maintain-width
@@ -392,6 +399,28 @@ fn saved_layout_matches_window(window_id: &str, layout: &str) -> bool {
 pub(crate) fn schedule_restore_after_pane_exit(pane_id: &str) {
     let window_id = tmux::display_message(pane_id, "#{window_id}");
     if window_id.is_empty() {
+        return;
+    }
+    // A window with a recorded sidebar-aware layout base restores by
+    // rebuilding that builtin a moment later, when the pane is actually
+    // gone (the tree is generated from the surviving panes at fire
+    // time, so it is always size-correct). The snapshot path below
+    // stays for windows that never used the layout keys.
+    let base = tmux::display_message(
+        &window_id,
+        &format!("#{{{}}}", crate::cli::layouts::SIDEBAR_LAYOUT_BASE),
+    );
+    if !base.trim().is_empty() {
+        let self_bin = std::env::current_exe()
+            .ok()
+            .and_then(|p| p.to_str().map(|s| s.to_string()))
+            .unwrap_or_else(|| "tmux-agent-sidebar".to_string());
+        let command = format!(
+            "sleep 0.3 && {} layouts --restore-base {} || true",
+            crate::cli::setup::shell_quote(&self_bin),
+            window_id
+        );
+        let _ = tmux::run_tmux(&["run-shell", "-b", &command]);
         return;
     }
     let layout = saved_window_layout(&window_id);
@@ -869,8 +898,9 @@ fn clamp_width_max(cells: u32, max_setting: &str) -> u32 {
 /// clamping to `@sidebar_width_max` when one is configured. Falls back
 /// to the raw setting (or 30 cells when unset) when the window width
 /// cannot be queried — an unresolvable percentage passes through
-/// unclamped.
-fn sidebar_width_cells(window_id: &str) -> String {
+/// unclamped. Shared with the sidebar-aware layout paths
+/// (`cli::layouts`), which re-pin the sidebar to this same resolution.
+pub(crate) fn sidebar_width_cells(window_id: &str) -> String {
     let setting = tmux::display_message(window_id, &format!("#{{{}}}", tmux::SIDEBAR_WIDTH));
     let max_setting =
         tmux::display_message(window_id, &format!("#{{{}}}", tmux::SIDEBAR_WIDTH_MAX));
@@ -882,8 +912,9 @@ fn sidebar_width_cells(window_id: &str) -> String {
 
 /// [`sidebar_width_cells`] with the settings and window width already
 /// probed (the cmd_toggle path batches them into one display-message);
-/// identical resolution otherwise.
-fn sidebar_width_cells_with(
+/// identical resolution otherwise. Shared with `cli::layouts`, which
+/// re-pins the sidebar to this same resolution on every layout apply.
+pub(crate) fn sidebar_width_cells_with(
     _window_id: &str,
     setting: &str,
     max_setting: &str,
@@ -1011,9 +1042,11 @@ fn unique_window_paths(output: &str) -> Vec<(String, String)> {
 }
 
 /// Which side of the window the sidebar pane is created on, driven by
-/// the `@sidebar_position` tmux option.
+/// the `@sidebar_position` tmux option. Shared with `cli::layouts`,
+/// which inserts the sidebar leaf on this same side when rebuilding a
+/// builtin arrangement.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum SidebarPosition {
+pub(crate) enum SidebarPosition {
     Left,
     Right,
 }
@@ -1024,7 +1057,7 @@ impl SidebarPosition {
     /// side; everything else — including unset, empty, or invalid values
     /// — falls back to the historical default of `left`, so a typo never
     /// moves the sidebar somewhere unexpected.
-    fn from_setting(setting: &str) -> Self {
+    pub(crate) fn from_setting(setting: &str) -> Self {
         if setting.trim().eq_ignore_ascii_case("right") {
             Self::Right
         } else {
