@@ -44,6 +44,17 @@
         ]
       }
     ],
+    "Elicitation": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hook.sh\" claude elicitation"
+          }
+        ]
+      }
+    ],
     "Stop": [
       {
         "matcher": "",
@@ -73,6 +84,17 @@
           {
             "type": "command",
             "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hook.sh\" claude permission-denied"
+          }
+        ]
+      }
+    ],
+    "PermissionRequest": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hook.sh\" claude permission-request"
           }
         ]
       }
@@ -128,6 +150,17 @@
           {
             "type": "command",
             "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hook.sh\" claude activity-log"
+          }
+        ]
+      }
+    ],
+    "PostToolUseFailure": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hook.sh\" claude tool-failure"
           }
         ]
       }

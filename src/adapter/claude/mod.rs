@@ -66,6 +66,9 @@ impl ClaudeAdapter {
     /// Note: `PreToolUse` maps to `AgentEventKind::ToolStart` and
     /// `PostToolUse` maps to `AgentEventKind::ActivityLog` — the two entries
     /// where the upstream trigger and the internal kind have different names.
+    /// `PermissionRequest` / `Elicitation` map to `Notification` under their
+    /// own CLI event names (`HookRegistration::cli_event_name`), and
+    /// `PostToolUseFailure` maps to `ToolFailure`.
     pub const HOOK_REGISTRATIONS: &'static [HookRegistration] = &[
         HookRegistration {
             trigger: "SessionStart",
@@ -87,6 +90,15 @@ impl ClaudeAdapter {
             matcher: None,
             kind: AgentEventKind::Notification,
         },
+        // MCP elicitation dialogs (form/URL prompts from an MCP server
+        // mid-tool-call). Fires well before the upstream `Notification`
+        // with type `elicitation_dialog` would, and the wait reason is
+        // already a known permission-class reason.
+        HookRegistration {
+            trigger: "Elicitation",
+            matcher: None,
+            kind: AgentEventKind::Notification,
+        },
         HookRegistration {
             trigger: "Stop",
             matcher: None,
@@ -101,6 +113,15 @@ impl ClaudeAdapter {
             trigger: "PermissionDenied",
             matcher: None,
             kind: AgentEventKind::PermissionDenied,
+        },
+        // Fires the moment Claude is about to ask for a permission
+        // decision — upstream's `Notification` with type
+        // `permission_prompt` only fires after the prompt has waited
+        // ~6s, so this is the early "needs you" signal.
+        HookRegistration {
+            trigger: "PermissionRequest",
+            matcher: None,
+            kind: AgentEventKind::Notification,
         },
         HookRegistration {
             trigger: "CwdChanged",
@@ -126,6 +147,14 @@ impl ClaudeAdapter {
             trigger: "PostToolUse",
             matcher: None,
             kind: AgentEventKind::ActivityLog,
+        },
+        // A tool call failed mid-turn. Feed-only visibility: failed calls
+        // are invisible to `PostToolUse` (success-only), but the turn
+        // continues, so this must not flip status.
+        HookRegistration {
+            trigger: "PostToolUseFailure",
+            matcher: None,
+            kind: AgentEventKind::ToolFailure,
         },
         HookRegistration {
             trigger: "TaskCreated",
@@ -161,6 +190,14 @@ impl EventAdapter for ClaudeAdapter {
                 let meta_only = wait_reason == "idle_prompt";
                 Some(base(input).notification(wait_reason.into(), meta_only))
             }
+            // `PermissionRequest` / `Elicitation` triggers resolve to the
+            // Notification handler under their own CLI event names (see
+            // `HookRegistration::cli_event_name`): their payloads carry no
+            // `notification_type`, so the wait reason is forced here.
+            "permission-request" => {
+                Some(base(input).notification("permission_prompt".into(), false))
+            }
+            "elicitation" => Some(base(input).notification("elicitation_dialog".into(), false)),
             "stop" => {
                 Some(base(input).stop(json_str(input, "last_assistant_message").into(), None))
             }
@@ -207,6 +244,13 @@ impl EventAdapter for ClaudeAdapter {
                 })
             }
             "tool-start" => Some(base(input).tool_start(json_str(input, "tool_name").into())),
+            "tool-failure" => {
+                let tool_name = json_str(input, "tool_name");
+                if tool_name.is_empty() {
+                    return None;
+                }
+                Some(base(input).tool_failure(tool_name.into(), json_str(input, "error").into()))
+            }
             "activity-log" => {
                 let tool_name = json_str(input, "tool_name");
                 if tool_name.is_empty() {

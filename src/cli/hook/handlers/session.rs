@@ -40,7 +40,9 @@ pub(in crate::cli::hook) fn on_session_start(
     // (`run_session_end_teardown` via `clear_all_meta`) already clear
     // the list when a real session ends, so the only state this would
     // skip clearing is a subagent list stranded by a hard crash —
-    // acceptable vs. racing against legitimate subagent activity.
+    // acceptable vs. racing against legitimate subagent activity. The
+    // routing copy (`@pane_subagent_routes`) is preserved for the same
+    // reason and cleared by the same teardown.
     // A fresh session drops any stale pending marker left behind by
     // the previous run.
     tmux::unset_pane_option(pane, PENDING_SESSION_END);

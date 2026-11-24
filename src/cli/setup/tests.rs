@@ -696,6 +696,12 @@ const EXPECTED_FULL_OUTPUT: &str = r#"{
           "trigger": "Notification"
         },
         {
+          "command": "bash /fake/hook.sh claude elicitation",
+          "event": "elicitation",
+          "matcher": null,
+          "trigger": "Elicitation"
+        },
+        {
           "command": "bash /fake/hook.sh claude stop",
           "event": "stop",
           "matcher": null,
@@ -712,6 +718,12 @@ const EXPECTED_FULL_OUTPUT: &str = r#"{
           "event": "permission-denied",
           "matcher": null,
           "trigger": "PermissionDenied"
+        },
+        {
+          "command": "bash /fake/hook.sh claude permission-request",
+          "event": "permission-request",
+          "matcher": null,
+          "trigger": "PermissionRequest"
         },
         {
           "command": "bash /fake/hook.sh claude cwd-changed",
@@ -742,6 +754,12 @@ const EXPECTED_FULL_OUTPUT: &str = r#"{
           "event": "activity-log",
           "matcher": null,
           "trigger": "PostToolUse"
+        },
+        {
+          "command": "bash /fake/hook.sh claude tool-failure",
+          "event": "tool-failure",
+          "matcher": null,
+          "trigger": "PostToolUseFailure"
         },
         {
           "command": "bash /fake/hook.sh claude task-created",
@@ -775,6 +793,17 @@ const EXPECTED_FULL_OUTPUT: &str = r#"{
               "matcher": ""
             }
           ],
+          "Elicitation": [
+            {
+              "hooks": [
+                {
+                  "command": "bash /fake/hook.sh claude elicitation",
+                  "type": "command"
+                }
+              ],
+              "matcher": ""
+            }
+          ],
           "Notification": [
             {
               "hooks": [
@@ -797,11 +826,33 @@ const EXPECTED_FULL_OUTPUT: &str = r#"{
               "matcher": ""
             }
           ],
+          "PermissionRequest": [
+            {
+              "hooks": [
+                {
+                  "command": "bash /fake/hook.sh claude permission-request",
+                  "type": "command"
+                }
+              ],
+              "matcher": ""
+            }
+          ],
           "PostToolUse": [
             {
               "hooks": [
                 {
                   "command": "bash /fake/hook.sh claude activity-log",
+                  "type": "command"
+                }
+              ],
+              "matcher": ""
+            }
+          ],
+          "PostToolUseFailure": [
+            {
+              "hooks": [
+                {
+                  "command": "bash /fake/hook.sh claude tool-failure",
                   "type": "command"
                 }
               ],

@@ -510,6 +510,7 @@ impl AppState {
             tmux::PANE_PROMPT,
             tmux::PANE_PROMPT_SOURCE,
             tmux::PANE_SUBAGENTS,
+            tmux::PANE_SUBAGENT_ROUTES,
             tmux::PANE_CWD,
             tmux::PANE_LAUNCH_CWD,
             tmux::PANE_PERMISSION_MODE,

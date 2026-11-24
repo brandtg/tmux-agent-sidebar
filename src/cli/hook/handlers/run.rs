@@ -173,6 +173,32 @@ pub(in crate::cli::hook) fn on_tool_start(pane: &str, ctx: &AgentContext<'_>) ->
     0
 }
 
+/// Claude `PostToolUseFailure`: a tool call failed mid-turn.
+///
+/// Feed-only. Failed calls are invisible to `PostToolUse` (success-only),
+/// so without this the feed shows a tool run that silently went wrong.
+/// The turn continues after a failed tool — the agent sees the error and
+/// adapts — so no status, attention, or wait-reason change: the next
+/// `PreToolUse` / `PostToolUse` / `Stop` owns those transitions. No
+/// `set_agent_meta` either — identity was already freshened by this
+/// turn's opener, and a per-tool rewrite is churn.
+///
+/// Only Claude registers `PostToolUseFailure` today; the same
+/// background-fork caveat as `handle_activity_log` applies if another
+/// agent ever maps a trigger here.
+pub(in crate::cli::hook) fn on_tool_failure(pane: &str, tool_name: &str, error: &str) -> i32 {
+    // First line only: Bash errors are `Exit code N` plus interleaved
+    // output, and the feed row label stays scannable.
+    let first_line = error.lines().next().unwrap_or("").trim();
+    let label = if first_line.is_empty() {
+        tool_name
+    } else {
+        first_line
+    };
+    write_activity_entry(pane, tool_name, label);
+    0
+}
+
 pub(in crate::cli::hook) fn on_stop(
     pane: &str,
     ctx: &AgentContext<'_>,
@@ -203,6 +229,13 @@ pub(in crate::cli::hook) fn on_stop(
     // list is stale state from a missed or mismatched SubagentStop and
     // is cleared before `mark_task_reset`, whose guard intentionally
     // skips writes while subagents are active.
+    //
+    // Only the liveness list is cleared here. The routing copy
+    // (`@pane_subagent_routes`) deliberately survives: async subagent
+    // hosts (`--agent claude --inherit-permission-mode` under bg-pty-host)
+    // keep firing env-scrubbed hook events after the parent's Stop, and
+    // without their route entries those events drop on the floor (see
+    // `cli::hook::resolve`).
     //
     // Hermes `delegate_task` has an async/background mode: the parent's
     // turn can end while dispatched children still run, and each child
@@ -328,6 +361,7 @@ pub(in crate::cli::hook) fn on_task_completed(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
 
     #[test]
     fn on_user_prompt_submit_sets_running_and_stores_prompt() {
@@ -814,6 +848,85 @@ mod tests {
             tmux::test_mock::get(pane, tmux::PANE_STATUS).as_deref(),
             Some("idle")
         );
+    }
+
+    #[test]
+    fn on_stop_preserves_subagent_routes() {
+        // Regression (dropped-event trigger 2): the parent's Stop used to
+        // be the only place the routing list could live, so clearing it
+        // stranded every async subagent host still running under
+        // bg-pty-host — its env-scrubbed events matched no pane and were
+        // dropped. The liveness guard clears; the routing copy survives.
+        let _guard = tmux::test_mock::install();
+        let pane = "%STOP_KEEP_ROUTES";
+        tmux::test_mock::set(pane, tmux::PANE_SUBAGENTS, ",Explore:sub-1");
+        tmux::test_mock::set(pane, tmux::PANE_SUBAGENT_ROUTES, ",Explore:sub-1");
+        let ctx = AgentContext {
+            agent: "claude",
+            cwd: "/repo",
+            permission_mode: "default",
+            worktree: &None,
+            session_id: &None,
+        };
+
+        on_stop(
+            pane,
+            &ctx,
+            "",
+            None,
+            &desktop_notification::DesktopNotificationSettings {
+                enabled: false,
+                events: Default::default(),
+            },
+        );
+
+        assert!(!tmux::test_mock::contains(pane, tmux::PANE_SUBAGENTS));
+        assert_eq!(
+            tmux::test_mock::get(pane, tmux::PANE_SUBAGENT_ROUTES).as_deref(),
+            Some(",Explore:sub-1"),
+            "routes must survive the parent's Stop so live hosts keep routing"
+        );
+    }
+
+    #[test]
+    fn on_tool_failure_writes_feed_entry_without_status_change() {
+        // A failed tool call must become visible in the feed (PostToolUse
+        // is success-only) but never flip status or attention: the turn
+        // continues after a failed tool.
+        let _guard = tmux::test_mock::install();
+        let pane = "%TOOL_FAIL";
+        tmux::test_mock::set(pane, tmux::PANE_STATUS, "running");
+        let log_path = crate::activity::log_file_path(pane);
+        let _ = fs::remove_file(&log_path);
+
+        let exit = on_tool_failure(pane, "Bash", "Exit code 1\nError: tests failed");
+        assert_eq!(exit, 0);
+
+        let content = fs::read_to_string(&log_path).unwrap();
+        assert!(
+            content.contains("|Bash|Exit code 1"),
+            "first error line only, expected it in {content:?}"
+        );
+        assert_eq!(
+            tmux::test_mock::get(pane, tmux::PANE_STATUS).as_deref(),
+            Some("running"),
+            "a failed tool must not change status"
+        );
+        assert!(!tmux::test_mock::contains(pane, tmux::PANE_ATTENTION));
+        fs::remove_file(&log_path).ok();
+    }
+
+    #[test]
+    fn on_tool_failure_falls_back_to_tool_name_when_error_empty() {
+        let _guard = tmux::test_mock::install();
+        let pane = "%TOOL_FAIL_EMPTY";
+        let log_path = crate::activity::log_file_path(pane);
+        let _ = fs::remove_file(&log_path);
+
+        on_tool_failure(pane, "WebSearch", "");
+        let content = fs::read_to_string(&log_path).unwrap();
+        assert!(content.contains("|WebSearch|WebSearch"), "got {content:?}");
+        fs::remove_file(&log_path).ok();
     }
 
     #[test]

@@ -16,6 +16,10 @@ pub enum AgentEventKind {
     SubagentStart,
     SubagentStop,
     ToolStart,
+    /// A tool call failed (Claude `PostToolUseFailure`). Feed-only: the
+    /// turn continues after a failed tool, so no status or attention
+    /// change.
+    ToolFailure,
     ActivityLog,
     TaskCreated,
     TaskCompleted,
@@ -39,6 +43,7 @@ impl AgentEventKind {
         Self::SubagentStart,
         Self::SubagentStop,
         Self::ToolStart,
+        Self::ToolFailure,
         Self::ActivityLog,
         Self::TaskCreated,
         Self::TaskCompleted,
@@ -62,6 +67,7 @@ impl AgentEventKind {
             Self::SubagentStart => "subagent-start",
             Self::SubagentStop => "subagent-stop",
             Self::ToolStart => "tool-start",
+            Self::ToolFailure => "tool-failure",
             Self::ActivityLog => "activity-log",
             Self::TaskCreated => "task-created",
             Self::TaskCompleted => "task-completed",
@@ -100,13 +106,14 @@ mod tests {
                 | AgentEventKind::SubagentStart
                 | AgentEventKind::SubagentStop
                 | AgentEventKind::ToolStart
+                | AgentEventKind::ToolFailure
                 | AgentEventKind::ActivityLog
                 | AgentEventKind::TaskCreated
                 | AgentEventKind::TaskCompleted
                 | AgentEventKind::TeammateIdle => {}
             }
         }
-        assert_eq!(AgentEventKind::ALL.len(), 16);
+        assert_eq!(AgentEventKind::ALL.len(), 17);
     }
 
     #[test]

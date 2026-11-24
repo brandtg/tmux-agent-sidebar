@@ -110,6 +110,20 @@ pub enum AgentEvent {
         agent_id: Option<String>,
         session_id: Option<String>,
     },
+    /// A tool call failed (Claude `PostToolUseFailure`). Same shape as
+    /// [`AgentEvent::ToolStart`] plus the upstream `error` text; the
+    /// handler writes a feed entry only — a failed tool does not end the
+    /// turn.
+    ToolFailure {
+        agent: String,
+        cwd: String,
+        permission_mode: String,
+        tool_name: String,
+        error: String,
+        worktree: Option<WorktreeInfo>,
+        agent_id: Option<String>,
+        session_id: Option<String>,
+    },
     ActivityLog {
         tool_name: String,
         tool_input: Value,
@@ -157,6 +171,7 @@ impl AgentEvent {
             | Self::StopFailure { session_id, .. }
             | Self::PermissionDenied { session_id, .. }
             | Self::ToolStart { session_id, .. }
+            | Self::ToolFailure { session_id, .. }
             | Self::CwdChanged { session_id, .. } => session_id.as_deref(),
             _ => None,
         }
@@ -175,6 +190,7 @@ impl AgentEvent {
             Self::SubagentStart { .. } => AgentEventKind::SubagentStart,
             Self::SubagentStop { .. } => AgentEventKind::SubagentStop,
             Self::ToolStart { .. } => AgentEventKind::ToolStart,
+            Self::ToolFailure { .. } => AgentEventKind::ToolFailure,
             Self::ActivityLog { .. } => AgentEventKind::ActivityLog,
             Self::PermissionDenied { .. } => AgentEventKind::PermissionDenied,
             Self::CwdChanged { .. } => AgentEventKind::CwdChanged,

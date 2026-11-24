@@ -36,6 +36,19 @@ pub(in crate::cli::hook) fn on_subagent_start(
     // unset option tmux stores it verbatim (leading comma), which every
     // reader tolerates by filtering empty entries.
     //
+    // Two lists are appended under one flock:
+    //
+    // - `@pane_subagents` is the liveness guard: `pane_writes_allowed`
+    //   keeps parent-owned identity writes filtered while children run.
+    //   The parent's Stop clears it (Claude children are synchronous
+    //   within a turn) and each SubagentStop drains one entry.
+    // - `@pane_subagent_routes` is the routing copy consulted by
+    //   `resolve` when an env-scrubbed process (async subagent host,
+    //   bg-pty-host continuation) fires with only a session id. It
+    //   deliberately outlives both the parent's Stop and the child's
+    //   SubagentStop — the host process keeps running and firing events
+    //   after either — and is cleared only on real session teardown.
+    //
     // The append alone cannot interleave with `on_subagent_stop`'s
     // read-modify-write: a start landing between a stop's read and its
     // write would be clobbered by the stale rewrite. Both sides take
@@ -43,6 +56,7 @@ pub(in crate::cli::hook) fn on_subagent_start(
     let entry = tmux::sanitize_option_value(&format!("{agent_type}:{id}"));
     with_subagent_lock(pane, || {
         tmux::append_pane_option(pane, tmux::PANE_SUBAGENTS, &format!(",{entry}"));
+        tmux::append_pane_option(pane, tmux::PANE_SUBAGENT_ROUTES, &format!(",{entry}"));
     });
     0
 }
@@ -56,6 +70,13 @@ pub(in crate::cli::hook) fn on_subagent_stop(pane: &str, agent_id: Option<&str>)
     // rounds with 6 concurrent hooks), stranding `pane_writes_allowed`
     // and blocking the parent's SessionEnd. Serialize on the same
     // per-pane flock the start path holds.
+    //
+    // Only the liveness list is drained. `@pane_subagent_routes` keeps
+    // the entry: the child's host process (async subagent host) may
+    // outlive this SubagentStop and fire further env-scrubbed events
+    // that still need to route here. Stale route entries are harmless —
+    // they match only events carrying that exact session id, and the
+    // exact `@pane_session_id` binding wins over a route match anyway.
     with_subagent_lock(pane, || {
         let current = tmux::get_pane_option_value(pane, tmux::PANE_SUBAGENTS);
         match remove_subagent(&current, id) {
@@ -112,9 +133,19 @@ mod tests {
             tmux::test_mock::get(pane, tmux::PANE_SUBAGENTS).as_deref(),
             Some(",Explore:sub-1")
         );
+        // The routing copy gets the same entry: it is what env-scrubbed
+        // child events resolve against after the guard list closes.
+        assert_eq!(
+            tmux::test_mock::get(pane, tmux::PANE_SUBAGENT_ROUTES).as_deref(),
+            Some(",Explore:sub-1")
+        );
         on_subagent_start(pane, "Plan", Some("sub-2"));
         assert_eq!(
             tmux::test_mock::get(pane, tmux::PANE_SUBAGENTS).as_deref(),
+            Some(",Explore:sub-1,Plan:sub-2")
+        );
+        assert_eq!(
+            tmux::test_mock::get(pane, tmux::PANE_SUBAGENT_ROUTES).as_deref(),
             Some(",Explore:sub-1,Plan:sub-2")
         );
         fs::remove_file(crate::paths::pane_lock_path("subagent", pane)).ok();
@@ -244,6 +275,30 @@ mod tests {
         assert!(
             !tmux::test_mock::contains(pane, tmux::PANE_SUBAGENTS),
             "drained list must be unset"
+        );
+        fs::remove_file(crate::paths::pane_lock_path("subagent", pane)).ok();
+    }
+
+    #[test]
+    fn on_subagent_stop_preserves_the_routing_copy() {
+        // Regression (dropped-event trigger 3): an async subagent host
+        // keeps firing env-scrubbed events after its own SubagentStop —
+        // its turn ended but the process lives on for the next turn.
+        // Removing its route entry dropped every later event on the
+        // floor. The liveness guard drains; the routing copy survives
+        // until real session teardown.
+        let _guard = tmux::test_mock::install();
+        let pane = "%SUB_ROUTES_SURVIVE";
+        on_subagent_start(pane, "claude", Some("host-1"));
+        on_subagent_stop(pane, Some("host-1"));
+        assert!(
+            !tmux::test_mock::contains(pane, tmux::PANE_SUBAGENTS),
+            "the liveness guard must drain"
+        );
+        assert_eq!(
+            tmux::test_mock::get(pane, tmux::PANE_SUBAGENT_ROUTES).as_deref(),
+            Some(",claude:host-1"),
+            "the route must survive the child's SubagentStop"
         );
         fs::remove_file(crate::paths::pane_lock_path("subagent", pane)).ok();
     }
