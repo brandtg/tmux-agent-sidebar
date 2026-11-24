@@ -6,7 +6,10 @@
 //! real scoped tmux server, real binary, real geometry.
 //!
 //! Same isolation rules as the other pipeline tests: throwaway server
-//! via `TMUX_TMPDIR`, serial execution (`make test-ignored`).
+//! via `TMUX_TMPDIR`, serial execution (`make test-ignored`). The
+//! smart-layout paths need tmux 3.8+ (JSON layout trees); on older
+//! tmux the binary correctly falls back to the stock command, so the
+//! tests asserting that geometry skip via [`json_layouts_available`].
 
 use std::process::Command;
 
@@ -184,6 +187,52 @@ fn run_toggle(args: &[&str]) -> i32 {
     run_layouts(args)
 }
 
+/// Whether the local tmux parses JSON layout trees (`{"V":2,"L":...}`,
+/// tmux 3.8+). Mirrors the binary's own gate (`version_supports_json_
+/// layouts` in cli::layouts): on older tmux the sidebar-aware paths
+/// fall back to the stock command, so tests asserting smart-path
+/// geometry must skip.
+fn json_layouts_available() -> bool {
+    let output = Command::new("tmux").arg("-V").output().unwrap();
+    let version = String::from_utf8_lossy(&output.stdout);
+    let digits = version
+        .trim()
+        .trim_start_matches(|c: char| !c.is_ascii_digit());
+    let mut parts = digits.split('.');
+    let Some(major) = parts.next().and_then(|p| p.parse::<u32>().ok()) else {
+        return false;
+    };
+    let minor: Option<u32> = parts.next().and_then(|p| {
+        p.chars()
+            .take_while(char::is_ascii_digit)
+            .collect::<String>()
+            .parse()
+            .ok()
+    });
+    match minor {
+        Some(minor) => major > 3 || (major == 3 && minor >= 8),
+        None => major > 3,
+    }
+}
+
+/// Skip guard for tests whose assertions only hold on tmux 3.8+: the
+/// smart-layout paths fall back to the stock command on older tmux, so
+/// the geometry those tests assert never materializes there. Call as
+/// `if skip_without_json_layouts() { return; }` at the top of a test.
+fn skip_without_json_layouts() -> bool {
+    if json_layouts_available() {
+        return false;
+    }
+    let version = Command::new("tmux").arg("-V").output().unwrap();
+    eprintln!(
+        "skipping: {} cannot parse JSON layout trees (sidebar-aware \
+         layouts need tmux 3.8+; the binary falls back to the stock \
+         command)",
+        String::from_utf8_lossy(&version.stdout).trim()
+    );
+    true
+}
+
 /// Create the sidebar split via the auto-create path (`--create-only`),
 /// mirroring what the after-new-window hook does.
 fn create_sidebar(server: &ScopedServer) -> String {
@@ -210,6 +259,9 @@ fn create_sidebar(server: &ScopedServer) -> String {
 #[test]
 #[ignore = "requires local tmux; mutates process-global env (run via make test-ignored)"]
 fn layouts_even_vertical_keeps_the_sidebar_at_the_left_edge() {
+    if skip_without_json_layouts() {
+        return;
+    }
     let server = ScopedServer::spawn();
     let sidebar = create_sidebar(&server);
 
@@ -242,6 +294,9 @@ fn layouts_even_vertical_keeps_the_sidebar_at_the_left_edge() {
 #[test]
 #[ignore = "requires local tmux; mutates process-global env (run via make test-ignored)"]
 fn layouts_main_vertical_gives_the_main_pane_its_width_next_to_the_sidebar() {
+    if skip_without_json_layouts() {
+        return;
+    }
     let server = ScopedServer::spawn();
     let sidebar = create_sidebar(&server);
 
@@ -265,6 +320,9 @@ fn layouts_main_vertical_gives_the_main_pane_its_width_next_to_the_sidebar() {
 #[test]
 #[ignore = "requires local tmux; mutates process-global env (run via make test-ignored)"]
 fn keep_hook_repins_a_drifted_sidebar_width() {
+    if skip_without_json_layouts() {
+        return;
+    }
     let server = ScopedServer::spawn();
     let sidebar = create_sidebar(&server);
     let code = run_layouts(&["layouts", "even-vertical", &server.window]);
@@ -312,6 +370,9 @@ fn keep_hook_is_inert_without_a_recorded_base() {
 #[test]
 #[ignore = "requires local tmux; mutates process-global env (run via make test-ignored)"]
 fn closing_the_sidebar_restores_the_recorded_base_builtin() {
+    if skip_without_json_layouts() {
+        return;
+    }
     let server = ScopedServer::spawn();
     create_sidebar(&server);
     let code = run_layouts(&["layouts", "even-vertical", &server.window]);

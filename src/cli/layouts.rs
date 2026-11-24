@@ -609,10 +609,11 @@ fn stamp_indices(
                 None => return false,
             }
         };
-        if indices.insert(id.clone(), idx).is_some() {
-            return false;
-        }
-        true
+        // A duplicate leaf id (the same pane appearing twice) is a
+        // construction bug: abort the stamp rather than emit a
+        // duplicate index (the JSON parse would reject it with
+        // "duplicate pane index").
+        indices.insert(id.clone(), idx).is_none()
     });
     if !complete {
         return None;
@@ -850,6 +851,14 @@ fn probe_window(window_id: &str) -> Option<WindowProbe> {
 /// command.
 fn json_layouts_supported() -> bool {
     let version = tmux::run_tmux(&["-V"]).unwrap_or_default();
+    version_supports_json_layouts(&version)
+}
+
+/// Pure version check behind [`json_layouts_supported`]: tmux gained
+/// JSON layout trees (`{"V":2,"L":...}`) in 3.8. Tolerates the
+/// distribution suffixes `tmux -V` prints (`tmux 3.8`, `tmux next-3.8`,
+/// `tmux 3.8.1`).
+fn version_supports_json_layouts(version: &str) -> bool {
     let digits = version
         .trim()
         .trim_start_matches(|c: char| !c.is_ascii_digit());
@@ -1543,36 +1552,14 @@ mod tests {
 
     #[test]
     fn version_gate_requires_json_layout_support() {
-        // The gate is `tmux -V` parsing; exercise the pure part through
-        // the same arithmetic the helper uses.
-        fn supports(version: &str) -> bool {
-            let digits = version
-                .trim()
-                .trim_start_matches(|c: char| !c.is_ascii_digit());
-            let mut parts = digits.split('.');
-            let Some(major) = parts.next().and_then(|p| p.parse::<u32>().ok()) else {
-                return false;
-            };
-            let minor: Option<u32> = parts.next().and_then(|p| {
-                p.chars()
-                    .take_while(char::is_ascii_digit)
-                    .collect::<String>()
-                    .parse()
-                    .ok()
-            });
-            match minor {
-                Some(minor) => major > 3 || (major == 3 && minor >= 8),
-                None => major > 3,
-            }
-        }
-        assert!(supports("tmux 3.8"));
-        assert!(supports("tmux 3.8.1"));
-        assert!(supports("tmux 4.0"));
-        assert!(supports("tmux next-3.8"));
-        assert!(!supports("tmux 3.7"));
-        assert!(!supports("tmux 3.2"));
-        assert!(!supports("tmux"));
-        assert!(!supports(""));
+        assert!(version_supports_json_layouts("tmux 3.8"));
+        assert!(version_supports_json_layouts("tmux 3.8.1"));
+        assert!(version_supports_json_layouts("tmux 4.0"));
+        assert!(version_supports_json_layouts("tmux next-3.8"));
+        assert!(!version_supports_json_layouts("tmux 3.7"));
+        assert!(!version_supports_json_layouts("tmux 3.2"));
+        assert!(!version_supports_json_layouts("tmux"));
+        assert!(!version_supports_json_layouts(""));
     }
 
     // ─── end-to-end tree checks ─────────────────────────────────────
