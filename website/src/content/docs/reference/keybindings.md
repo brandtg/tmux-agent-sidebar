@@ -9,6 +9,7 @@ description: Every shortcut in the sidebar, the worktree spawn modal, and the cl
 | -------------- | ------------------------------------------------------------- |
 | `prefix + e`   | Toggle sidebar                                                |
 | `prefix + E`   | Toggle sidebar in all windows                                 |
+| `prefix + M-1` … `prefix + M-5` | Sidebar-aware builtin layouts (even-horizontal, even-vertical, main-horizontal, main-vertical, tiled): the sidebar keeps its edge and width while the real panes get the builtin's geometry. Replaces tmux's stock `select-layout` bindings only where they are still at their defaults; requires tmux 3.8+. Applying one records the window's `@sidebar_layout_base`, after which layout changes re-pin the sidebar width and closing the sidebar restores that builtin. Set `@sidebar_layout_keys off` before loading to keep the stock bindings |
 | `j` / `Down` / `Ctrl-n` | Move selection down                                   |
 | `k` / `Up` / `Ctrl-p`   | Move selection up                                     |
 | `/`            | Search agents by session title, tmux session, agent label, or branch |

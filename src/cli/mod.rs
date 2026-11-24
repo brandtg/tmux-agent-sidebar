@@ -1,6 +1,7 @@
 pub mod capture;
 mod hook;
 mod label;
+pub(crate) mod layouts;
 pub(crate) mod notify_focus;
 mod overview;
 pub mod plugin_state;
@@ -28,6 +29,7 @@ pub fn run(args: &[String]) -> Option<i32> {
         "toggle-all" => toggle::cmd_toggle_all(rest),
         "auto-close" => toggle::cmd_auto_close(rest),
         "maintain-width" => toggle::cmd_maintain_width(rest),
+        "layouts" => layouts::cmd_layouts(rest),
         "set-status" => cmd_set_status(rest),
         "spawn" => spawn::cmd_spawn(rest),
         "todo" => todo::cmd_todo(rest),
