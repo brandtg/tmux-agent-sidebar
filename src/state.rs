@@ -150,6 +150,17 @@ pub struct AppState {
     /// against the session's current window instead of the exited
     /// pane's window.
     pub window_has_no_other_panes: bool,
+    /// The path the TUI's own pane should report as its working directory,
+    /// recorded by the refresh loop (`state::refresh::track_own_pane_cwd`).
+    /// tmux's `automatic-rename` derives the window name from the active
+    /// pane's `pane_current_path`, so whenever the user focuses the sidebar
+    /// the window would be renamed after the sidebar pane's own directory —
+    /// the pane it happened to be opened from, not the window's real work.
+    /// The app layer chdirs the TUI process to this path after every
+    /// applied snapshot (`state::refresh::apply_own_pane_cwd`), making the
+    /// sidebar pane invisible to the window's auto-name. `None` until the
+    /// first snapshot with a real pane resolves one.
+    pub own_pane_cwd: Option<String>,
     /// Set when the user presses `q` anywhere in the TUI. The event loop
     /// checks this after draining input and exits; `display-popup -E`
     /// tears the popup down when the process exits, and the pane-mode
@@ -197,6 +208,7 @@ impl AppState {
             sessions: SessionNamesState::default(),
             popup_mode: false,
             window_has_no_other_panes: false,
+            own_pane_cwd: None,
             quit_requested: false,
             snapshot_now: false,
         }

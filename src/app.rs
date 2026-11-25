@@ -280,6 +280,11 @@ pub fn run(
                 // keep the last known-good snapshot, retry next tick.
                 None => state.focus_state.window_active,
             };
+            // Keep the TUI pane's reported cwd on the window's real panes'
+            // directory so the sidebar pane never drives tmux's
+            // automatic-rename (see `track_own_pane_cwd`). No-op until the
+            // first snapshot resolves a target.
+            state.apply_own_pane_cwd();
             // A sidebar whose window has no panes left besides itself
             // would render as a full-window sidebar. The `auto-close`
             // hook cannot always repair that (its pane-exited
