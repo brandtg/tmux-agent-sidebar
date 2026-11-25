@@ -5,7 +5,9 @@ use crate::activity::{self, TaskProgress};
 use crate::cli::sanitize_tmux_value;
 use crate::process::{ProcessSnapshot, command_basename};
 use crate::state::pane_runtime::WindowFinished;
-use crate::tmux::{self, PaneAttention, PaneStatus, SessionInfo, TmuxSnapshot, WindowStatus};
+use crate::tmux::{
+    self, AgentType, PaneAttention, PaneStatus, SessionInfo, TmuxSnapshot, WindowStatus,
+};
 
 use super::{AppState, PaneRuntimeMap};
 
@@ -1010,12 +1012,18 @@ pub(crate) fn sweep_dead_bg_shells(
     sessions: &mut [SessionInfo],
     process_snapshot: &mut Option<ProcessSnapshot>,
 ) {
-    let has_any = sessions
+    // Discovery needs a scan too: a pane whose spawn event was missed is
+    // indistinguishable from one with no shells until the process tree is
+    // examined. The sweep is rate-limited (BG_SHELL_SWEEP_INTERVAL), so
+    // the scan fires at most every few seconds.
+    let has_work = sessions
         .iter()
         .flat_map(|s| s.windows.iter())
         .flat_map(|w| w.panes.iter())
-        .any(|p| p.bg_shell_cmd.is_some());
-    if !has_any {
+        .any(|p| {
+            p.bg_shell_cmd.is_some() || (p.agent == AgentType::Claude && p.pane_pid.is_some())
+        });
+    if !has_work {
         return;
     }
     if process_snapshot.is_none() {
@@ -1023,6 +1031,7 @@ pub(crate) fn sweep_dead_bg_shells(
     }
     if let Some(snapshot) = process_snapshot.as_ref() {
         clear_dead_bg_shells(sessions, snapshot);
+        discover_bg_shells(sessions, snapshot);
     }
 }
 
@@ -1085,6 +1094,101 @@ pub(crate) fn clear_dead_bg_shells(
             }
         }
     }
+}
+
+/// Discover Claude background shells the hook stream never reported.
+///
+/// `@pane_bg_cmd` is written by the bg spawn's `PostToolUse`, so any
+/// missed event strands a live shell invisibly: the pane renders idle
+/// while dev servers keep running. Causes include hook-routing gaps
+/// (a continuation handoff that dropped events before the ancestry
+/// fallback existed), a crashed hook process, or a binary upgrade
+/// mid-spawn. The pane's process tree is ground truth: a Claude shell
+/// tool spawns `zsh -c source …/.claude/shell-snapshots/snapshot-… &&
+/// eval '<command>'`, a shape no other process in the agent's tree
+/// has. When such a process is alive but untracked, adopt it.
+///
+/// Guardrails:
+/// - Claude only. The snapshot marker is Claude-specific, and other
+///   agents' shell spawns must never be adopted by a Claude rule.
+/// - Tracked commands are never overwritten — discovery only fills
+///   panes whose `@pane_bg_cmd` is empty.
+/// - Status is promoted only from `idle` → `background`. A `waiting`
+///   pane may have a live permission prompt that outranks any shell,
+///   and `running` may be mid-foreground-command (a foreground tool
+///   call's shell has the same snapshot shape while it executes).
+fn discover_bg_shells(sessions: &mut [SessionInfo], process_snapshot: &ProcessSnapshot) {
+    for session in sessions.iter_mut() {
+        for window in &mut session.windows {
+            for pane in &mut window.panes {
+                if pane.bg_shell_cmd.is_some() || pane.agent != AgentType::Claude {
+                    continue;
+                }
+                // A running pane may be mid-foreground-command: the
+                // executing tool call's shell has the same snapshot
+                // shape, and adopting it would show a phantom bg
+                // command for the tool's whole duration.
+                if pane.status == PaneStatus::Running {
+                    continue;
+                }
+                let Some(pane_pid) = pane.pane_pid else {
+                    continue;
+                };
+                let Some(cmd) = process_snapshot
+                    .command_lines_for_tree(&[pane_pid])
+                    .iter()
+                    .find_map(|line| claude_bg_command_from_ps_line(line))
+                else {
+                    continue;
+                };
+                let stored = tmux::sanitize_option_value(&cmd);
+                tmux::set_pane_option(&pane.pane_id, tmux::PANE_BG_CMD, &stored);
+                pane.bg_shell_cmd = Some(stored);
+                // A shell alive while the pane sits idle means the spawn
+                // event was missed after the turn ended — the truthful
+                // status is background (green row + the command hint).
+                if pane.status == PaneStatus::Idle {
+                    tmux::set_pane_option(&pane.pane_id, tmux::PANE_STATUS, "background");
+                    pane.status = PaneStatus::Background;
+                }
+            }
+        }
+    }
+}
+
+/// The marker inside every Claude shell-tool process's argv: the tool
+/// sources a snapshot script from `~/.claude/shell-snapshots/` before
+/// eval-ing the actual command.
+const CLAUDE_SHELL_SNAPSHOT_MARKER: &str = ".claude/shell-snapshots/snapshot-";
+
+/// The argv fragment that precedes the actual command in a Claude shell
+/// tool process (`… && eval '<command>' < /dev/null && …`).
+const CLAUDE_SHELL_EVAL_PREFIX: &str = "eval '";
+
+/// Extract the command a Claude shell-tool process is running, from its
+/// `ps` args line. Returns `None` for anything that is not a Claude
+/// shell tool (no snapshot marker, no eval body).
+///
+/// The eval body runs from the first `eval '` to the line's LAST single
+/// quote: the snapshot preamble before it contains quotes (e.g.
+/// `unalias 'which'`), but the tail after the body (` < /dev/null &&
+/// pwd -P >| /tmp/claude-…-cwd`) has none. A literal quote inside the
+/// command arrives shell-escaped (`'\''`) and is kept verbatim — the
+/// result is display text and a liveness-match key, never re-parsed.
+fn claude_bg_command_from_ps_line(line: &str) -> Option<String> {
+    if !line.contains(CLAUDE_SHELL_SNAPSHOT_MARKER) {
+        return None;
+    }
+    let start = line.find(CLAUDE_SHELL_EVAL_PREFIX)? + CLAUDE_SHELL_EVAL_PREFIX.len();
+    let end = line.rfind('\'')?;
+    if end < start {
+        return None;
+    }
+    let cmd = &line[start..end];
+    if cmd.trim().is_empty() {
+        return None;
+    }
+    Some(cmd.to_string())
 }
 
 /// Token-boundary substring match against a ps `command=` line that has
@@ -1182,6 +1286,196 @@ mod tests {
                 panes,
             }],
         }]
+    }
+
+    // ─── discover_bg_shells ─────────────────────────────────────────
+
+    fn pane_untracked(id: &str, status: PaneStatus) -> PaneInfo {
+        let mut p = test_pane(id);
+        p.status = status;
+        p.pane_pid = Some(100);
+        p
+    }
+
+    /// A realistic Claude shell-tool ps line (snapshot preamble, eval
+    /// body, `< /dev/null` tail), shaped like the live process tree of a
+    /// pane running background dev servers.
+    const SNAPSHOT_LINE: &str = concat!(
+        "/bin/zsh -c source /home/u/.claude/shell-snapshots/snapshot-zsh-1795564272117-yz4dy6.sh ",
+        "2>/dev/null || true && { \\builtin unalias -- 'which'; } >/dev/null 2>&1 || true && eval 'mkdir -p /tmp/qa && PORT=3003 npm run dev > /tmp/qa/server.log 2>&1' < /dev/null && pwd -P >| /tmp/claude-8c8a-cwd",
+    );
+
+    #[test]
+    fn claude_bg_command_extracts_the_eval_body() {
+        let cmd = claude_bg_command_from_ps_line(SNAPSHOT_LINE).expect("snapshot line");
+        assert_eq!(
+            cmd,
+            "mkdir -p /tmp/qa && PORT=3003 npm run dev > /tmp/qa/server.log 2>&1"
+        );
+    }
+
+    #[test]
+    fn claude_bg_command_rejects_non_claude_and_non_command_lines() {
+        // A plain foreground process in the tree (e.g. the dev server
+        // itself) is not a shell tool.
+        assert_eq!(
+            claude_bg_command_from_ps_line("node /repo/node_modules/.bin/tsx watch src/server.ts"),
+            None
+        );
+        // A snapshot-sourcing process with no eval body (defensive: the
+        // tool always evals, but a truncated ps line must not parse).
+        assert_eq!(
+            claude_bg_command_from_ps_line(
+                "/bin/zsh -c source /home/u/.claude/shell-snapshots/snapshot-zsh-1.sh"
+            ),
+            None
+        );
+        // Empty eval body.
+        assert_eq!(
+            claude_bg_command_from_ps_line(
+                "/bin/zsh -c source /home/u/.claude/shell-snapshots/snapshot-zsh-1.sh && eval '' < /dev/null"
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn claude_bg_command_tolerates_shell_escaped_quotes_in_the_body() {
+        // A command containing a literal quote arrives as `'\''`; the
+        // last quote on the line still closes the eval.
+        let line = "/bin/zsh -c source /home/u/.claude/shell-snapshots/snapshot-zsh-1.sh 2>/dev/null || true && eval 'echo it'\\''s alive' < /dev/null && pwd -P >| /tmp/claude-x-cwd";
+        let cmd = claude_bg_command_from_ps_line(line).expect("escaped-quote line");
+        assert!(cmd.starts_with("echo it"), "got {cmd:?}");
+        assert!(cmd.ends_with("s alive"), "got {cmd:?}");
+    }
+
+    #[test]
+    fn discover_bg_shells_adopts_an_untracked_claude_shell_from_idle() {
+        let _guard = tmux::test_mock::install();
+        let pane_id = "%BG_DISCOVER";
+        let ps_out =
+            format!("100 1 zsh /bin/zsh\n200 100 claude claude\n300 200 zsh {SNAPSHOT_LINE}\n");
+        let snapshot = process_snapshot(&ps_out);
+
+        let mut sessions = test_session(vec![pane_untracked(pane_id, PaneStatus::Idle)]);
+        discover_bg_shells(&mut sessions, &snapshot);
+
+        let pane = &sessions[0].windows[0].panes[0];
+        assert_eq!(
+            pane.bg_shell_cmd.as_deref(),
+            Some("mkdir -p /tmp/qa && PORT=3003 npm run dev > /tmp/qa/server.log 2>&1"),
+            "the untracked snapshot shell must be adopted"
+        );
+        assert_eq!(pane.status, PaneStatus::Background, "idle must promote");
+        assert_eq!(
+            tmux::test_mock::get(pane_id, tmux::PANE_BG_CMD).as_deref(),
+            Some("mkdir -p /tmp/qa && PORT=3003 npm run dev > /tmp/qa/server.log 2>&1")
+        );
+        assert_eq!(
+            tmux::test_mock::get(pane_id, tmux::PANE_STATUS).as_deref(),
+            Some("background")
+        );
+    }
+
+    #[test]
+    fn discover_bg_shells_never_touches_a_running_pane() {
+        // A foreground tool call's shell has the same snapshot shape
+        // while it executes; a running pane must not adopt it.
+        let _guard = tmux::test_mock::install();
+        let pane_id = "%BG_DISCOVER_RUNNING";
+        let ps_out =
+            format!("100 1 zsh /bin/zsh\n200 100 claude claude\n300 200 zsh {SNAPSHOT_LINE}\n");
+        let snapshot = process_snapshot(&ps_out);
+
+        let mut sessions = test_session(vec![pane_untracked(pane_id, PaneStatus::Running)]);
+        discover_bg_shells(&mut sessions, &snapshot);
+
+        let pane = &sessions[0].windows[0].panes[0];
+        assert!(pane.bg_shell_cmd.is_none());
+        assert_eq!(pane.status, PaneStatus::Running);
+        assert!(!tmux::test_mock::contains(pane_id, tmux::PANE_BG_CMD));
+    }
+
+    #[test]
+    fn discover_bg_shells_writes_cmd_but_keeps_a_waiting_prompt() {
+        // A permission prompt outranks any bg shell: record the shell
+        // (the next Stop routes to background) but never flip the
+        // status away from waiting.
+        let _guard = tmux::test_mock::install();
+        let pane_id = "%BG_DISCOVER_WAITING";
+        let ps_out =
+            format!("100 1 zsh /bin/zsh\n200 100 claude claude\n300 200 zsh {SNAPSHOT_LINE}\n");
+        let snapshot = process_snapshot(&ps_out);
+
+        let mut sessions = test_session(vec![pane_untracked(pane_id, PaneStatus::Waiting)]);
+        discover_bg_shells(&mut sessions, &snapshot);
+
+        let pane = &sessions[0].windows[0].panes[0];
+        assert!(pane.bg_shell_cmd.is_some());
+        assert_eq!(pane.status, PaneStatus::Waiting);
+        assert!(
+            !tmux::test_mock::contains(pane_id, tmux::PANE_STATUS),
+            "a waiting pane's status must never be rewritten by discovery"
+        );
+    }
+
+    #[test]
+    fn discover_bg_shells_skips_tracked_and_non_claude_panes() {
+        let _guard = tmux::test_mock::install();
+        let ps_out =
+            format!("100 1 zsh /bin/zsh\n200 100 claude claude\n300 200 zsh {SNAPSHOT_LINE}\n");
+        let snapshot = process_snapshot(&ps_out);
+
+        // Already tracked: untouched (bg_cmd keeps its own value).
+        let tracked = pane_with_bg("%BG_TRACKED", "sleep 300", PaneStatus::Idle);
+        // Non-claude agent: never adopted, even with a snapshot-shaped
+        // line in the tree (belt and suspenders — the marker is
+        // claude-specific anyway).
+        let mut other = pane_untracked("%BG_OTHER_AGENT", PaneStatus::Idle);
+        other.agent = AgentType::Codex;
+        // No pane pid: nothing to scan.
+        let mut no_pid = pane_untracked("%BG_NO_PID", PaneStatus::Idle);
+        no_pid.pane_pid = None;
+
+        let mut sessions = test_session(vec![tracked, other, no_pid]);
+        discover_bg_shells(&mut sessions, &snapshot);
+
+        assert_eq!(
+            sessions[0].windows[0].panes[0].bg_shell_cmd.as_deref(),
+            Some("sleep 300"),
+            "a tracked command must survive discovery"
+        );
+        assert!(sessions[0].windows[0].panes[1].bg_shell_cmd.is_none());
+        assert!(sessions[0].windows[0].panes[2].bg_shell_cmd.is_none());
+    }
+
+    #[test]
+    fn sweep_discovers_when_no_pane_tracks_a_shell() {
+        // The old sweep early-returned when no pane had @pane_bg_cmd;
+        // discovery needs the scan in exactly that state.
+        let _guard = tmux::test_mock::install();
+        let pane_id = "%BG_SWEEP_DISCOVER";
+        let ps_out =
+            format!("100 1 zsh /bin/zsh\n200 100 claude claude\n300 200 zsh {SNAPSHOT_LINE}\n");
+        // Pre-seeded snapshot: a None snapshot would trigger a real ps
+        // scan that cannot know about synthetic test panes.
+        let mut snapshot = Some(process_snapshot(&ps_out));
+
+        let mut sessions = test_session(vec![pane_untracked(pane_id, PaneStatus::Idle)]);
+        sweep_dead_bg_shells(&mut sessions, &mut snapshot);
+
+        assert!(sessions[0].windows[0].panes[0].bg_shell_cmd.is_some());
+    }
+
+    #[test]
+    fn sweep_skips_the_scan_without_claude_panes_or_tracked_shells() {
+        let mut snapshot: Option<ProcessSnapshot> = None;
+        let mut sessions = test_session(vec![pane_untracked("%BG_SWEEP_SKIP", PaneStatus::Idle)]);
+        sessions[0].windows[0].panes[0].agent = AgentType::Codex;
+        sessions[0].windows[0].panes[0].pane_pid = None;
+
+        sweep_dead_bg_shells(&mut sessions, &mut snapshot);
+        assert!(snapshot.is_none(), "nothing to do, no scan");
     }
 
     // ─── clear_dead_bg_shells ───────────────────────────────────────
