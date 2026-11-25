@@ -123,18 +123,27 @@ Interaction ladder:
   (src/tmux/commands.rs — the same primitive as the sidebar's agent-jump
   path). Enter while zoomed does the same, so zoom-then-Enter steps from
   reading an agent to working in it.
-- Typing (shipped): `p` opens an inline prompt bar on the target cell;
-  Enter sends the typed line with `send-keys -t` via tmux::send_prompt —
-  literal text, an 80 ms pause, then Enter, so agent TUIs that batch a
-  fast input burst as a paste (opencode) don't swallow the submitting
-  Enter. The bar edits like the TODO line editor (Ctrl/Alt-Backspace and
-  Ctrl-w kill words, Ctrl/Alt-arrows jump words, Ctrl-a/e/u, arrows,
-  Home/End) via the shared src/line_edit.rs, and windows long drafts
-  around the cursor instead of clipping them. A send is refused — draft
-  kept, reason on the bar — unless the pane's foreground is still an
-  agent, so text can never execute in a shell left by an exited agent.
-  Esc dismisses the bar. Interactive without attaching, zero resize side
-  effects.
+- Prompting (shipped): `p` forwards every key press to the target — from
+  the grid (selected cell) or zoomed, the zoom state never changes and the
+  cell keeps its size. Keys go over as tmux key names (`send-keys`: `C-c`,
+  `M-Enter` for a newline in a prompt, `S-Up`, F1-F12), plain characters
+  as literal text, and bracketed pastes as one `paste-buffer -p` block
+  (never a key run, or a multi-line paste would submit line by line). The
+  agent's own UI — slash menus, completions, permission answers, Esc
+  interrupts — runs natively inside the mirrored cell, and the prompted
+  pane's capture refreshes at ~16 Hz (60 ms; the rest of the grid keeps
+  500 ms — one capture is ~1 ms, see the probe above) so menus render live
+  while typing. Ctrl-g is the only key the overview keeps: Esc must reach
+  the agent as its interrupt key, so the leave chord is one no agent binds
+  (a click leaves too, consuming the click). Forwards are gated per key —
+  the pane's foreground is queried fresh (`#{pane_current_command}`), not
+  trusted from the up-to-one-refresh-stale listing — and a refused or
+  failed forward keeps the prompt open with the reason on the bar; the
+  slow tick closes a prompt whose pane vanished or whose agent exited.
+  Input must never reach a shell. This replaces the earlier compose bar
+  (a LineEdit draft submitted on Enter): once forwards could carry the
+  agent's own editing and autocomplete, a second input line in the
+  overview was one more thing to learn for less capability.
 - Per-cell scrollback: `capture-pane -S` offsets.
 
 ## Spike scope
@@ -232,10 +241,10 @@ it; click the selected cell again to zoom it (the grid layout feeding the
 render also drives the click hit-test, so they cannot drift). `s` toggles
 the cell order between the sidebar's row order (default) and status-first.
 On the targeted cell — the zoomed one when zoomed, else the selected one —
-`p` opens a prompt bar
-(type and Enter to send the line straight into that agent, Esc to cancel),
-and `f` — or Enter again while zoomed — closes the popup and focuses the
-agent's real pane.
+`p` prompts it live: every key goes straight to the agent (slash menus and
+all, from the grid or zoomed — no zoom change), ctrl-g or a click leaves,
+Esc interrupts the agent. `f` — or Enter again while zoomed — closes the
+popup and focuses the agent's real pane.
 Refresh interval defaults to 500ms (`--interval-ms N` to change).
 
 ## Open questions

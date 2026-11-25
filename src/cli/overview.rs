@@ -24,15 +24,19 @@
 //!   the counts.
 //! - Enter zooms the selected cell fullscreen (still a capture — read-only);
 //!   Esc collapses back to the grid.
-//! - Interaction ladder (docs/overview-grid-spike.md): `p` opens an inline
-//!   prompt bar that types into the target pane with `send-keys` (no attach,
-//!   no resize side effects). The bar edits like the TODO line editor
-//!   (Ctrl-w/Alt-Backspace kill words, Ctrl-arrows jump words, Ctrl-a/e/u)
-//!   and windows long drafts around the cursor. A send is refused unless
-//!   the pane's foreground is still the agent — text must never reach a
-//!   shell. `f` — or Enter again while zoomed — closes the popup and
-//!   focuses the real pane via `select_pane`. The target is the zoomed
-//!   cell when zoomed, else the selected cell.
+//! - Interaction ladder (docs/overview-grid-spike.md): `p` prompts the
+//!   target pane live — from the grid (selected cell) or zoomed, the zoom
+//!   state never changes. Every key press is forwarded to the pane (tmux
+//!   key names via `send-keys`, bracketed pastes via `paste-buffer`), so
+//!   the agent's own UI — slash menus, completions, permission answers,
+//!   Esc interrupts — runs natively inside the mirrored cell, and the
+//!   prompted pane's capture refreshes at a fast cadence to keep up.
+//!   Ctrl-g leaves (never Esc: that must reach the agent as its interrupt
+//!   key); a click leaves too. Forwards are refused unless the pane's
+//!   foreground is still the agent — input must never reach a shell.
+//!   `f` — or Enter again while zoomed — closes the popup and focuses the
+//!   real pane via `select_pane`. The target is the zoomed cell when
+//!   zoomed, else the selected cell.
 
 use std::collections::{HashMap, HashSet};
 use std::io;
@@ -40,8 +44,8 @@ use std::time::{Duration, Instant};
 
 use crossterm::{
     event::{
-        self, EnableMouseCapture, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers,
-        MouseButton, MouseEventKind,
+        self, EnableBracketedPaste, EnableMouseCapture, Event, KeyCode, KeyEvent, KeyEventKind,
+        KeyModifiers, MouseButton, MouseEventKind,
     },
     execute,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
@@ -61,12 +65,17 @@ use crate::cli::capture::tmux_probe::capture_pane;
 use crate::group::{
     PaneGitInfo, group_panes_by_repo, group_panes_by_session, resolve_pane_git_info,
 };
-use crate::line_edit::LineEdit;
 use crate::state::GroupBy;
 use crate::tmux::{self, AgentType, PaneInfo, PaneStatus, SessionInfo};
 use crate::ui::colors::ColorTheme;
 
 const DEFAULT_INTERVAL_MS: u64 = 500;
+/// Drive mode's capture cadence for the driven pane — the rest of the grid
+/// keeps [`DEFAULT_INTERVAL_MS`]. An agent menu must render live while its
+/// keys are being forwarded, and the spike measured ~1 ms per capture, so
+/// one pane at ~16 Hz is negligible.
+const DRIVE_INTERVAL_MS: u64 = 60;
+const DRIVE_INTERVAL: Duration = Duration::from_millis(DRIVE_INTERVAL_MS);
 /// Minimum cell size the layout tries to preserve by growing columns
 /// (smaller cells) until every row fits the terminal height.
 const MIN_CELL_WIDTH: u16 = 40;
@@ -93,85 +102,153 @@ struct OverviewPane {
     err: Option<String>,
 }
 
-/// The inline prompt bar: text typed here goes to the named pane with
-/// `send-keys` when Enter is pressed (see [`PromptAction::Send`]). While
-/// open it owns the keyboard — every key is editing, never a grid command.
-/// The buffer is a [`LineEdit`], so the bar edits like the TODO panel's
-/// input (readline word moves and kills).
-struct PromptInput {
+/// Prompt mode (`p`): every key press is forwarded to the target pane, so
+/// the agent's own UI — slash menus, completions, permission answers, Esc
+/// interrupts — runs natively inside the mirrored cell. The overview stops
+/// being an editor here and becomes the input side of a terminal: the
+/// agent owns the line, the draft, the autocomplete. The cell keeps its
+/// size — this works from the grid (selected cell) and zoomed alike, no
+/// zoom change. This struct only remembers where the keys go, at what
+/// resolution to re-capture the pane, and what to say when a forward is
+/// refused.
+struct DriveInput {
     pane_id: String,
-    /// `agent · repo` label before the caret, so the user can see at a
-    /// glance which pane the text will land in.
+    /// `agent · repo` label on the bar, the cell-title vocabulary — the
+    /// bar names the pane every key will hit.
     label: String,
-    edit: LineEdit,
-    /// Last refused or failed send, shown on the bar; the next edit clears
-    /// it.
+    /// The pane's dimensions, cached at entry and refreshed on slow
+    /// ticks; the fast capture parses against them.
+    dims: Option<(u16, u16)>,
+    /// Last refused or failed forward, shown on the bar; the next key
+    /// clears it.
     err: Option<String>,
 }
 
-/// What a key press inside the prompt bar asks the caller to do.
-enum PromptAction {
-    /// The bar consumed the key; keep editing.
-    Stay,
-    /// Dismiss the bar without sending (Esc, or Enter on an empty bar).
-    Close,
-    /// Enter with text: the caller sends it to the bar's pane.
-    Send(String),
+/// What a key press while prompting asks the caller to do.
+enum DriveAction {
+    /// Forward the key to the prompted pane.
+    Forward,
+    /// Leave prompt mode. Ctrl-g, deliberately not Esc: Esc is the
+    /// agents' interrupt key and must be forwarded, so the leave chord
+    /// has to be one no agent binds.
+    Leave,
 }
 
-/// Edit the prompt bar from one key press, on the same key vocabulary as
-/// the TODO panel's line editor. Pure — the tmux round trip for
-/// [`PromptAction::Send`] stays with the caller, so this needs no server.
-fn handle_prompt_key(input: &mut PromptInput, key: KeyEvent) -> PromptAction {
-    // Any keystroke retires a stale refusal; if this send fails too, the
-    // caller restores the draft and the message.
-    input.err = None;
+/// Prompt mode's whole key logic: one chord leaves, everything else
+/// forwards.
+fn handle_drive_key(key: &KeyEvent) -> DriveAction {
+    if key.code == KeyCode::Char('g') && key.modifiers.contains(KeyModifiers::CONTROL) {
+        DriveAction::Leave
+    } else {
+        DriveAction::Forward
+    }
+}
+
+/// One forwarded key press: a tmux key name (sent with key-name lookup,
+/// so `Enter` arrives as the Return key and `C-c` as the interrupt byte)
+/// or literal text (sent with `-l`, so characters are never reinterpreted
+/// as key names).
+#[derive(Debug)]
+enum ForwardedKey {
+    Named(String),
+    Text(String),
+}
+
+/// Translate one key press into what drive mode sends. `None` drops the
+/// key: an unmappable name must never fall back to literal text, because
+/// `send-keys` types an unrecognized name as characters. Chorded
+/// characters keep only Ctrl and Alt — a Shift'ed character already
+/// carries its shift in the character itself — while a special key's
+/// Shift is part of the key (S-Up selects, in TUIs that select with the
+/// keyboard).
+fn forward_key_name(key: &KeyEvent) -> Option<ForwardedKey> {
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
     let alt = key.modifiers.contains(KeyModifiers::ALT);
-    match key.code {
-        KeyCode::Esc => return PromptAction::Close,
-        KeyCode::Enter => {
-            let text = input.edit.take();
-            return if text.trim().is_empty() {
-                PromptAction::Close
-            } else {
-                PromptAction::Send(text)
-            };
-        }
-        // Alt-Backspace / Ctrl-Backspace kill the word before the cursor;
-        // plain Backspace deletes one character.
-        KeyCode::Backspace if ctrl || alt => input.edit.pop_word(),
-        KeyCode::Backspace => input.edit.backspace(),
-        KeyCode::Delete => input.edit.delete(),
-        // Ctrl/Alt arrows jump a whole word; plain arrows step one char.
-        KeyCode::Left if ctrl || alt => input.edit.cursor_word_left(),
-        KeyCode::Right if ctrl || alt => input.edit.cursor_word_right(),
-        KeyCode::Left => input.edit.left(),
-        KeyCode::Right => input.edit.right(),
-        // Plain Home/End and their readline aliases. Separate arms, not an
-        // or-pattern with a guard: a guard on an or-pattern applies to
-        // every alternative (the trap documented in app/input.rs).
-        KeyCode::Home => input.edit.home(),
-        KeyCode::Char('a') if ctrl => input.edit.home(),
-        KeyCode::End => input.edit.end(),
-        KeyCode::Char('e') if ctrl => input.edit.end(),
-        KeyCode::Char('u') if ctrl => input.edit.clear(),
-        KeyCode::Char('w') if ctrl => input.edit.pop_word(),
-        // Control/Alt chords would smuggle control bytes into the agent's
-        // input line; plain (shifted) characters are the only accepted text.
-        KeyCode::Char(c) if !ctrl && !alt => input.edit.push(c),
-        _ => {}
+    let shift = key.modifiers.contains(KeyModifiers::SHIFT);
+    // Plain characters (shifted ones included) are literal text, never
+    // key names — key-name lookup would put them up for debate.
+    if let KeyCode::Char(c) = key.code
+        && !ctrl
+        && !alt
+    {
+        return Some(ForwardedKey::Text(c.to_string()));
     }
-    PromptAction::Stay
+    // The base name, and whether Shift joins it. tmux's vocabulary as
+    // verified against tmux 3.8.
+    let (base, shift_joins) = match key.code {
+        // A space names "Space" — `C- ` is not a name.
+        KeyCode::Char(c) => (
+            if c == ' ' {
+                "Space".to_string()
+            } else {
+                c.to_string()
+            },
+            false,
+        ),
+        KeyCode::Enter => ("Enter".to_string(), true),
+        KeyCode::Esc => ("Escape".to_string(), true),
+        KeyCode::Tab => ("Tab".to_string(), true),
+        KeyCode::BackTab => ("BTab".to_string(), true),
+        KeyCode::Backspace => ("BSpace".to_string(), true),
+        KeyCode::Delete => ("DC".to_string(), true),
+        KeyCode::Insert => ("IC".to_string(), true),
+        KeyCode::Home => ("Home".to_string(), true),
+        KeyCode::End => ("End".to_string(), true),
+        KeyCode::PageUp => ("PPage".to_string(), true),
+        KeyCode::PageDown => ("NPage".to_string(), true),
+        KeyCode::Up => ("Up".to_string(), true),
+        KeyCode::Down => ("Down".to_string(), true),
+        KeyCode::Left => ("Left".to_string(), true),
+        KeyCode::Right => ("Right".to_string(), true),
+        KeyCode::F(n) if (1..=12).contains(&n) => (format!("F{n}"), true),
+        // Modifier-only presses, media keys, and anything without an
+        // agent-visible meaning: dropped, never typed as characters.
+        _ => return None,
+    };
+    // Prefix order C-, M-, S- is what tmux parses (C-M-S-Home verified).
+    let mut name = String::new();
+    if ctrl {
+        name.push_str("C-");
+    }
+    if alt {
+        name.push_str("M-");
+    }
+    if shift && shift_joins {
+        name.push_str("S-");
+    }
+    name.push_str(&base);
+    Some(ForwardedKey::Named(name))
 }
 
-/// Refuse a send whose text would land in a shell instead of an agent.
-/// Panes deliberately survive in the listing after their agent exits —
-/// hook-clear races with detection (query.rs keeps claude/opencode panes
-/// alive on a shell foreground) — and `send-keys` + Enter into a bare
-/// shell executes the prompt as a command line. `None` means the pane is
-/// live under an agent and the send may proceed.
-fn send_refusal(panes: &[OverviewPane], pane_id: &str) -> Option<String> {
+/// The per-key gate, stricter than [`prompt_refusal`]: keys flow
+/// continuously here, so the up-to-one-refresh-stale listing field is not
+/// trusted — the pane's foreground is queried fresh per key. `Some`
+/// refuses and the reason goes on the bar; the prompt stays open (the
+/// next key re-decides), so the reason stays visible until the user
+/// leaves with Ctrl-g or the slow tick closes a prompt whose pane is
+/// truly gone.
+fn drive_refusal(panes: &[OverviewPane], pane_id: &str) -> Option<String> {
+    if !panes.iter().any(|p| p.info.pane_id == pane_id) {
+        return Some("pane is gone — nothing sent".to_string());
+    }
+    let cmd = tmux::display_message(pane_id, "#{pane_current_command}");
+    let cmd = cmd.trim();
+    if tmux::is_shell_command(cmd) {
+        return Some(format!("no agent in the foreground ({cmd}) — nothing sent"));
+    }
+    None
+}
+
+/// Refuse to start prompting a pane whose text would land in a shell
+/// instead of an agent. Panes deliberately survive in the listing after
+/// their agent exits — hook-clear races with detection (query.rs keeps
+/// claude/opencode panes alive on a shell foreground) — and keys sent
+/// into a bare shell execute the prompt as a command line. `None` means
+/// the pane is live under an agent and prompting may start. The listing
+/// field can be up to one refresh stale; the per-key gate
+/// ([`drive_refusal`]) re-decides with a live query from the first
+/// forwarded key on.
+fn prompt_refusal(panes: &[OverviewPane], pane_id: &str) -> Option<String> {
     match panes.iter().find(|p| p.info.pane_id == pane_id) {
         None => Some("pane is gone — nothing sent".to_string()),
         Some(p) if tmux::is_shell_command(&p.info.current_command) => Some(format!(
@@ -339,7 +416,16 @@ fn run_tui(interval: Duration) -> io::Result<i32> {
     let theme = ColorTheme::from_tmux();
     enable_raw_mode()?;
     let result = (|| -> io::Result<i32> {
-        execute!(io::stdout(), EnterAlternateScreen, EnableMouseCapture)?;
+        // Bracketed paste is part of the drive contract: without it a
+        // terminal paste arrives as a key run (submitting multi-line text
+        // line by line), with it crossterm delivers Event::Paste blocks
+        // that forward as one `paste-buffer` (see the Event::Paste arm).
+        execute!(
+            io::stdout(),
+            EnterAlternateScreen,
+            EnableMouseCapture,
+            EnableBracketedPaste
+        )?;
         let backend = CrosstermBackend::new(io::stdout());
         let mut terminal = Terminal::new(backend)?;
 
@@ -353,13 +439,34 @@ fn run_tui(interval: Duration) -> io::Result<i32> {
         // status-first. The git cache backs the sidebar grouping.
         let mut sort_mode = SortMode::Sidebar;
         let mut git_cache: HashMap<String, PaneGitInfo> = HashMap::new();
-        // The inline prompt bar, open while the user composes a message for
-        // one pane (see handle_prompt_key).
-        let mut prompt: Option<PromptInput> = None;
+        // The bottom bar: prompt mode (`p`) while it owns the keyboard
+        // (see DriveInput).
+        let mut drive: Option<DriveInput> = None;
+        // Prompt mode's own refresh clock: the prompted pane's capture
+        // refreshes at DRIVE_INTERVAL while everything else paces to
+        // `interval`.
+        let mut last_drive_refresh = Instant::now();
         // Refresh on the first iteration: the elapsed time starts "in the past".
         let mut last_refresh = Instant::now() - interval;
 
         loop {
+            // Prompt mode first: the prompted pane's capture refreshes at
+            // the fast cadence so the agent's own menus render live inside
+            // the cell. A failed fast capture keeps the previous frame —
+            // one tmux hiccup must not flash "(pane gone)" mid-keystroke.
+            if let Some(input) = drive.as_ref()
+                && last_drive_refresh.elapsed() >= DRIVE_INTERVAL
+            {
+                let (pane_id, dims) = (input.pane_id.clone(), input.dims);
+                if let Some(pane) = panes.iter_mut().find(|p| p.info.pane_id == pane_id)
+                    && let Ok(grid) = capture_grid(&pane.info, dims)
+                {
+                    pane.grid = Some(grid);
+                    pane.err = None;
+                }
+                last_drive_refresh = Instant::now();
+            }
+
             if last_refresh.elapsed() >= interval {
                 // A failed listing keeps the previous frame instead of
                 // blanking the grid on one transient tmux hiccup.
@@ -380,12 +487,29 @@ fn run_tui(interval: Duration) -> io::Result<i32> {
                 {
                     zoomed = None;
                 }
-                // A prompt bar whose target pane vanished closes itself.
-                if prompt
-                    .as_ref()
-                    .is_some_and(|input| !panes.iter().any(|p| p.info.pane_id == input.pane_id))
-                {
-                    prompt = None;
+                // A prompt whose pane is no longer drivable closes itself:
+                // it must not sit on a pane a shell now owns — the per-key
+                // gate below is the hard guarantee, this is the tidy-up
+                // (the listing field can be up to one refresh stale).
+                let stale_prompt = match drive.as_ref() {
+                    Some(input) => match panes.iter().find(|p| p.info.pane_id == input.pane_id) {
+                        None => true,
+                        Some(p) => tmux::is_shell_command(&p.info.current_command),
+                    },
+                    None => false,
+                };
+                if stale_prompt {
+                    drive = None;
+                }
+                // Refresh the prompted pane's cached dimensions so a
+                // resized pane parses correctly again within a second.
+                if let Some(input) = drive.as_mut() {
+                    input.dims = pane_dimensions().get(&input.pane_id).copied();
+                }
+                // The slow refresh re-captured every pane including the
+                // prompted one; its fast clock restarts from here.
+                if drive.is_some() {
+                    last_drive_refresh = Instant::now();
                 }
                 last_refresh = Instant::now();
             }
@@ -397,64 +521,111 @@ fn run_tui(interval: Duration) -> io::Result<i32> {
                 .as_ref()
                 .and_then(|id| panes.iter().position(|p| &p.info.pane_id == id));
             terminal.draw(|f| match zoom_idx {
-                Some(i) => draw_zoomed(f, &panes, i, prompt.as_ref(), &theme),
-                None => draw_grid(f, &panes, selected_idx, prompt.as_ref(), sort_mode, &theme),
+                Some(i) => draw_zoomed(f, &panes, i, drive.as_ref(), &theme),
+                None => draw_grid(f, &panes, selected_idx, drive.as_ref(), sort_mode, &theme),
             })?;
 
-            let budget = interval
-                .checked_sub(last_refresh.elapsed())
-                .unwrap_or(Duration::from_millis(30))
-                .max(Duration::from_millis(30));
+            let driving = drive.is_some();
+            let budget = if driving {
+                // Redraws pace to the drive capture; keys wake the poll
+                // instantly, so typing latency is unaffected.
+                DRIVE_INTERVAL
+            } else {
+                interval
+                    .checked_sub(last_refresh.elapsed())
+                    .unwrap_or(Duration::from_millis(30))
+                    .max(Duration::from_millis(30))
+            };
             if event::poll(budget)? {
                 match event::read()? {
                     Event::Key(key) if key.kind == KeyEventKind::Press => {
-                        // While the prompt bar is open it owns the keyboard.
-                        let mut dismiss = false;
-                        if let Some(input) = prompt.as_mut() {
-                            match handle_prompt_key(&mut *input, key) {
-                                PromptAction::Stay => {}
-                                PromptAction::Close => dismiss = true,
-                                PromptAction::Send(text) => {
-                                    let pane_id = input.pane_id.clone();
-                                    // Refuse sends that would land in a
-                                    // shell: the draft stays on the bar
-                                    // with the reason, nothing executes.
-                                    if let Some(reason) = send_refusal(&panes, &pane_id) {
-                                        input.edit.set(&text);
+                        // While prompting, the keys go to the agent.
+                        let mut leave = false;
+                        match drive.as_mut() {
+                            Some(input) => match handle_drive_key(&key) {
+                                DriveAction::Leave => leave = true,
+                                DriveAction::Forward => {
+                                    // Any keystroke retires a stale refusal;
+                                    // the gate re-decides on every key.
+                                    input.err = None;
+                                    if let Some(reason) = drive_refusal(&panes, &input.pane_id) {
                                         input.err = Some(reason);
-                                    } else {
-                                        match tmux::send_prompt(&pane_id, &text) {
-                                            Ok(()) => dismiss = true,
-                                            Err(e) => {
-                                                // Keep the bar open with the text
-                                                // intact so the user can retry or
-                                                // bail; the failure shows on the bar.
-                                                input.edit.set(&text);
-                                                input.err = Some(e);
-                                            }
+                                    } else if let Err(e) = match forward_key_name(&key) {
+                                        Some(ForwardedKey::Named(name)) => {
+                                            tmux::send_key(&input.pane_id, &name)
                                         }
+                                        Some(ForwardedKey::Text(text)) => {
+                                            tmux::send_text(&input.pane_id, &text)
+                                        }
+                                        None => Ok(()),
+                                    } {
+                                        input.err = Some(e);
                                     }
                                 }
-                            }
-                        } else {
-                            match key.code {
-                                KeyCode::Char('q') => return Ok(0),
-                                KeyCode::Char('c')
-                                    if key.modifiers.contains(KeyModifiers::CONTROL) =>
-                                {
-                                    return Ok(0);
-                                }
-                                // Zoom collapses first; Esc only quits from the grid.
-                                KeyCode::Esc => {
-                                    if zoomed.take().is_none() {
+                            },
+                            None => {
+                                match key.code {
+                                    KeyCode::Char('q') => return Ok(0),
+                                    KeyCode::Char('c')
+                                        if key.modifiers.contains(KeyModifiers::CONTROL) =>
+                                    {
                                         return Ok(0);
                                     }
-                                }
-                                KeyCode::Enter => {
-                                    // In the grid, Enter zooms. Already zoomed,
-                                    // Enter steps into the real pane: read it
-                                    // first, then work in it.
-                                    if zoomed.is_some() {
+                                    // Zoom collapses first; Esc only quits from the grid.
+                                    KeyCode::Esc => {
+                                        if zoomed.take().is_none() {
+                                            return Ok(0);
+                                        }
+                                    }
+                                    KeyCode::Enter => {
+                                        // In the grid, Enter zooms. Already zoomed,
+                                        // Enter steps into the real pane: read it
+                                        // first, then work in it.
+                                        if zoomed.is_some() {
+                                            if let Some(pane) = target_pane(
+                                                &panes,
+                                                zoomed.as_deref(),
+                                                selected.as_deref(),
+                                            ) {
+                                                tmux::select_pane(&pane.info.pane_id);
+                                                return Ok(0);
+                                            }
+                                        } else if let Some(idx) = selected_idx {
+                                            zoomed = Some(panes[idx].info.pane_id.clone());
+                                        }
+                                    }
+                                    KeyCode::Char('p') => {
+                                        // Prompt: forward every key to the
+                                        // target until ctrl-g. Works from the
+                                        // grid (selected cell) and zoomed — the
+                                        // zoom state never changes, the cell
+                                        // keeps its size. Entry refuses a pane
+                                        // the listing says is not an agent;
+                                        // the per-key gate is the fresh
+                                        // guarantee.
+                                        if let Some(pane) = target_pane(
+                                            &panes,
+                                            zoomed.as_deref(),
+                                            selected.as_deref(),
+                                        ) && prompt_refusal(&panes, &pane.info.pane_id).is_none()
+                                        {
+                                            drive = Some(DriveInput {
+                                                pane_id: pane.info.pane_id.clone(),
+                                                label: prompt_label(&pane.info),
+                                                dims: pane_dimensions()
+                                                    .get(&pane.info.pane_id)
+                                                    .copied(),
+                                                err: None,
+                                            });
+                                            // Capture immediately: the view may
+                                            // be a slow tick stale, and prompting
+                                            // types into what it shows.
+                                            last_drive_refresh = Instant::now() - DRIVE_INTERVAL;
+                                        }
+                                    }
+                                    KeyCode::Char('f') => {
+                                        // Focus: close the popup and hand the
+                                        // client to the agent's real pane.
                                         if let Some(pane) = target_pane(
                                             &panes,
                                             zoomed.as_deref(),
@@ -463,63 +634,62 @@ fn run_tui(interval: Duration) -> io::Result<i32> {
                                             tmux::select_pane(&pane.info.pane_id);
                                             return Ok(0);
                                         }
-                                    } else if let Some(idx) = selected_idx {
-                                        zoomed = Some(panes[idx].info.pane_id.clone());
                                     }
-                                }
-                                KeyCode::Char('p') => {
-                                    if let Some(pane) =
-                                        target_pane(&panes, zoomed.as_deref(), selected.as_deref())
-                                    {
-                                        prompt = Some(PromptInput {
-                                            pane_id: pane.info.pane_id.clone(),
-                                            label: prompt_label(&pane.info),
-                                            edit: LineEdit::new(),
-                                            err: None,
-                                        });
+                                    KeyCode::Char('s') => {
+                                        sort_mode = sort_mode.toggled();
+                                        // Re-order on the next tick instead of
+                                        // waiting out the interval.
+                                        last_refresh = Instant::now() - interval;
                                     }
-                                }
-                                KeyCode::Char('f') => {
-                                    // Focus: close the popup and hand the
-                                    // client to the agent's real pane.
-                                    if let Some(pane) =
-                                        target_pane(&panes, zoomed.as_deref(), selected.as_deref())
-                                    {
-                                        tmux::select_pane(&pane.info.pane_id);
-                                        return Ok(0);
+                                    KeyCode::Right | KeyCode::Tab | KeyCode::Char('j') => {
+                                        selected = step_selection(&panes, selected, 1);
                                     }
+                                    KeyCode::Left | KeyCode::BackTab | KeyCode::Char('k') => {
+                                        selected = step_selection(&panes, selected, -1);
+                                    }
+                                    _ => {}
                                 }
-                                KeyCode::Char('s') => {
-                                    sort_mode = sort_mode.toggled();
-                                    // Re-order on the next tick instead of
-                                    // waiting out the interval.
-                                    last_refresh = Instant::now() - interval;
-                                }
-                                KeyCode::Right | KeyCode::Tab | KeyCode::Char('j') => {
-                                    selected = step_selection(&panes, selected, 1);
-                                }
-                                KeyCode::Left | KeyCode::BackTab | KeyCode::Char('k') => {
-                                    selected = step_selection(&panes, selected, -1);
-                                }
-                                _ => {}
                             }
                         }
-                        if dismiss {
-                            prompt = None;
+                        if leave {
+                            drive = None;
+                        }
+                    }
+                    Event::Paste(text) => {
+                        // Bracketed paste routes to prompt mode: the whole
+                        // block forwards as one `paste-buffer` — never a key
+                        // run, or a multi-line paste would submit line by
+                        // line. The gate applies: a paste is text too, and
+                        // text must never reach a shell.
+                        if let Some(input) = drive.as_mut() {
+                            input.err = None;
+                            if let Some(reason) = drive_refusal(&panes, &input.pane_id) {
+                                input.err = Some(reason);
+                            } else if let Err(e) = tmux::paste_to_pane(&input.pane_id, &text) {
+                                input.err = Some(e);
+                            }
                         }
                     }
                     Event::Mouse(mouse)
                         if mouse.kind == MouseEventKind::Down(MouseButton::Left) =>
                     {
+                        // Prompting, a click is the mouse way out (ctrl-g is
+                        // the keyboard one); the click itself is consumed —
+                        // leaving a modal must not also select or quit
+                        // through it.
+                        if drive.is_some() {
+                            drive = None;
+                            continue;
+                        }
                         let size = terminal.size()?;
                         if header_close_hit(mouse.row, mouse.column, size.width) {
                             return Ok(0);
                         }
                         // Grid-body click selects; clicking the already-
-                        // selected cell zooms it (Esc collapses). While the
-                        // prompt bar owns the keyboard, body clicks stay
+                        // selected cell zooms it (Esc collapses). While
+                        // prompting owns the keyboard, body clicks stay
                         // inert.
-                        if prompt.is_none() && zoomed.is_none() {
+                        if zoomed.is_none() {
                             let area = Rect::new(0, 0, size.width, size.height);
                             let body = grid_body(area, false);
                             if let Some(idx) = cell_at(panes.len(), body, mouse.row, mouse.column) {
@@ -544,7 +714,8 @@ fn run_tui(interval: Duration) -> io::Result<i32> {
     let _ = execute!(
         io::stdout(),
         LeaveAlternateScreen,
-        crossterm::event::DisableMouseCapture
+        crossterm::event::DisableMouseCapture,
+        crossterm::event::DisableBracketedPaste
     );
     result
 }
@@ -865,7 +1036,7 @@ fn draw_grid(
     f: &mut Frame,
     panes: &[OverviewPane],
     selected_idx: Option<usize>,
-    prompt: Option<&PromptInput>,
+    drive: Option<&DriveInput>,
     sort_mode: SortMode,
     theme: &ColorTheme,
 ) {
@@ -891,7 +1062,7 @@ fn draw_grid(
     }
 
     let mut constraints = vec![Constraint::Length(1), Constraint::Fill(1)];
-    if prompt.is_some() {
+    if drive.is_some() {
         constraints.push(Constraint::Length(1));
     }
     let chunks = Layout::default()
@@ -899,28 +1070,33 @@ fn draw_grid(
         .constraints(constraints)
         .split(area);
     let width = area.width;
-    let counts = header_line(panes, theme, grid_hints(sort_mode), width);
+    // Prompting, the only key still ours is the leave chord — Esc and
+    // everything else belong to the agent, including q.
+    let hints = if drive.is_some() {
+        DRIVE_HINTS
+    } else {
+        grid_hints(sort_mode)
+    };
+    let counts = header_line(panes, theme, hints, drive.is_none(), width);
     f.render_widget(Paragraph::new(counts), chunks[0]);
 
     let rects = cell_rects(panes.len(), chunks[1]);
     for (idx, cell_area) in rects.iter().enumerate() {
         draw_cell(f, *cell_area, &panes[idx], selected_idx == Some(idx), theme);
     }
-    if let Some(input) = prompt {
-        f.render_widget(
-            Paragraph::new(prompt_line(input, chunks[2].width, theme)),
-            chunks[2],
-        );
+    if let Some(input) = drive {
+        f.render_widget(Paragraph::new(drive_line(input, theme)), chunks[2]);
     }
 }
 
 /// Zoomed view: the selected pane's capture rendered into one fullscreen
-/// cell. Same renderer, same rules — just no cropping pressure.
+/// cell. Same renderer, same rules — just no cropping pressure. While
+/// prompting, the hints shrink to the one key that is still ours.
 fn draw_zoomed(
     f: &mut Frame,
     panes: &[OverviewPane],
     idx: usize,
-    prompt: Option<&PromptInput>,
+    drive: Option<&DriveInput>,
     theme: &ColorTheme,
 ) {
     let area = f.area();
@@ -928,7 +1104,7 @@ fn draw_zoomed(
         return;
     }
     let mut constraints = vec![Constraint::Length(1), Constraint::Fill(1)];
-    if prompt.is_some() {
+    if drive.is_some() {
         constraints.push(Constraint::Length(1));
     }
     let chunks = Layout::default()
@@ -936,14 +1112,16 @@ fn draw_zoomed(
         .constraints(constraints)
         .split(area);
     let width = area.width;
-    let counts = header_line(panes, theme, ZOOM_HINTS, width);
+    let hints = if drive.is_some() {
+        DRIVE_HINTS
+    } else {
+        ZOOM_HINTS
+    };
+    let counts = header_line(panes, theme, hints, drive.is_none(), width);
     f.render_widget(Paragraph::new(counts), chunks[0]);
     draw_cell(f, chunks[1], &panes[idx], true, theme);
-    if let Some(input) = prompt {
-        f.render_widget(
-            Paragraph::new(prompt_line(input, chunks[2].width, theme)),
-            chunks[2],
-        );
+    if let Some(input) = drive {
+        f.render_widget(Paragraph::new(drive_line(input, theme)), chunks[2]);
     }
 }
 
@@ -1026,13 +1204,20 @@ fn grid_hints(sort_mode: SortMode) -> &'static [&'static str] {
 /// Header key-hint segments for zoomed mode.
 const ZOOM_HINTS: &[&str] = &["esc grid", "enter go", "p prompt"];
 
+/// Header key-hint segments while prompting: the only key still ours is
+/// the leave chord — Esc and everything else belong to the agent.
+const DRIVE_HINTS: &[&str] = &["ctrl-g leave"];
+
 /// Header row: per-status counts (only non-zero classes) so "does anything
 /// need me?" is one glance, plus the key hints and a clickable `✕` pinned
-/// to the last two columns for closing with the mouse.
+/// to the last two columns for closing with the mouse. `quit_hint` —
+/// while prompting, q belongs to the agent (it forwards), so the "q quit"
+/// hint would lie and must drop.
 fn header_line(
     panes: &[OverviewPane],
     theme: &ColorTheme,
     optional_hints: &[&str],
+    quit_hint: bool,
     width: u16,
 ) -> Line<'static> {
     let muted = Style::default().fg(theme.border_inactive);
@@ -1061,8 +1246,9 @@ fn header_line(
         }
     }
     // Key hints degrade by dropping whole segments when the row gets tight;
-    // `q quit` is the one everyone needs, so it survives even when the rest
-    // is squeezed out, and the `✕` keeps its pinned columns at any width.
+    // `q quit` is the one everyone needs (except while prompting — see the
+    // doc), so it survives even when the rest is squeezed out, and the `✕`
+    // keeps its pinned columns at any width.
     const REQUIRED: &str = "q quit";
     use unicode_width::UnicodeWidthStr as _;
     let used_prefix: usize = spans.iter().map(|s| s.width()).sum();
@@ -1070,7 +1256,7 @@ fn header_line(
         .saturating_sub(used_prefix)
         .saturating_sub(" ✕".width());
     let mut shown: Vec<&str> = Vec::new();
-    let mut hints_width = REQUIRED.width();
+    let mut hints_width = if quit_hint { REQUIRED.width() } else { 0 };
     for hint in optional_hints {
         // Each extra segment costs its own width plus the " · " separator.
         let cost = hint.width() + 3;
@@ -1080,7 +1266,9 @@ fn header_line(
         shown.push(hint);
         hints_width += cost;
     }
-    shown.push(REQUIRED);
+    if quit_hint {
+        shown.push(REQUIRED);
+    }
     spans.push(Span::styled(shown.join(" · "), muted));
     // The close button owns the row's last two columns in every state —
     // the same contract the mouse handler uses for its hit zone.
@@ -1133,37 +1321,20 @@ fn prompt_label(info: &PaneInfo) -> String {
     }
 }
 
-/// The prompt bar line: caret, target label, and a cursor-positioned view
-/// of the draft. The text is windowed to the row (`LineEdit::visible_window`)
-/// so a long prompt scrolls around the cursor instead of being clipped past
-/// the edge. A refused or failed send appends its message in the error
-/// color — the draft stays so the user can fix and retry, or Esc to drop it.
-fn prompt_line(input: &PromptInput, width: u16, theme: &ColorTheme) -> Line<'static> {
-    use unicode_width::UnicodeWidthStr as _;
+/// The prompt bar: names the pane every key is hitting and how to leave.
+/// There is no draft to window around a cursor — the agent owns the input
+/// line and its echo lands in the cell above — so the bar is a fixed
+/// indicator; a refused or failed forward appends its reason in the error
+/// color, and the next key re-decides.
+fn drive_line(drive: &DriveInput, theme: &ColorTheme) -> Line<'static> {
     let label = Style::default()
         .fg(theme.accent)
         .add_modifier(Modifier::BOLD);
-    let prefix = format!(" ❯ {} ", input.label);
-    let mut spans = vec![Span::styled(prefix.clone(), label)];
-    let avail = (width as usize).saturating_sub(prefix.width());
-    let (start, end) = input.edit.visible_window(avail);
-    let chars = input.edit.chars();
-    let cursor = input.edit.cursor().min(input.edit.len());
-    if cursor >= end {
-        // Cursor past the last character: the block follows the window.
-        spans.push(Span::raw(chars[start..end].iter().collect::<String>()));
-        spans.push(Span::styled("█", Style::default().fg(theme.accent)));
-    } else {
-        // Cursor mid-draft: reverse the character under it, so editing in
-        // the middle shows exactly where the next keystroke lands.
-        spans.push(Span::raw(chars[start..cursor].iter().collect::<String>()));
-        spans.push(Span::styled(
-            chars[cursor].to_string(),
-            Style::default().bg(theme.accent).fg(Color::Black),
-        ));
-        spans.push(Span::raw(chars[cursor + 1..end].iter().collect::<String>()));
-    }
-    if let Some(err) = &input.err {
+    let mut spans = vec![Span::styled(
+        format!(" ▶ PROMPT {} · ctrl-g leave", drive.label),
+        label,
+    )];
+    if let Some(err) = &drive.err {
         spans.push(Span::styled(
             format!("  {err}"),
             Style::default().fg(theme.status_error),
@@ -1319,7 +1490,7 @@ mod tests {
     fn render_frame(
         panes: &[OverviewPane],
         selected_idx: Option<usize>,
-        prompt: Option<&PromptInput>,
+        drive: Option<&DriveInput>,
         sort_mode: SortMode,
         w: u16,
         h: u16,
@@ -1328,7 +1499,7 @@ mod tests {
         let backend = TestBackend::new(w, h);
         let mut terminal = Terminal::new(backend).unwrap();
         terminal
-            .draw(|f| draw_grid(f, panes, selected_idx, prompt, sort_mode, &theme))
+            .draw(|f| draw_grid(f, panes, selected_idx, drive, sort_mode, &theme))
             .unwrap();
         buffer_to_string(terminal.backend().buffer())
     }
@@ -1336,7 +1507,7 @@ mod tests {
     fn render_zoom(
         panes: &[OverviewPane],
         idx: usize,
-        prompt: Option<&PromptInput>,
+        drive: Option<&DriveInput>,
         w: u16,
         h: u16,
     ) -> String {
@@ -1344,7 +1515,7 @@ mod tests {
         let backend = TestBackend::new(w, h);
         let mut terminal = Terminal::new(backend).unwrap();
         terminal
-            .draw(|f| draw_zoomed(f, panes, idx, prompt, &theme))
+            .draw(|f| draw_zoomed(f, panes, idx, drive, &theme))
             .unwrap();
         buffer_to_string(terminal.backend().buffer())
     }
@@ -1606,6 +1777,7 @@ mod tests {
             &[pane],
             &ColorTheme::default(),
             grid_hints(SortMode::Sidebar),
+            true,
             40,
         );
         let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
@@ -1627,6 +1799,27 @@ mod tests {
         assert!(!header_close_hit(0, 3, 40), "between the two buttons");
         assert!(!header_close_hit(1, 39, 40), "grid body clicks are inert");
         assert!(!header_close_hit(0, 39, 1), "degenerate width is inert");
+    }
+
+    #[test]
+    fn header_drops_the_quit_hint_while_prompting() {
+        let panes = [OverviewPane {
+            info: make_pane(AgentType::Claude, PaneStatus::Running, "%1"),
+            grid: None,
+            err: None,
+        }];
+        let theme = ColorTheme::default();
+        // While prompting, q forwards to the agent — "q quit" would lie.
+        let line = header_line(&panes, &theme, DRIVE_HINTS, false, 60);
+        let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(
+            text.contains("ctrl-g leave") && !text.contains("q quit"),
+            "{text:?}"
+        );
+        // And it comes back once the prompt is left.
+        let line = header_line(&panes, &theme, ZOOM_HINTS, true, 60);
+        let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(text.contains("q quit"), "{text:?}");
     }
 
     #[test]
@@ -1719,84 +1912,12 @@ mod tests {
         }
     }
 
-    fn make_prompt(text: &str, err: Option<&str>) -> PromptInput {
-        PromptInput {
-            pane_id: "%1".into(),
-            label: "claude · project".into(),
-            edit: LineEdit::from_text(text),
-            err: err.map(str::to_string),
-        }
-    }
-
     fn key(code: KeyCode, modifiers: KeyModifiers) -> KeyEvent {
         KeyEvent::new(code, modifiers)
     }
 
     #[test]
-    fn prompt_bar_edits_and_sends() {
-        let mut input = make_prompt("", None);
-        // Plain characters accumulate, shifted ones included; control/alt
-        // chords never insert text.
-        assert!(matches!(
-            handle_prompt_key(&mut input, key(KeyCode::Char('h'), KeyModifiers::NONE)),
-            PromptAction::Stay
-        ));
-        handle_prompt_key(&mut input, key(KeyCode::Char('i'), KeyModifiers::NONE));
-        handle_prompt_key(&mut input, key(KeyCode::Char('C'), KeyModifiers::SHIFT));
-        handle_prompt_key(&mut input, key(KeyCode::Char('x'), KeyModifiers::CONTROL));
-        assert_eq!(input.edit.content(), "hiC");
-        // Ctrl-w kills the word before the cursor, same as the TODO editor.
-        handle_prompt_key(&mut input, key(KeyCode::Char('w'), KeyModifiers::CONTROL));
-        assert_eq!(input.edit.content(), "");
-        // Word moves and word-kills from the middle of a draft.
-        input.edit.set("run the tests");
-        handle_prompt_key(&mut input, key(KeyCode::Left, KeyModifiers::CONTROL));
-        assert_eq!(input.edit.cursor(), 8, "at the start of 'tests'");
-        handle_prompt_key(&mut input, key(KeyCode::Backspace, KeyModifiers::ALT));
-        assert_eq!(
-            input.edit.content(),
-            "run tests",
-            "killed 'the', kept the tail"
-        );
-        handle_prompt_key(&mut input, key(KeyCode::Backspace, KeyModifiers::ALT));
-        assert_eq!(input.edit.content(), "tests", "killed 'run' and its space");
-        handle_prompt_key(&mut input, key(KeyCode::Char('u'), KeyModifiers::CONTROL));
-        assert!(input.edit.is_empty());
-        // Enter with text hands it to the caller and empties the bar.
-        input.edit.set("hi");
-        assert!(matches!(
-            handle_prompt_key(&mut input, key(KeyCode::Enter, KeyModifiers::NONE)),
-            PromptAction::Send(ref t) if t == "hi"
-        ));
-        assert!(input.edit.is_empty());
-        // Enter on an empty bar dismisses without sending; Esc always does.
-        assert!(matches!(
-            handle_prompt_key(&mut input, key(KeyCode::Enter, KeyModifiers::NONE)),
-            PromptAction::Close
-        ));
-        input.edit.set("draft");
-        assert!(matches!(
-            handle_prompt_key(&mut input, key(KeyCode::Esc, KeyModifiers::NONE)),
-            PromptAction::Close
-        ));
-        // Whitespace-only is no prompt either.
-        input.edit.set("  ");
-        assert!(matches!(
-            handle_prompt_key(&mut input, key(KeyCode::Enter, KeyModifiers::NONE)),
-            PromptAction::Close
-        ));
-    }
-
-    #[test]
-    fn prompt_bar_editing_clears_a_send_failure() {
-        let mut input = make_prompt("retry", Some("send-keys failed"));
-        handle_prompt_key(&mut input, key(KeyCode::Char('!'), KeyModifiers::NONE));
-        assert_eq!(input.err, None);
-        assert_eq!(input.edit.content(), "retry!");
-    }
-
-    #[test]
-    fn sends_are_refused_before_the_text_reaches_a_shell() {
+    fn prompt_refusal_keeps_text_out_of_a_shell() {
         let mut live = make_pane(AgentType::OpenCode, PaneStatus::Waiting, "%1");
         live.current_command = "opencode".into();
         let mut stale = make_pane(AgentType::Claude, PaneStatus::Idle, "%2");
@@ -1813,17 +1934,17 @@ mod tests {
                 err: None,
             },
         ];
-        // A live agent foreground sends.
-        assert_eq!(send_refusal(&panes, "%1"), None);
+        // A live agent foreground prompts.
+        assert_eq!(prompt_refusal(&panes, "%1"), None);
         // An exited agent (shell back in the foreground) is refused, and
         // the message names the process so the user sees why.
-        let refused = send_refusal(&panes, "%2").expect("shell foreground must refuse");
+        let refused = prompt_refusal(&panes, "%2").expect("shell foreground must refuse");
         assert!(
             refused.contains("zsh") && refused.contains("nothing sent"),
             "{refused}"
         );
         // A pane that vanished between ticks is refused too.
-        assert!(send_refusal(&panes, "%9").is_some());
+        assert!(prompt_refusal(&panes, "%9").is_some());
     }
 
     #[test]
@@ -1859,16 +1980,125 @@ mod tests {
         assert!(target_pane(&panes, Some("%9"), None).is_none());
     }
 
-    #[test]
-    fn prompt_label_names_the_pane_like_the_cell_title() {
-        let mut info = make_pane(AgentType::Claude, PaneStatus::Waiting, "%1");
-        assert_eq!(prompt_label(&info), "claude · project");
-        info.worktree.name = "fix-login".into();
-        assert_eq!(prompt_label(&info), "claude · project ⎇ fix-login");
+    fn make_drive(err: Option<&str>) -> DriveInput {
+        DriveInput {
+            pane_id: "%1".into(),
+            label: "claude · project".into(),
+            dims: Some((80, 24)),
+            err: err.map(str::to_string),
+        }
     }
 
     #[test]
-    fn snapshot_grid_with_prompt_bar() {
+    fn drive_keys_leave_or_forward() {
+        // Ctrl-g leaves; every other chord — including Esc, the agents'
+        // interrupt key, and plain g — forwards.
+        assert!(matches!(
+            handle_drive_key(&key(KeyCode::Char('g'), KeyModifiers::CONTROL)),
+            DriveAction::Leave
+        ));
+        assert!(matches!(
+            handle_drive_key(&key(KeyCode::Char('g'), KeyModifiers::NONE)),
+            DriveAction::Forward
+        ));
+        assert!(matches!(
+            handle_drive_key(&key(KeyCode::Esc, KeyModifiers::NONE)),
+            DriveAction::Forward
+        ));
+        assert!(matches!(
+            handle_drive_key(&key(KeyCode::Char('c'), KeyModifiers::CONTROL)),
+            DriveAction::Forward
+        ));
+    }
+
+    #[test]
+    fn forwarded_keys_map_to_tmux_names_or_literal_text() {
+        // Plain and shifted characters are literal text, never key names —
+        // key-name lookup would reinterpret some of them (a space alone is
+        // fine, but the point of -l is that nothing is up for debate).
+        assert!(matches!(
+            forward_key_name(&key(KeyCode::Char('a'), KeyModifiers::NONE)),
+            Some(ForwardedKey::Text(ref t)) if t == "a"
+        ));
+        assert!(matches!(
+            forward_key_name(&key(KeyCode::Char('A'), KeyModifiers::SHIFT)),
+            Some(ForwardedKey::Text(ref t)) if t == "A"
+        ));
+        assert!(matches!(
+            forward_key_name(&key(KeyCode::Char(' '), KeyModifiers::NONE)),
+            Some(ForwardedKey::Text(ref t)) if t == " "
+        ));
+        // Chords become tmux key names; a space names "Space" (C- is not
+        // a name), and M-Enter is the agents' newline-in-a-prompt chord.
+        assert!(matches!(
+            forward_key_name(&key(KeyCode::Char('c'), KeyModifiers::CONTROL)),
+            Some(ForwardedKey::Named(ref n)) if n == "C-c"
+        ));
+        assert!(matches!(
+            forward_key_name(&key(KeyCode::Enter, KeyModifiers::ALT)),
+            Some(ForwardedKey::Named(ref n)) if n == "M-Enter"
+        ));
+        assert!(matches!(
+            forward_key_name(&key(KeyCode::Char('x'), KeyModifiers::CONTROL | KeyModifiers::ALT)),
+            Some(ForwardedKey::Named(ref n)) if n == "C-M-x"
+        ));
+        assert!(matches!(
+            forward_key_name(&key(KeyCode::Char(' '), KeyModifiers::CONTROL)),
+            Some(ForwardedKey::Named(ref n)) if n == "C-Space"
+        ));
+        // A chorded character ignores Shift (its shift is the character);
+        // only special keys keep S- in the name.
+        assert!(matches!(
+            forward_key_name(&key(KeyCode::Char('a'), KeyModifiers::CONTROL | KeyModifiers::SHIFT)),
+            Some(ForwardedKey::Named(ref n)) if n == "C-a"
+        ));
+        // Named keys use tmux's vocabulary (verified against tmux 3.8).
+        let named = |k: KeyEvent| match forward_key_name(&k) {
+            Some(ForwardedKey::Named(n)) => n,
+            other => panic!("expected a named key, got {other:?}"),
+        };
+        assert_eq!(named(key(KeyCode::Enter, KeyModifiers::NONE)), "Enter");
+        assert_eq!(named(key(KeyCode::Esc, KeyModifiers::NONE)), "Escape");
+        assert_eq!(named(key(KeyCode::Tab, KeyModifiers::NONE)), "Tab");
+        assert_eq!(named(key(KeyCode::BackTab, KeyModifiers::NONE)), "BTab");
+        assert_eq!(named(key(KeyCode::Backspace, KeyModifiers::NONE)), "BSpace");
+        assert_eq!(named(key(KeyCode::Delete, KeyModifiers::NONE)), "DC");
+        assert_eq!(named(key(KeyCode::Insert, KeyModifiers::NONE)), "IC");
+        assert_eq!(named(key(KeyCode::Home, KeyModifiers::NONE)), "Home");
+        assert_eq!(named(key(KeyCode::End, KeyModifiers::NONE)), "End");
+        assert_eq!(named(key(KeyCode::PageUp, KeyModifiers::NONE)), "PPage");
+        assert_eq!(named(key(KeyCode::PageDown, KeyModifiers::NONE)), "NPage");
+        assert_eq!(named(key(KeyCode::Up, KeyModifiers::SHIFT)), "S-Up");
+        assert_eq!(named(key(KeyCode::Left, KeyModifiers::ALT)), "M-Left");
+        assert_eq!(named(key(KeyCode::F(5), KeyModifiers::NONE)), "F5");
+        // Modifier-only presses and out-of-range keys drop, never type
+        // characters: send-keys types an unrecognized name literally.
+        assert!(forward_key_name(&key(KeyCode::Null, KeyModifiers::NONE)).is_none());
+        assert!(forward_key_name(&key(KeyCode::F(13), KeyModifiers::NONE)).is_none());
+        assert!(forward_key_name(&key(KeyCode::CapsLock, KeyModifiers::NONE)).is_none());
+    }
+
+    #[test]
+    fn drive_is_refused_when_the_pane_is_gone() {
+        let mut live = make_pane(AgentType::Claude, PaneStatus::Running, "%1");
+        live.current_command = "claude".into();
+        let panes = vec![OverviewPane {
+            info: live,
+            grid: None,
+            err: None,
+        }];
+        // A pane in the listing passes (the fresh per-key foreground query
+        // is the shell gate; under test tmux IPC is off and returns empty,
+        // which is not a shell).
+        assert_eq!(drive_refusal(&panes, "%1"), None);
+        // A pane that vanished between ticks is refused: nothing to type
+        // into, and the drive bar carries the reason.
+        let refused = drive_refusal(&panes, "%9").expect("vanished pane must refuse");
+        assert!(refused.contains("gone"), "{refused}");
+    }
+
+    #[test]
+    fn snapshot_zoomed_with_drive_bar() {
         let mut info = make_pane(AgentType::Claude, PaneStatus::Running, "%1");
         info.prompt = "Editing src/main.rs".into();
         let pane = OverviewPane {
@@ -1876,92 +2106,53 @@ mod tests {
             grid: Some(grid_padded("\x1b[32m[claude] line one\x1b[0m")),
             err: None,
         };
-        let prompt = make_prompt("run the tests", None);
         insta::assert_snapshot!(
-            render_frame(&[pane], Some(0), Some(&prompt), SortMode::Sidebar, 40, 9),
+            render_zoom(&[pane], 0, Some(&make_drive(None)), 40, 12),
             @"
-        «   ●1tab move · enter zoom · q quit   ✕
+        «   ●1ctrl-g leave                     ✕
         ┌ ● claude · project───────────────────┐
         │ Editing src/main.rs …                │
         │                                      │
         │                                      │
         │                                      │
+        │                                      │
+        │                                      │
+        │                                      │
         │[claude] line one                     │
         └──────────────────────────────────────┘
-         ❯ claude · project run the tests█
-        ");
+         ▶ PROMPT claude · project · ctrl-g leav
+        "
+        );
     }
 
     #[test]
-    fn snapshot_prompt_bar_shows_a_send_failure() {
+    fn snapshot_drive_bar_shows_a_refusal() {
         let pane = OverviewPane {
             info: make_pane(AgentType::Claude, PaneStatus::Waiting, "%1"),
             grid: None,
             err: None,
         };
-        let prompt = make_prompt("yes, go ahead", Some("send-keys failed"));
+        let drive = make_drive(Some("no agent in the foreground (zsh) — nothing sent"));
         insta::assert_snapshot!(
-            render_frame(&[pane], Some(0), Some(&prompt), SortMode::Sidebar, 56, 7),
+            render_zoom(&[pane], 0, Some(&drive), 100, 7),
             @"
-        «   ◐1tab move · enter zoom · p prompt · f go · q quit ✕
-        ┌ ◐ claude · project───────────────────────────────────┐
-        │ Waiting · input                                      │
-        │(pane gone)                                           │
-        │                                                      │
-        └──────────────────────────────────────────────────────┘
-         ❯ claude · project yes, go ahead█  send-keys failed
-        ");
+        «   ◐1ctrl-g leave                                                                                 ✕
+        ┌ ◐ claude · project───────────────────────────────────────────────────────────────────────────────┐
+        │ Waiting · input                                                                                  │
+        │(pane gone)                                                                                       │
+        │                                                                                                  │
+        └──────────────────────────────────────────────────────────────────────────────────────────────────┘
+         ▶ PROMPT claude · project · ctrl-g leave  no agent in the foreground (zsh) — nothing sent
+        "
+        );
     }
 
     #[test]
-    fn snapshot_prompt_bar_windows_a_long_prompt_around_the_cursor() {
-        // A 120+ char draft on a 40-column row: the bar must scroll to
-        // keep the cursor visible instead of clipping at the edge.
-        let pane = OverviewPane {
-            info: make_pane(AgentType::Claude, PaneStatus::Running, "%1"),
-            grid: None,
-            err: None,
-        };
-        let mut prompt = make_prompt("", None);
-        prompt.edit.set(&format!("{}tail", "x".repeat(120)));
-        insta::assert_snapshot!(
-            render_frame(&[pane], Some(0), Some(&prompt), SortMode::Sidebar, 40, 8),
-            @"
-        «   ●1tab move · enter zoom · q quit   ✕
-        ┌ ● claude · project───────────────────┐
-        │ Running                              │
-        │(pane gone)                           │
-        │                                      │
-        │                                      │
-        └──────────────────────────────────────┘
-         ❯ claude · project xxxxxxxxxxxxxxxtail█
-        ");
-    }
-
-    #[test]
-    fn snapshot_zoomed_with_prompt_bar() {
-        let mut info = make_pane(AgentType::Codex, PaneStatus::Running, "%1");
-        info.prompt = "Refactoring the export path".into();
-        let pane = OverviewPane {
-            info,
-            grid: Some(grid_padded("\x1b[34m[codex] waiting for input\x1b[0m")),
-            err: None,
-        };
-        let prompt = make_prompt("add a test", None);
-        insta::assert_snapshot!(render_zoom(&[pane], 0, Some(&prompt), 40, 12), @"
-        «   ●1esc grid · enter go · q quit     ✕
-        ┌ ● codex · project────────────────────┐
-        │ Refactoring the export path …        │
-        │                                      │
-        │                                      │
-        │                                      │
-        │                                      │
-        │                                      │
-        │                                      │
-        │[codex] waiting for input             │
-        └──────────────────────────────────────┘
-         ❯ claude · project add a test█
-        ");
+    fn prompt_label_names_the_pane_like_the_cell_title() {
+        let mut info = make_pane(AgentType::Claude, PaneStatus::Waiting, "%1");
+        assert_eq!(prompt_label(&info), "claude · project");
+        info.worktree.name = "fix-login".into();
+        assert_eq!(prompt_label(&info), "claude · project ⎇ fix-login");
     }
 
     fn cells(infos: Vec<PaneInfo>) -> Vec<OverviewPane> {
