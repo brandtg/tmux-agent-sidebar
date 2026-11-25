@@ -37,6 +37,10 @@ pub(super) fn init_state(tmux_pane: String) -> AppState {
     state.sessions.names = scanned.names;
     state.sessions.derived = scanned.derived;
     state.refresh();
+    // Sync the TUI pane's reported cwd to the window's real panes (see
+    // `track_own_pane_cwd`) from the very first snapshot, so a sidebar
+    // opened from a stray directory never renames its window after it.
+    state.apply_own_pane_cwd();
 
     // Reconcile the cursor against this window's tmux context, in every
     // mode. A popup needs it because it never sees the event loop's

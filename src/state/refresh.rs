@@ -191,6 +191,87 @@ impl AppState {
         self.resolve_proxy_focus();
         self.window_has_no_other_panes =
             !self.popup_mode && window_has_only_own_pane(&sidebar_window_panes, &self.tmux_pane);
+        self.track_own_pane_cwd(&sidebar_window_panes);
+    }
+
+    /// Resolve and record the directory the TUI's own pane should report
+    /// as its working directory, so the sidebar pane never drives the tmux
+    /// window's auto-generated name. Pure: the host side effect lives in
+    /// [`Self::apply_own_pane_cwd`], called by the app layer after each
+    /// applied snapshot.
+    ///
+    /// tmux's `automatic-rename` derives the window name from the *active*
+    /// pane — with the common `#{b:pane_current_path}` rename format, from
+    /// the active pane's directory. The sidebar pane is a full pane of the
+    /// window, so the moment the user focuses it (scrolling, clicking), the
+    /// window is renamed after the sidebar pane's own directory: the
+    /// directory the `toggle` keybinding happened to capture at open time,
+    /// which drifts from the window's real work the moment any pane cds.
+    /// The window title then reads as a directory nobody is working in.
+    ///
+    /// The fix mirrors the real panes: a pane's reported
+    /// `pane_current_path` is the foreground process's cwd (tmux 3.8 does
+    /// not honor OSC 7), so chdir-ing this process to the window's real
+    /// pane directory makes the sidebar pane report — and therefore
+    /// auto-name after — exactly what the window's real panes report.
+    /// Focusing the sidebar then renames the window to the same directory
+    /// the last real pane produced: as if the sidebar pane were not there.
+    ///
+    /// Target selection ([`own_pane_cwd_target`]): the currently active
+    /// real pane's path wins (that pane is what the window name is already
+    /// derived from); with none active, the last recorded path is kept —
+    /// the window name must not swing to some other pane's directory just
+    /// because the user stepped into the sidebar. The first real pane's
+    /// path seeds the mirror before any real pane has been seen active.
+    /// Popup mode records nothing: a popup has no pane, so there is no
+    /// window name to protect and the pinned `TMUX_PANE` belongs to a
+    /// real pane.
+    fn track_own_pane_cwd(&mut self, panes: &[(String, bool, String)]) {
+        if self.popup_mode {
+            return;
+        }
+        let target = if let Some(path) = own_pane_cwd_target(panes, &self.tmux_pane) {
+            // A real pane is active: follow it — that pane is what the
+            // window's auto-name is already derived from, so mirroring it
+            // keeps the name identical when the user steps into the
+            // sidebar.
+            path.to_string()
+        } else {
+            // Nothing active (the user is in the sidebar, or every
+            // sibling just closed): hold the last recorded directory
+            // rather than swinging to an arbitrary sibling, seeding from
+            // the window's first real pane before any real pane has been
+            // seen active.
+            match self
+                .own_pane_cwd
+                .as_deref()
+                .or_else(|| own_pane_cwd_seed(panes, &self.tmux_pane))
+            {
+                Some(path) => path.to_string(),
+                None => return,
+            }
+        };
+        self.own_pane_cwd = Some(target);
+    }
+
+    /// Chdir the TUI process to the directory recorded by
+    /// [`Self::track_own_pane_cwd`] — the host half of the own-pane cwd
+    /// mirror. Kept out of the snapshot apply so tests can exercise the
+    /// resolution logic without mutating the process-wide working
+    /// directory; called by the app layer after each applied snapshot.
+    /// Re-applying the same target every tick is a no-op syscall and
+    /// keeps the mirror idempotent. The TUI spawns every child with
+    /// explicit absolute paths, so nothing else depends on this cwd.
+    pub(crate) fn apply_own_pane_cwd(&self) {
+        if let Some(target) = self.own_pane_cwd.as_deref()
+            && std::env::set_current_dir(target).is_err()
+        {
+            // Directory vanished (worktree removed, unmounted): the
+            // process keeps its previous cwd and the failure is logged;
+            // the target is retried on the next tick, and a pane sitting
+            // in a recreated directory self-heals.
+            crate::debug::log(&format!("own-pane cwd sync to {target} failed"));
+        }
     }
 
     /// Same "seen" contract as [`Self::mark_focused_pane_seen`], extended
@@ -1230,6 +1311,34 @@ fn window_has_only_own_pane(panes: &[(String, bool, String)], own_pane: &str) ->
         }
     }
     saw_own_pane
+}
+
+/// The directory [`Self::track_own_pane_cwd`] should mirror this tick when
+/// a real pane is active: the active pane's path, from the sidebar's own
+/// window's pane list `(pane_id, pane_active, path)`.
+///
+/// The active pane is what tmux's automatic-rename derives the window name
+/// from, so its path is the one to mirror. The sidebar's own pane never
+/// qualifies (its path is the pollution this sync exists to remove), and
+/// panes whose path failed to parse are skipped. `None` when nothing is
+/// active — the caller then holds its last directory, seeded by
+/// [`own_pane_cwd_seed`].
+fn own_pane_cwd_target<'a>(panes: &'a [(String, bool, String)], own_pane: &str) -> Option<&'a str> {
+    let real = |pane: &&(String, bool, String)| pane.0 != own_pane && !pane.2.is_empty();
+    panes
+        .iter()
+        .find(|pane| pane.1 && real(pane))
+        .map(|pane| pane.2.as_str())
+}
+
+/// Seed directory for [`Self::track_own_pane_cwd`]: the window's first
+/// real pane with a parsed path, in tmux encounter order. Used only before
+/// any real pane has been seen active (e.g. the first tick after an
+/// auto-created sidebar took focus); afterwards the caller holds the last
+/// mirrored directory instead.
+fn own_pane_cwd_seed<'a>(panes: &'a [(String, bool, String)], own_pane: &str) -> Option<&'a str> {
+    let real = |pane: &&(String, bool, String)| pane.0 != own_pane && !pane.2.is_empty();
+    panes.iter().find(real).map(|pane| pane.2.as_str())
 }
 
 fn is_cmd_token_byte(b: u8) -> bool {
@@ -2719,6 +2828,111 @@ mod tests {
         assert!(!window_has_only_own_pane(&[], "%9"));
         let panes = vec![("%1".to_string(), true, "/tmp".to_string())];
         assert!(!window_has_only_own_pane(&panes, "%9"));
+    }
+
+    // ─── own-pane cwd mirror (window auto-name protection) ───────────
+
+    #[test]
+    fn own_pane_cwd_target_prefers_the_active_real_pane() {
+        // The active pane is what tmux's automatic-rename derives the
+        // window name from, so its path is the one to mirror.
+        let panes = vec![
+            ("%99".to_string(), true, "/sidebar".to_string()),
+            ("%1".to_string(), true, "/repo".to_string()),
+            ("%2".to_string(), false, "/other".to_string()),
+        ];
+        assert_eq!(own_pane_cwd_target(&panes, "%99"), Some("/repo"));
+    }
+
+    #[test]
+    fn own_pane_cwd_target_skips_empty_paths() {
+        // A pane whose path failed to parse must not become the mirror.
+        let panes = vec![("%1".to_string(), true, String::new())];
+        assert_eq!(own_pane_cwd_target(&panes, "%99"), None);
+        let panes = vec![("%1".to_string(), true, String::new())];
+        assert_eq!(own_pane_cwd_seed(&panes, "%99"), None);
+    }
+
+    #[test]
+    fn own_pane_cwd_seed_falls_back_to_the_first_real_pane() {
+        // Seed case: nothing active (the auto-created sidebar took focus
+        // before any real pane was seen), so the first real pane with a
+        // path seeds the mirror.
+        let panes = vec![
+            ("%99".to_string(), true, "/sidebar".to_string()),
+            ("%1".to_string(), false, "/repo".to_string()),
+        ];
+        assert_eq!(own_pane_cwd_target(&panes, "%99"), None);
+        assert_eq!(own_pane_cwd_seed(&panes, "%99"), Some("/repo"));
+    }
+
+    #[test]
+    fn own_pane_cwd_selectors_none_without_real_panes() {
+        // A stranded sidebar (window holds only itself) has nothing to
+        // mirror, and a path-less window neither.
+        assert_eq!(own_pane_cwd_target(&[], "%99"), None);
+        assert_eq!(own_pane_cwd_seed(&[], "%99"), None);
+        let panes = vec![("%99".to_string(), true, "/sidebar".to_string())];
+        assert_eq!(own_pane_cwd_target(&panes, "%99"), None);
+        assert_eq!(own_pane_cwd_seed(&panes, "%99"), None);
+    }
+
+    #[test]
+    fn own_pane_cwd_tracks_the_active_pane_and_holds_when_the_sidebar_takes_focus() {
+        let mut state = AppState::new("%99".into());
+        let fetched_at = std::time::Instant::now();
+        // A real pane is active: the mirror follows its directory.
+        state.apply_session_snapshot(
+            Vec::new(),
+            Vec::new(),
+            vec![
+                ("%99".into(), true, "/sidebar".into()),
+                ("%1".into(), true, "/repo".into()),
+            ],
+            fetched_at,
+        );
+        assert_eq!(state.own_pane_cwd.as_deref(), Some("/repo"));
+        // The user steps into the sidebar (no real pane active): the
+        // mirror holds the window's working directory instead of swinging
+        // to an arbitrary sibling.
+        state.apply_session_snapshot(
+            Vec::new(),
+            Vec::new(),
+            vec![
+                ("%99".into(), true, "/sidebar".into()),
+                ("%1".into(), false, "/repo".into()),
+                ("%2".into(), false, "/other".into()),
+            ],
+            fetched_at,
+        );
+        assert_eq!(state.own_pane_cwd.as_deref(), Some("/repo"));
+        // Work moves to another pane: the mirror follows it.
+        state.apply_session_snapshot(
+            Vec::new(),
+            Vec::new(),
+            vec![
+                ("%99".into(), true, "/sidebar".into()),
+                ("%2".into(), true, "/work".into()),
+            ],
+            fetched_at,
+        );
+        assert_eq!(state.own_pane_cwd.as_deref(), Some("/work"));
+    }
+
+    #[test]
+    fn own_pane_cwd_tracks_nothing_in_popup_mode() {
+        // A popup has no pane of its own, so there is no window name to
+        // protect — and the pinned TMUX_PANE belongs to a real pane the
+        // mirror must never adopt as "the sidebar pane".
+        let mut state = AppState::new("%99".into());
+        state.popup_mode = true;
+        state.apply_session_snapshot(
+            Vec::new(),
+            Vec::new(),
+            vec![("%1".into(), true, "/repo".into())],
+            std::time::Instant::now(),
+        );
+        assert!(state.own_pane_cwd.is_none());
     }
 
     // ─── stale snapshot vs. optimistic focus writes ──────────────────
