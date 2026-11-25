@@ -61,6 +61,11 @@ pub(crate) enum PaneRoute {
     /// without firing any pane-scoped hook, so the route is allowed to
     /// adopt the session (rewrite `@pane_session_id`), which is what
     /// re-keys the pane to the continued conversation.
+    ///
+    /// Constructed on Linux only (the walk reads /proc); on other
+    /// platforms the variant stays declared so the match sites and
+    /// semantics do not fork per-OS.
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     Inherited,
     /// Resolved via a subagent-list entry — a guess that must not
     /// rewrite the pane's session identity.
@@ -99,7 +104,11 @@ pub(crate) fn resolve_hook_pane(agent: &str, session_id: Option<&str>) -> (Strin
             return (pane.to_string(), PaneRoute::Guessed);
         }
         // The continuation fallback: only Claude re-keys conversations
-        // mid-pane (see the module docs).
+        // mid-pane (see the module docs). The process-ancestry walk
+        // reads /proc, so it exists on Linux only — elsewhere the
+        // session-id routes are the last word and unknown sessions
+        // still drop.
+        #[cfg(target_os = "linux")]
         if agent == crate::tmux::CLAUDE_AGENT
             && let Some(pane) = inherited_tmux_pane()
         {
@@ -137,13 +146,21 @@ fn query_pane_rows() -> Vec<PaneRow> {
         .collect()
 }
 
-// ─── process-ancestry fallback ──────────────────────────────────────────────
+// ─── process-ancestry fallback (Linux only: /proc reads) ────────────────────
+//
+// Everything in this section compiles behind `cfg(target_os = "linux")`:
+// `/proc` does not exist on macOS, so the walk cannot work there. The
+// production impact is graceful — without the walk, session matching is
+// the last word and a continued-in session's events still drop (the
+// pre-fix behavior). macOS CI runs `cargo test` over everything, which
+// is why the walk's tests are gated with it.
 
 /// How far the ancestry walk ascends before giving up. The continuation
 /// daemon sits a handful of levels above the hook process
 /// (hook → runtime → bg-pty-host/bg-spare → daemon), with slack for
 /// launcher shims; every level costs two tiny `/proc` reads and the walk
 /// only runs when session matching failed.
+#[cfg(target_os = "linux")]
 const ANCESTRY_WALK_MAX_DEPTH: u32 = 10;
 
 /// The pane a `TMUX_PANE`-scrubbed hook process inherited, via its
@@ -155,6 +172,7 @@ const ANCESTRY_WALK_MAX_DEPTH: u32 = 10;
 /// socket this process would talk to: a scoped-server test (or any
 /// isolated-socket setup) must never adopt a pane from a differently-
 /// socketed ancestor further up the tree.
+#[cfg(target_os = "linux")]
 fn inherited_tmux_pane() -> Option<String> {
     let own_socket = own_tmux_socket()?;
     walk_to_pane(std::process::id(), &own_socket)
@@ -167,6 +185,7 @@ fn inherited_tmux_pane() -> Option<String> {
 /// it never carries `TMUX_PANE` — the `Env` route would have won — so
 /// the check is free; it makes the walk a plain "scan the chain
 /// starting here").
+#[cfg(target_os = "linux")]
 fn walk_to_pane(start_pid: u32, own_socket: &str) -> Option<String> {
     let mut pid = Some(start_pid);
     for _ in 0..ANCESTRY_WALK_MAX_DEPTH {
@@ -192,6 +211,7 @@ fn walk_to_pane(start_pid: u32, own_socket: &str) -> Option<String> {
     None
 }
 
+#[cfg(target_os = "linux")]
 fn env_value<'a>(env: &'a [(String, String)], key: &str) -> Option<&'a str> {
     env.iter()
         .find_map(|(k, v)| (k == key).then_some(v.as_str()))
@@ -201,6 +221,7 @@ fn env_value<'a>(env: &'a [(String, String)], key: &str) -> Option<&'a str> {
 /// to: the socket embedded in `$TMUX` when inside tmux, otherwise
 /// `$TMUX_TMPDIR` (or `/tmp/tmux-<uid>`) plus the default socket name —
 /// the same resolution tmux's client performs.
+#[cfg(target_os = "linux")]
 fn own_tmux_socket() -> Option<String> {
     if let Ok(tmux) = std::env::var("TMUX")
         && !tmux.is_empty()
@@ -217,6 +238,7 @@ fn own_tmux_socket() -> Option<String> {
 /// Real uid from `/proc/self/status` — the same source tmux's
 /// `/tmp/tmux-$UID` default derives from. `None` outside Linux (or when
 /// the file is unreadable), which disables the ancestry fallback.
+#[cfg(target_os = "linux")]
 fn real_uid() -> Option<u32> {
     let status = std::fs::read_to_string("/proc/self/status").ok()?;
     let line = status.lines().find(|line| line.starts_with("Uid:"))?;
@@ -225,6 +247,7 @@ fn real_uid() -> Option<u32> {
 
 /// The parent pid of `pid`, from `/proc/<pid>/stat`. The comm field may
 /// contain spaces and parens, so parsing starts after the last `)`.
+#[cfg(target_os = "linux")]
 fn proc_parent(pid: u32) -> Option<u32> {
     let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
     let after_comm = stat.rsplit_once(')')?.1;
@@ -235,6 +258,7 @@ fn proc_parent(pid: u32) -> Option<u32> {
 
 /// The environment of `pid` as `(key, value)` pairs. Fails (→ `None`)
 /// when the process is gone or the kernel refuses the read.
+#[cfg(target_os = "linux")]
 fn proc_environ(pid: u32) -> Option<Vec<(String, String)>> {
     let raw = std::fs::read(format!("/proc/{pid}/environ")).ok()?;
     Some(
@@ -322,6 +346,7 @@ mod tests {
     /// ~15% of spawns). Production ancestors are seconds old, so the
     /// walk itself needs no such tolerance — this is purely a test
     /// fixture concern.
+    #[cfg(target_os = "linux")]
     fn spawn_with_env(env: &[(&str, &str)], needle: &str) -> u32 {
         let mut cmd = std::process::Command::new("sleep");
         cmd.arg("5");
@@ -447,9 +472,10 @@ mod tests {
         assert!(!subagent_list_contains("garbage", "garbage"));
     }
 
-    // ─── ancestry walk ───────────────────────────────────────────────
+    // ─── ancestry walk (Linux: /proc) ────────────────────────────────
 
     #[test]
+    #[cfg(target_os = "linux")]
     fn proc_parent_and_environ_read_a_spawned_child() {
         let child = spawn_with_env(&[("TMUX_WALK_MARKER", "yes")], "TMUX_WALK_MARKER=yes");
         assert_eq!(proc_parent(child), Some(std::process::id()));
@@ -459,6 +485,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(target_os = "linux")]
     fn walk_finds_the_pane_on_a_matching_socket_ancestor() {
         // The child carries TMUX + TMUX_PANE for a socket the walk is
         // told is our own — the daemon-shaped hit.
@@ -474,6 +501,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(target_os = "linux")]
     fn walk_rejects_ancestors_on_a_foreign_socket() {
         // The child's socket differs from the one the walk is told is
         // ours. Every real ancestor above the child (the test harness,
@@ -492,6 +520,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(target_os = "linux")]
     fn walk_skips_a_pane_marker_without_a_socket_to_validate() {
         // `TMUX_PANE` without `TMUX` is an orphaned marker: no way to
         // prove it belongs to our server, so the walk must not trust it.
@@ -502,6 +531,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(target_os = "linux")]
     fn own_tmux_socket_prefers_the_embedded_tmux_socket() {
         // SAFETY: single-threaded test process env mutation (suite runs
         // with --test-threads=1, see the Makefile's test-ignored target).
