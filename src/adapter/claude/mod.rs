@@ -260,6 +260,7 @@ impl EventAdapter for ClaudeAdapter {
                     tool_name: tool_name.into(),
                     tool_input: parse_json_field(input, "tool_input"),
                     tool_response: parse_json_field(input, "tool_response"),
+                    session_id: optional_str(input, "session_id"),
                 })
             }
             "task-created" => Some(AgentEvent::TaskCreated {

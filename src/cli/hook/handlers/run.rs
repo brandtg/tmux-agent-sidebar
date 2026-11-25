@@ -128,7 +128,16 @@ pub(in crate::cli::hook) fn on_tool_start(pane: &str, ctx: &AgentContext<'_>) ->
     if ctx.agent == crate::tmux::HERMES_AGENT {
         return 0;
     }
-    let reads = tmux::get_pane_options(pane, &[tmux::PANE_STATUS, tmux::PANE_STARTED_AT]);
+    // One batched read for status, the run clock, and the session binding
+    // the post-turn guard compares against (audit 2026-11-19 C2 pattern).
+    let reads = tmux::get_pane_options(
+        pane,
+        &[
+            tmux::PANE_STATUS,
+            tmux::PANE_STARTED_AT,
+            tmux::PANE_SESSION_ID,
+        ],
+    );
     let current_status = reads.first().map(String::as_str).unwrap_or_default();
     // Mid-turn tool calls arrive with the pane already `running` — the
     // common case must stay a read-only probe, not a tmux write storm.
@@ -148,8 +157,18 @@ pub(in crate::cli::hook) fn on_tool_start(pane: &str, ctx: &AgentContext<'_>) ->
     // idle/background promotion. `waiting`/`error` stay promotable — they
     // are mid-turn states (stranded permission denial, auto-retry), and
     // an empty status is an unclaimed pane.
+    //
+    // Exception: a tool call from a DIFFERENT session than the pane's
+    // binding is a session adoption in progress (see
+    // `session_takeover`) — a continued-in handoff re-keys the pane's
+    // conversation to a fresh session id and keeps tooling with no
+    // `UserPromptSubmit` ever firing. Those calls are the new session's
+    // real turn and must promote, or the freshly adopted session renders
+    // idle while it works.
+    let bound = reads.get(2).map(String::as_str).unwrap_or_default();
     if ctx.agent == crate::tmux::CLAUDE_AGENT
         && (current_status == "idle" || current_status == "background")
+        && !super::status_priority::session_takeover(ctx.session_id.as_deref(), bound)
     {
         return 0;
     }

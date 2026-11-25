@@ -10,7 +10,7 @@ pub(super) use run::{
     on_user_prompt_submit,
 };
 pub(super) use session::{on_session_end, on_session_start, on_session_title};
-pub(super) use status_priority::is_pending_action_wait_reason;
+pub(super) use status_priority::{is_pending_action_wait_reason, session_takeover};
 pub(super) use subagent::{on_subagent_start, on_subagent_stop};
 
 // The per-pane identity lock is shared outside `handlers`: the

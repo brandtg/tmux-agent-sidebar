@@ -32,6 +32,13 @@ impl Drop for ScopedServer {
 }
 
 impl ScopedServer {
+    /// Path of the scoped server's socket (`$TMUX_TMPDIR/default`) — what
+    /// a `TMUX=...` env var must embed for the hook-side ancestry walk to
+    /// accept the chain as same-server.
+    fn socket(&self) -> String {
+        format!("{}/default", self._dir.path().display())
+    }
+
     fn spawn() -> Self {
         let dir = tempfile::tempdir().unwrap();
         // SAFETY: these #[ignore]-style integration tests run under
@@ -176,6 +183,44 @@ fn pane_option(pane: &str, option: &str) -> String {
         .output()
         .expect("tmux show");
     String::from_utf8_lossy(&output.stdout).trim().to_string()
+}
+
+/// Run the staged hook.sh as a grandchild of a shell that carries
+/// `TMUX_PANE` + `TMUX` while the hook process itself has neither — the
+/// environment shape Claude's continuation daemon chain produces (the
+/// daemon inherits both from the pane's CLI; the hosts it spawns scrub
+/// them). `shell_env` must include a `TMUX` whose socket agrees with the
+/// hook's own socket resolution, or the ancestry walk rejects the chain.
+fn run_hook_continuation(
+    plugin_dir: &std::path::Path,
+    shell_env: &[(&str, String)],
+    agent: &str,
+    event: &str,
+    payload: &str,
+) -> (i32, String) {
+    let script = format!(
+        "printf '%s' \"$PAYLOAD\" | env -u TMUX_PANE -u TMUX bash {hook} {agent} {event}",
+        hook = plugin_dir.join("hook.sh").display(),
+        agent = agent,
+        event = event,
+    );
+    let mut cmd = Command::new("bash");
+    cmd.arg("-c").arg(&script).env("PAYLOAD", payload);
+    if std::env::var("HOOK_DEBUG").is_ok() {
+        cmd.env("TMUX_AGENT_SIDEBAR_DEBUG", "1");
+    }
+    for (key, value) in shell_env {
+        cmd.env(key, value);
+    }
+    let output = cmd.output().expect("spawn continuation shell");
+    (
+        output.status.code().unwrap_or(-1),
+        format!(
+            "{}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        ),
+    )
 }
 
 #[test]
@@ -388,5 +433,118 @@ fn hook_sh_drops_paneless_event_that_matches_no_pane() {
     assert!(
         pane_option(&server.pane, "@pane_status").is_empty(),
         "an unmatched pane-less event must not touch the pane"
+    );
+}
+
+#[test]
+#[ignore = "requires local tmux; mutates process-global env (run via make test-ignored)"]
+fn hook_sh_routes_continuation_event_via_process_ancestry_and_adopts_it() {
+    // The Claude continuation handoff ("continued-in") re-keys the
+    // pane's conversation to a NEW session id and moves the work to
+    // bg-pty-host descendants whose environment scrubs TMUX_PANE. No
+    // pane-scoped hook ever fires for the new session, so the binding
+    // still names the old one and exact + subagent matching both fail.
+    // The event must land via the ancestry walk, the pane must adopt the
+    // new session, and the post-turn promotion guards must let the new
+    // session's turn through (the pulse the user actually watches).
+    let server = ScopedServer::spawn();
+    let plugin = stage_plugin_dir();
+    set_pane_option(&server.pane, "@pane_agent", "claude");
+    set_pane_option(&server.pane, "@pane_session_id", "e2e-old-session");
+    set_pane_option(&server.pane, "@pane_status", "idle");
+
+    let shell_env = [
+        ("TMUX", format!("{},123,0", server.socket())),
+        ("TMUX_PANE", server.pane.clone()),
+    ];
+    let (code, out) = run_hook_continuation(
+        plugin.path(),
+        &shell_env,
+        "claude",
+        "tool-start",
+        r#"{"session_id":"e2e-new-session","tool_name":"Bash","tool_input":{"command":"ls"}}"#,
+    );
+    assert_eq!(code, 0, "{out}");
+    assert_eq!(
+        pane_option(&server.pane, "@pane_status"),
+        "running",
+        "a continuation's tool event must promote the pane even from idle"
+    );
+    assert_eq!(
+        pane_option(&server.pane, "@pane_session_id"),
+        "e2e-new-session",
+        "an ancestry-routed continuation must re-key the pane's session binding"
+    );
+}
+
+#[test]
+#[ignore = "requires local tmux; mutates process-global env (run via make test-ignored)"]
+fn hook_sh_continuation_activity_log_routes_and_promotes() {
+    // A continuation's PostToolUse stream is the bulk of its traffic and
+    // carries the payload's session id. It must route through the same
+    // ancestry fallback and promote the pane (from idle) so the row
+    // pulses while the continued session works.
+    let server = ScopedServer::spawn();
+    let plugin = stage_plugin_dir();
+    set_pane_option(&server.pane, "@pane_agent", "claude");
+    set_pane_option(&server.pane, "@pane_session_id", "e2e-old-session");
+    set_pane_option(&server.pane, "@pane_status", "idle");
+
+    let shell_env = [
+        ("TMUX", format!("{},123,0", server.socket())),
+        ("TMUX_PANE", server.pane.clone()),
+    ];
+    let (code, out) = run_hook_continuation(
+        plugin.path(),
+        &shell_env,
+        "claude",
+        "activity-log",
+        r#"{"session_id":"e2e-new-session","tool_name":"Bash","tool_input":{"command":"ls"},"tool_response":{"stdout":"ok"}}"#,
+    );
+    assert_eq!(code, 0, "{out}");
+    assert_eq!(
+        pane_option(&server.pane, "@pane_status"),
+        "running",
+        "a continuation's PostToolUse must promote the pane even from idle"
+    );
+    // The binding re-key happens on identity-bearing events (PreToolUse,
+    // Stop, Notification call `set_agent_meta`); a bare activity event
+    // drives state only. In a real continuation the turn's first tool
+    // call always fires PreToolUse first, so the binding heals
+    // immediately.
+}
+
+#[test]
+#[ignore = "requires local tmux; mutates process-global env (run via make test-ignored)"]
+fn hook_sh_rejects_continuation_chain_from_a_foreign_socket() {
+    // The ancestry walk must not adopt a pane whose TMUX socket differs
+    // from the one the hook process would talk to: a hook running
+    // against a scoped server whose shell ancestor carries the LIVE
+    // server's TMUX would otherwise write to (or adopt) live panes.
+    let server = ScopedServer::spawn();
+    let plugin = stage_plugin_dir();
+    set_pane_option(&server.pane, "@pane_agent", "claude");
+    set_pane_option(&server.pane, "@pane_session_id", "e2e-old-session");
+
+    let shell_env = [
+        ("TMUX", "/tmp/tmux-9999-foreign-socket,123,0".to_string()),
+        ("TMUX_PANE", server.pane.clone()),
+    ];
+    let (code, out) = run_hook_continuation(
+        plugin.path(),
+        &shell_env,
+        "claude",
+        "tool-start",
+        r#"{"session_id":"e2e-new-session","tool_name":"Bash","tool_input":{"command":"ls"}}"#,
+    );
+    assert_eq!(code, 0, "{out}");
+    assert_eq!(
+        pane_option(&server.pane, "@pane_session_id"),
+        "e2e-old-session",
+        "a foreign-socket chain must not reach the scoped pane"
+    );
+    assert!(
+        pane_option(&server.pane, "@pane_status").is_empty(),
+        "a foreign-socket chain must not touch the scoped pane"
     );
 }

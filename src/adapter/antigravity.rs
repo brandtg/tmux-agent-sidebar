@@ -293,6 +293,7 @@ impl EventAdapter for AntigravityAdapter {
                         json_value_or_null(&tool_call, "args"),
                     ),
                     tool_response: tool_response(input),
+                    session_id: optional_str(input, "session_id"),
                 })
             }
             _ => None,

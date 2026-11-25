@@ -59,8 +59,9 @@ pub(crate) fn cmd_hook(args: &[String]) -> i32 {
 
     // Resolve the pane. `$TMUX_PANE` is the normal route; events from
     // environment-scrubbed processes (Claude's bg-pty-host continuation
-    // forks and async subagent hosts) fall back to a session-id match —
-    // see `resolve` for the routing table and the guess semantics.
+    // forks and async subagent hosts) fall back to a session-id match,
+    // then a process-ancestry walk — see `resolve` for the routing
+    // table and the guess semantics.
     let (pane, route) = resolve::resolve_hook_pane(agent_name, event.session_id());
     if pane.is_empty() {
         debug::log(&format!(
@@ -243,9 +244,15 @@ fn handle_event(pane: &str, agent_name: &str, event: AgentEvent) -> i32 {
             tool_name,
             tool_input,
             tool_response,
-        } => {
-            activity::handle_activity_log(pane, agent_name, &tool_name, &tool_input, &tool_response)
-        }
+            session_id,
+        } => activity::handle_activity_log(
+            pane,
+            agent_name,
+            &tool_name,
+            &tool_input,
+            &tool_response,
+            session_id.as_deref(),
+        ),
         AgentEvent::PermissionDenied {
             agent,
             cwd,

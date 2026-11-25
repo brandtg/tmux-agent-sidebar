@@ -432,6 +432,7 @@ fn activity_log() {
             tool_name: "Read".into(),
             tool_input: json!({"file_path": "/a/b.rs"}),
             tool_response: Value::Null,
+            session_id: None,
         }
     );
 }
@@ -447,6 +448,7 @@ fn activity_log_string_tool_input() {
             tool_name: "Edit".into(),
             tool_input: json!({"file_path": "/a/b.rs"}),
             tool_response: Value::Null,
+            session_id: None,
         }
     );
 }
@@ -971,6 +973,7 @@ fn activity_log_with_tool_response() {
             tool_name: "TaskCreate".into(),
             tool_input: json!({"subject": "Fix bug"}),
             tool_response: json!({"task": {"id": "42"}}),
+            session_id: None,
         }
     );
 }

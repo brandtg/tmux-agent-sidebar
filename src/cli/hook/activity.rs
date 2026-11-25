@@ -102,6 +102,7 @@ pub(super) fn handle_activity_log(
     tool_name: &str,
     tool_input: &serde_json::Value,
     tool_response: &serde_json::Value,
+    session_id: Option<&str>,
 ) -> i32 {
     // The CLI argument may be an alias (`agy`); every guard below compares
     // against canonical labels. The run-state handlers are immune to the
@@ -138,9 +139,10 @@ pub(super) fn handle_activity_log(
         });
     }
 
-    // One batched read for the four options the resume/plan gates inspect
-    // (audit 2026-11-19 C2): status, wait reason, the run clock, and the
-    // subagent guard used to be separate spawns per tool event.
+    // One batched read for the five options the resume/plan gates inspect
+    // (audit 2026-11-19 C2): status, wait reason, the run clock, the
+    // subagent guard, and the session binding the post-turn guard compares
+    // against used to be separate spawns per tool event.
     let reads = tmux::get_pane_options(
         pane,
         &[
@@ -148,6 +150,7 @@ pub(super) fn handle_activity_log(
             tmux::PANE_WAIT_REASON,
             tmux::PANE_STARTED_AT,
             tmux::PANE_SUBAGENTS,
+            tmux::PANE_SESSION_ID,
         ],
     );
     let current_status = reads.first().map(String::as_str).unwrap_or_default();
@@ -196,8 +199,18 @@ pub(super) fn handle_activity_log(
     // with no `Stop` ever coming (same stance as the Hermes fork gate and
     // the `on_tool_start` dangling-call guard). Waiting/error/empty still
     // promote: they are mid-turn or unclaimed states.
+    //
+    // Exception, same as `on_tool_start`: a tool result from a DIFFERENT
+    // session than the pane's binding is a session adoption in progress —
+    // a continued-in handoff keeps tooling under a fresh session id with
+    // no `UserPromptSubmit`, and its results are real work the pane must
+    // render (see `session_takeover`).
     let claude_post_turn = agent_name == crate::tmux::CLAUDE_AGENT
-        && (current_status == "idle" || current_status == "background");
+        && (current_status == "idle" || current_status == "background")
+        && !super::handlers::session_takeover(
+            session_id,
+            reads.get(4).map(String::as_str).unwrap_or_default(),
+        );
     if agent_name != crate::tmux::HERMES_AGENT
         && !claude_post_turn
         && !agy_internal_churn
@@ -468,6 +481,7 @@ mod tests {
             "Read",
             &json!({"file_path": "/home/user/src/main.rs"}),
             &Value::Null,
+            None,
         );
 
         let content = fs::read_to_string(&path).unwrap();
@@ -488,6 +502,7 @@ mod tests {
             "Bash",
             &json!({"command": "npm run dev", "run_in_background": true}),
             &Value::Null,
+            None,
         );
 
         assert_eq!(
@@ -511,6 +526,7 @@ mod tests {
             "Bash",
             &json!({"run_in_background": true}),
             &Value::Null,
+            None,
         );
 
         assert_eq!(
@@ -533,6 +549,7 @@ mod tests {
             "Bash",
             &json!({"command": "cat a.log | grep foo\nbar", "run_in_background": true}),
             &Value::Null,
+            None,
         );
 
         let stored = tmux::test_mock::get(pane_id, tmux::PANE_BG_CMD).unwrap_or_default();
@@ -560,6 +577,7 @@ mod tests {
             // `terminal(background=true)` onto `run_in_background`).
             &json!({"command": "opencode run --title \"m13\" \"$(cat prompt.md)\"", "run_in_background": true}),
             &json!({"output": "Background process started", "pid": 1126098}),
+            None,
         );
 
         assert_eq!(
@@ -611,6 +629,7 @@ mod tests {
             "Bash",
             &json!({"command": "npm run dev", "run_in_background": true}),
             &json!({"output": "Background process started", "pid": 4242}),
+            None,
         );
         helper.join().unwrap();
 
@@ -638,6 +657,7 @@ mod tests {
             "Bash",
             &json!({"command": "npm run dev", "run_in_background": true}),
             &json!({"pid": "4242"}),
+            None,
         );
         assert_eq!(
             tmux::test_mock::get(pane_id, tmux::PANE_BG_PID).as_deref(),
@@ -652,6 +672,7 @@ mod tests {
             "Bash",
             &json!({"command": "cargo watch", "run_in_background": true}),
             &Value::Null,
+            None,
         );
         assert!(
             !tmux::test_mock::contains(pane_id, tmux::PANE_BG_PID),
@@ -673,6 +694,7 @@ mod tests {
             "Bash",
             &json!({"command": "npm run dev", "run_in_background": true}),
             &json!({"pid": 0}),
+            None,
         );
         assert!(!tmux::test_mock::contains(pane_id, tmux::PANE_BG_PID));
         fs::remove_file(&path).ok();
@@ -699,6 +721,7 @@ mod tests {
             "Read",
             &json!({"file_path": "/home/user/src/main.rs"}),
             &Value::Null,
+            None,
         );
 
         assert_eq!(
@@ -731,6 +754,7 @@ mod tests {
             "Bash",
             &json!({"command": "recap"}),
             &Value::Null,
+            None,
         );
 
         assert_eq!(
@@ -763,6 +787,7 @@ mod tests {
             "Read",
             &json!({"file_path": "/home/user/src/main.rs"}),
             &Value::Null,
+            None,
         );
 
         assert_eq!(
@@ -791,6 +816,7 @@ mod tests {
             "Read",
             &json!({"file_path": "/home/user/src/main.rs"}),
             &Value::Null,
+            None,
         );
 
         assert_eq!(
@@ -821,6 +847,7 @@ mod tests {
             "Read",
             &json!({"file_path": "/home/user/src/main.rs"}),
             &Value::Null,
+            None,
         );
 
         assert_eq!(
@@ -854,6 +881,7 @@ mod tests {
             "Read",
             &json!({"file_path": "/home/user/src/main.rs"}),
             &Value::Null,
+            None,
         );
 
         assert_eq!(
@@ -886,6 +914,7 @@ mod tests {
             "Read",
             &json!({"file_path": "/home/user/src/main.rs"}),
             &Value::Null,
+            None,
         );
 
         assert_eq!(
@@ -921,6 +950,7 @@ mod tests {
             "Read",
             &json!({"file_path": "/home/user/src/main.rs"}),
             &Value::Null,
+            None,
         );
 
         assert_eq!(
@@ -953,6 +983,7 @@ mod tests {
             "__task_reset__",
             &json!({}),
             &Value::Null,
+            None,
         );
 
         assert_eq!(
@@ -983,6 +1014,7 @@ mod tests {
             "__task_reset__",
             &json!({}),
             &Value::Null,
+            None,
         );
 
         assert_eq!(
@@ -1014,6 +1046,7 @@ mod tests {
             "Read",
             &json!({"file_path": "/home/user/src/main.rs"}),
             &Value::Null,
+            None,
         );
 
         assert_eq!(
@@ -1037,7 +1070,14 @@ mod tests {
         let _ = fs::remove_file(&path);
         tmux::test_mock::set(pane_id, tmux::PANE_STATUS, "idle");
 
-        handle_activity_log(pane_id, "agy", "__task_reset__", &json!({}), &Value::Null);
+        handle_activity_log(
+            pane_id,
+            "agy",
+            "__task_reset__",
+            &json!({}),
+            &Value::Null,
+            None,
+        );
 
         assert_eq!(
             tmux::test_mock::get(pane_id, tmux::PANE_STATUS).as_deref(),
@@ -1062,6 +1102,7 @@ mod tests {
             "Read",
             &json!({"file_path": "/home/user/src/main.rs"}),
             &Value::Null,
+            None,
         );
 
         assert_eq!(
@@ -1085,6 +1126,7 @@ mod tests {
             "Read",
             &json!({"file_path": "/home/user/src/main.rs"}),
             &Value::Null,
+            None,
         );
 
         assert_eq!(
@@ -1111,6 +1153,7 @@ mod tests {
             "Read",
             &json!({"file_path": "/home/user/src/main.rs"}),
             &Value::Null,
+            None,
         );
 
         assert_eq!(
@@ -1132,7 +1175,14 @@ mod tests {
         let _ = fs::remove_file(&path);
         tmux::test_mock::set(pane_id, tmux::PANE_STATUS, "idle");
 
-        handle_activity_log(pane_id, "hermes", "skill_view", &json!({}), &Value::Null);
+        handle_activity_log(
+            pane_id,
+            "hermes",
+            "skill_view",
+            &json!({}),
+            &Value::Null,
+            None,
+        );
 
         assert_eq!(
             tmux::test_mock::get(pane_id, tmux::PANE_STATUS).as_deref(),
@@ -1166,6 +1216,7 @@ mod tests {
             "Read",
             &json!({"file_path": "/a.rs"}),
             &Value::Null,
+            None,
         );
 
         assert_eq!(
@@ -1189,7 +1240,7 @@ mod tests {
         // With the adapter pattern, empty tool_name is filtered by the adapter
         // before reaching handle_activity_log. We still test that handle_activity_log
         // writes an entry even with empty tool_name (label extraction handles it).
-        let result = handle_activity_log(pane_id, "claude", "", &Value::Null, &Value::Null);
+        let result = handle_activity_log(pane_id, "claude", "", &Value::Null, &Value::Null, None);
         assert_eq!(result, 0);
         // Empty tool_name still writes an entry now (adapter filters upstream)
     }
@@ -1206,6 +1257,7 @@ mod tests {
             "Edit",
             &json!({"file_path": "/a/b/test.rs"}),
             &Value::Null,
+            None,
         );
 
         let content = fs::read_to_string(&path).unwrap();
@@ -1219,7 +1271,14 @@ mod tests {
         let path = crate::activity::log_file_path(pane_id);
         let _ = fs::remove_file(&path);
 
-        handle_activity_log(pane_id, "claude", "UnknownTool", &Value::Null, &Value::Null);
+        handle_activity_log(
+            pane_id,
+            "claude",
+            "UnknownTool",
+            &Value::Null,
+            &Value::Null,
+            None,
+        );
 
         let content = fs::read_to_string(&path).unwrap();
         assert!(content.contains("|UnknownTool|"));
@@ -1238,6 +1297,7 @@ mod tests {
             "TaskCreate",
             &json!({"subject": "Fix bug"}),
             &json!({"task": {"id": "42"}}),
+            None,
         );
 
         let content = fs::read_to_string(&path).unwrap();
@@ -1254,7 +1314,14 @@ mod tests {
 
         // A subagent's EnterPlanMode tool use must not flip the parent
         // badge to "plan".
-        handle_activity_log(pane, "claude", "EnterPlanMode", &Value::Null, &Value::Null);
+        handle_activity_log(
+            pane,
+            "claude",
+            "EnterPlanMode",
+            &Value::Null,
+            &Value::Null,
+            None,
+        );
 
         assert_eq!(
             tmux::test_mock::get(pane, tmux::PANE_PERMISSION_MODE).as_deref(),
