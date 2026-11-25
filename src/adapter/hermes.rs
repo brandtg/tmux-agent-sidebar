@@ -264,6 +264,7 @@ impl EventAdapter for HermesAdapter {
                     tool_name,
                     tool_input,
                     tool_response: parse_result(input),
+                    session_id: optional_str(input, "session_id"),
                 })
             }
             _ => None,
@@ -513,6 +514,7 @@ mod tests {
                 tool_name,
                 tool_input,
                 tool_response,
+                ..
             } => {
                 assert_eq!(tool_name, "Read");
                 assert_eq!(tool_input["file_path"], "/repo/src/main.rs");

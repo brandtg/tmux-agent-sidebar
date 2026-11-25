@@ -226,8 +226,10 @@ Agent hooks (hook.sh)
   → CLI `hook` subcommand (cli/hook.rs)
     → resolve_adapter() (event.rs) → adapter.parse() → AgentEvent
     → resolve_hook_pane() (cli/hook/resolve.rs) ← $TMUX_PANE, or a
-      session-id fallback when the firing process has no tmux env
-      (Claude bg-pty-host continuation forks / async subagent hosts)
+      session-id fallback, then a process-ancestry walk when the session
+      id matches no pane (Claude bg-pty-host continuation forks / async
+      subagent hosts; the walk requires the ancestor's TMUX socket to
+      match the hook's own)
     → handle_event() writes @pane_* tmux options + /tmp activity log files
                         ↓
 TUI main loop (app::run in app.rs; submodules app/{setup,workers,input,render})

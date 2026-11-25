@@ -128,6 +128,10 @@ pub enum AgentEvent {
         tool_name: String,
         tool_input: Value,
         tool_response: Value,
+        /// The session the tool call belongs to. Claude's `PostToolUse`
+        /// payloads carry it; routing needs it because a continuation's
+        /// tool events are the bulk of what a pane-less session emits.
+        session_id: Option<String>,
     },
     PermissionDenied {
         agent: String,
@@ -172,6 +176,7 @@ impl AgentEvent {
             | Self::PermissionDenied { session_id, .. }
             | Self::ToolStart { session_id, .. }
             | Self::ToolFailure { session_id, .. }
+            | Self::ActivityLog { session_id, .. }
             | Self::CwdChanged { session_id, .. } => session_id.as_deref(),
             _ => None,
         }

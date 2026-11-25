@@ -48,6 +48,33 @@ pub(in crate::cli::hook) fn resolve_stop_status(bg_shell_live: bool) -> &'static
     if bg_shell_live { "background" } else { "idle" }
 }
 
+/// Whether this event belongs to a session that is taking the pane over
+/// from a different, already-recorded session — a session adoption in
+/// progress.
+///
+/// Claude's post-turn guards (`on_tool_start`, `handle_activity_log`)
+/// refuse to promote an `idle`/`background` pane from a tool event,
+/// because the CLI's own background machinery (away-summary generators)
+/// fires dangling tool calls right after `Stop` and promoting them glued
+/// finished panes solid green. Those calls carry the pane's own session
+/// id — the one `@pane_session_id` already records. A tool event whose
+/// session id DIFFERS from the recorded binding is the opposite case: a
+/// new session has taken over the pane's work (a `continued-in`
+/// handoff re-keys the conversation to a fresh session id mid-pane, and
+/// a `/resume` switch lands a new binding), and its tool calls are real
+/// turns that never re-open with `UserPromptSubmit`. Those must promote,
+/// or the freshly adopted session renders as idle while it works.
+///
+/// An empty binding counts as a takeover: a pane with no recorded
+/// session has nothing whose finished state a dangling call could
+/// belong to.
+pub(in crate::cli::hook) fn session_takeover(event_session: Option<&str>, bound: &str) -> bool {
+    match event_session {
+        Some(sid) => !sid.is_empty() && sid != bound,
+        None => false,
+    }
+}
+
 /// Status `Notification` should land in.
 pub(in crate::cli::hook) fn resolve_notification_status(
     wait_reason: &str,
@@ -132,5 +159,17 @@ mod tests {
             "waiting"
         );
         assert_eq!(resolve_notification_status("", false), "waiting");
+    }
+
+    #[test]
+    fn session_takeover_requires_a_nonempty_new_session() {
+        assert!(session_takeover(Some("new-session"), "old-session"));
+        // An empty binding is a takeover too: nothing is recorded yet.
+        assert!(session_takeover(Some("new-session"), ""));
+        // The pane's own session is not a takeover.
+        assert!(!session_takeover(Some("same"), "same"));
+        // Missing or empty session ids carry no evidence either way.
+        assert!(!session_takeover(None, "old-session"));
+        assert!(!session_takeover(Some(""), "old-session"));
     }
 }
