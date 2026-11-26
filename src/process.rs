@@ -66,14 +66,18 @@ impl ProcessSnapshot {
             // the true `args` which begins with the program ("npm").
             //
             // Detect this spill when `comm_head` reappears as an argument token at
-            // index > 0, reassembling the multi-word comm and restoring the true args.
+            // index > 0 AND the reassembled comm is a prefix of the following
+            // args. The prefix check is mandatory: a bare length heuristic
+            // misparses args that repeat argv[0] within 16 chars (`bash -c
+            // bash`, `node node …`) — only a real spill has the true args
+            // starting with the full comm (audit 2026-11-25 L-tmux-3).
             let spill_idx = args_tokens.iter().enumerate().position(|(idx, &tok)| {
                 if idx == 0 || tok != comm_head {
                     return false;
                 }
                 let comm_cand = format!("{comm_head} {}", args_tokens[..idx].join(" "));
                 let args_cand = args_tokens[idx..].join(" ");
-                args_cand.starts_with(&comm_cand) || comm_cand.chars().count() <= 16
+                args_cand.starts_with(&comm_cand)
             });
 
             let (comm, args) = if let Some(idx) = spill_idx {
@@ -473,7 +477,7 @@ pub(crate) fn strip_exe_suffix(name: &str) -> &str {
 /// `sudo`, and `login` are meta-invocations — the shell-integration
 /// snippet forks a transient `tmux` at every prompt, which must not
 /// read as a running task.
-fn is_meta_or_shell_comm(comm: &str) -> bool {
+pub(crate) fn is_meta_or_shell_comm(comm: &str) -> bool {
     let first = comm.split_whitespace().next().unwrap_or(comm);
     if crate::tmux::is_shell_basename(first) || crate::tmux::is_shell_basename(comm) {
         return true;

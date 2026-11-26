@@ -65,11 +65,6 @@ pub(in crate::cli::hook) fn on_user_prompt_submit(
     } else {
         None
     };
-    let started_stamp = if !prompt.is_empty() || existing_started.is_empty() {
-        Some(now_epoch_secs().to_string())
-    } else {
-        None
-    };
     let mut writes = vec![tmux::PaneOptionWrite::Set {
         key: tmux::PANE_NOTIFICATION_RUN_ID,
         value: &run_id,
@@ -90,6 +85,19 @@ pub(in crate::cli::hook) fn on_user_prompt_submit(
     // elapsed timer resets on every response instead of spanning the turn.
     // An empty prompt still stamps a missing clock so recovery paths
     // (retry → busy with no chat.message) start timing.
+    // agy: a mid-turn PreInvocation carries a transcript-recovered prompt
+    // that is never empty, so `!prompt.is_empty()` would restamp the clock
+    // on *every* model call — the row would show elapsed-since-last-model-
+    // call instead of turn length. While the turn is already running, only
+    // a missing clock (recovery) stamps; a present clock keeps running.
+    let agy_running = ctx.agent == crate::tmux::ANTIGRAVITY_AGENT && current_status == "running";
+    let started_stamp = if agy_running && !existing_started.is_empty() {
+        None
+    } else if !prompt.is_empty() || existing_started.is_empty() {
+        Some(now_epoch_secs().to_string())
+    } else {
+        None
+    };
     if let Some(stamp) = &started_stamp {
         writes.push(tmux::PaneOptionWrite::Set {
             key: tmux::PANE_STARTED_AT,
@@ -459,6 +467,44 @@ mod tests {
         assert_eq!(
             tmux::test_mock::get(pane, tmux::PANE_WAIT_REASON).as_deref(),
             Some("permission")
+        );
+    }
+
+    #[test]
+    fn on_user_prompt_submit_agy_running_turn_does_not_restamp_the_clock() {
+        // M-hook-2 (audit 2026-11-25): agy's PreInvocation fires before
+        // every model call with a transcript-recovered (never-empty)
+        // prompt. Restamping per call would render elapsed-since-last-
+        // model-call instead of turn length, so a running turn keeps its
+        // clock; a missing clock (recovery) still stamps.
+        let _guard = tmux::test_mock::install();
+        let pane = "%AGY_RUNNING_CLOCK";
+        tmux::test_mock::set(pane, tmux::PANE_STATUS, "running");
+        tmux::test_mock::set(pane, tmux::PANE_STARTED_AT, "1700000000");
+        let ctx = AgentContext {
+            agent: "antigravity",
+            cwd: "/repo",
+            permission_mode: "default",
+            worktree: &None,
+            session_id: &None,
+        };
+        let exit = on_user_prompt_submit(pane, &ctx, "recovered prompt");
+        assert_eq!(exit, 0);
+        assert_eq!(
+            tmux::test_mock::get(pane, tmux::PANE_STARTED_AT).as_deref(),
+            Some("1700000000"),
+            "a mid-turn agy model call must not restart the run clock"
+        );
+
+        // Recovery: the clock is missing (sidebar restart mid-turn) —
+        // the running PreInvocation starts one.
+        let pane = "%AGY_RUNNING_NO_CLOCK";
+        tmux::test_mock::set(pane, tmux::PANE_STATUS, "running");
+        let exit = on_user_prompt_submit(pane, &ctx, "recovered prompt");
+        assert_eq!(exit, 0);
+        assert!(
+            tmux::test_mock::contains(pane, tmux::PANE_STARTED_AT),
+            "a missing clock must still be stamped so the turn times"
         );
     }
 

@@ -28,6 +28,17 @@ pub struct TodoUndo {
     pub landed: bool,
 }
 
+/// Outcome of an undo attempt. Only [`TodosUndo::NoStash`] stays silent
+/// (`u` outside an undo window is not an error); an expired or
+/// stale-stash refuse is surfaced so the key does not appear dead while
+/// the "u to undo" banner may still be on screen (audit 2026-11-25
+/// L-inp-1).
+pub(crate) enum TodosUndo {
+    Restored,
+    NoStash,
+    Expired,
+}
+
 /// In-progress text edit for one item, opened with `e`. The buffer is
 /// rendered in place of the item's own text; `cursor` is a char index
 /// into `input`. `original_text` is the item's text as of the moment
@@ -530,7 +541,9 @@ impl TodoState {
     /// deadline must not have passed and the file must not have changed
     /// since the deletion (a write by another instance would make the
     /// stashed indices stale — restoring over a newer state would
-    /// resurrect stale data). An invalid stash is dropped silently.
+    /// resurrect stale data). An invalid stash is refused with
+    /// [`TodosUndo::Expired`] so the caller can say why the key
+    /// no-oped; only the no-stash case stays silent.
     ///
     /// The freshness check stats the file fresh rather than trusting the
     /// per-tick `self.file_stamp` cache, which can lag the disk by up to
@@ -547,17 +560,17 @@ impl TodoState {
     /// error is surfaced in the panel. When the removal never reached
     /// the file (failed persistence) the restore is memory-only — the
     /// file still holds the items, and a write would duplicate them.
-    pub fn undo(&mut self, hide_completed: bool) -> bool {
+    pub(crate) fn undo(&mut self, hide_completed: bool) -> TodosUndo {
         let Some(undo) = self.undo.take() else {
-            return false;
+            return TodosUndo::NoStash;
         };
         if Instant::now() >= undo.deadline {
-            return false;
+            return TodosUndo::Expired;
         }
         if let Some(dir) = self.dir.clone()
             && crate::todo::stamp_in(&dir) != undo.file_stamp
         {
-            return false;
+            return TodosUndo::Expired;
         }
         let mut entries = undo.items;
         entries.sort_unstable_by_key(|(index, _)| *index);
@@ -594,7 +607,7 @@ impl TodoState {
             }
         }
         self.clamp_selection(hide_completed);
-        true
+        TodosUndo::Restored
     }
 
     /// The completed items with their indices into `items`.
@@ -977,10 +990,19 @@ impl AppState {
     }
 
     /// Restore the last delete / clear-completed while its undo window
-    /// is open. A silent no-op once the window has passed, the file
-    /// changed since the deletion, or there is no pending stash.
+    /// is open. A silent no-op when there is no pending stash; an
+    /// expired window or a changed file flashes instead of silently
+    /// eating the key while the "u to undo" banner may still be on
+    /// screen (audit 2026-11-25 L-inp-1).
     pub fn undo_todo_last(&mut self) -> bool {
-        self.todos.undo(self.global.todo_hide_completed)
+        match self.todos.undo(self.global.todo_hide_completed) {
+            TodosUndo::Restored => true,
+            TodosUndo::NoStash => false,
+            TodosUndo::Expired => {
+                self.set_flash("undo expired — list changed");
+                false
+            }
+        }
     }
 
     /// Open the inline add line, focusing the panel first.

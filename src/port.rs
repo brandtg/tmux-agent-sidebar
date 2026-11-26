@@ -81,11 +81,14 @@ fn run_lsof() -> Option<String> {
     }
 }
 
+/// The port scan shares the process tree's shell/meta classification
+/// (audit 2026-11-25 L-tmux-5): the local list here had drifted smaller
+/// (no dash/ksh/mksh/nu), so an idle `dash` pane reported `dash` as its
+/// command instead of walking deeper. `is_meta_or_shell_comm` is the
+/// same predicate `tree_has_non_shell` uses — shells plus the
+/// `tmux`/`sudo`/`login` meta-invocations the old local list carried.
 fn is_shell_command(basename: &str) -> bool {
-    matches!(
-        basename,
-        "bash" | "sh" | "zsh" | "fish" | "tmux" | "login" | "sudo"
-    )
+    crate::process::is_meta_or_shell_comm(basename)
 }
 
 fn best_command_for_pane(pane_pid: u32, process_snapshot: &ProcessSnapshot) -> Option<String> {

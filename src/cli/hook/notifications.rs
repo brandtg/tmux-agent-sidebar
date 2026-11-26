@@ -167,7 +167,10 @@ pub(super) fn stop_failure_body(error: &str) -> String {
     if error.is_empty() {
         "Task failed".to_string()
     } else {
-        format!("Task failed: {error}")
+        // Truncate the error like the Stop path does: a multi-KB upstream
+        // error otherwise becomes a giant notification body (audit
+        // 2026-11-25 L-hook-4).
+        format!("Task failed: {}", truncate_body(error))
     }
 }
 

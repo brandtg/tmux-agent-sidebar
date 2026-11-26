@@ -226,6 +226,16 @@ pub fn wrap_flow_offsets(
     }
     let chars: Vec<char> = text.chars().collect();
     let mut pos = 0;
+    // Skip a leading space run before the first chunk: the break-at-space
+    // cut can land inside it (cut = pos+1) and the mid-text trim_end then
+    // leaves line 0 blank — a todo edit buffer starting with a space
+    // rendered a blank row above its text (audit 2026-11-25 L-UI-2).
+    // Continuation lines already skip their break spaces, so the first
+    // line skipping its leading run is consistent; the line's start
+    // offset points at the first kept char.
+    while pos < chars.len() && chars[pos] == ' ' {
+        pos += 1;
+    }
     // Real labels are far below this; the cap guarantees termination even
     // on pathological zero-progress chunks.
     while pos < chars.len() && lines.len() < 4096 {
@@ -493,6 +503,18 @@ mod tests {
         // the break, not to the line.
         let lines = wrap_flow_offsets("ab  cd", 4, 4);
         assert_eq!(lines, vec![("ab".to_string(), 0), ("cd".to_string(), 4)]);
+    }
+
+    #[test]
+    fn wrap_flow_offsets_skips_leading_spaces_of_the_first_chunk() {
+        // A break landing inside a leading space run must not emit a
+        // blank line 0 above the text (audit 2026-11-25 L-UI-2): the run
+        // is skipped and line 0 starts at the first kept char.
+        let lines = wrap_flow_offsets("  cd ef", 4, 4);
+        assert_eq!(lines, vec![("cd".to_string(), 2), ("ef".to_string(), 5)]);
+        // A single leading space that fits is skipped the same way.
+        let single = wrap_flow_offsets(" ab", 3, 3);
+        assert_eq!(single, vec![("ab".to_string(), 1)]);
     }
 
     // ─── elapsed_label ─────────────────────────────────────────────

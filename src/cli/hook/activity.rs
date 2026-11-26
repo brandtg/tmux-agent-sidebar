@@ -44,6 +44,15 @@ pub(super) fn write_activity_entry(pane: &str, tool_name: &str, label: &str) {
         let _ = f.seek(SeekFrom::End(0));
         let _ = f.write_all(line.as_bytes());
         trim_locked(&mut f, 200, 210);
+    } else {
+        // A failed flock silently drops the entry — say so in the debug
+        // trace like every other lock user (audit 2026-11-25 L-hook-5).
+        crate::debug::log(&format!(
+            "activity: flock failed on {}, entry dropped: {}|{}",
+            log_path.display(),
+            timestamp,
+            tool_name
+        ));
     }
     // The lock is released when the fd closes.
 }

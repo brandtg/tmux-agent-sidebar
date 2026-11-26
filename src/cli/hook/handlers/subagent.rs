@@ -1,6 +1,6 @@
 use crate::tmux;
 
-use super::super::context::remove_subagent;
+use super::super::context::{clear_run_state, remove_subagent};
 
 /// Run `f` while holding the pane's subagent lock. Fail-open (see
 /// `paths::with_pane_lock`): if the lockfile cannot be opened or
@@ -87,12 +87,17 @@ pub(in crate::cli::hook) fn on_subagent_stop(pane: &str, agent_id: Option<&str>)
                 // resolved to `background` because of these children
                 // (`on_stop` keeps the list for Hermes), nothing else
                 // will drop the pane — do it here, but only when no bg
-                // shell keeps `background` alive on its own. Direct
-                // option write, mirroring the sweep's downgrade so the
-                // `done` attention flag set at Stop survives.
+                // shell keeps `background` alive on its own. Clear the
+                // run clock first (matching `on_stop`'s idle path): the
+                // downgrade write lands idle, and leaving
+                // `@pane_started_at` set would render a forever-growing
+                // elapsed label under it (audit 2026-11-25 M-hook-1).
+                // Direct option write, mirroring the sweep's downgrade
+                // so the `done` attention flag set at Stop survives.
                 if tmux::get_pane_option_value(pane, tmux::PANE_BG_CMD).is_empty()
                     && tmux::get_pane_option_value(pane, tmux::PANE_STATUS) == "background"
                 {
+                    clear_run_state(pane);
                     tmux::set_pane_option(pane, tmux::PANE_STATUS, "idle");
                 }
             }
@@ -317,11 +322,16 @@ mod tests {
     fn on_subagent_stop_drains_last_async_child_to_idle() {
         // Hermes async delegation: the parent's Stop resolved to
         // `background` while children ran; when the last child stops, the
-        // pane must drop back to idle — nothing else will.
+        // pane must drop back to idle — nothing else will. The downgrade
+        // clears the run state first (matching `on_stop`'s idle path):
+        // leaving `@pane_started_at` set would render a forever-growing
+        // elapsed label under the idle row (audit 2026-11-25 M-hook-1).
         let _guard = tmux::test_mock::install();
         let pane = "%SUB_DRAIN_IDLE";
         tmux::test_mock::set(pane, tmux::PANE_SUBAGENTS, ",leaf:child-1");
         tmux::test_mock::set(pane, tmux::PANE_STATUS, "background");
+        tmux::test_mock::set(pane, tmux::PANE_STARTED_AT, "1700000000");
+        tmux::test_mock::set(pane, tmux::PANE_WAIT_REASON, "permission");
 
         on_subagent_stop(pane, Some("child-1"));
 
@@ -330,6 +340,14 @@ mod tests {
             tmux::test_mock::get(pane, tmux::PANE_STATUS).as_deref(),
             Some("idle"),
             "the last child finishing must drop the pane out of background"
+        );
+        assert!(
+            !tmux::test_mock::contains(pane, tmux::PANE_STARTED_AT),
+            "the idle downgrade must clear the run clock"
+        );
+        assert!(
+            !tmux::test_mock::contains(pane, tmux::PANE_WAIT_REASON),
+            "the idle downgrade must clear the wait reason"
         );
         fs::remove_file(crate::paths::pane_lock_path("subagent", pane)).ok();
     }

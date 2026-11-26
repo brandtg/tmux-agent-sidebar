@@ -388,7 +388,12 @@ fn flag_waiting(pane_id: &str, reason: &str) {
 fn clear_waiting(pane_id: &str) {
     tmux::set_pane_option(pane_id, tmux::PANE_STATUS, "running");
     tmux::unset_pane_option(pane_id, tmux::PANE_WAIT_REASON);
-    tmux::set_pane_option(pane_id, tmux::PANE_ATTENTION, "clear");
+    // Unset, not write "clear": a non-empty unknown @pane_attention value
+    // parses as attention-set (PaneAttention::from_label), so the literal
+    // re-lights the flag it is trying to clear until the turn's Stop
+    // (audit 2026-11-25 M-tmux-1). Hook-side set_attention unsets the
+    // option for "clear" — mirror that convention.
+    tmux::unset_pane_option(pane_id, tmux::PANE_ATTENTION);
 }
 
 /// Session name polling thread. Refreshes the `session_id → name` map every
@@ -508,5 +513,35 @@ mod approval_tests {
             "esc to cancel            Gemini 3.8 Flash · high".into(),
         ];
         assert_eq!(detect_prompt_reason(&running), None);
+    }
+
+    #[test]
+    fn clear_waiting_unsets_attention_instead_of_writing_clear() {
+        // M-tmux-1 (audit 2026-11-25): a literal "clear" in
+        // @pane_attention parses as attention-set
+        // (PaneAttention::from_label maps any non-empty unknown value to
+        // Notification), so the moment a prompt is answered the worker
+        // re-lit the flag it was clearing. The option must be unset,
+        // matching the hook-side set_attention convention.
+        let _guard = tmux::test_mock::install();
+        let pane = "%CLEAR_WAIT";
+        tmux::test_mock::set(pane, tmux::PANE_STATUS, "waiting");
+        tmux::test_mock::set(pane, tmux::PANE_WAIT_REASON, "permission");
+        tmux::test_mock::set(pane, tmux::PANE_ATTENTION, "notification");
+
+        clear_waiting(pane);
+
+        assert_eq!(
+            tmux::test_mock::get(pane, tmux::PANE_STATUS).as_deref(),
+            Some("running")
+        );
+        assert!(
+            !tmux::test_mock::contains(pane, tmux::PANE_WAIT_REASON),
+            "the wait reason must be unset"
+        );
+        assert!(
+            !tmux::test_mock::contains(pane, tmux::PANE_ATTENTION),
+            "attention must be unset, not written as \"clear\""
+        );
     }
 }

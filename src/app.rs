@@ -181,6 +181,15 @@ pub fn run(
             if !state.popup_mode {
                 crate::cli::toggle::schedule_restore_after_pane_exit(&state.tmux_pane);
             }
+            // The debounce flushes below run after this check, so shared
+            // writes queued in the last 120 ms would die with the process
+            // and the other sidebars would revert them. Force both queues
+            // once before exiting; ZERO bypasses the debounce window
+            // (audit 2026-11-25 L-state-1). A failed write is not retried
+            // — the process is exiting — and the next sidebar's sync
+            // reconciles.
+            state.global.flush_pending_cursor_save(Duration::ZERO);
+            state.global.flush_pending_collapsed_save(Duration::ZERO);
             break Ok(());
         }
 

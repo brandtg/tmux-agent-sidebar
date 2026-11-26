@@ -51,16 +51,26 @@ fn wrap_with_cursor(
         .iter()
         .enumerate()
         .rfind(|(_, (_, start))| *start <= cursor);
-    if let Some((index, (_, start))) = home {
-        let line = &mut result[index].0;
-        let len = line.chars().count();
-        let position = (cursor - start).min(len);
-        if position == len && display_width(line) + CHECKBOX_WIDTH + 1 > row_width {
-            // No cell left for the block glyph on this row: spill it
-            // onto a row of its own.
-            result.insert(index + 1, (String::new(), Some(0)));
-        } else {
-            result[index].1 = Some(position);
+    match home {
+        Some((index, (_, start))) => {
+            let line = &mut result[index].0;
+            let len = line.chars().count();
+            let position = (cursor - start).min(len);
+            if position == len && display_width(line) + CHECKBOX_WIDTH + 1 > row_width {
+                // No cell left for the block glyph on this row: spill it
+                // onto a row of its own.
+                result.insert(index + 1, (String::new(), Some(0)));
+            } else {
+                result[index].1 = Some(position);
+            }
+        }
+        None => {
+            // The cursor sits inside chars no line kept — the skipped
+            // leading space run (audit 2026-11-25 L-UI-2). Park it at
+            // the start of the first line instead of vanishing.
+            if let Some(first) = result.first_mut() {
+                first.1 = Some(0);
+            }
         }
     }
     result

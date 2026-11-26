@@ -42,20 +42,33 @@ fn copy_via_tmux_buffer(text: &str) -> bool {
     // failure → `None`, which is all the status check needs.
     let run_set_buffer = |args: &[&str]| crate::tmux::run_tmux(args).is_some();
     match W_SUPPORTED.get() {
-        Some(true) => run_set_buffer(&["set-buffer", "-w", text]),
-        Some(false) => run_set_buffer(&["set-buffer", text]),
+        Some(true) => run_set_buffer(&set_buffer_args(true, text)),
+        Some(false) => run_set_buffer(&set_buffer_args(false, text)),
         None => {
             // First copy decides for the process: `-w` first, and the
             // plain fallback both recovers the copy and records the
             // capability.
-            let w_ok = run_set_buffer(&["set-buffer", "-w", text]);
+            let w_ok = run_set_buffer(&set_buffer_args(true, text));
             let _ = W_SUPPORTED.set(w_ok);
             if w_ok {
                 true
             } else {
-                run_set_buffer(&["set-buffer", text])
+                run_set_buffer(&set_buffer_args(false, text))
             }
         }
+    }
+}
+
+/// The argv for a `tmux set-buffer` write. `--` ends flag parsing so a
+/// payload starting with `-` (dash-bullet todo yanks, a literal
+/// `-w hello`) is taken verbatim instead of parsed as a flag — which
+/// failed the copy *and* pinned `W_SUPPORTED=false` for the process
+/// lifetime (audit 2026-11-25 H-tmux-1).
+fn set_buffer_args(with_clipboard: bool, text: &str) -> Vec<&str> {
+    if with_clipboard {
+        vec!["set-buffer", "-w", "--", text]
+    } else {
+        vec!["set-buffer", "--", text]
     }
 }
 
@@ -76,8 +89,22 @@ fn copy_via_os_clipboard(text: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    // The shims shell out to real `tmux` / the OS clipboard; calling
-    // them from a test would clobber the user's actual paste buffer.
-    // The policy (success → feedback, failure → silent) is exercised
-    // through the callers' `record_*` seams instead.
+    use super::*;
+
+    #[test]
+    fn set_buffer_args_end_flag_parsing_before_the_payload() {
+        // H-tmux-1 (audit 2026-11-25): every shape carries `--` before
+        // the payload so a yank starting with `-` is stored verbatim
+        // instead of parsed as a flag. The scoped-server counterpart
+        // (hook_pipeline_tests::set_buffer_takes_dash_payload_verbatim)
+        // pins tmux's acceptance of these exact shapes.
+        assert_eq!(
+            set_buffer_args(true, "-w hello"),
+            vec!["set-buffer", "-w", "--", "-w hello"]
+        );
+        assert_eq!(
+            set_buffer_args(false, "- fix the login bug"),
+            vec!["set-buffer", "--", "- fix the login bug"]
+        );
+    }
 }

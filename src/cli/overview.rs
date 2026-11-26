@@ -281,11 +281,17 @@ pub fn cmd_overview(args: &[String]) -> i32 {
         match arg.as_str() {
             "--popup" => popup = true,
             "--popup-client" => {
-                popup_client = Some(iter.next().map(|s| s.to_string()).unwrap_or_default());
-                if popup_client.as_deref() == Some("") {
+                let value = iter.next().map(|s| s.to_string()).unwrap_or_default();
+                // A missing value or a following flag (a value starting
+                // with `--`) is a caller mistake: silently consuming
+                // `--interval-ms 500` as the client name drops the flag
+                // and targets a client that does not exist (audit
+                // 2026-11-25 L-cli-4).
+                if value.is_empty() || value.starts_with("--") {
                     eprintln!("overview: --popup-client requires a client name");
                     return 2;
                 }
+                popup_client = Some(value);
             }
             "--interval-ms" => match iter.next().and_then(|v| v.parse::<u64>().ok()) {
                 Some(ms) if ms >= 100 => interval = Duration::from_millis(ms),

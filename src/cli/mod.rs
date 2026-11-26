@@ -17,8 +17,10 @@ use std::io::Read;
 
 use crate::tmux;
 
-/// Run a CLI subcommand. Returns Some(exit_code) if a subcommand was matched,
-/// None if no subcommand was given (caller should launch TUI).
+/// Run a CLI subcommand. Returns Some(exit_code) if a subcommand was matched
+/// (including the usage error for an unknown one — a typo must not launch
+/// the TUI, audit 2026-11-25 L-cli-5), None if no subcommand was given
+/// (caller should launch TUI).
 pub fn run(args: &[String]) -> Option<i32> {
     let cmd = args.first().map(|s| s.as_str())?;
     let rest = &args[1..];
@@ -40,7 +42,18 @@ pub fn run(args: &[String]) -> Option<i32> {
             println!("{}", crate::VERSION);
             0
         }
-        _ => return None,
+        // A typo'd subcommand must not fall through to the TUI the way a
+        // bare invocation does — print usage and exit 2 instead (audit
+        // 2026-11-25 L-cli-5). No args at all is the only TUI path.
+        _ => {
+            eprintln!("unknown subcommand '{cmd}'");
+            eprintln!(
+                "usage: tmux-agent-sidebar \
+                 [setup|hook|toggle|toggle-all|auto-close|maintain-width|layouts|set-status|\
+                 spawn|todo|capture|overview|notify-focus|version]"
+            );
+            2
+        }
     };
     Some(code)
 }
@@ -159,8 +172,10 @@ mod tests {
     }
 
     #[test]
-    fn run_returns_none_for_unknown_command() {
-        assert_eq!(run(&["unknown-cmd".into()]), None);
+    fn run_exits_2_with_usage_for_unknown_command() {
+        // A typo must not fall through to the TUI the way a bare
+        // invocation does (audit 2026-11-25 L-cli-5).
+        assert_eq!(run(&["unknown-cmd".into()]), Some(2));
     }
 
     #[test]

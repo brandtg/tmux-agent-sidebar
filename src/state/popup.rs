@@ -241,14 +241,21 @@ impl AppState {
     pub fn confirm_repo_popup(&mut self) {
         let selected = self.repo_popup_selected();
         let names = self.repo_names();
-        if let Some(name) = names.get(selected) {
-            self.global.repo_filter = if selected == 0 {
+        let new_filter = names.get(selected).map(|name| {
+            if selected == 0 {
                 super::RepoFilter::All
             } else {
                 super::RepoFilter::Repo(name.clone())
-            };
-        }
+            }
+        });
         self.popup = PopupState::None;
+        // Re-confirming the active filter is a no-op: skip the `set -g` +
+        // SIGUSR1 broadcast + rebuild it would otherwise fire at every
+        // open sidebar (audit 2026-11-25 L-state-5).
+        let Some(filter) = new_filter.filter(|f| *f != self.global.repo_filter) else {
+            return;
+        };
+        self.global.repo_filter = filter;
         self.global.save_repo_filter();
         self.rebuild_row_targets();
         // The rebuild can and routinely does move the cursor: the list
