@@ -95,10 +95,14 @@ impl PaneLayout {
 }
 
 /// Minimum agents-panel height the expanded Vercel-style spawn modal
-/// needs. Below this the popup falls back to a compact label-less
-/// layout to avoid clipping rows (the default 20-row bottom panel can
-/// leave only ~10 rows for the agents panel on short terminals).
-const SPAWN_MODAL_EXPANDED_MIN_HEIGHT: u16 = 12;
+/// needs: the content runs through the error/status row at inner
+/// offset 10, so the inner area needs 11 rows and the popup 13 total.
+/// Height 12 used to pick the expanded layout and then clamp the popup
+/// to an inner height of 10 — where the reserved error/status row never
+/// rendered, exactly where inline feedback matters most on a short
+/// terminal (audit 2026-11-25 L-UI-1) — so 12 now falls back to the
+/// compact layout.
+const SPAWN_MODAL_EXPANDED_MIN_HEIGHT: u16 = 13;
 
 /// Border rows contributed to the total popup height (top + bottom).
 const POPUP_BORDER_ROWS: u16 = 2;
@@ -733,7 +737,19 @@ fn compute_scroll_offset(state: &mut AppState, total_lines: usize, list_area: Re
         if let (Some(first), Some(last)) = (first_line, last_line) {
             let visible_h = list_area.height as usize;
             let offset = state.scrolls.panes.offset;
-            if first < offset {
+            let row_height = last - first + 1;
+            if row_height > visible_h {
+                // A row taller than the viewport cannot satisfy both
+                // anchors: the old two-branch logic alternated top- and
+                // bottom-anchoring every frame — the viewport ping-ponged
+                // at ~5 Hz while the cursor rested on the tall row (audit
+                // 2026-11-25 M-UI-1). Bring the row in from whichever
+                // side it is fully off-screen, then leave the user's
+                // wheel alone while any part of it is visible.
+                if last < offset || first >= offset + visible_h {
+                    state.scrolls.panes.offset = first.saturating_sub(1);
+                }
+            } else if first < offset {
                 state.scrolls.panes.offset = first.saturating_sub(1);
             } else if last >= offset + visible_h {
                 state.scrolls.panes.offset = (last + 1).saturating_sub(visible_h);

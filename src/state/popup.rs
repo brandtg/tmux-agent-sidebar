@@ -1,5 +1,30 @@
 use super::AppState;
 
+/// One memoized help-overlay line (see [`PopupState::Help::cache`]).
+/// Style-free: the renderer applies the theme when it materializes the
+/// ratatui lines.
+#[derive(Debug, Clone)]
+pub enum HelpCachedLine {
+    Blank,
+    /// A section title (`list`, `group`, …).
+    Header(String),
+    /// One key row: the padded ` key  ` prefix and one wrapped chunk of
+    /// the description (continuation lines carry an all-space prefix).
+    Entry {
+        prefix: String,
+        chunk: String,
+    },
+}
+
+/// The help overlay's wrapped content for one geometry (audit
+/// 2026-11-25 L-UI-7).
+#[derive(Debug, Clone)]
+pub struct HelpLineCache {
+    pub key_col: usize,
+    pub action_width: usize,
+    pub lines: Vec<HelpCachedLine>,
+}
+
 /// Placeholder warning lines shown in the remove-confirm dialog for
 /// worktree spawns while its pre-flight git probes run on a worker
 /// thread (see [`AppState::open_remove_confirm_for_pane`]).
@@ -111,6 +136,11 @@ pub enum PopupState {
         content: u16,
         /// Visible inner height, as of the last render.
         viewport: u16,
+        /// The wrapped help content, memoized per (key column, action
+        /// width): the old render re-wrapped every description every
+        /// frame the overlay stayed open (audit 2026-11-25 L-UI-7).
+        /// Style-free strings — the theme is applied at render time.
+        cache: Option<HelpLineCache>,
     },
     /// Confirmation prompt shown when the user presses `x` on a
     /// spawn-created pane. `pane_id` feeds `worktree::remove`; `label`
@@ -346,8 +376,61 @@ impl AppState {
                 scroll: 0,
                 content: 0,
                 viewport: 0,
+                cache: None,
             };
         }
+    }
+
+    /// Whether the help cache matches this geometry. `false` sends the
+    /// renderer to a fresh wrap.
+    pub fn help_cache_matches(&self, key_col: usize, action_width: usize) -> bool {
+        matches!(
+            &self.popup,
+            PopupState::Help {
+                cache: Some(cache),
+                ..
+            } if cache.key_col == key_col && cache.action_width == action_width
+        )
+    }
+
+    /// Store the freshly wrapped help content for this geometry.
+    pub fn store_help_cache(
+        &mut self,
+        key_col: usize,
+        action_width: usize,
+        lines: Vec<HelpCachedLine>,
+    ) {
+        if let PopupState::Help { cache, .. } = &mut self.popup {
+            *cache = Some(HelpLineCache {
+                key_col,
+                action_width,
+                lines,
+            });
+        }
+    }
+
+    /// The cached help content, when the geometry matches.
+    pub fn help_cache(&self, key_col: usize, action_width: usize) -> Option<&[HelpCachedLine]> {
+        match &self.popup {
+            PopupState::Help {
+                cache:
+                    Some(HelpLineCache {
+                        key_col: k,
+                        action_width: a,
+                        lines,
+                    }),
+                ..
+            } if *k == key_col && *a == action_width => Some(lines),
+            _ => None,
+        }
+    }
+
+    /// The cached content's line count, when the geometry matches; 0
+    /// otherwise (the renderer stores the cache before measuring).
+    pub fn help_cache_len(&self, key_col: usize, action_width: usize) -> u16 {
+        self.help_cache(key_col, action_width)
+            .map(|lines| lines.len() as u16)
+            .unwrap_or(0)
     }
 
     /// Record the content/viewport heights the renderer just laid out,
@@ -1220,6 +1303,7 @@ mod tests {
             scroll: 0,
             content: 0,
             viewport: 0,
+            cache: None,
         };
         state.set_repo_popup_selected(9);
         // Repo accessor returns default when not in the Repo variant.
@@ -1257,6 +1341,7 @@ mod tests {
             scroll: 0,
             content: 0,
             viewport: 0,
+            cache: None,
         };
         state.close_help_popup();
         assert!(matches!(state.popup, PopupState::None));

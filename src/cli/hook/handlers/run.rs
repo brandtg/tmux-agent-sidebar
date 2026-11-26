@@ -7,11 +7,12 @@ use crate::time::{now_epoch_millis, now_epoch_secs};
 
 use super::super::activity::write_activity_entry;
 use super::super::context::{
-    AgentContext, clear_run_state, is_system_message, mark_task_reset, set_agent_meta,
+    AgentContext, clear_run_state, is_system_message, mark_task_reset, mark_task_reset_with,
+    set_agent_meta,
 };
 use super::super::notifications::{
-    NotifyLabels, NotifyPayload, notification_run_id, notify_lifecycle, stop_body,
-    stop_failure_body, stop_failure_fingerprint, task_completed_body, task_completed_fingerprint,
+    NotifyLabels, NotifyPayload, notify_lifecycle, stop_body, stop_failure_body,
+    stop_failure_fingerprint, task_completed_body, task_completed_fingerprint,
 };
 use super::status_priority::resolve_stop_status;
 use super::subagent::with_subagent_lock;
@@ -196,22 +197,35 @@ pub(in crate::cli::hook) fn on_tool_start(pane: &str, ctx: &AgentContext<'_>) ->
         return 0;
     }
     set_agent_meta(pane, ctx);
-    set_status(pane, "running");
-    // Same cleanup as the `handle_activity_log` resume: the reason row
-    // renders for every status, so a stale `permission_denied` (or error
-    // text stored by `on_stop_failure`) must go when the agent resumes.
-    // set_status's batch already unset @pane_attention; the wait-reason
-    // clear is one batched write, not two spawns (audit 2026-11-19 C2).
-    tmux::apply_pane_options(
-        pane,
-        &[tmux::PaneOptionWrite::Unset {
-            key: tmux::PANE_WAIT_REASON,
-        }],
-    );
+    // One batched write for the whole resume: the status set, the
+    // attention unset `set_status("running")` carried, the wait-reason
+    // clear, and the conditional run-clock stamp were three separate
+    // spawns (audit 2026-11-25 L-hook-2).
     let existing_started = reads.get(1).map(String::as_str).unwrap_or_default();
+    let stamp = now_epoch_secs().to_string();
+    let mut writes = vec![
+        tmux::PaneOptionWrite::Set {
+            key: tmux::PANE_STATUS,
+            value: "running",
+        },
+        tmux::PaneOptionWrite::Unset {
+            key: tmux::PANE_ATTENTION,
+        },
+        // Same cleanup as the `handle_activity_log` resume: the reason
+        // row renders for every status, so a stale `permission_denied`
+        // (or error text stored by `on_stop_failure`) must go when the
+        // agent resumes.
+        tmux::PaneOptionWrite::Unset {
+            key: tmux::PANE_WAIT_REASON,
+        },
+    ];
     if existing_started.is_empty() {
-        tmux::set_pane_option(pane, tmux::PANE_STARTED_AT, &now_epoch_secs().to_string());
+        writes.push(tmux::PaneOptionWrite::Set {
+            key: tmux::PANE_STARTED_AT,
+            value: &stamp,
+        });
     }
+    tmux::apply_pane_options(pane, &writes);
     0
 }
 
@@ -306,7 +320,12 @@ pub(in crate::cli::hook) fn on_stop(
     } else {
         clear_run_state(pane);
     }
-    mark_task_reset(pane);
+    // The guard is decided, not re-read: the list above was just settled
+    // under the pane lock, so re-reading `@pane_subagents` in
+    // `mark_task_reset` paid a spawn for the value already in hand (audit
+    // 2026-11-25 L-hook-2). Children live → keep task state; drained →
+    // write the reset marker.
+    mark_task_reset_with(pane, !children_live);
     set_status(pane, resolve_stop_status(bg_work_live));
     // Flag the finished turn for attention AFTER set_status, which
     // clears attention for `idle`. The sidebar clears the flag when the
@@ -315,16 +334,41 @@ pub(in crate::cli::hook) fn on_stop(
     set_attention(pane, "done");
 
     if !bg_work_live {
-        let run_id = notification_run_id(pane);
+        // One batched read for the run id and the TaskCompleted stamp
+        // (audit 2026-11-25 L-hook-2): the run id, the has-stamp check,
+        // and the stamp inside `notify_if_allowed` read the same option
+        // up to three times per Stop.
+        let run_id;
+        let already_notified;
+        match tmux::get_pane_options(
+            pane,
+            &[
+                tmux::PANE_NOTIFICATION_RUN_ID,
+                desktop_notification::task_completed_stamp_key(),
+            ],
+        ) {
+            Some(reads) => {
+                run_id = reads
+                    .first()
+                    .map(String::as_str)
+                    .and_then(|s| s.parse::<u64>().ok());
+                already_notified = desktop_notification::stamp_matches_run(
+                    reads.get(1).map(String::as_str).unwrap_or_default(),
+                    run_id,
+                );
+            }
+            // A failed read is no evidence of "not notified": skip the
+            // generic Stop notification this event rather than risk a
+            // duplicate (the next run's stamp is fresh anyway).
+            None => {
+                run_id = None;
+                already_notified = true;
+            }
+        }
         // Skip the generic Stop notification if an explicit TaskCompleted
         // stamp from the current run has already fired — otherwise Claude
         // Code's `TaskCompleted` → `Stop` sequence produces two desktop
         // notifications for the same logical completion.
-        let already_notified = desktop_notification::has_run_scoped_stamp(
-            pane,
-            DesktopNotificationKind::TaskCompleted,
-            run_id,
-        );
         if !already_notified {
             let _ = notify_lifecycle(
                 pane,

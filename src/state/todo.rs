@@ -108,6 +108,12 @@ pub struct TodoState {
     /// Validated by comparing the cached source text, so no mutation
     /// site needs an explicit invalidation.
     wrap_cache: Option<TodoWrapCache>,
+    /// Same memo for the buffer being edited (audit 2026-11-25 L-UI-7):
+    /// the height sizing and the body render wrapped the same live
+    /// buffer twice per frame, on every keystroke. Keyed by index,
+    /// cursor, buffer, and both widths — compared at read time, so a
+    /// keystroke invalidates without any mutation-site plumbing.
+    edit_wrap_cache: Option<TodoEditWrapCache>,
 }
 
 /// One item's memoized wrap (see [`TodoState::wrap_cache`]).
@@ -115,6 +121,18 @@ pub struct TodoState {
 struct TodoWrapCache {
     text_width: usize,
     entries: Vec<TodoWrapEntry>,
+}
+
+/// The edited buffer's memoized `wrap_with_cursor` output (see
+/// [`TodoState::edit_wrap_cache`]).
+#[derive(Debug, Clone)]
+struct TodoEditWrapCache {
+    index: usize,
+    cursor: usize,
+    input: String,
+    text_width: usize,
+    row_width: usize,
+    lines: Vec<(String, Option<usize>)>,
 }
 
 #[derive(Debug, Clone)]
@@ -269,6 +287,49 @@ impl TodoState {
         self.wrap_cache = Some(TodoWrapCache {
             text_width,
             entries,
+        });
+    }
+
+    /// The edited buffer's cached wrap when the key matches; `None`
+    /// sends the caller to a fresh `wrap_with_cursor` (height sizing).
+    pub(crate) fn cached_edit_wrap(
+        &self,
+        index: usize,
+        cursor: usize,
+        input: &str,
+        text_width: usize,
+        row_width: usize,
+    ) -> Option<&[(String, Option<usize>)]> {
+        let cache = self.edit_wrap_cache.as_ref()?;
+        if cache.index != index
+            || cache.cursor != cursor
+            || cache.text_width != text_width
+            || cache.row_width != row_width
+            || cache.input != input
+        {
+            return None;
+        }
+        Some(cache.lines.as_slice())
+    }
+
+    /// Store the edited buffer's wrap the render pass just computed, so
+    /// the next frame's height sizing reuses it instead of re-wrapping.
+    pub(crate) fn fill_edit_wrap_cache(
+        &mut self,
+        index: usize,
+        cursor: usize,
+        input: &str,
+        text_width: usize,
+        row_width: usize,
+        lines: Vec<(String, Option<usize>)>,
+    ) {
+        self.edit_wrap_cache = Some(TodoEditWrapCache {
+            index,
+            cursor,
+            input: input.to_string(),
+            text_width,
+            row_width,
+            lines,
         });
     }
 

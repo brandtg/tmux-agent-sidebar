@@ -92,9 +92,27 @@ pub(crate) fn open_append_private(path: &Path) -> io::Result<std::fs::File> {
 /// Exclusive flock on an open file; false if the lock could not be
 /// taken (callers fail open — an unlocked write is only the pre-lock
 /// race, while a skipped write would strand state).
+///
+/// Non-blocking with a bounded retry: the old blocking `flock` stacked
+/// the holder's full critical section (tmux and notify-send spawns with
+/// 3 s timeouts) onto every queued hook for that pane — and hooks block
+/// the agent CLI. A waiter gives up after [`LOCK_RETRY_WINDOW`] and
+/// proceeds unlocked, capping the added latency while keeping the
+/// normal uncontended path a single syscall (audit 2026-11-25 L-hook-1).
 pub(crate) fn lock_exclusive(file: &std::fs::File) -> bool {
     use std::os::fd::AsRawFd;
-    unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) == 0 }
+    use std::time::{Duration, Instant};
+    const LOCK_RETRY_WINDOW: Duration = Duration::from_millis(500);
+    const LOCK_RETRY_SLEEP: Duration = Duration::from_millis(5);
+    let fd = file.as_raw_fd();
+    let deadline = Instant::now() + LOCK_RETRY_WINDOW;
+    loop {
+        let locked = unsafe { libc::flock(fd, libc::LOCK_EX | libc::LOCK_NB) == 0 };
+        if locked || Instant::now() >= deadline {
+            return locked;
+        }
+        std::thread::sleep(LOCK_RETRY_SLEEP);
+    }
 }
 
 /// Lockfile path for one pane's `scope`-scoped writers across

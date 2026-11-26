@@ -117,7 +117,15 @@ pub(in crate::cli::hook) fn clear_all_meta(pane: &str) {
 /// Skipped while subagents are still active so a parent Stop event doesn't
 /// wipe task state children are still driving.
 pub(in crate::cli::hook) fn mark_task_reset(pane: &str) {
-    if !pane_writes_allowed(pane) {
+    mark_task_reset_with(pane, pane_writes_allowed(pane));
+}
+
+/// [`mark_task_reset`] with the subagent guard pre-decided: callers that
+/// just settled the `@pane_subagents` state under the pane lock (the
+/// Stop path) pass their known answer instead of paying a re-read spawn
+/// for a value they already hold (audit 2026-11-25 L-hook-2).
+pub(in crate::cli::hook) fn mark_task_reset_with(pane: &str, writes_allowed: bool) {
+    if !writes_allowed {
         return;
     }
     crate::cli::hook::activity::write_activity_entry(pane, crate::activity::TASK_RESET_MARKER, "");

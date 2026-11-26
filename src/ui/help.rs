@@ -7,6 +7,7 @@ use ratatui::{
 };
 
 use crate::state::AppState;
+use crate::state::HelpCachedLine;
 use crate::ui::paint_background;
 use crate::ui::text::{display_width, truncate_to_width, wrap_flow};
 
@@ -70,6 +71,42 @@ const HELP_SECTIONS: &[(&str, &[(&str, &str)])] = &[
 /// any key reference can help with anyway.
 const MIN_ACTION_WIDTH: usize = 10;
 
+/// Wrap the whole reference into cacheable lines at this geometry: a
+/// section header, one entry per wrapped description chunk (the
+/// continuation lines carry an all-space prefix that aligns under the
+/// description column), and blank separators between sections. The
+/// theme is applied when the renderer materializes the ratatui lines —
+/// the cache stays style-free (audit 2026-11-25 L-UI-7: the old render
+/// re-wrapped every description every frame the overlay stayed open).
+fn build_help_lines(key_col: usize, action_width: usize) -> Vec<HelpCachedLine> {
+    let mut lines: Vec<HelpCachedLine> = Vec::new();
+    for (section, rows) in HELP_SECTIONS {
+        if !lines.is_empty() {
+            lines.push(HelpCachedLine::Blank);
+        }
+        lines.push(HelpCachedLine::Header(format!(" {section}")));
+        for (key, action) in rows.iter() {
+            let key_text = truncate_to_width(key, key_col);
+            let key_pad = " ".repeat(key_col.saturating_sub(display_width(&key_text)));
+            let mut wrapped = wrap_flow(action, action_width, action_width);
+            if wrapped.is_empty() {
+                wrapped.push(String::new());
+            }
+            for (i, chunk) in wrapped.into_iter().enumerate() {
+                let prefix = if i == 0 {
+                    format!(" {key_text}{key_pad}  ")
+                } else {
+                    // Hanging indent: continuation lines align under the
+                    // description column, never under the key.
+                    " ".repeat(key_col + 3)
+                };
+                lines.push(HelpCachedLine::Entry { prefix, chunk });
+            }
+        }
+    }
+    lines
+}
+
 /// Read-only key reference rendered over the whole sidebar, opened with
 /// `?`. The sidebar is a narrow column: a centered box would truncate
 /// every description on the right, so the overlay spans the full width,
@@ -99,39 +136,14 @@ pub(in crate::ui) fn render_help_popup(frame: &mut Frame, state: &mut AppState, 
     // The row prefix is ` key<pad>  ` = key_col + 3 columns.
     let action_width = inner_width.saturating_sub(key_col + 3).max(1);
 
-    let mut lines: Vec<Line<'static>> = Vec::new();
-    for (section, rows) in HELP_SECTIONS {
-        if !lines.is_empty() {
-            lines.push(Line::from(Span::raw("")));
-        }
-        lines.push(Line::from(Span::styled(
-            format!(" {section}"),
-            Style::default().fg(accent).add_modifier(Modifier::BOLD),
-        )));
-        for (key, action) in rows.iter() {
-            let key_text = truncate_to_width(key, key_col);
-            let key_pad = " ".repeat(key_col.saturating_sub(display_width(&key_text)));
-            let mut wrapped = wrap_flow(action, action_width, action_width);
-            if wrapped.is_empty() {
-                wrapped.push(String::new());
-            }
-            for (i, chunk) in wrapped.into_iter().enumerate() {
-                let prefix = if i == 0 {
-                    format!(" {key_text}{key_pad}  ")
-                } else {
-                    // Hanging indent: continuation lines align under the
-                    // description column, never under the key.
-                    " ".repeat(key_col + 3)
-                };
-                lines.push(Line::from(vec![
-                    Span::styled(prefix, Style::default().fg(text_active)),
-                    Span::styled(chunk, Style::default().fg(text_muted)),
-                ]));
-            }
-        }
+    // Wrapped content, memoized per geometry: the wrap is pure output of
+    // (key_col, action_width), so a resize is the only invalidation.
+    if !state.help_cache_matches(key_col, action_width) {
+        let lines = build_help_lines(key_col, action_width);
+        state.store_help_cache(key_col, action_width, lines);
     }
+    let content = state.help_cache_len(key_col, action_width);
 
-    let content = lines.len() as u16;
     let viewport = area.height.saturating_sub(2);
     // Write the metrics back first: the write-back re-clamps scroll
     // against the fresh layout (a resize can shrink the content).
@@ -157,6 +169,25 @@ pub(in crate::ui) fn render_help_popup(frame: &mut Frame, state: &mut AppState, 
     frame.render_widget(Clear, area);
     paint_background(frame, &state.theme, area);
     frame.render_widget(block, area);
+
+    // Materialize the styled lines from the cache: the strings are only
+    // referenced, so nothing is re-wrapped or re-allocated here.
+    let lines: Vec<Line<'_>> = state
+        .help_cache(key_col, action_width)
+        .unwrap_or(&[])
+        .iter()
+        .map(|line| match line {
+            HelpCachedLine::Blank => Line::from(Span::raw("")),
+            HelpCachedLine::Header(text) => Line::from(Span::styled(
+                text.as_str(),
+                Style::default().fg(accent).add_modifier(Modifier::BOLD),
+            )),
+            HelpCachedLine::Entry { prefix, chunk } => Line::from(vec![
+                Span::styled(prefix.as_str(), Style::default().fg(text_active)),
+                Span::styled(chunk.as_str(), Style::default().fg(text_muted)),
+            ]),
+        })
+        .collect();
 
     frame.render_widget(Paragraph::new(lines).scroll((scroll, 0)), inner);
 }

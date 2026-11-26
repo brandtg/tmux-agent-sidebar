@@ -145,6 +145,36 @@ fn handle_drive_key(key: &KeyEvent) -> DriveAction {
     }
 }
 
+/// How long after a forwarded Enter a second Enter is treated as the
+/// same paste run's next line break rather than a deliberate submit.
+const PASTE_ENTER_DEBOUNCE: Duration = Duration::from_millis(20);
+
+/// Translate one key press into what drive mode sends, debouncing the
+/// paste-run Enters (audit 2026-11-25 L-cli-3). Without `Event::Paste`
+/// support in the terminal chain, a multi-line paste arrives as a key
+/// run and every Enter in it would submit a line into the agent —
+/// Enters closer together than any human repeats them are the paste
+/// run's line breaks, so the first is forwarded and the rest are
+/// dropped: the visible, recoverable failure (lines left unsubmitted
+/// in the agent's input) instead of one accidental send per line.
+/// `last_enter_forward` is the event loop's running state; any
+/// non-Enter key resets it, since typing between Enters is a human.
+fn forward_for_drive(
+    key: &KeyEvent,
+    last_enter_forward: &mut Option<Instant>,
+) -> Option<ForwardedKey> {
+    if key.code == KeyCode::Enter {
+        let paste_run = last_enter_forward.is_some_and(|at| at.elapsed() < PASTE_ENTER_DEBOUNCE);
+        *last_enter_forward = Some(Instant::now());
+        if paste_run {
+            return None;
+        }
+    } else {
+        *last_enter_forward = None;
+    }
+    forward_key_name(key)
+}
+
 /// One forwarded key press: a tmux key name (sent with key-name lookup,
 /// so `Enter` arrives as the Return key and `C-c` as the interrupt byte)
 /// or literal text (sent with `-l`, so characters are never reinterpreted
@@ -453,6 +483,10 @@ fn run_tui(interval: Duration) -> io::Result<i32> {
         // refreshes at DRIVE_INTERVAL while everything else paces to
         // `interval`.
         let mut last_drive_refresh = Instant::now();
+        // Running state for the paste-Enter debounce (audit 2026-11-25
+        // L-cli-3): the instant the last Enter was forwarded, reset by
+        // any non-Enter key.
+        let mut last_enter_forward: Option<Instant> = None;
         // Refresh on the first iteration: the elapsed time starts "in the past".
         let mut last_refresh = Instant::now() - interval;
         // The listing + process snapshot run on a worker thread, the same
@@ -611,16 +645,19 @@ fn run_tui(interval: Duration) -> io::Result<i32> {
                                     input.err = None;
                                     if let Some(reason) = drive_refusal(&panes, &input.pane_id) {
                                         input.err = Some(reason);
-                                    } else if let Err(e) = match forward_key_name(&key) {
-                                        Some(ForwardedKey::Named(name)) => {
-                                            tmux::send_key(&input.pane_id, &name)
+                                    } else if let Some(forwarded) =
+                                        forward_for_drive(&key, &mut last_enter_forward)
+                                    {
+                                        if let Err(e) = match forwarded {
+                                            ForwardedKey::Named(name) => {
+                                                tmux::send_key(&input.pane_id, &name)
+                                            }
+                                            ForwardedKey::Text(text) => {
+                                                tmux::send_text(&input.pane_id, &text)
+                                            }
+                                        } {
+                                            input.err = Some(e);
                                         }
-                                        Some(ForwardedKey::Text(text)) => {
-                                            tmux::send_text(&input.pane_id, &text)
-                                        }
-                                        None => Ok(()),
-                                    } {
-                                        input.err = Some(e);
                                     }
                                 }
                             },
@@ -682,6 +719,9 @@ fn run_tui(interval: Duration) -> io::Result<i32> {
                                                 dims: last_dims.get(&pane.info.pane_id).copied(),
                                                 err: None,
                                             });
+                                            // Fresh session, fresh paste-run window
+                                            // (audit 2026-11-25 L-cli-3).
+                                            last_enter_forward = None;
                                             // Capture immediately: the view may
                                             // be a slow tick stale, and prompting
                                             // types into what it shows.
@@ -1506,12 +1546,23 @@ fn sgr_style(cell: &StyledCell) -> Style {
     if cell.bold {
         mods |= Modifier::BOLD;
     }
+    if cell.faint {
+        mods |= Modifier::DIM;
+    }
+    if cell.italic {
+        mods |= Modifier::ITALIC;
+    }
     if cell.reversed {
         mods |= Modifier::REVERSED;
     }
     if cell.underlined {
         mods |= Modifier::UNDERLINED;
     }
+    if cell.strike {
+        mods |= Modifier::CROSSED_OUT;
+    }
+    // SGR 53 (overline) has no ratatui modifier; only the HTML renderer
+    // shows it.
     style.add_modifier(mods)
 }
 

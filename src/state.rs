@@ -27,13 +27,14 @@ pub use filter::RepoFilter;
 pub use focus::{Focus, FocusState};
 pub use global::{GlobalState, GroupBy, TodoScope};
 pub use layout::{
-    FrameLayout, GroupHeaderTarget, GroupStart, HyperlinkOverlay, OVERVIEW_BUTTON_WIDTH,
-    RepoSpawnTarget, RowTarget, SpawnRemoveTarget, TodoRowTarget, WindowHeaderTarget,
+    FrameLayout, GroupHeaderTarget, GroupStart, OVERVIEW_BUTTON_WIDTH, RepoSpawnTarget, RowTarget,
+    SpawnRemoveTarget, TodoRowTarget, WindowHeaderTarget,
 };
 pub(crate) use notices::debug_forced_display;
 pub(crate) use notices::parse_enabled_agents;
 pub use notices::{ClaudePluginNotice, NoticesCopyTarget, NoticesMissingHookGroup, NoticesState};
 pub use pane_runtime::{PaneRuntimeMap, PaneRuntimeState, WindowFinished};
+pub(crate) use popup::HelpCachedLine;
 pub use popup::{PopupOpResult, PopupState, SpawnField};
 #[cfg(test)]
 pub(crate) use refresh::{TaskProgressDecision, classify_task_progress};
@@ -79,7 +80,7 @@ pub struct AppState {
     pub flash: Option<Flash>,
     pub spinner_frame: usize,
     /// Frame-scoped render output (pane_row_targets, line_to_row,
-    /// menu_button_col, hyperlink_overlays). Rewritten every frame by
+    /// menu_button_col). Rewritten every frame by
     /// the UI layer; consumed by mouse/keyboard handlers before the
     /// next render.
     pub layout: FrameLayout,

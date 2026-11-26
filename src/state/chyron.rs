@@ -49,6 +49,14 @@ pub const CHYRON_FADE_FRAMES: usize = 4;
 /// readable ticker.
 pub const CHYRON_SCROLL_COLS_PER_FRAME: usize = 1;
 
+/// Banner width assumed before the first frame stamps
+/// `layout.banner_width` (the header row minus the two 3-column
+/// buttons). A fresh sidebar is typically ~40 columns, so 34 keeps an
+/// event landing in that gap from counting as maximally overflowing —
+/// `unwrap_or(0)` stretched the first banner's display window by the
+/// full scroll (audit 2026-11-25 L-state-4).
+const DEFAULT_BANNER_WIDTH: u16 = 34;
+
 /// Kind of agent event the chyron names.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ChyronKind {
@@ -237,8 +245,11 @@ impl ChyronState {
         // `render_header_into` every frame (audit 2026-11-25 H-UI-1).
         // Measuring against the full row width used to close the
         // display window before an overflowing banner finished
-        // scrolling.
-        let avail_w = state.layout.banner_width.unwrap_or(0) as usize;
+        // scrolling. Before the first frame there is no stamp yet; a
+        // sane default keeps an event landing in that gap from counting
+        // as maximally overflowing and stretching its window by the
+        // full scroll (audit 2026-11-25 L-state-4).
+        let avail_w = state.layout.banner_width.unwrap_or(DEFAULT_BANNER_WIDTH) as usize;
         let frame = self
             .current
             .as_ref()

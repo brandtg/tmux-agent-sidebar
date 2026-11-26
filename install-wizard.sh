@@ -28,6 +28,19 @@ function finish {
         else
             echo "No tmux.conf found to reload."
         fi
+        # Reload trace (audit 2026-11-25 L-wiz-2): the reload killed the
+        # running sidebar before re-creating it, and a tmux.conf that
+        # never loads the plugin leaves it dead with no explanation.
+        # The entry script re-registers bindings and hooks and sources
+        # the conf — point the user at it when the reload did not.
+        if ! tmux show-options -gv @agent_sidebar_dir >/dev/null 2>&1; then
+            echo ""
+            echo "tmux.conf does not load tmux-agent-sidebar, so the sidebar"
+            echo "is not running after this install. Start it with:"
+            echo ""
+            echo "  bash \"$PLUGIN_DIR/tmux-agent-sidebar.tmux\""
+            echo ""
+        fi
         exit 0
     else
         echo "Something went wrong. Press any key to close this window."

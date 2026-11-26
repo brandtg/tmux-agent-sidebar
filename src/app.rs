@@ -280,6 +280,13 @@ pub fn run(
                         state.global.clear_collapsed_groups_local();
                     }
                     state.collapsed_cursor_group = None;
+                    // The fold below reshapes the list and re-anchors the
+                    // cursor; the debounce flush persists the re-anchored
+                    // index like the `s` changer path does. Without the
+                    // save, the shared cursor keeps an index into the old
+                    // list shape until the user navigates (audit
+                    // 2026-11-25 L-state-2).
+                    state.global.queue_cursor_save();
                 }
             }
             // Whether this tick's snapshot was applied (the fold ran and

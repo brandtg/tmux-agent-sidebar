@@ -3,7 +3,7 @@ use crate::tmux;
 use crate::tool_name::CanonicalTool;
 
 use super::super::label::extract_tool_label;
-use super::super::{sanitize_tmux_value, set_status};
+use super::super::sanitize_tmux_value;
 use super::context::pane_writes_allowed_with;
 
 /// Write a single activity entry to the log file and trim if needed.
@@ -236,25 +236,38 @@ pub(super) fn handle_activity_log(
         && current_status != "running"
         && !pending_action
     {
-        set_status(pane, "running");
-        // Any resume into `running` clears a stale wait reason, not just
-        // resumes from `waiting`: `on_stop_failure` stores error text in
-        // @pane_wait_reason under status `error`, and the renderer shows
-        // the reason row for every status. The pending-action guard above
-        // is what keeps a live prompt intact, not this gate.
-        // set_status's batch already unset @pane_attention; the
-        // wait-reason clear is one batched write, not two spawns (audit
-        // 2026-11-19 C2).
-        tmux::apply_pane_options(
-            pane,
-            &[tmux::PaneOptionWrite::Unset {
-                key: tmux::PANE_WAIT_REASON,
-            }],
-        );
+        // One batched write for the whole resume (audit 2026-11-25
+        // L-hook-2): the status set, the attention unset that
+        // `set_status("running")` carries, the wait-reason clear, and
+        // the conditional run-clock stamp were three separate spawns.
+        // The existing-started probe rides the batched read above.
         let existing_started = reads.get(2).map(String::as_str).unwrap_or_default();
+        let stamp = now_epoch_secs().to_string();
+        let mut writes = vec![
+            tmux::PaneOptionWrite::Set {
+                key: tmux::PANE_STATUS,
+                value: "running",
+            },
+            tmux::PaneOptionWrite::Unset {
+                key: tmux::PANE_ATTENTION,
+            },
+            // Any resume into `running` clears a stale wait reason, not
+            // just resumes from `waiting`: `on_stop_failure` stores
+            // error text in @pane_wait_reason under status `error`, and
+            // the renderer shows the reason row for every status. The
+            // pending-action guard above is what keeps a live prompt
+            // intact, not this gate.
+            tmux::PaneOptionWrite::Unset {
+                key: tmux::PANE_WAIT_REASON,
+            },
+        ];
         if existing_started.is_empty() {
-            tmux::set_pane_option(pane, tmux::PANE_STARTED_AT, &now_epoch_secs().to_string());
+            writes.push(tmux::PaneOptionWrite::Set {
+                key: tmux::PANE_STARTED_AT,
+                value: &stamp,
+            });
         }
+        tmux::apply_pane_options(pane, &writes);
     }
 
     // Update permission mode when plan mode tools are used.

@@ -54,6 +54,15 @@ if [ -n "${BASH_VERSION:-}" ]; then
   # variable and flush it once from precmd, so a whole command line costs
   # one write. `_tas_in_precmd` keeps the trap from recording the writes
   # and helper calls that precmd itself runs.
+  #
+  # Pipeline note (audit 2026-11-25 L-shell-2, documented divergence):
+  # the trap records pipeline STAGES, not whole commands — `foo | bar`
+  # ends up recording `bar` (the last stage), the command that actually
+  # finished. The zsh path records the full first line from preexec's
+  # `$1`. Both feed `@pane_last_cmd`, whose only consumer is the
+  # finished-command flash: the basename of the last stage is at least
+  # as precise for that purpose, and matching "what exited" keeps the
+  # failure attribution honest for multi-stage failures.
   _tas_pending_cmd=""
   _tas_in_precmd="0"
   _tas_exit=""
@@ -90,8 +99,25 @@ fi
 # zsh ----------------------------------------------------------------
 if [ -n "${ZSH_VERSION:-}" ]; then
 
-  _tas_precmd_zsh() { _interp "@pane_last_exit" "$?"; }
-  _tas_preexec_zsh() { _interp "@pane_last_cmd" "$(cmd_basename "$1")"; }
+  # Mirror the bash pending-variable batching (audit 2026-11-25
+  # L-shell-1): preexec used to spawn one tmux write per command. The
+  # pending command is remembered here and flushed from precmd, so a
+  # command line costs one write, emitted together with the exit code.
+  _tas_pending_cmd=""
+  _tas_exit=""
+
+  _tas_precmd_zsh() {
+    _tas_exit=$?
+    if [ -n "$_tas_pending_cmd" ]; then
+      _interp "@pane_last_cmd" "$(cmd_basename "$_tas_pending_cmd")"
+      _tas_pending_cmd=""
+    fi
+    _interp "@pane_last_exit" "$_tas_exit"
+  }
+
+  _tas_preexec_zsh() {
+    _tas_pending_cmd="$1"
+  }
 
   if autoload -Uz add-zsh-hook 2>/dev/null; then
     add-zsh-hook precmd _tas_precmd_zsh

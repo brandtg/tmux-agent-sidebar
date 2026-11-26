@@ -169,7 +169,16 @@ pub fn has_run_scoped_stamp(
         return false;
     }
     let raw = tmux::get_pane_option_value(pane_id, stamp_option_key(kind));
-    let Some(stamp) = parse_stamp(&raw) else {
+    stamp_matches_run(&raw, Some(run_id))
+}
+
+/// Whether a pre-read stamp value belongs to `run_id`. The batched-read
+/// half of [`has_run_scoped_stamp`]: `on_stop` reads the run id and the
+/// TaskCompleted stamp in one `get_pane_options` call instead of two
+/// spawns (audit 2026-11-25 L-hook-2).
+pub(crate) fn stamp_matches_run(raw: &str, run_id: Option<u64>) -> bool {
+    let Some(run_id) = run_id else { return false };
+    let Some(stamp) = parse_stamp(raw) else {
         return false;
     };
     stamp.fingerprint.starts_with(&format!("{run_id}:"))
@@ -233,12 +242,19 @@ struct NotificationStamp {
     fingerprint: String,
 }
 
-fn stamp_option_key(kind: DesktopNotificationKind) -> &'static str {
+pub(crate) fn stamp_option_key(kind: DesktopNotificationKind) -> &'static str {
     match kind {
         DesktopNotificationKind::TaskCompleted => tmux::PANE_OS_NOTIFY_TASK_COMPLETED,
         DesktopNotificationKind::TaskFailed => tmux::PANE_OS_NOTIFY_TASK_FAILED,
         DesktopNotificationKind::PermissionRequired => tmux::PANE_OS_NOTIFY_PERMISSION_REQUIRED,
     }
+}
+
+/// The TaskCompleted stamp's option key, for callers that batch-read it
+/// alongside other pane options (the Stop path's dedupe check — audit
+/// 2026-11-25 L-hook-2).
+pub(crate) fn task_completed_stamp_key() -> &'static str {
+    tmux::PANE_OS_NOTIFY_TASK_COMPLETED
 }
 
 fn encode_stamp(timestamp: u64, fingerprint: &str) -> String {

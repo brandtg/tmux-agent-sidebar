@@ -153,7 +153,7 @@ Per-pane file-based state:
 | `popup` | On user input / render | `PopupState` enum: `None` / `Repo` / `SpawnInput` / `Help` / `RemoveConfirm`. Enforces "at most one popup open" via the type system. `Repo` carries a `scroll` the renderer owns: it clamps the value and keeps the selection inside the window each frame, so the popup scrolls todo-style (`N more ↓` indicator) instead of clipping the tail |
 | `popup_op_seq` / `popup_op_active` | On popup-op dispatch / apply | Monotonic dispatch counter and the id whose result may still mutate the popup. `start_popup_op` stamps each worker result with the next id; `apply_popup_op_result` drops stale results (popup closed or replaced) and flashes a stale success instead of dropping it silently. Closing or reopening the modal invalidates the id |
 | `flash` | On user feedback, cleared by expiry | Transient banner (`Flash`: severity + text + expiry) for spawn / remove / copy / resume feedback. Severity travels with the message (`set_flash` = info, `set_flash_error` = error); the renderer colors by severity, never by substring-sniffing the text |
-| `layout` | Every frame (render) | `FrameLayout` sub-struct bundling the ephemeral fields the UI rewrites every frame for click hit-testing: `pane_row_targets`, `group_starts` (visible group headers and their first row, used by `[` / `]`), `line_to_row`, `toolbar_row`, `header_width`, `menu_button_col` (the merged `ⓘ` menu button in the header row), `repo_spawn_targets`, `spawn_remove_targets`, `group_header_targets` (fold toggles), `window_header_targets` (`index:name` rows jump the tmux client to that window), `hyperlink_overlays`, `todo_row_targets`, `todo_input_rect`, `todo_area`, `flash_rect` |
+| `layout` | Every frame (render) | `FrameLayout` sub-struct bundling the ephemeral fields the UI rewrites every frame for click hit-testing: `pane_row_targets`, `group_starts` (visible group headers and their first row, used by `[` / `]`), `line_to_row`, `toolbar_row`, `header_width`, `menu_button_col` (the merged `ⓘ` menu button in the header row), `repo_spawn_targets`, `spawn_remove_targets`, `group_header_targets` (fold toggles), `window_header_targets` (`index:name` rows jump the tmux client to that window), `todo_row_targets`, `todo_input_rect`, `todo_area`, `flash_rect` |
 | `notices` | Once at startup / on copy | `NoticesState` sub-struct: `missing_hook_groups`, `claude_plugin_status`, `claude_settings_has_residual_hooks`, `claude_plugin_notice`, `enabled_agents`, `copy_targets`, `copied_at`. The menu button's column lives in `layout.menu_button_col` |
 | `timers` | Refresh cycle | `RefreshTimers` sub-struct gating periodic work: `last_port_refresh`, `port_scan_initialized`, `git_info_primed`, `last_bg_shell_sweep`, `last_approval_scan`, `approval_scan_initialized` |
 | `spinner_frame` | Every 200ms (animation) | Spinner animation frame counter |
@@ -215,7 +215,7 @@ Per-pane file-based state:
 │  Every frame (render)                                       │
 │  layout.line_to_row, layout.menu_button_col,                │
 │  popup area (Repo/SpawnInput/Help/RemoveConfirm variants),  │
-│  notices.copy_targets, layout.hyperlink_overlays            │
+│  notices.copy_targets                                       │
 └─────────────────────────────────────────────────────────────┘
 ```
 
@@ -317,12 +317,6 @@ struct ScrollState {
     visible_height: usize,
 }
 
-struct HyperlinkOverlay {
-    x: u16,
-    y: u16,
-    text: String,
-    url: String,
-}
 
 struct PaneRuntimeState {
     window_task_command: Option<String>,
@@ -384,7 +378,6 @@ struct FrameLayout {
     spawn_remove_targets: Vec<SpawnRemoveTarget>,
     group_header_targets: Vec<GroupHeaderTarget>,
     window_header_targets: Vec<WindowHeaderTarget>,
-    hyperlink_overlays: Vec<HyperlinkOverlay>,
     todo_row_targets: Vec<TodoRowTarget>,
     todo_input_rect: Option<Rect>,
     todo_area: Rect,

@@ -263,12 +263,19 @@ fn open_split_sidebar(
             dedupe_window_sidebars();
         }
     } else {
-        // The split failed: the focus restore still runs.
+        // The split failed: the focus restore still runs, and the
+        // failure is no longer silent — the keybinding reports it and
+        // the sweep's window is honestly unserviced (audit 2026-11-25
+        // L-cli-2).
+        crate::debug::log(&format!(
+            "toggle: split-window failed for window {window_id}"
+        ));
         if !active_pane.is_empty() {
             let _ = tmux::run_tmux(&["select-pane", "-t", &active_pane]);
         } else {
             let _ = tmux::run_tmux(&["select-pane", "-t", window_id, "-l"]);
         }
+        return 1;
     }
 
     0

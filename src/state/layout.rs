@@ -86,15 +86,6 @@ pub struct TodoRowTarget {
     pub index: usize,
 }
 
-/// Screen-positioned hyperlink overlay for OSC 8 terminal hyperlinks.
-#[derive(Debug, Clone)]
-pub struct HyperlinkOverlay {
-    pub x: u16,
-    pub y: u16,
-    pub text: String,
-    pub url: String,
-}
-
 /// Ephemeral render output cached for click hit-testing.
 ///
 /// Every field here is **rewritten on every frame** by the UI layer and
@@ -144,9 +135,6 @@ pub struct FrameLayout {
     /// group title): clicking anywhere on one switches the tmux client
     /// to that window. One entry per rendered header.
     pub window_header_targets: Vec<WindowHeaderTarget>,
-    /// OSC 8 hyperlink overlays the main loop writes after each frame so
-    /// terminals can recognise PR numbers as clickable links.
-    pub hyperlink_overlays: Vec<HyperlinkOverlay>,
     /// Click regions for rendered TODO items, one per visible item.
     pub todo_row_targets: Vec<TodoRowTarget>,
     /// Click region for the inline "add TODO" input line, when open.
@@ -910,8 +898,14 @@ impl AppState {
             return;
         }
 
-        // The list starts below the single header row.
-        let line_index = row.saturating_sub(1) as usize + self.scrolls.panes.offset;
+        // The list starts below the single header row. The header's
+        // screen row is `layout.toolbar_row` — 0 today only because the
+        // panel always occupies the whole terminal; deriving the offset
+        // keeps every click landing on its row if the panel ever gains a
+        // top offset (audit 2026-11-25 L-state-3, which hardcoded the
+        // `saturating_sub(1)`).
+        let header_rows = self.layout.toolbar_row.saturating_add(1);
+        let line_index = row.saturating_sub(header_rows) as usize + self.scrolls.panes.offset;
         if let Some(Some(agent_row)) = self.layout.line_to_row.get(line_index) {
             self.global.selected_pane_row = *agent_row;
             self.global.queue_cursor_save();

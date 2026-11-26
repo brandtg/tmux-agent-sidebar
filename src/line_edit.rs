@@ -1,12 +1,13 @@
 //! A small cursor-positioned text buffer: the editing vocabulary the TODO
 //! panel's line editor established (readline-style word moves and kills,
 //! whitespace-split word boundaries), reimplemented as a standalone leaf
-//! for contexts outside the sidebar's `AppState` — today the overview's
-//! inline prompt bar (src/cli/overview.rs), which types straight into a
-//! live pane and needs real editing more than one-line Google-Tasks
-//! semantics. Also owns the one job a bar on a fixed-width row needs: a
-//! visible window that keeps the cursor on screen while the text grows
-//! past the row.
+//! for contexts outside the sidebar's `AppState`. Built for the overview's
+//! drive mode, whose prompt bar forwards keystrokes straight into the live
+//! pane — if a consumer ever renders a local editable row, a visible
+//! window that keeps the cursor on screen while the text grows past the
+//! row is the piece to add (the old `visible_window` measured chars, not
+//! display columns, and had no consumer, so it was dropped — audit
+//! 2026-11-25 L-UI-5).
 
 /// Editable single-line buffer with a character-offset cursor.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
@@ -150,32 +151,6 @@ impl LineEdit {
         self.chars.clear();
         self.cursor = 0;
     }
-
-    /// The character range to render so the cursor column is on screen,
-    /// given `width` available columns. The cursor occupies a column of
-    /// its own (the character under it, or a block past the last
-    /// character), so a window always leaves room for it. Returns
-    /// `(start, end)` indices into chars(); empty when nothing fits.
-    pub fn visible_window(&self, width: usize) -> (usize, usize) {
-        let len = self.chars.len();
-        let cursor = self.cursor.min(len);
-        if width == 0 {
-            return (cursor, cursor);
-        }
-        // The block past the last character adds one column on top of
-        // whatever text is shown.
-        let extra = if cursor == len { 1 } else { 0 };
-        let text_cols = width - extra;
-        let start = cursor.saturating_sub(text_cols.saturating_sub(1));
-        let end = (start + text_cols).min(len);
-        // Near the end of the text, slide the window left so a short
-        // tail still fills the row.
-        if end == len {
-            let start = len.saturating_sub(text_cols);
-            return (start, len);
-        }
-        (start, end)
-    }
 }
 
 #[cfg(test)]
@@ -273,37 +248,5 @@ mod tests {
         assert!(e.is_blank(), "whitespace-only is blank: nothing to send");
         e.clear();
         assert!(e.is_empty());
-    }
-
-    #[test]
-    fn short_text_is_shown_whole() {
-        let e = edit("hello", 5);
-        assert_eq!(e.visible_window(10), (0, 5));
-        let e = edit("", 0);
-        assert_eq!(e.visible_window(10), (0, 0));
-    }
-
-    #[test]
-    fn window_follows_the_cursor_at_the_right_edge() {
-        let long = "x".repeat(100);
-        let e = edit(&long, 100);
-        // Cursor past the last char: 9 chars + block column = 10.
-        assert_eq!(e.visible_window(10), (91, 100));
-        // Cursor mid-text: the char under the cursor counts as its column.
-        let e = edit(&long, 50);
-        let (start, end) = e.visible_window(10);
-        assert!(start <= 50 && 50 < end, "cursor inside the window");
-        assert_eq!(end - start, 10);
-        // Home keeps the head of the line.
-        let e = edit(&long, 0);
-        assert_eq!(e.visible_window(10), (0, 10));
-    }
-
-    #[test]
-    fn window_degrades_at_width_zero() {
-        let e = edit("hello", 3);
-        let (start, end) = e.visible_window(0);
-        assert_eq!(start, 3);
-        assert_eq!(end, 3);
     }
 }

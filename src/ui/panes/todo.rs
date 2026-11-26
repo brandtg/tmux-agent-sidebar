@@ -164,8 +164,16 @@ pub(super) fn panel_height(state: &AppState, area: Rect, agent_rows: usize) -> u
             .filter(|edit| edit.index == index)
         {
             // A block cursor with no cell left on an exactly full line
-            // spills onto a row of its own.
-            Some(edit) => wrap_with_cursor(&edit.input, edit.cursor, text_width, width).len(),
+            // spills onto a row of its own. The memo the render pass
+            // filled last frame answers this without re-wrapping the
+            // live buffer every frame (audit 2026-11-25 L-UI-7).
+            Some(edit) => state
+                .todos
+                .cached_edit_wrap(edit.index, edit.cursor, &edit.input, text_width, width)
+                .map(|lines| lines.len())
+                .unwrap_or_else(|| {
+                    wrap_with_cursor(&edit.input, edit.cursor, text_width, width).len()
+                }),
             None => match state.todos.cached_wrap(index, text_width) {
                 Some((lines, _)) => lines.len(),
                 None => wrap_flow(&state.todos.items[index].text, text_width, text_width).len(),
@@ -315,7 +323,32 @@ pub(super) fn render_todo_panel(frame: &mut Frame, state: &mut AppState, area: R
             checkbox_style
         };
         let wrapped: Vec<(String, Option<usize>)> = match (edit, cached) {
-            (Some(edit), _) => wrap_with_cursor(&edit.input, edit.cursor, text_width, width),
+            (Some(edit), _) => {
+                // Copy the edit's identity out first so the cache
+                // write-back can borrow `state.todos` (the `edit` borrow
+                // ends at the clone). Reuse the memo when the previous
+                // frame computed the same wrap; refill it only on a miss
+                // (audit 2026-11-25 L-UI-7).
+                let (index, cursor, input) = (edit.index, edit.cursor, edit.input.clone());
+                match state
+                    .todos
+                    .cached_edit_wrap(index, cursor, &input, text_width, width)
+                {
+                    Some(lines) => lines.to_vec(),
+                    None => {
+                        let lines = wrap_with_cursor(&input, cursor, text_width, width);
+                        state.todos.fill_edit_wrap_cache(
+                            index,
+                            cursor,
+                            &input,
+                            text_width,
+                            width,
+                            lines.clone(),
+                        );
+                        lines
+                    }
+                }
+            }
             (None, Some((lines, _))) => lines.iter().map(|line| (line.clone(), None)).collect(),
             (None, None) => wrap_flow(&item.text, text_width, text_width)
                 .into_iter()
