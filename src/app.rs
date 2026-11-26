@@ -328,7 +328,11 @@ pub fn run(
             // Keep the git-info resolver fed with the current grouping
             // anchors (launch cwd when captured, else live cwd — the same
             // keys group_panes_by_repo looks up); it refreshes stale
-            // entries off-thread and returns the cache.
+            // entries off-thread and returns the cache. The first
+            // snapshot's anchors are the worker's initial request —
+            // startup git priming runs here, off the render thread, and
+            // the first frames render default git info until the reply
+            // lands (audit 2026-11-25 H-state-1).
             let mut paths: Vec<String> = state
                 .repo_groups
                 .iter()

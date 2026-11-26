@@ -616,16 +616,25 @@ fn render_header_into(frame: &mut Frame, state: &mut AppState, area: Rect) {
     // The chyron overlays the toolbar while an event is alive; the
     // toolbar owns the row the rest of the time. Either way the row is
     // reserved, so the list never shifts.
+    //
+    // Both branches share the row geometry: the overview button owns
+    // the left columns and the menu button the right ones, so the
+    // banner's room is the row minus both. It is stamped every frame
+    // so the chyron's display-window math (state/chyron.rs) measures
+    // the width the banner actually renders at — measuring against the
+    // full row width closed the window before an overflowing banner
+    // finished scrolling (audit 2026-11-25 H-UI-1).
+    let button_w = (chyron::BUTTON_WIDTH as u16).min(area.width);
+    let overview_w = crate::state::OVERVIEW_BUTTON_WIDTH.min(area.width);
+    let banner_w = area
+        .width
+        .saturating_sub(button_w)
+        .saturating_sub(overview_w);
+    state.layout.banner_width = Some(banner_w);
     if let Some((banner_text, banner_kind)) = state.chyron.visible_banner(state) {
         // The banner leaves the overview button's left columns and the
         // menu button's corner free, so both stay visible — and
         // clickable — over it.
-        let button_w = (chyron::BUTTON_WIDTH as u16).min(area.width);
-        let overview_w = crate::state::OVERVIEW_BUTTON_WIDTH.min(area.width);
-        let banner_w = area
-            .width
-            .saturating_sub(button_w)
-            .saturating_sub(overview_w);
         if banner_w > 0
             && let Some(line) = chyron::render_chyron(state, &banner_text, banner_kind, banner_w)
         {
@@ -641,15 +650,11 @@ fn render_header_into(frame: &mut Frame, state: &mut AppState, area: Rect) {
         frame.render_widget(Paragraph::new(vec![button_line]), button_area);
         // Same contract as the toolbar branch: the click column is
         // width - button width. Written on chyron frames too so a
-        // first-frame banner still leaves the button clickable. The
-        // width feeds the ticker's display-window math (the scroll
-        // must finish before the close).
+        // first-frame banner still leaves the button clickable.
         state.layout.menu_button_col = Some(area.width.saturating_sub(button_w));
-        state.layout.header_width = Some(area.width);
     } else {
         let (line, menu_btn_col) = chyron::render_secondary_header(state, area.width);
         state.layout.menu_button_col = menu_btn_col;
-        state.layout.header_width = Some(area.width);
         frame.render_widget(Paragraph::new(vec![line]), area);
     }
 }

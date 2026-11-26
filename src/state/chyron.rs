@@ -232,7 +232,13 @@ impl ChyronState {
     pub fn visible_banner(&self, state: &AppState) -> Option<(String, ChyronKind)> {
         let (text, kind) = self.banner(state)?;
         let text_w = crate::ui::text::display_width(&text);
-        let avail_w = state.layout.header_width.unwrap_or(0) as usize;
+        // The width the renderer actually scrolls the banner against —
+        // the header row minus both button columns, stamped by
+        // `render_header_into` every frame (audit 2026-11-25 H-UI-1).
+        // Measuring against the full row width used to close the
+        // display window before an overflowing banner finished
+        // scrolling.
+        let avail_w = state.layout.banner_width.unwrap_or(0) as usize;
         let frame = self
             .current
             .as_ref()
@@ -548,6 +554,93 @@ mod tests {
                 + CHYRON_END_HOLD_FRAMES
                 + CHYRON_FADE_FRAMES
         );
+    }
+
+    #[test]
+    fn display_window_measures_the_rendered_banner_width() {
+        // Audit 2026-11-25 H-UI-1: the display window must measure the
+        // width the renderer scrolls against (`layout.banner_width`).
+        // Measuring the full header row used to budget too few scroll
+        // frames: a 49-column banner in a 20-column banner area needs
+        // 29 scroll frames, but a 40-column row budgeted 9 — the
+        // EndHold was swallowed and the ticker cut ~1.2 s early.
+        let mut state = state_with(vec![pane("%1", PaneStatus::Idle, PaneAttention::Done)]);
+        // The live pane's title names the event (see `chyron_label`),
+        // so the banner width is controlled through it.
+        state.repo_groups[0].panes[0].0.session_name =
+            "a-very-long-session-name-that-will-not-fit".into();
+        state.layout.banner_width = Some(20);
+        state.chyron.current = Some(ChyronEvent {
+            pane_id: "%1".into(),
+            kind: ChyronKind::Done,
+            label: "a-very-long-session-name-that-will-not-fit".into(),
+            shown_at: Instant::now(),
+        });
+        let text_w = crate::ui::text::display_width(&state.chyron.banner(&state).unwrap().0);
+        assert_eq!(text_w, 49);
+        let avail_w = 20;
+        let scroll_frames = text_w - avail_w;
+
+        // Mid-EndHold: the tail is resting, so the row must still be
+        // the chyron's. (Mid-frame offsets so a slow runner cannot
+        // shift the phase across a 200 ms boundary.)
+        let end_hold = CHYRON_FLASH_FRAMES + CHYRON_HOLD_FRAMES + scroll_frames + 1;
+        state.chyron.current.as_mut().unwrap().shown_at =
+            Instant::now() - (CHYRON_FRAME * end_hold as u32 + Duration::from_millis(50));
+        assert!(
+            state.chyron.is_showing(&state),
+            "the display window must cover the whole ticker"
+        );
+
+        // One frame past the full window: the toolbar owns the row.
+        let total = display_frames(text_w, avail_w);
+        state.chyron.current.as_mut().unwrap().shown_at =
+            Instant::now() - (CHYRON_FRAME * total as u32 + Duration::from_millis(50));
+        assert!(!state.chyron.is_showing(&state));
+    }
+
+    #[test]
+    fn display_window_and_phase_machine_close_together() {
+        // Audit 2026-11-25 H-UI-1, sub-symptom: the display window and
+        // the phase machine must measure the same width. A banner
+        // overflowing the banner area by a column or two used to reach
+        // Rest a frame before the window closed (measured against the
+        // wider row), and the header then rendered nothing — the stale
+        // banner froze mid-row until the close.
+        let mut state = state_with(vec![pane("%1", PaneStatus::Idle, PaneAttention::Done)]);
+        // "✓ <title> done": a 14-column title → 21 columns of banner,
+        // a one-column overflow.
+        state.repo_groups[0].panes[0].0.session_name = "fix-auth-again".into();
+        state.layout.banner_width = Some(20);
+        state.chyron.current = Some(ChyronEvent {
+            pane_id: "%1".into(),
+            kind: ChyronKind::Done,
+            label: "fix-auth-again".into(),
+            shown_at: Instant::now(),
+        });
+        let text_w = crate::ui::text::display_width(&state.chyron.banner(&state).unwrap().0);
+        let avail_w = 20;
+        assert_eq!(text_w, avail_w + 1, "one-column overflow, as reported");
+        let total = display_frames(text_w, avail_w);
+
+        // Walk the whole timeline: the window closes exactly when the
+        // phase machine rests — no frame where the row is owned by the
+        // chyron but renders nothing.
+        for frame in 0..=total {
+            state.chyron.current.as_mut().unwrap().shown_at =
+                Instant::now() - (CHYRON_FRAME * frame as u32 + Duration::from_millis(50));
+            let phase = state
+                .chyron
+                .current
+                .as_ref()
+                .unwrap()
+                .phase(text_w, avail_w);
+            assert_eq!(
+                state.chyron.is_showing(&state),
+                phase != ChyronPhase::Rest,
+                "frame {frame}: window and phase machine disagree"
+            );
+        }
     }
 
     // ─── transition diffing ──────────────────────────────────────────

@@ -378,7 +378,7 @@ mod tests {
         let mut event = done_event();
         event.shown_at = Instant::now() - std::time::Duration::from_secs(5);
         let mut state = state_with_event(event, true);
-        state.layout.header_width = Some(40);
+        state.layout.banner_width = Some(40);
         assert!(render_chyron_from_state(&state, 40).is_none());
         assert!(!state.chyron.is_showing(&state));
     }

@@ -129,37 +129,18 @@ impl AppState {
         sidebar_window_panes: Vec<(String, bool, String)>,
         fetched_at: std::time::Instant,
     ) {
-        // First snapshot primes the anchor→git-info cache synchronously so
-        // the very first frame groups by repo root. Later ticks consume
-        // only the worker-maintained cache (see `git_info_poll_loop`) and
-        // never spawn git on the render thread.
-        if !self.timers.git_info_primed {
-            let mut primed_paths: HashSet<String> = HashSet::new();
-            for session in &sessions {
-                for window in &session.windows {
-                    for pane in &window.panes {
-                        let anchor = pane.grouping_anchor();
-                        if anchor.is_empty() || self.git_info_cache.contains_key(anchor) {
-                            continue;
-                        }
-                        if primed_paths.insert(anchor.to_string()) {
-                            let info = crate::group::resolve_pane_git_info(anchor);
-                            self.git_info_cache.insert(anchor.to_string(), info);
-                        }
-                    }
-                }
-            }
-            for pane in &other_panes {
-                if pane.path.is_empty() || self.git_info_cache.contains_key(&pane.path) {
-                    continue;
-                }
-                if primed_paths.insert(pane.path.clone()) {
-                    let info = crate::group::resolve_pane_git_info(&pane.path);
-                    self.git_info_cache.insert(pane.path.clone(), info);
-                }
-            }
-            self.timers.git_info_primed = true;
-        }
+        // Git info comes exclusively from the resolver worker
+        // (`git_info_poll_loop`): the event loop feeds it this snapshot's
+        // grouping anchors right after the fold, and the reply lands on
+        // `git_info_rx` a tick later. The first frames therefore render
+        // `PaneGitInfo::default()` and group per anchor path until the
+        // worker's first reply re-keys the groups to repo roots. The
+        // startup priming this replaced resolved every distinct pane cwd
+        // inline on the render thread — several serial git spawns per
+        // path, each up to the 5 s subprocess deadline under a hung repo
+        // (observed ~20 s for one FIFO-backed `.git`) — so one stale
+        // NFS/autofs cwd among the pane directories froze the first
+        // frame for tens of seconds (audit 2026-11-25 H-state-1).
         self.repo_groups = match self.global.group_by {
             crate::state::GroupBy::Repo => {
                 crate::group::group_panes_by_repo(&sessions, &self.git_info_cache)
@@ -3007,6 +2988,35 @@ mod tests {
             !state.focus_state.sidebar_focused,
             "the stale claim must not re-light the selection background"
         );
+    }
+
+    #[test]
+    fn apply_session_snapshot_leaves_git_resolution_to_the_worker() {
+        // Audit 2026-11-25 H-state-1: the fold must not resolve git info
+        // inline. The startup priming this replaced ran several serial
+        // git spawns per distinct pane cwd on the render thread — tens
+        // of seconds of white-screen per hung path — so the cache stays
+        // empty here and the groups fall back to the anchor keys until
+        // the resolver worker's first reply lands. The manifest dir is a
+        // real git checkout: the old inline priming would have resolved
+        // it.
+        let mut state = AppState::new("%99".into());
+        let mut pane = test_pane("%1");
+        pane.path = env!("CARGO_MANIFEST_DIR").into();
+        state.apply_session_snapshot(
+            test_session(vec![pane]),
+            Vec::new(),
+            Vec::new(),
+            std::time::Instant::now(),
+        );
+
+        assert!(
+            state.git_info_cache.is_empty(),
+            "the fold must not resolve git info on the render thread"
+        );
+        // One pane, one group — keyed by its anchor path until the
+        // worker's reply re-keys it to the repo root.
+        assert_eq!(state.repo_groups.len(), 1);
     }
 
     #[test]
