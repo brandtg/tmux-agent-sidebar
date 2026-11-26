@@ -502,6 +502,23 @@ rides the 3 s-deadline `exec_tmux` choke point.
   pane created in between is destroyed with the window. Kill each role-tagged
   sidebar pane individually instead (killing the last pane auto-destroys the
   window; a raced-in pane survives).
+- **M-cli-5. Focus-mode (zoomed) content never fills the popup's width — the
+  mirror is 1:1 at the source pane's size. (User-reported 2026-11-26,
+  confirmed.)** The zoomed view paints the captured grid 1:1 into the
+  fullscreen area (draw_zoomed → draw_cell → paint_grid, src/cli/overview.rs:1101,
+  1148, 1407), and the capture is parsed at the source pane's own dimensions
+  (pane_dimensions → capture_grid, :905, 925 — fallback (80,24)); tmux offers
+  no size override for `capture-pane`, so content wider than the source pane
+  does not exist to show. With the plugin's standard layout every agent pane
+  shares its window with the 40-column sidebar (and often other splits): on
+  this machine the overview popup is the full 240-col client while the agent
+  panes are 99–199 wide, so every focus-mode view leaves a 41–141 column dead
+  margin on the right. Seen identically in claude and opencode — the
+  mechanism is agent-agnostic, and it is not M-UI-2's wide-char drift (a
+  uniform right margin, not progressive column shift). Verified on a scoped
+  server: a 240-wide window split 40/199 captures at 199; `resize-pane -Z`
+  grows the pane (and its pty — SIGWINCH → agent reflow) to 240 and restores
+  the exact layout on toggle.
 - **L-cli-1.** Capture loop busy-spins and can fill the disk for absurd
   `--fps`: `Duration::from_nanos(1e9/fps)` truncates to 0 above 1e9 fps
   (u32 allows ~4.29e9), so `--fps 3000000000` writes ~3M HTML files in a
@@ -617,7 +634,8 @@ hook's background-subagent list instead of child execution-event inference
 
 ## Summary
 
-Counts: 4 High, 23 Medium, 41 Low across eight lanes (0, 0b, 1-6).
+Counts: 4 High, 24 Medium, 41 Low across eight lanes (0, 0b, 1-6) — the
+24th Medium, M-cli-5, added 2026-11-26 with Phase 8.
 
 Priority order for a hardening pass, risk-adjusted:
 
@@ -647,7 +665,8 @@ Priority order for a hardening pass, risk-adjusted:
 
 Implements the Summary's risk-adjusted priority order, regrouped by theme so
 related fixes land together, share tests, and (for the bridge) share a single
-plugin copy + daemon restart. All 68 findings appear in exactly one phase.
+plugin copy + daemon restart. All 69 findings appear in exactly one phase
+(68 at the initial write-up; M-cli-5 added 2026-11-26 with Phase 8).
 
 Deploy discipline for every phase: cargo fmt → cargo test → cargo clippy →
 cargo build --release, then copy the binary into
@@ -814,6 +833,62 @@ many-window scoped server.
   toggle/auto-create hooks), **L-shell-1** (mirror the bash pending-variable
   batching for zsh preexec), **L-shell-2** (document or align the
   pipeline-stage recording), **L-wiz-2** (accept as-is or add a debug-trace).
+
+### Phase 8 — Focus-mode width: mirror the pane at the width the popup has (added 2026-11-26)
+
+Implements M-cli-5 (user-reported: focus-mode content does not expand to the
+window's width, seen in claude and opencode). The root cause is geometric,
+not a parser bug: the zoomed view is a 1:1 mirror of the source pane's
+capture, and the source pane is always narrower than the overview popup while
+it shares its window with the 40-column sidebar (this machine: 240-col popup
+vs 99–199-col agent panes). `capture-pane` has no size override — content at
+wider widths does not exist until the pane itself is wider — so the fix must
+briefly widen the real pane.
+
+- **M-cli-5 fix — temporary window-zoom of the source pane while focus mode
+  is active.** On entering zoom (Enter from the grid, or the click-zoom): if
+  the pane shares its window with siblings and is not already the window's
+  zoomed pane, run `resize-pane -Z -t <pane>` and remember the pane id.
+  Scoped-server verified: the pane (and its pty) grow to the full window
+  width, 199 → 240; the agent TUI reflows on the pty SIGWINCH (claude and
+  opencode both re-render at the new width — they already render at 99/116/199
+  across this machine's windows), and the next tick's pane_dimensions +
+  capture pick the new size up. Force an immediate re-capture on entry rather
+  than waiting a tick. On every zoom-exit path (Esc collapse, Enter/f into
+  the real pane, q, Ctrl-C, the ✕ click / popup close): if we zoomed it and
+  `#{window_zoomed_flag}` is still set, `resize-pane -Z` again — tmux
+  restores the pre-zoom layout exactly (verified: 40/199 back from 240).
+  Implement the restore as a drop guard held by the run loop so every return
+  site (and `?` error propagation) is covered.
+- Ownership and safety rules: never touch a window that was already zoomed on
+  arrival (that zoom is the user's state, not ours); skip the resize when the
+  pane is alone in its window (nothing to gain, no churn); a failed restore
+  (pane or window died while zoomed) is a silent no-op plus a debug::log
+  line; a crash mid-zoom leaves the pane zoomed exactly like a user zoom —
+  recoverable with prefix-z, the agent unaffected. Hidden siblings keep their
+  size while the window is zoomed (verified: the 40-col pane reports 40x50
+  under zoom), so the sidebar does not reflow churn; it re-renders unchanged
+  on restore.
+- **Center the capture horizontally** when the grid is still narrower than
+  the area (multi-client setups where the source window cannot reach the
+  popup's width even zoomed): a paint_grid/draw_zoomed rider so the residual
+  margin splits evenly instead of hugging the left edge. Related accepted
+  clip: the zoomed cell's own border costs 2 columns, so a full-window
+  capture loses its last ≤2 columns — agent TUIs paint right padding there;
+  accept it (or draw the zoomed cell borderless if it bothers in practice).
+- **Invariant update:** the module doc's "the mirror itself is read-only"
+  gains a documented, always-restored exception for the temporary `-Z`. The
+  only resize-free alternative — join-pane/link-window into the overview
+  window — couples terminal sizes, which the module doc itself bans; and
+  centering alone does not expand content. Height needs nothing: panes here
+  are full-height and the bottom-anchored rule already covers shorter ones.
+- Verify: scoped-server tests for the lifecycle (zoom on entry, flag-gated
+  restore on each exit path, the ownership rule for a pre-zoomed window, the
+  pane-died restore no-op, hidden siblings keep their size) plus a snapshot
+  for the centered fallback; live pass with claude + opencode: focus mode
+  fills the popup width, collapse restores the sidebar layout. Deploy:
+  standard binary copy + sidebar toggle — no conf change, no bridge change.
+
 
 ### Deferred
 
