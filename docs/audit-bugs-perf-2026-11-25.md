@@ -643,3 +643,185 @@ Priority order for a hardening pass, risk-adjusted:
 9. Everything else by lane, Ls last (many are one-liners: L-hook-4/5,
    L-tmux-5/6, L-cli-4/5, L-state-1/5).
 
+## Phased implementation plan (2026-11-26)
+
+Implements the Summary's risk-adjusted priority order, regrouped by theme so
+related fixes land together, share tests, and (for the bridge) share a single
+plugin copy + daemon restart. All 68 findings appear in exactly one phase.
+
+Deploy discipline for every phase: cargo fmt → cargo test → cargo clippy →
+cargo build --release, then copy the binary into
+~/.tmux/plugins/tmux-agent-sidebar/bin/ and toggle the sidebar off/on (copy
+agent-sidebar.conf too when hook registration or option defaults change).
+Bridge phases additionally copy .opencode/plugins/tmux-agent-sidebar.js and
+restart the opencode serve daemon — the daemon imports the plugin module once
+and caches it for the process lifetime. tmux-behavior tests run on scoped
+servers only, never the live server.
+
+### Phase 1 — One-liners and trivial mechanical fixes (one small batch)
+
+Led by H-tmux-1 (priority #1). All small, independently testable, expected to
+leave UI snapshots unchanged.
+
+- **H-tmux-1.** Insert `--` before the payload in all four set-buffer argv
+  shapes; test yanking a `-w hello` payload and a dash-bullet todo; confirms
+  the first failure no longer poisons W_SUPPORTED for the process lifetime.
+- **M-tmux-1.** Approval worker calls unset_pane_option(pane_id, PANE_ATTENTION)
+  instead of writing literal "clear".
+- **M-tmux-2.** Add PANE_SUBAGENT_ROUTES to clear_agent_pane_state's KEYS list.
+- **M-hook-1.** Call clear_run_state before the subagent-drain idle downgrade
+  (matches on_stop; the Hermes parent-Stop exception stays).
+- **M-hook-2.** Skip the started_stamp restamp for agy when current_status ==
+  "running".
+- **M-hook-4.** Run the agent name through canonical_agent_name at the top of
+  resolve_hook_pane.
+- One-liner Ls: **L-hook-4** (stop_failure_body through truncate_body),
+  **L-hook-5** (debug::log on the flock-failure drop), **L-hook-6** (fall
+  through to proc_parent on environ-read failure), **L-tmux-3** (require
+  args_cand.starts_with(&comm_cand)), **L-tmux-5** (reuse is_shell_basename
+  in port.rs), **L-tmux-6** (a non-numeric suffix compares lower than the
+  same numeric version), **L-cli-1** (reject --fps > 1000 or floor the
+  interval at 1 ms), **L-cli-4** (reject --popup-client values starting with
+  --), **L-cli-5** (print usage and exit 2 for unknown subcommands),
+  **L-state-1** (run the shared-option flushes once before break Ok(())),
+  **L-state-5** (early-return confirm_repo_popup when the selection is
+  unchanged), **L-UI-2** (skip leading spaces of the first wrap chunk),
+  **L-inp-1** (flash "undo expired — list changed" instead of returning
+  silently).
+
+Verify: full cargo test; scoped-server tests for the set-buffer shapes and
+the attention-clear path.
+
+### Phase 2 — High findings in the Rust tree (two focused changes)
+
+- **H-state-1.** Move startup git priming behind the git-info worker: send
+  the first snapshot's anchors as the worker's initial request, render
+  PaneGitInfo::default() until replies land. Fallback if that reshapes too
+  much: gate the first frame on a short deadline. Verify: scoped server with
+  a hung-path cwd among pane dirs opens the first frame immediately; git
+  columns fill in a tick or two later.
+- **H-UI-1.** Single-source the chyron display width: store banner_w in
+  FrameLayout, or subtract both button widths inside visible_banner. Verify:
+  chyron phase snapshots; a banner overflowing banner_w by ≤2 columns reaches
+  Rest cleanly instead of freezing stale text mid-row.
+
+### Phase 3 — OpenCode bridge: H-bridge-1 + chain/spawn robustness (one deploy)
+
+All bridge fixes in one pass so one plugin copy + one opencode serve daemon
+restart covers them. Live test: two background subagents running while the
+main turn ends, before and after.
+
+- **H-bridge-1.** Preferred: build on the experimental.idle hook's
+  background-subagent list (guard it like the legacy question.* path, observe
+  only, admit nothing), keeping terminal-event handling as the fallback since
+  idle does not fire after interruption or failure. Fallback design if the
+  hook proves unreliable: the activeChildTurns set inferred from child
+  session.execution.* events.
+- **M-bridge-1.** Race the whole hookChain link body (routeSessionId →
+  lookupSessionInfo → ctx.session.get included) against a timeout, not just
+  the final spawn.
+- **M-bridge-2.** listPanes resolves on close (or exit + end-of-stream), not
+  bare exit.
+- **M-bridge-3.** Kill the timed-out spawn child so its late tmux writes
+  cannot race the next link.
+- Hygiene riders: **L-bridge-2** (staleness bound on activeTurns entries),
+  **L-bridge-3** (catch the event-pump abort), **L-bridge-1** (cap or evict
+  sessionProjects/mainSessions).
+
+Verify: live two-subagent repro (pane stays running until the last child
+drains), a hung-RPC simulation for the chain timeout, load for listPanes;
+activity-log entries land after the daemon restart.
+
+### Phase 4 — Remaining wrong-state and race fixes
+
+- **M-cli-4.** auto-close kills each role-tagged sidebar pane individually
+  instead of kill-window after the only-sidebar-panes check (a raced-in pane
+  survives; killing the last pane auto-destroys the window).
+- **L-hook-3.** Surface get_pane_options read failure; skip promotion on it.
+- **L-tmux-1.** Detect over-short list-panes records (a newline inside a
+  field) and trace; a newline-safe surrogate only if it occurs for real.
+- **L-tmux-2.** pidfd_open + pidfd_send_signal for SIGUSR1, or re-verify exe
+  immediately before kill (macOS ps fallback first).
+
+### Phase 5 — Popup op lifecycle + mouse/focus interaction (one design pass)
+
+The Summary's items #6 and #7 share plumbing (flash, popup state), so they
+land together.
+
+- **M-state-1.** Stamp Spawn/Remove results with an op id captured at
+  start_popup_op; drop results whose popup was closed or replaced.
+- **M-state-2.** Latch resume_in_flight, cleared in flash_resume_result.
+- **L-inp-3.** Once op identity lands, flash on a late Spawn(Ok) instead of
+  dropping it.
+- **L-UI-3.** Carry severity alongside the message in set_flash (same flash
+  plumbing).
+- **M-UI-3.** Clamp repo popup navigation to the visible window (or add
+  todo-style scrolling with a "N more ↓" indicator).
+- **M-inp-1.** Early-return wheel events while a popup is open; wheel scrolls
+  help while Help is open.
+- **M-inp-2.** Finish or cancel the search when a click moves focus into the
+  todo panel or opens a popup.
+
+Verify: snapshot tests plus a manual pass over spawn→Esc→reopen, wheel over
+an open modal, click-todo with a live search.
+
+### Phase 6 — Perf pass: the spawn-waste family (Summary item #8)
+
+- **M-hook-3.** Resolve notification settings lazily in the handlers that
+  actually notify; move label resolution inside notify_if_allowed past the
+  enabled gate.
+- **M-state-3.** Git-info worker returns only refreshed entries and merges;
+  at most one request outstanding.
+- **M-state-4.** Queue Vec<(pane_id, was_waiting)> from the queueing parse and
+  heal only was_waiting targets; drop the per-pane show -v probe.
+- **M-cli-1.** Overview: move ProcessSnapshot::scan to a background worker or
+  cache it for N ticks.
+- **M-cli-2.** toggle-all: hoist the global mode read out of the loop, defer
+  dedupe to one end-of-sweep scan, chain each window's writes into one
+  ;-separated invocation.
+- **M-cli-3.** Feed drive dims from the retained snapshot map.
+- **M-UI-4.** Pre-truncate the prompt to preview_lines * wrap_width +
+  wrap_width chars (or memoize per pane) before wrap_text_inner.
+- Rider: **L-inp-2** (pre-lower matched fields once; one match pass shared
+  between rebuild and collector).
+
+Verify: per-tick spawn census before/after; toggle-all timing on a
+many-window scoped server.
+
+### Phase 7 — Render/CLI remainder and the long-tail Ls
+
+- **M-UI-1.** Top-anchor rows taller than the viewport and skip the bottom
+  branch for that row (kills the ~5 Hz ping-pong).
+- **M-UI-2.** Unicode-width cells in the ANSI capture parser: advance by
+  UnicodeWidthChar::width, placeholder cell for the trailing half, zero-width
+  merges into the previous cell; same pass can restore SGR 2/3/9/53 (lane 6
+  cross-ref).
+- UI Ls: **L-UI-1** (treat popup height 12 as compact), **L-UI-4** (remove or
+  re-wire the dead OSC-8 overlay plumbing), **L-UI-5** (drop or fix
+  line_edit::visible_window), **L-UI-6** (lowercase once per snapshot),
+  **L-UI-7** (one cleanup pass over popup-open per-frame rebuilds).
+- CLI Ls: **L-cli-2** (return 1 or debug-trace on a failed split-window in
+  open_split_sidebar and the layouts passthrough), **L-cli-3** (debounce
+  consecutive Enters in the paste fallback, or document).
+- State/layout Ls: **L-state-2** (queue the cursor save when the group-by
+  observer moves the row), **L-state-3** (derive click rows from toolbar_row
+  + 1), **L-state-4** (sane default chyron width before the first frame).
+- tmux/process Ls: **L-tmux-4** (cap drain-thread buffers), **L-tmux-7**
+  (cheap width probe before the layout maintenance full probe).
+- Hook Ls: **L-hook-1** (LOCK_NB with bounded retry, or move tmux I/O out of
+  the locked window), **L-hook-2** (batch the resume-path write fan-out).
+- Conf/shell/wizard Ls: **L-conf-1** (quote-safe interpolation in the
+  toggle/auto-create hooks), **L-shell-1** (mirror the bash pending-variable
+  batching for zsh preexec), **L-shell-2** (document or align the
+  pipeline-stage recording), **L-wiz-2** (accept as-is or add a debug-trace).
+
+### Deferred
+
+- **L-wiz-1.** Deliberate defer: downloaded-binary integrity pinning matters
+  only if the repo goes wide; a sha256 pin is the fix if that changes.
+- Feature opportunities stay out of scope except where they ride along with a
+  fix above (the bridge event-pump types filter rides with Phase 3; snapshot
+  change-detection, the single git status --porcelain -b fold, and pane-option
+  write batching are follow-up perf candidates if the Phase 6 census says
+  so).
+
