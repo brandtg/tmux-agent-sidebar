@@ -808,6 +808,11 @@ impl AppState {
     /// re-flag, gone → clear), and queueing it keeps a batch flowing while
     /// only waiting panes exist, so the worker never starves on `recv`.
     /// Idle/error panes have no turn in flight to prompt on.
+    ///
+    /// Each target carries its snapshot-time status (`true` = waiting):
+    /// the worker's heal path only clears panes that were waiting here,
+    /// so it needs no per-pane `show -v` probe to re-derive what this
+    /// parse already knew (audit 2026-11-25 M-state-4).
     pub(crate) fn queue_approval_scan_if_due(&mut self, sessions: &[SessionInfo]) {
         const APPROVAL_REFRESH_INTERVAL: Duration = Duration::from_secs(2);
 
@@ -818,7 +823,7 @@ impl AppState {
         }
         self.timers.approval_scan_initialized = true;
         self.timers.last_approval_scan = std::time::Instant::now();
-        let targets: Vec<String> = sessions
+        let targets: Vec<(String, bool)> = sessions
             .iter()
             .flat_map(|session| session.windows.iter())
             .flat_map(|window| window.panes.iter())
@@ -829,7 +834,12 @@ impl AppState {
                     crate::tmux::PaneStatus::Running | crate::tmux::PaneStatus::Waiting
                 )
             })
-            .map(|pane| pane.pane_id.clone())
+            .map(|pane| {
+                (
+                    pane.pane_id.clone(),
+                    pane.status == crate::tmux::PaneStatus::Waiting,
+                )
+            })
             .collect();
         crate::debug::log(&format!(
             "approval-scan: queued {} antigravity running/waiting pane(s)",
@@ -841,7 +851,7 @@ impl AppState {
         self.pending_approval_scan = Some(targets);
     }
 
-    pub(crate) fn take_pending_approval_scan(&mut self) -> Option<Vec<String>> {
+    pub(crate) fn take_pending_approval_scan(&mut self) -> Option<Vec<(String, bool)>> {
         self.pending_approval_scan.take()
     }
 
@@ -2232,7 +2242,7 @@ mod tests {
 
         assert_eq!(
             state.take_pending_approval_scan(),
-            Some(vec!["%AGY_WAITING".to_string()]),
+            Some(vec![("%AGY_WAITING".to_string(), true)]),
         );
     }
 
@@ -2251,6 +2261,33 @@ mod tests {
         state.queue_approval_scan_if_due(&test_session(vec![agy_idle, claude_waiting]));
 
         assert_eq!(state.take_pending_approval_scan(), None);
+    }
+
+    #[test]
+    fn queue_approval_scan_carries_snapshot_status_per_pane() {
+        // M-state-4: the worker's heal path keys off each pane's
+        // snapshot-time status instead of a per-pane `show -v` probe, so
+        // the queue must carry it — waiting panes heal, running ones
+        // never do.
+        let _guard = tmux::test_mock::install();
+        let mut state = AppState::new("%99".into());
+        let mut waiting = test_pane("%AGY_WAITING");
+        waiting.agent = AgentType::Antigravity;
+        waiting.status = PaneStatus::Waiting;
+        waiting.wait_reason = "permission".into();
+        let mut running = test_pane("%AGY_RUNNING");
+        running.agent = AgentType::Antigravity;
+        running.status = PaneStatus::Running;
+
+        state.queue_approval_scan_if_due(&test_session(vec![waiting, running]));
+
+        assert_eq!(
+            state.take_pending_approval_scan(),
+            Some(vec![
+                ("%AGY_WAITING".to_string(), true),
+                ("%AGY_RUNNING".to_string(), false),
+            ]),
+        );
     }
 
     // ─── refresh_session_names ──────────────────────────────────────

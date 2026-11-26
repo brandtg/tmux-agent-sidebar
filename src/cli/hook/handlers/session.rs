@@ -114,7 +114,7 @@ pub(in crate::cli::hook) fn on_session_end(
     agent_name: &str,
     end_reason: &str,
     session_id: Option<&str>,
-    notifications: &desktop_notification::DesktopNotificationSettings,
+    notifications: Option<desktop_notification::DesktopNotificationSettings>,
 ) -> i32 {
     // Subagents share the parent's `$TMUX_PANE`, so a SessionEnd fired
     // while `@pane_subagents` is populated is almost certainly a child's
@@ -204,7 +204,7 @@ mod tests {
         let _ = fs::create_dir_all(log_path.parent().unwrap());
         fs::write(&log_path, "1234567890|Read|main.rs\n").unwrap();
 
-        let exit = on_session_end(pane, "claude", "", None, &default_notifications());
+        let exit = on_session_end(pane, "claude", "", None, Some(default_notifications()));
 
         assert_eq!(exit, 0);
         assert!(
@@ -235,7 +235,7 @@ mod tests {
         tmux::test_mock::set(pane, tmux::PANE_CWD, "/repo");
         tmux::test_mock::set(pane, tmux::PANE_STATUS, "running");
 
-        let exit = on_session_end(pane, "claude", "", None, &default_notifications());
+        let exit = on_session_end(pane, "claude", "", None, Some(default_notifications()));
 
         assert_eq!(exit, 0);
         assert!(
@@ -268,7 +268,7 @@ mod tests {
             "claude",
             "",
             Some("sess-old"),
-            &default_notifications(),
+            Some(default_notifications()),
         );
 
         assert_eq!(exit, 0);
@@ -290,7 +290,13 @@ mod tests {
         tmux::test_mock::set(pane, tmux::PANE_AGENT, "claude");
         tmux::test_mock::set(pane, tmux::PANE_SESSION_ID, "sess-1");
 
-        let exit = on_session_end(pane, "claude", "", Some("sess-1"), &default_notifications());
+        let exit = on_session_end(
+            pane,
+            "claude",
+            "",
+            Some("sess-1"),
+            Some(default_notifications()),
+        );
 
         assert_eq!(exit, 0);
         assert!(
@@ -308,7 +314,7 @@ mod tests {
         tmux::test_mock::set(pane, tmux::PANE_AGENT, "claude");
         tmux::test_mock::set(pane, tmux::PANE_SESSION_ID, "sess-1");
 
-        let exit = on_session_end(pane, "claude", "", None, &default_notifications());
+        let exit = on_session_end(pane, "claude", "", None, Some(default_notifications()));
 
         assert_eq!(exit, 0);
         assert!(!tmux::test_mock::contains(pane, tmux::PANE_AGENT));
@@ -526,7 +532,13 @@ mod tests {
     fn on_session_end_routine_reason_does_not_notify() {
         let _guard = tmux::test_mock::install();
         let pane = "%END_ROUTINE";
-        on_session_end(pane, "claude", "clear", None, &notifications_enabled_all());
+        on_session_end(
+            pane,
+            "claude",
+            "clear",
+            None,
+            Some(notifications_enabled_all()),
+        );
         // The notification helper writes a dedup stamp only when a notification
         // actually goes out; a missing stamp is proof the gate rejected it.
         assert!(
@@ -549,7 +561,7 @@ mod tests {
             "cargo-test: on_session_end_logout",
             "logout",
             None,
-            &notifications_enabled_all(),
+            Some(notifications_enabled_all()),
         );
         // If `send_desktop_notification` succeeds (local dev with notify-send
         // / osascript available), the stamp is written; if it fails (headless
@@ -576,7 +588,7 @@ mod tests {
             "cargo-test: on_session_end_bypass_disabled",
             "bypass_permissions_disabled",
             None,
-            &notifications_enabled_all(),
+            Some(notifications_enabled_all()),
         );
         let stamp_key = tmux::PANE_OS_NOTIFY_TASK_COMPLETED;
         if tmux::test_mock::contains(pane, stamp_key) {

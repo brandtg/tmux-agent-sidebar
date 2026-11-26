@@ -246,7 +246,7 @@ pub(in crate::cli::hook) fn on_stop(
     ctx: &AgentContext<'_>,
     last_message: &str,
     response: Option<&str>,
-    notifications: &desktop_notification::DesktopNotificationSettings,
+    notifications: Option<desktop_notification::DesktopNotificationSettings>,
 ) -> i32 {
     set_agent_meta(pane, ctx);
     if !last_message.is_empty() {
@@ -350,7 +350,7 @@ pub(in crate::cli::hook) fn on_stop_failure(
     pane: &str,
     ctx: &AgentContext<'_>,
     error: &str,
-    notifications: &desktop_notification::DesktopNotificationSettings,
+    notifications: Option<desktop_notification::DesktopNotificationSettings>,
 ) -> i32 {
     set_agent_meta(pane, ctx);
     set_attention(pane, "clear");
@@ -383,7 +383,7 @@ pub(in crate::cli::hook) fn on_task_completed(
     agent_name: &str,
     task_id: &str,
     task_subject: &str,
-    notifications: &desktop_notification::DesktopNotificationSettings,
+    notifications: Option<desktop_notification::DesktopNotificationSettings>,
 ) -> i32 {
     let _ = notify_lifecycle(
         pane,
@@ -885,10 +885,10 @@ mod tests {
             &ctx,
             "",
             None,
-            &desktop_notification::DesktopNotificationSettings {
+            Some(desktop_notification::DesktopNotificationSettings {
                 enabled: false,
                 events: Default::default(),
-            },
+            }),
         );
 
         assert_eq!(exit, 0);
@@ -920,10 +920,10 @@ mod tests {
             &ctx,
             "",
             None,
-            &desktop_notification::DesktopNotificationSettings {
+            Some(desktop_notification::DesktopNotificationSettings {
                 enabled: false,
                 events: Default::default(),
-            },
+            }),
         );
 
         assert_eq!(
@@ -951,10 +951,10 @@ mod tests {
             &ctx,
             "all finished",
             None,
-            &desktop_notification::DesktopNotificationSettings {
+            Some(desktop_notification::DesktopNotificationSettings {
                 enabled: false,
                 events: Default::default(),
-            },
+            }),
         );
 
         assert_eq!(
@@ -986,10 +986,10 @@ mod tests {
             &ctx,
             "",
             None,
-            &desktop_notification::DesktopNotificationSettings {
+            Some(desktop_notification::DesktopNotificationSettings {
                 enabled: false,
                 events: Default::default(),
-            },
+            }),
         );
 
         assert!(
@@ -1026,10 +1026,10 @@ mod tests {
             &ctx,
             "",
             None,
-            &desktop_notification::DesktopNotificationSettings {
+            Some(desktop_notification::DesktopNotificationSettings {
                 enabled: false,
                 events: Default::default(),
-            },
+            }),
         );
 
         assert!(!tmux::test_mock::contains(pane, tmux::PANE_SUBAGENTS));
@@ -1104,10 +1104,10 @@ mod tests {
             &ctx,
             "",
             None,
-            &desktop_notification::DesktopNotificationSettings {
+            Some(desktop_notification::DesktopNotificationSettings {
                 enabled: false,
                 events: Default::default(),
-            },
+            }),
         );
 
         assert_eq!(
@@ -1141,10 +1141,10 @@ mod tests {
             pane,
             &ctx,
             "rate_limit",
-            &desktop_notification::DesktopNotificationSettings {
+            Some(desktop_notification::DesktopNotificationSettings {
                 enabled: false,
                 events: Default::default(),
-            },
+            }),
         );
         assert_eq!(exit, 0);
         assert_eq!(

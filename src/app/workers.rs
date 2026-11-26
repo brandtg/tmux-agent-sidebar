@@ -58,9 +58,10 @@ pub(super) struct Workers {
     pub port_scan_rx: Receiver<Option<PaneProcessSnapshot>>,
     /// Requests the approval-scan worker: the Antigravity pane ids whose
     /// status is `running` or `waiting` (its own flagged set is merged in
-    /// worker-side). Fire-and-forget — the worker writes pane options
+    /// worker-side), each with the pane's snapshot-time status (`true` =
+    /// was waiting). Fire-and-forget — the worker writes pane options
     /// directly.
-    pub approval_tx: mpsc::Sender<Vec<String>>,
+    pub approval_tx: mpsc::Sender<Vec<(String, bool)>>,
 }
 
 /// One snapshot refresh request. `include_globals` asks the worker to also
@@ -113,7 +114,7 @@ pub(super) fn spawn(_state: &crate::state::AppState) -> Workers {
     let (git_info_res_tx, git_info_rx) = mpsc::channel::<HashMap<String, PaneGitInfo>>();
     let (port_scan_tx, port_scan_req_rx) = mpsc::channel::<Vec<PaneScanTarget>>();
     let (port_scan_res_tx, port_scan_rx) = mpsc::channel::<Option<PaneProcessSnapshot>>();
-    let (approval_tx, approval_req_rx) = mpsc::channel::<Vec<String>>();
+    let (approval_tx, approval_req_rx) = mpsc::channel::<Vec<(String, bool)>>();
     std::thread::spawn(move || {
         snapshot_poll_loop(&snapshot_req_rx, &snapshot_res_tx);
     });
@@ -191,8 +192,10 @@ pub(super) fn snapshot_poll_loop(
 /// distinct pane working directories, the worker refreshes entries that are
 /// missing or older than [`GIT_INFO_TTL`] (one `git rev-parse` per stale
 /// path — the spawn the render thread used to pay every tick) and returns
-/// the full map. Entries for paths that dropped out of the snapshot are
-/// pruned.
+/// only the entries it refreshed; the event loop merges them into its own
+/// copy. Round-tripping the full map used to clone every entry twice per
+/// tick even when nothing was stale (audit 2026-11-25 M-state-3). Entries
+/// for paths that dropped out of the snapshot are pruned.
 pub(super) fn git_info_poll_loop(
     rx: &mpsc::Receiver<Vec<String>>,
     tx: &mpsc::Sender<HashMap<String, PaneGitInfo>>,
@@ -202,20 +205,18 @@ pub(super) fn git_info_poll_loop(
         let now = std::time::Instant::now();
         let wanted: HashSet<&str> = paths.iter().map(|path| path.as_str()).collect();
         cache.retain(|path, _| wanted.contains(path.as_str()));
+        let mut refreshed: HashMap<String, PaneGitInfo> = HashMap::new();
         for path in &paths {
             let fresh = cache
                 .get(path)
                 .is_some_and(|(_, resolved_at)| now.duration_since(*resolved_at) < GIT_INFO_TTL);
             if !fresh {
                 let info = resolve_pane_git_info(path);
-                cache.insert(path.clone(), (info, now));
+                cache.insert(path.clone(), (info.clone(), now));
+                refreshed.insert(path.clone(), info);
             }
         }
-        let snapshot: HashMap<String, PaneGitInfo> = cache
-            .iter()
-            .map(|(path, (info, _))| (path.clone(), info.clone()))
-            .collect();
-        if tx.send(snapshot).is_err() {
+        if tx.send(refreshed).is_err() {
             return;
         }
     }
@@ -265,20 +266,20 @@ pub(super) fn port_scan_loop(
 /// Writes are fire-and-forget: the next `list-panes` parse reads the
 /// options like any hook-written state, and `notify_sidebars_of_pane`
 /// pokes the sidebar for an instant repaint.
-pub(super) fn approval_scan_loop(rx: &mpsc::Receiver<Vec<String>>) {
+pub(super) fn approval_scan_loop(rx: &mpsc::Receiver<Vec<(String, bool)>>) {
     let mut flagged: HashSet<String> = HashSet::new();
     while let Ok(targets) = rx.recv() {
         // Rescan running panes plus every pane this worker flagged, so the
         // clear is observed even though a flagged pane reads as `waiting`.
         let mut panes = targets;
         for pane_id in &flagged {
-            if !panes.contains(pane_id) {
-                panes.push(pane_id.clone());
+            if !panes.iter().any(|(id, _)| id == pane_id) {
+                panes.push((pane_id.clone(), false));
             }
         }
 
         let mut still_flagged = HashSet::new();
-        for pane_id in panes {
+        for (pane_id, was_waiting) in panes {
             let capture = capture_pane_tail(&pane_id);
             let prompt_reason = detect_prompt_reason(&capture);
             crate::debug::log(&format!(
@@ -300,12 +301,16 @@ pub(super) fn approval_scan_loop(rx: &mpsc::Receiver<Vec<String>>) {
                 }
                 (None, false) => {
                     // Heal a stale flag the worker doesn't remember (the
-                    // TUI restarted mid-prompt, losing `flagged`): the
-                    // queue includes waiting panes, so one still reading
-                    // `waiting` with no visible prompt is cleared here.
-                    // agy hooks never write `waiting` themselves, so the
-                    // flag is unambiguously this worker's to clear.
-                    if tmux::get_pane_option_value(&pane_id, tmux::PANE_STATUS) == "waiting" {
+                    // TUI restarted mid-prompt, losing `flagged`): only
+                    // panes that read `waiting` in the queueing parse are
+                    // healed — the queue carries each pane's snapshot-time
+                    // status, so the per-pane `show -v @pane_status` probe
+                    // this arm used to spawn for every queued pane every
+                    // 2s was re-reading data the parse already had
+                    // (audit 2026-11-25 M-state-4). agy hooks never write
+                    // `waiting` themselves, so the flag is unambiguously
+                    // this worker's to clear.
+                    if was_waiting {
                         clear_waiting(&pane_id);
                         crate::cli::notify_focus::notify_sidebars_of_pane(&pane_id);
                     }
@@ -407,6 +412,60 @@ pub(super) fn session_poll_loop(tx: &mpsc::Sender<session::ScannedNames>) {
         if tx.send(names).is_err() {
             return;
         }
+    }
+}
+
+#[cfg(test)]
+mod git_info_worker_tests {
+    use super::*;
+    use std::sync::mpsc;
+
+    fn drain(rx: &mpsc::Receiver<HashMap<String, PaneGitInfo>>) -> HashMap<String, PaneGitInfo> {
+        rx.recv_timeout(Duration::from_secs(5)).unwrap()
+    }
+
+    #[test]
+    fn replies_carry_only_refreshed_entries_and_merge_into_a_full_cache() {
+        // M-state-3: the worker used to round-trip the whole cache every
+        // tick — 2N string clones plus a map rebuild per snapshot apply
+        // even when nothing was stale. It must return only what it
+        // refreshed; the event loop merges. The paths do not need to
+        // exist: a failed git resolve still produces a (default) entry.
+        let (req_tx, req_rx) = mpsc::channel::<Vec<String>>();
+        let (res_tx, res_rx) = mpsc::channel::<HashMap<String, PaneGitInfo>>();
+        let handle = std::thread::spawn(move || git_info_poll_loop(&req_rx, &res_tx));
+
+        let a = "/nonexistent-phase6-gitinfo-a";
+        let b = "/nonexistent-phase6-gitinfo-b";
+        req_tx.send(vec![a.to_string(), b.to_string()]).unwrap();
+        let first = drain(&res_rx);
+        assert_eq!(first.len(), 2, "both paths are cold: both refresh");
+        assert!(first.contains_key(a) && first.contains_key(b));
+
+        // Warm cache: nothing is stale, so the reply is empty.
+        req_tx.send(vec![a.to_string(), b.to_string()]).unwrap();
+        let second = drain(&res_rx);
+        assert!(
+            second.is_empty(),
+            "a warm pass must not re-send the whole cache, got {second:?}"
+        );
+
+        // A dropped anchor is pruned worker-side and never re-sent; the
+        // event loop prunes its own copy against the same anchor set.
+        req_tx.send(vec![a.to_string()]).unwrap();
+        let third = drain(&res_rx);
+        assert!(third.is_empty());
+        req_tx.send(vec![a.to_string(), b.to_string()]).unwrap();
+        let fourth = drain(&res_rx);
+        assert_eq!(
+            fourth.len(),
+            1,
+            "only the re-appearing path refreshes after the prune"
+        );
+        assert!(fourth.contains_key(b));
+
+        drop(req_tx);
+        handle.join().unwrap();
     }
 }
 

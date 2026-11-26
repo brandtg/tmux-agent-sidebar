@@ -83,6 +83,12 @@ pub fn run(
     // (every agent in every window), and each one used to cost its own
     // synchronous tmux spawn.
     let mut snapshot_in_flight = false;
+    // The git-info worker has a request it has not answered yet. With the
+    // worker serial and a hung repo costing up to the 5s subprocess
+    // timeout per path, unbounded request queuing would let stale replies
+    // overwrite fresher state — only one request is outstanding at a time
+    // (audit 2026-11-25 M-state-3).
+    let mut git_info_in_flight = false;
 
     loop {
         if needs_redraw {
@@ -328,20 +334,23 @@ pub fn run(
             // Keep the git-info resolver fed with the current grouping
             // anchors (launch cwd when captured, else live cwd — the same
             // keys group_panes_by_repo looks up); it refreshes stale
-            // entries off-thread and returns the cache. The first
-            // snapshot's anchors are the worker's initial request —
-            // startup git priming runs here, off the render thread, and
-            // the first frames render default git info until the reply
-            // lands (audit 2026-11-25 H-state-1).
-            let mut paths: Vec<String> = state
+            // entries off-thread and returns only what it refreshed, which
+            // this side merges. The first snapshot's anchors are the
+            // worker's initial request — startup git priming runs here,
+            // off the render thread, and the first frames render default
+            // git info until the reply lands (audit 2026-11-25 H-state-1).
+            // Requests coalesce onto one outstanding at a time (see
+            // `git_info_in_flight`), and the state cache prunes against
+            // the same anchor set the worker retains with — with
+            // merge-only replies, a dropped anchor would otherwise live
+            // here forever (audit 2026-11-25 M-state-3).
+            let mut anchors: std::collections::HashSet<String> = state
                 .repo_groups
                 .iter()
                 .flat_map(|group| group.panes.iter())
                 .map(|(pane, _)| pane.grouping_anchor().to_string())
-                .collect::<std::collections::HashSet<_>>()
-                .into_iter()
                 .collect();
-            paths.extend(
+            anchors.extend(
                 state
                     .other_windows
                     .values()
@@ -349,8 +358,14 @@ pub fn run(
                     .map(|window| window.path.clone())
                     .filter(|path| !path.is_empty()),
             );
-            if !paths.is_empty() {
-                let _ = git_info_tx.send(paths);
+            state
+                .git_info_cache
+                .retain(|path, _| anchors.contains(path));
+            if !anchors.is_empty()
+                && !git_info_in_flight
+                && git_info_tx.send(anchors.into_iter().collect()).is_ok()
+            {
+                git_info_in_flight = true;
             }
             needs_redraw = true;
             if reloaded {
@@ -427,7 +442,13 @@ pub fn run(
         }
 
         if let Ok(git_info) = git_info_rx.try_recv() {
-            state.git_info_cache = git_info;
+            git_info_in_flight = false;
+            // Merge-only: the worker sends just the entries it refreshed
+            // this pass (audit 2026-11-25 M-state-3) — a wholesale
+            // overwrite used to clone the full cache twice per tick.
+            for (path, info) in git_info {
+                state.git_info_cache.insert(path, info);
+            }
             needs_redraw = true;
         }
 

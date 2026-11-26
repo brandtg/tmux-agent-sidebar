@@ -10,7 +10,6 @@ mod notifications;
 mod resolve;
 
 use context::sync_pane_location;
-use notifications::notification_settings;
 use resolve::PaneRoute;
 
 // ─── hook subcommand ────────────────────────────────────────────────────────
@@ -142,14 +141,11 @@ fn handle_event(pane: &str, agent_name: &str, event: AgentEvent) -> i32 {
             end_reason,
             session_id,
         } => {
-            let notifications = notification_settings();
-            handlers::on_session_end(
-                pane,
-                agent_name,
-                &end_reason,
-                session_id.as_deref(),
-                &notifications,
-            )
+            // Notification settings resolve lazily at the notify site —
+            // a `tmux show -g` plus the backend probe paid for nothing
+            // when the handler never notified (audit 2026-11-25
+            // M-hook-3). Same for every lifecycle arm below.
+            handlers::on_session_end(pane, agent_name, &end_reason, session_id.as_deref(), None)
         }
         AgentEvent::UserPromptSubmit {
             agent,
@@ -173,16 +169,13 @@ fn handle_event(pane: &str, agent_name: &str, event: AgentEvent) -> i32 {
             worktree,
             session_id,
             ..
-        } => {
-            let notifications = notification_settings();
-            handlers::on_notification(
-                pane,
-                &context::make_ctx(&agent, &cwd, &permission_mode, &worktree, &session_id),
-                &wait_reason,
-                meta_only,
-                &notifications,
-            )
-        }
+        } => handlers::on_notification(
+            pane,
+            &context::make_ctx(&agent, &cwd, &permission_mode, &worktree, &session_id),
+            &wait_reason,
+            meta_only,
+            None,
+        ),
         AgentEvent::Stop {
             agent,
             cwd,
@@ -192,16 +185,13 @@ fn handle_event(pane: &str, agent_name: &str, event: AgentEvent) -> i32 {
             worktree,
             session_id,
             ..
-        } => {
-            let notifications = notification_settings();
-            handlers::on_stop(
-                pane,
-                &context::make_ctx(&agent, &cwd, &permission_mode, &worktree, &session_id),
-                &last_message,
-                response.as_deref(),
-                &notifications,
-            )
-        }
+        } => handlers::on_stop(
+            pane,
+            &context::make_ctx(&agent, &cwd, &permission_mode, &worktree, &session_id),
+            &last_message,
+            response.as_deref(),
+            None,
+        ),
         AgentEvent::StopFailure {
             agent,
             cwd,
@@ -210,15 +200,12 @@ fn handle_event(pane: &str, agent_name: &str, event: AgentEvent) -> i32 {
             worktree,
             session_id,
             ..
-        } => {
-            let notifications = notification_settings();
-            handlers::on_stop_failure(
-                pane,
-                &context::make_ctx(&agent, &cwd, &permission_mode, &worktree, &session_id),
-                &error,
-                &notifications,
-            )
-        }
+        } => handlers::on_stop_failure(
+            pane,
+            &context::make_ctx(&agent, &cwd, &permission_mode, &worktree, &session_id),
+            &error,
+            None,
+        ),
         AgentEvent::SubagentStart {
             agent_type,
             agent_id,
@@ -260,14 +247,11 @@ fn handle_event(pane: &str, agent_name: &str, event: AgentEvent) -> i32 {
             worktree,
             session_id,
             ..
-        } => {
-            let notifications = notification_settings();
-            handlers::on_permission_denied(
-                pane,
-                &context::make_ctx(&agent, &cwd, &permission_mode, &worktree, &session_id),
-                &notifications,
-            )
-        }
+        } => handlers::on_permission_denied(
+            pane,
+            &context::make_ctx(&agent, &cwd, &permission_mode, &worktree, &session_id),
+            None,
+        ),
         AgentEvent::CwdChanged {
             cwd,
             worktree,
@@ -284,8 +268,7 @@ fn handle_event(pane: &str, agent_name: &str, event: AgentEvent) -> i32 {
             task_subject,
         } => {
             super::set_attention(pane, "notification");
-            let notifications = notification_settings();
-            handlers::on_task_completed(pane, agent_name, &task_id, &task_subject, &notifications)
+            handlers::on_task_completed(pane, agent_name, &task_id, &task_subject, None)
         }
         AgentEvent::TeammateIdle {
             teammate_name,

@@ -246,7 +246,7 @@ mod tests {
             session_id: &None,
         };
         let started = std::time::Instant::now();
-        let exit = on_stop(pane, &ctx, "", None, &default_notifications());
+        let exit = on_stop(pane, &ctx, "", None, Some(default_notifications()));
         let elapsed = started.elapsed();
 
         assert_eq!(exit, 0);
@@ -413,7 +413,7 @@ mod tests {
         let _ = fs::create_dir_all(log_path.parent().unwrap());
         fs::write(&log_path, "1234567890|Read|main.rs\n").unwrap();
 
-        on_session_end(pane, "claude", "", None, &default_notifications());
+        on_session_end(pane, "claude", "", None, Some(default_notifications()));
         assert!(
             !tmux::test_mock::contains(pane, PENDING_SESSION_END),
             "child SessionEnd must not record a pending teardown"

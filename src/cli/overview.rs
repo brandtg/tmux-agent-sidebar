@@ -40,6 +40,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::io;
+use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 use crossterm::{
@@ -454,6 +455,37 @@ fn run_tui(interval: Duration) -> io::Result<i32> {
         let mut last_drive_refresh = Instant::now();
         // Refresh on the first iteration: the elapsed time starts "in the past".
         let mut last_refresh = Instant::now() - interval;
+        // The listing + process snapshot run on a worker thread, the same
+        // shape as the sidebar's snapshot worker: a full-system `ps` scan
+        // armed by the listing used to run inline on the UI thread every
+        // tick, and under ps contention it froze the grid for up to the
+        // subprocess timeout (audit 2026-11-25 M-cli-1). At most one
+        // request is outstanding; a failed listing keeps the previous
+        // frame.
+        let (snapshot_req_tx, snapshot_req_rx) = mpsc::channel::<()>();
+        let (snapshot_res_tx, snapshot_res_rx) = mpsc::channel::<OverviewSnapshotRaw>();
+        std::thread::spawn(move || {
+            while snapshot_req_rx.recv().is_ok() {
+                let panes_output = tmux::fetch_pane_listing();
+                let process_snapshot = panes_output
+                    .as_ref()
+                    .and_then(|output| tmux::process_snapshot_for_panes(output));
+                if snapshot_res_tx
+                    .send(OverviewSnapshotRaw {
+                        panes_output,
+                        process_snapshot,
+                    })
+                    .is_err()
+                {
+                    return;
+                }
+            }
+        });
+        let mut snapshot_in_flight = false;
+        // The pane geometry the last successful refresh captured at; the
+        // drive paths read their dims from here instead of re-scanning the
+        // whole server (audit 2026-11-25 M-cli-3).
+        let mut last_dims: HashMap<String, (u16, u16)> = HashMap::new();
 
         loop {
             // Prompt mode first: the prompted pane's capture refreshes at
@@ -474,50 +506,73 @@ fn run_tui(interval: Duration) -> io::Result<i32> {
             }
 
             if last_refresh.elapsed() >= interval {
-                // A failed listing keeps the previous frame instead of
-                // blanking the grid on one transient tmux hiccup.
-                if let Some(next) = refresh_panes(sort_mode, &mut git_cache) {
-                    panes = next;
-                }
-                // A selection whose pane vanished clears entirely: the
-                // grid starts with nobody selected, and a selection only
-                // exists once the user moves.
-                if selected
-                    .as_ref()
-                    .is_some_and(|id| !panes.iter().any(|p| &p.info.pane_id == id))
-                {
-                    selected = None;
-                }
-                if let Some(id) = zoomed.clone()
-                    && !panes.iter().any(|p| p.info.pane_id == id)
-                {
-                    zoomed = None;
-                }
-                // A prompt whose pane is no longer drivable closes itself:
-                // it must not sit on a pane a shell now owns — the per-key
-                // gate below is the hard guarantee, this is the tidy-up
-                // (the listing field can be up to one refresh stale).
-                let stale_prompt = match drive.as_ref() {
-                    Some(input) => match panes.iter().find(|p| p.info.pane_id == input.pane_id) {
-                        None => true,
-                        Some(p) => tmux::is_shell_command(&p.info.current_command),
-                    },
-                    None => false,
-                };
-                if stale_prompt {
-                    drive = None;
-                }
-                // Refresh the prompted pane's cached dimensions so a
-                // resized pane parses correctly again within a second.
-                if let Some(input) = drive.as_mut() {
-                    input.dims = pane_dimensions().get(&input.pane_id).copied();
-                }
-                // The slow refresh re-captured every pane including the
-                // prompted one; its fast clock restarts from here.
-                if drive.is_some() {
-                    last_drive_refresh = Instant::now();
+                // Request a refresh; the apply happens below when the
+                // worker's raw listing lands. `last_refresh` advances at
+                // request time so the cadence is independent of the
+                // worker's latency.
+                if !snapshot_in_flight && snapshot_req_tx.send(()).is_ok() {
+                    snapshot_in_flight = true;
                 }
                 last_refresh = Instant::now();
+            }
+
+            // Apply a landed snapshot: parse, capture, sort — the same
+            // work the inline refresh used to do, minus the ps scan.
+            if let Ok(raw) = snapshot_res_rx.try_recv() {
+                snapshot_in_flight = false;
+                // A failed listing keeps the previous frame instead of
+                // blanking the grid on one transient tmux hiccup.
+                if let Some(listing) = &raw.panes_output {
+                    let (next, dims) = build_overview_panes(
+                        listing,
+                        raw.process_snapshot,
+                        sort_mode,
+                        &mut git_cache,
+                    );
+                    panes = next;
+                    last_dims = dims;
+                    // A selection whose pane vanished clears entirely: the
+                    // grid starts with nobody selected, and a selection only
+                    // exists once the user moves.
+                    if selected
+                        .as_ref()
+                        .is_some_and(|id| !panes.iter().any(|p| &p.info.pane_id == id))
+                    {
+                        selected = None;
+                    }
+                    if let Some(id) = zoomed.clone()
+                        && !panes.iter().any(|p| p.info.pane_id == id)
+                    {
+                        zoomed = None;
+                    }
+                    // A prompt whose pane is no longer drivable closes itself:
+                    // it must not sit on a pane a shell now owns — the per-key
+                    // gate below is the hard guarantee, this is the tidy-up
+                    // (the listing field can be up to one refresh stale).
+                    let stale_prompt = match drive.as_ref() {
+                        Some(input) => match panes.iter().find(|p| p.info.pane_id == input.pane_id)
+                        {
+                            None => true,
+                            Some(p) => tmux::is_shell_command(&p.info.current_command),
+                        },
+                        None => false,
+                    };
+                    if stale_prompt {
+                        drive = None;
+                    }
+                    // Refresh the prompted pane's cached dimensions from the
+                    // geometry this refresh already collected, so a resized
+                    // pane parses correctly again within a second (audit
+                    // 2026-11-25 M-cli-3).
+                    if let Some(input) = drive.as_mut() {
+                        input.dims = last_dims.get(&input.pane_id).copied();
+                    }
+                    // The slow refresh re-captured every pane including the
+                    // prompted one; its fast clock restarts from here.
+                    if drive.is_some() {
+                        last_drive_refresh = Instant::now();
+                    }
+                }
             }
 
             let selected_idx = selected
@@ -618,9 +673,13 @@ fn run_tui(interval: Duration) -> io::Result<i32> {
                                             drive = Some(DriveInput {
                                                 pane_id: pane.info.pane_id.clone(),
                                                 label: prompt_label(&pane.info),
-                                                dims: pane_dimensions()
-                                                    .get(&pane.info.pane_id)
-                                                    .copied(),
+                                                // From the geometry the last refresh
+                                                // collected — a full-server
+                                                // `list-panes` scan just to learn one
+                                                // pane's dims re-read data the retained
+                                                // map already had (audit 2026-11-25
+                                                // M-cli-3).
+                                                dims: last_dims.get(&pane.info.pane_id).copied(),
                                                 err: None,
                                             });
                                             // Capture immediately: the view may
@@ -762,15 +821,27 @@ fn step_selection(panes: &[OverviewPane], current: Option<String>, delta: i32) -
     Some(panes[idx].info.pane_id.clone())
 }
 
+/// The raw outputs of one overview snapshot pass, produced on the worker
+/// thread (see `run_tui`). `panes_output` is `None` when the `list-panes`
+/// spawn failed — the caller keeps its previous frame.
+struct OverviewSnapshotRaw {
+    panes_output: Option<String>,
+    process_snapshot: Option<crate::process::ProcessSnapshot>,
+}
+
 /// One refresh cycle: the standard single `list-panes -a` sync for the agent
-/// set, one geometry query, then one capture per agent pane. `None` when the
-/// listing itself failed (caller keeps the previous frame).
-fn refresh_panes(
+/// set, one geometry query, then one capture per agent pane. The listing and
+/// the armed `ps` scan arrive from the snapshot worker; everything here runs
+/// on the UI thread. Returns the built cells plus the pane-geometry map the
+/// captures used, so the drive paths can read dims without re-scanning the
+/// server (audit 2026-11-25 M-cli-3).
+fn build_overview_panes(
+    listing: &str,
+    process_snapshot: Option<crate::process::ProcessSnapshot>,
     sort_mode: SortMode,
     git_cache: &mut HashMap<String, PaneGitInfo>,
-) -> Option<Vec<OverviewPane>> {
-    let listing = tmux::fetch_pane_listing()?;
-    let snapshot = tmux::build_session_snapshot(&listing, "%overview-none");
+) -> (Vec<OverviewPane>, HashMap<String, (u16, u16)>) {
+    let snapshot = tmux::build_session_snapshot_with(listing, "%overview-none", process_snapshot);
     // Resolved per tick so flipping the sidebar's grouping mode (s in the
     // sidebar, or a tmux.conf change) lands on the next grid refresh.
     let group_by = GroupBy::from_label(
@@ -815,7 +886,7 @@ fn refresh_panes(
         SortMode::Status => sort_for_grid(&mut panes),
         SortMode::Sidebar => sort_like_sidebar(&mut panes, &snapshot.sessions, group_by, git_cache),
     }
-    Some(panes)
+    (panes, dims)
 }
 
 /// Status-first cell order (see status_rank); stable within a class.

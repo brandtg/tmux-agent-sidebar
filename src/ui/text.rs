@@ -129,27 +129,33 @@ fn wrap_text_inner(text: &str, max_width: usize, max_lines: usize, word_wrap: bo
         return vec![];
     }
 
-    let chars: Vec<char> = text.chars().collect();
+    // Byte offsets into `text`; every advance lands on a char boundary
+    // (offsets come from `len_utf8` steps, `rfind` on a slice built from
+    // the same region, or slice boundaries). The old version collected
+    // the whole input into a `Vec<char>` first, so an unbounded prompt
+    // buffer paid a full copy per pane per frame even though the loop
+    // itself never scans past the lines it renders (audit 2026-11-25
+    // M-UI-4).
     let mut result: Vec<String> = Vec::new();
     let mut pos = 0;
 
-    while pos < chars.len() && result.len() < max_lines {
+    while pos < text.len() && result.len() < max_lines {
         // Collect chars that fit within max_width display columns
         let mut chunk = String::new();
         let mut chunk_width = 0;
         let mut end = pos;
 
-        while end < chars.len() {
-            let ch_w = unicode_width::UnicodeWidthChar::width(chars[end]).unwrap_or(0);
+        for ch in text[end..].chars() {
+            let ch_w = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
             if chunk_width + ch_w > max_width {
                 break;
             }
-            chunk.push(chars[end]);
+            chunk.push(ch);
             chunk_width += ch_w;
-            end += 1;
+            end += ch.len_utf8();
         }
 
-        if end >= chars.len() {
+        if end >= text.len() {
             // All remaining text fits
             result.push(chunk);
             break;
@@ -161,7 +167,7 @@ fn wrap_text_inner(text: &str, max_width: usize, max_lines: usize, word_wrap: bo
             let mut trunc = String::new();
             let mut tw = 0;
             let ellipsis_w = 1; // ... is 1 column wide in most terminals
-            for &ch in &chars[pos..] {
+            for ch in text[pos..].chars() {
                 let ch_w = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
                 if tw + ch_w + ellipsis_w > max_width {
                     break;
@@ -179,11 +185,14 @@ fn wrap_text_inner(text: &str, max_width: usize, max_lines: usize, word_wrap: bo
             && let Some(space_pos) = chunk.rfind(' ')
             && space_pos > 0
         {
-            let nice_chunk = chunk[..space_pos].to_string();
-            let char_count = nice_chunk.chars().count();
-            result.push(nice_chunk);
-            pos += char_count;
-            while pos < chars.len() && chars[pos] == ' ' {
+            // `chunk` is byte-identical to `text[pos..end]`, so the word
+            // before the break space is exactly the chunk's first
+            // `space_pos` bytes: the input advances by that many bytes
+            // (the old version counted the same span in chars), then the
+            // break spaces are skipped.
+            result.push(chunk[..space_pos].to_string());
+            pos += space_pos;
+            while text[pos..].starts_with(' ') {
                 pos += 1;
             }
             continue;

@@ -15,7 +15,7 @@ pub(in crate::cli::hook) fn on_notification(
     ctx: &AgentContext<'_>,
     wait_reason: &str,
     meta_only: bool,
-    notifications: &desktop_notification::DesktopNotificationSettings,
+    notifications: Option<desktop_notification::DesktopNotificationSettings>,
 ) -> i32 {
     set_agent_meta(pane, ctx);
     if meta_only {
@@ -69,7 +69,7 @@ pub(in crate::cli::hook) fn on_notification(
 pub(in crate::cli::hook) fn on_permission_denied(
     pane: &str,
     ctx: &AgentContext<'_>,
-    notifications: &desktop_notification::DesktopNotificationSettings,
+    notifications: Option<desktop_notification::DesktopNotificationSettings>,
 ) -> i32 {
     set_agent_meta(pane, ctx);
     set_status(pane, "waiting");
@@ -157,7 +157,7 @@ mod tests {
             &ctx,
             "permission",
             /* meta_only */ true,
-            &notifications,
+            Some(notifications),
         );
         // meta_only=true must short-circuit before status/attention/wait_reason writes.
         assert!(!tmux::test_mock::contains(pane, tmux::PANE_STATUS));
@@ -190,7 +190,7 @@ mod tests {
             &ctx,
             "permission",
             /* meta_only */ false,
-            &notifications,
+            Some(notifications),
         );
         assert_eq!(
             tmux::test_mock::get(pane, tmux::PANE_STATUS).as_deref(),
@@ -227,7 +227,7 @@ mod tests {
             &ctx,
             "auth_success",
             /* meta_only */ false,
-            &notifications,
+            Some(notifications),
         );
         assert_eq!(
             tmux::test_mock::get(pane, tmux::PANE_STATUS).as_deref(),
@@ -256,7 +256,7 @@ mod tests {
             &ctx,
             "permission_prompt",
             /* meta_only */ false,
-            &notifications,
+            Some(notifications),
         );
         assert_eq!(
             tmux::test_mock::get(pane, tmux::PANE_STATUS).as_deref(),
@@ -288,7 +288,7 @@ mod tests {
             &ctx,
             "permission",
             /* meta_only */ false,
-            &notifications,
+            Some(notifications),
         );
         assert_eq!(
             tmux::test_mock::get(pane, tmux::PANE_STATUS).as_deref(),
@@ -316,7 +316,7 @@ mod tests {
             &ctx,
             "auth_success",
             /* meta_only */ false,
-            &notifications,
+            Some(notifications),
         );
         assert_eq!(
             tmux::test_mock::get(pane, tmux::PANE_STATUS).as_deref(),
@@ -346,7 +346,13 @@ mod tests {
             enabled: false,
             events: Default::default(),
         };
-        on_notification(pane, &ctx, "", /* meta_only */ false, &notifications);
+        on_notification(
+            pane,
+            &ctx,
+            "",
+            /* meta_only */ false,
+            Some(notifications),
+        );
 
         assert!(
             !tmux::test_mock::contains(pane, tmux::PANE_WAIT_REASON),
@@ -393,7 +399,7 @@ mod tests {
             &ctx,
             "agent_completed",
             /* meta_only */ false,
-            &notifications,
+            Some(notifications),
         );
 
         assert_eq!(
@@ -431,7 +437,7 @@ mod tests {
             enabled: false,
             events: Default::default(),
         };
-        on_permission_denied(pane, &ctx, &notifications);
+        on_permission_denied(pane, &ctx, Some(notifications));
         assert_eq!(
             tmux::test_mock::get(pane, tmux::PANE_WAIT_REASON).as_deref(),
             Some("permission_denied")

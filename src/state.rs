@@ -98,7 +98,10 @@ pub struct AppState {
     pub pending_port_scan: Option<Vec<crate::port::PaneScanTarget>>,
     /// Antigravity pane ids (status `running`) queued for the approval-
     /// prompt capture scan. See [`AppState::queue_approval_scan_if_due`].
-    pub pending_approval_scan: Option<Vec<String>>,
+    /// Antigravity panes queued for the approval-prompt capture scan,
+    /// each with its snapshot-time status (`true` = was waiting — the
+    /// worker heals only these, audit 2026-11-25 M-state-4).
+    pub pending_approval_scan: Option<Vec<(String, bool)>>,
     pub pane_states: PaneRuntimeMap,
     /// Periodic-refresh clocks (port scan, session-name scan, filter
     /// debounce, port-scan first-run flag).

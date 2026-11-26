@@ -693,53 +693,60 @@ impl TodoState {
 /// Char-level edits shared by the add line and an open edit. Cursors
 /// are char indices into the buffer (never byte offsets), clamped to
 /// the buffer's length before use.
+///
+/// The edits splice the String at a byte offset derived from the cursor
+/// instead of collecting the buffer into a `Vec<char>` and rebuilding it
+/// per keystroke (audit 2026-11-25 L-inp-2).
+fn char_index_to_byte(input: &str, index: usize) -> usize {
+    input
+        .char_indices()
+        .nth(index)
+        .map(|(byte, _)| byte)
+        .unwrap_or(input.len())
+}
+
 fn insert_char_at(input: &mut String, cursor: &mut usize, c: char) {
-    let mut chars: Vec<char> = input.chars().collect();
-    let at = (*cursor).min(chars.len());
-    chars.insert(at, c);
-    *input = chars.into_iter().collect();
-    *cursor = at + 1;
+    let at = char_index_to_byte(input, *cursor);
+    input.insert(at, c);
+    *cursor += 1;
 }
 
 fn pop_char_before(input: &mut String, cursor: &mut usize) {
-    let mut chars: Vec<char> = input.chars().collect();
-    let at = (*cursor).min(chars.len());
+    let at = char_index_to_byte(input, *cursor);
     if at > 0 {
-        chars.remove(at - 1);
-        *input = chars.into_iter().collect();
-        *cursor = at - 1;
+        let prev = input[..at]
+            .char_indices()
+            .next_back()
+            .map(|(byte, _)| byte)
+            .unwrap_or(0);
+        input.replace_range(prev..at, "");
+        *cursor -= 1;
     }
 }
 
 fn pop_char_at(input: &mut String, cursor: &mut usize) {
-    let mut chars: Vec<char> = input.chars().collect();
-    let at = (*cursor).min(chars.len());
-    if at < chars.len() {
-        chars.remove(at);
-        *input = chars.into_iter().collect();
+    let at = char_index_to_byte(input, *cursor);
+    if let Some(ch) = input[at..].chars().next() {
+        input.replace_range(at..at + ch.len_utf8(), "");
         // The cursor stays: the next char slides under it.
     }
 }
 
 fn pop_word_before(input: &mut String, cursor: &mut usize) {
-    let mut chars: Vec<char> = input.chars().collect();
-    let mut cut = (*cursor).min(chars.len());
-    while cut > 0 && chars[cut - 1].is_whitespace() {
-        cut -= 1;
-    }
-    while cut > 0 && !chars[cut - 1].is_whitespace() {
-        cut -= 1;
-    }
-    if cut < *cursor {
-        // Clamp the range end too: `cut` is safe but a `cursor` beyond
-        // the buffer would panic `drain`. Every mutator keeps the cursor
-        // in bounds today, so this is latent — but the stale-buffer class
-        // (an external reload landing under an open edit) is exactly what
-        // would trip it (audit 2026-11-19 B5).
-        let end = (*cursor).min(chars.len());
-        chars.drain(cut..end);
-        *input = chars.into_iter().collect();
-        *cursor = cut;
+    let end = char_index_to_byte(input, *cursor);
+    let prefix = &input[..end];
+    // Trim trailing whitespace, then the word before it — the same two
+    // scans the char-vector version did, over the prefix slice.
+    let trimmed = prefix.trim_end();
+    let cut_byte = trimmed
+        .char_indices()
+        .rev()
+        .find(|(_, c)| c.is_whitespace())
+        .map(|(byte, c)| byte + c.len_utf8())
+        .unwrap_or(0);
+    if cut_byte < end {
+        input.replace_range(cut_byte..end, "");
+        *cursor = input[..cut_byte].chars().count();
     }
 }
 
