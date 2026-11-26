@@ -7,6 +7,8 @@ feature opportunities. This is the third audit pass; the 2026-11-20 docs audit a
 Ground truth: main @ 1852914 (v1.5.3), clean tree.
 
 Status: COMPLETE — all lanes recorded. See Summary for priorities.
+Addendum 2026-11-26: OpenCode 2.1.4 → 2.4.2 upgrade check recorded under
+Lane 0 — no breaking changes for the bridge.
 
 ## Findings
 
@@ -70,6 +72,69 @@ Status: COMPLETE — all lanes recorded. See Summary for priorities.
 - Clean: entry script version gate, agy bundle generation, bridge symlink
   healing, hook dedup awk patterns, maintain-width version gates, hook.sh
   fallback chain — all verified correct.
+
+#### OpenCode 2.1.4 → 2.4.2 upgrade check (2026-11-26, audited directly)
+
+The daemon was upgraded past the bridge's tested 2.1.x baseline
+(@opencode/cli@2.4.2 via npm; daemon restarted 2026-11-26 08:51). No breaking
+changes to the bridge's consumed surface — no new findings. Verified by
+diffing v2.1.4..v2.4.2 in the opencode checkout (packages/plugin, client,
+schema, protocol, server, core) plus the changelog:
+
+- Plugin module shape (`{ id, setup }` default export returning an unload fn)
+  and `.opencode/plugins/*.js` discovery (files, directories, symlinks) are
+  unchanged — the same loader code ships in both tags
+  (packages/core/src/plugin/module.ts, plugin/source-directory.ts,
+  config/plugin/source.ts).
+- ctx.location.{directory, project.id}, ctx.session.get (endpoint and
+  PublicSessionInfo unchanged: directory flat or under location, projectID,
+  parentID, title), and ctx.session.hook("prompt") (prompt.text) are
+  unchanged.
+- ctx.tool.hook("execute.after") is additive only: info and codemode added in
+  2.4.0; tool/sessionID/input/status/result intact, status still
+  "completed" | "error".
+- ctx.event.subscribe({ signal }) is unchanged (options stay types?, signal?,
+  onActivity?) and the plugin bus is still server-global with the same
+  isPublicEvent filter.
+- Every consumed bus event type and payload field is intact at the schema
+  level: session.created (flat data incl. location.directory; the data.info
+  branch still covers 2.0.x daemons), session.renamed / session.updated
+  (v1-legacy only), session.status (status.type), session.execution.started /
+  succeeded / failed / interrupted (error.message / error.type), session.idle,
+  permission.asked / replied (flat sessionID), form.created / replied /
+  cancelled (form.sessionID, metadata.kind), question.* (absent at both tags —
+  2.0.x daemons only). Only additions: new event types
+  (session.step.first-token, experimental.mcp.event, job.*, push.*,
+  artifact.*) and an unused source literal.
+- Changelog breaking changes in range (@opencode/ai root now the Promise API,
+  ImageResponse.image removed, provider renames, SDK endpoints no longer wait
+  5 s for plugins, schedule → automation endpoints) touch nothing the bridge
+  imports — it imports no opencode package at all.
+- Still true: the npm package ships the Bun binary as bin/opencode.exe on
+  every platform, so resolvePaneId's .exe handling stays necessary. Comment
+  nit: MCP elicitation forms carry metadata.kind "mcp-elicitation" (both
+  2.1.4 and 2.4.2), not "mcp" as the bridge header comment says — mapping is
+  unaffected (anything non-"question" maps to elicitation_dialog).
+- Live confirmation: this session's activity-log entries landed after the
+  2.4.2 daemon restart, so the prompt hook and execute.after path deliver
+  end-to-end on the new version.
+
+New primitives in range that upgrade existing findings:
+
+- ctx.session.hook("experimental.idle") (v2.2.1) fires when a main session
+  finishes model work, carrying background: SessionIdleBackground[] with
+  { kind: "subagent", childSessionID, ... } entries for still-running
+  children, and re-fires as each child drains. Cleaner primitive for
+  H-bridge-1 than inferring child-turn state from child session.execution.*
+  events: hold the stop while a subagent background entry exists, forward
+  stop when a later idle fires without one. Caveats: experimental (guard it
+  like the legacy question.* path), it does not fire after interruption or
+  failure (terminal-event handling stays), and admitting input from it would
+  continue execution — observe only, admit nothing.
+- ctx.event.subscribe({ types: [...] }) (v2.2.0) filters at the bus; recorded
+  under feature opportunities.
+- execute.after codemode (2.4.0) could label Code Mode tool calls in the
+  activity log (minor).
 
 ### Lane 3 — TUI event loop + state layer (batch 2)
 
@@ -542,6 +607,14 @@ tmux/ps; toggle-all `;`-chained invocations (~12 spawns/window → 2-3);
 overview zoom mode paging through the target pane's scrollback with
 `capture-pane -S/-E` offsets (the vte renderer already parses styled grids).
 
+From the upgrade check: bridge event-pump `types` filter —
+`ctx.event.subscribe({ types })` (v2.2.0+) filters server-side at the bus;
+subscribing with the ~17 handled types keeps message-part deltas and other
+high-volume events from crossing into the plugin on a busy daemon. Also
+worth noting: the H-bridge-1 fix can now build on the `experimental.idle`
+hook's background-subagent list instead of child execution-event inference
+(see the Lane 0 upgrade check).
+
 ## Summary
 
 Counts: 4 High, 23 Medium, 41 Low across eight lanes (0, 0b, 1-6).
@@ -553,7 +626,9 @@ Priority order for a hardening pass, risk-adjusted:
 2. H-state-1 (startup git priming on the render thread) — highest-impact
    freeze; violates the codebase's own stated invariant (git.rs:6-8).
 3. H-bridge-1 (opencode pane idle while background subagents run) — the
-   user-reported daily-workflow miss; needs the activeChildTurns design.
+   user-reported daily-workflow miss; the activeChildTurns design, or the
+   cleaner `experimental.idle` background-subagent signal added in opencode
+   2.2.1 (see the Lane 0 upgrade check).
 4. H-UI-1 (chyron width mismatch) — mechanical single-sourcing of one width.
 5. The wrong-state family on hot paths: M-tmux-1 (`"clear"` re-lights
    attention), M-tmux-2 (stale subagent routes survive teardown), M-hook-1
