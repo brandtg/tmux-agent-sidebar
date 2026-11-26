@@ -6,9 +6,9 @@ mod signal;
 mod types;
 
 pub use commands::{
-    display_message, enable_tmux_ipc, kill_window, new_window, pane_session_name, run_tmux,
-    run_tmux_blocking, run_tmux_capture, run_tmux_capture_raw, select_pane, send_command,
-    send_prompt, set_window_option, split_window_left, switch_to_window, switch_window,
+    display_message, enable_tmux_ipc, kill_window, new_window, pane_session_name, paste_to_pane,
+    run_tmux, run_tmux_blocking, run_tmux_capture, run_tmux_capture_raw, select_pane, send_command,
+    send_key, send_text, set_window_option, split_window_left, switch_to_window, switch_window,
 };
 pub use options::{
     BG_CMD_PLACEHOLDER, PANE_AGENT, PANE_ATTENTION, PANE_BG_CMD, PANE_BG_PID, PANE_CWD,

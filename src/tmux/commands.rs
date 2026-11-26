@@ -224,19 +224,45 @@ pub fn send_command(target: &str, command: &str) -> Result<(), String> {
     run_tmux_capture(&["send-keys", "-t", target, "Enter"]).map(|_| ())
 }
 
-/// Deliver a user-typed prompt to an agent TUI: literal text, then Enter
-/// after a short pause. The pause matters — agent TUIs (opencode, at
-/// least) batch a fast input burst as a paste, and an Enter arriving in
-/// the same batch is swallowed with the text, leaving the prompt sitting
-/// unsubmitted in the input box. Two back-to-back tmux spawns land well
-/// inside that batch window; 80 ms clears it while staying imperceptible
-/// from the overview's key loop. Unlike [`send_command`] (agent launches
-/// into a plain shell, where immediacy is the right contract), this is
-/// the send-a-prompt path.
-pub fn send_prompt(target: &str, text: &str) -> Result<(), String> {
-    run_tmux_capture(&["send-keys", "-t", target, "-l", text])?;
-    std::thread::sleep(Duration::from_millis(80));
-    run_tmux_capture(&["send-keys", "-t", target, "Enter"]).map(|_| ())
+/// Paste `text` into `target` (a pane id) as one bracketed-paste block.
+/// The text rides a named server buffer pasted with `-p` (bracket markers
+/// inserted around it when the application requested bracketed paste
+/// mode) and `-d` (the buffer is consumed on success). This is the only
+/// correct way to move multi-line text into a TUI — never a `send-keys`
+/// run, whose literal LF bytes are ill-defined (a draft would submit
+/// line by line). Submitting stays the caller's business: the overview's
+/// prompt mode forwards the user's own Enter as a key.
+pub fn paste_to_pane(target: &str, text: &str) -> Result<(), String> {
+    // Per-process buffer name: two senders (two overview popups) never
+    // race on one server-global buffer, and `-d` consumes it on success
+    // so nothing lingers in the user's paste stack.
+    let buffer = format!("tmux-agent-sidebar-{}", std::process::id());
+    run_tmux_capture(&["set-buffer", "-b", &buffer, "--", text])?;
+    match run_tmux_capture(&["paste-buffer", "-p", "-d", "-b", &buffer, "-t", target]) {
+        Ok(_) => Ok(()),
+        Err(e) => {
+            // The buffer only dies with a successful paste; remove it so
+            // a failed send never leaves droppings in the buffer list.
+            let _ = run_tmux_capture(&["delete-buffer", "-b", &buffer]);
+            Err(e)
+        }
+    }
+}
+
+/// Send one tmux key name to `target` (a pane id) — the drive-mode
+/// primitive (see `forward_key_name` in cli/overview.rs for what
+/// produces the names). Key-name lookup applies, which is the point:
+/// `Enter` arrives as the Return key and `C-c` as the interrupt byte,
+/// never as typed text.
+pub fn send_key(target: &str, key: &str) -> Result<(), String> {
+    run_tmux_capture(&["send-keys", "-t", target, key]).map(|_| ())
+}
+
+/// Send literal text to `target` (a pane id) without pressing Enter —
+/// prompt mode's plain-character path. `-l` disables key-name lookup, so
+/// the text can never collide with a tmux key name.
+pub fn send_text(target: &str, text: &str) -> Result<(), String> {
+    run_tmux_capture(&["send-keys", "-t", target, "-l", text]).map(|_| ())
 }
 
 /// Kill the tmux window identified by `window_id` (e.g. `@7`).
