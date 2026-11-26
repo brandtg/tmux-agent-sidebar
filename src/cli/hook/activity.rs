@@ -152,7 +152,7 @@ pub(super) fn handle_activity_log(
     // (audit 2026-11-19 C2): status, wait reason, the run clock, the
     // subagent guard, and the session binding the post-turn guard compares
     // against used to be separate spawns per tool event.
-    let reads = tmux::get_pane_options(
+    let Some(reads) = tmux::get_pane_options(
         pane,
         &[
             tmux::PANE_STATUS,
@@ -161,7 +161,17 @@ pub(super) fn handle_activity_log(
             tmux::PANE_SUBAGENTS,
             tmux::PANE_SESSION_ID,
         ],
-    );
+    ) else {
+        // A failed read must not read as five empty options: an empty
+        // status is promotable ("unclaimed pane") and an empty subagent
+        // list opens the parent-protection gate, so one timed-out spawn
+        // used to flip the pane to `running` and restamp its clock
+        // (audit 2026-11-26 L-hook-3). Skip every read-gated write and
+        // let the next event re-decide; the feed entry below is
+        // read-independent and still lands.
+        write_activity_entry(pane, tool_name, &label);
+        return 0;
+    };
     let current_status = reads.first().map(String::as_str).unwrap_or_default();
     // Permission/question prompts are cleared by something other than a
     // tool result, so a tool event landing while the prompt is open must
@@ -495,6 +505,41 @@ mod tests {
 
         let content = fs::read_to_string(&path).unwrap();
         assert!(content.contains("|Read|main.rs"));
+        fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn handle_activity_log_failed_read_skips_promotion_but_writes_entry() {
+        // L-hook-3: a transient tmux read failure must not read as five
+        // empty options — an empty status is promotable ("unclaimed
+        // pane"), so one timed-out spawn used to flip the pane to
+        // `running` and restamp its clock. The feed entry is
+        // read-independent and still lands.
+        let _guard = tmux::test_mock::install();
+        let pane_id = "%CLI_READ_FAIL";
+        let path = crate::activity::log_file_path(pane_id);
+        let _ = fs::remove_file(&path);
+        let _fail = tmux::test_mock::fail_reads(pane_id);
+
+        handle_activity_log(
+            pane_id,
+            "claude",
+            "Read",
+            &json!({"file_path": "/home/user/src/a.rs"}),
+            &Value::Null,
+            None,
+        );
+
+        let content = fs::read_to_string(&path).unwrap();
+        assert!(content.contains("|Read|a.rs"));
+        assert!(
+            !tmux::test_mock::contains(pane_id, tmux::PANE_STATUS),
+            "a failed read must not promote the pane"
+        );
+        assert!(
+            !tmux::test_mock::contains(pane_id, tmux::PANE_STARTED_AT),
+            "a failed read must not restamp the run clock"
+        );
         fs::remove_file(&path).ok();
     }
 

@@ -460,9 +460,19 @@ pub(in crate::cli::hook) struct PaneIdentityReads {
 
 pub(in crate::cli::hook) fn read_pane_identity(pane: &str) -> PaneIdentityReads {
     let values = tmux::get_pane_options(pane, &[tmux::PANE_SUBAGENTS, tmux::PANE_LAUNCH_CWD]);
+    // A failed read degrades to empty values (the pre-L-hook-3 shape):
+    // these feed the parent-protection gate, whose failure semantics are
+    // a separate concern from the promotion fix. The read failure itself
+    // is surfaced by `get_pane_options`' debug trace.
     PaneIdentityReads {
-        subagents: values.first().cloned().unwrap_or_default(),
-        launch_cwd: values.get(1).cloned().unwrap_or_default(),
+        subagents: values
+            .as_ref()
+            .and_then(|v| v.first().cloned())
+            .unwrap_or_default(),
+        launch_cwd: values
+            .as_ref()
+            .and_then(|v| v.get(1).cloned())
+            .unwrap_or_default(),
     }
 }
 

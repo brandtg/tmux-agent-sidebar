@@ -380,6 +380,29 @@ fn extract_sidebar_window_info(
     (sidebar_pane_active, sidebar_window_active, out)
 }
 
+/// The debug-trace line for a `list-panes` record shorter than the
+/// pane-line contract. With every field `#{q:...}`-quoted the expansion
+/// always yields the full field count, so an over-short record is almost
+/// always a newline inside a pane field (audit 2026-11-26 L-tmux-1):
+/// `#{q:…}` escapes `|`, quotes, and braces but not newlines, so
+/// `lines()` splits the record and both halves fail the field minimum —
+/// the pane vanishes from the sidebar silently. Split out from
+/// [`trace_over_short_record`] so the format is unit-testable without
+/// touching the debug log.
+fn over_short_record_message(line: &str) -> String {
+    const PREFIX_CHARS: usize = 160;
+    let fields = line.split('|').count();
+    let preview: String = line.chars().take(PREFIX_CHARS).collect();
+    format!(
+        "list-panes: over-short record ({fields} fields, need {}): {preview}",
+        session_line_field::MIN_FIELDS
+    )
+}
+
+fn trace_over_short_record(line: &str) {
+    crate::debug::log(&over_short_record_message(line));
+}
+
 /// Parse the raw `tmux list-panes` output into an indexed session→window→pane
 /// hierarchy. Also returns every Codex pane's pid so the caller can resolve
 /// permission modes in a single `ps` pass.
@@ -394,6 +417,7 @@ fn build_session_hierarchy(
     for line in all_panes_output.lines() {
         let parts = split_tmux_fields(line, '|');
         if parts.len() < session_line_field::MIN_FIELDS {
+            trace_over_short_record(line);
             continue;
         }
 
@@ -2291,6 +2315,49 @@ mod tests {
             grouped.windows[0].panes[0].pane_pid,
             Some(0),
             "retained pane should be the zero-pid one"
+        );
+    }
+
+    // ─── over-short records (newline inside a field) ────────────────
+
+    #[test]
+    fn build_session_hierarchy_drops_records_split_by_a_newline_field() {
+        // L-tmux-1: `#{q:…}` escapes `|` and quotes but not newlines, so
+        // a real newline inside `pane_current_path` splits the record at
+        // Rust's `lines()` and both halves fail the field minimum — the
+        // pane vanishes from the sidebar. Pinned: the drop is total, and
+        // the trace message (below) is what makes it diagnosable.
+        let line = make_full_pane_line("primary", 42);
+        let mut fields: Vec<String> = line.split('|').map(str::to_string).collect();
+        fields[11] = "/tmp/evil\npath".to_string();
+        let input = fields.join("|");
+
+        let (sessions_map, _) = build_session_hierarchy(&input, None);
+        let sessions = finalize_sessions(sessions_map);
+        assert!(
+            sessions.is_empty(),
+            "a newline inside a field must not fabricate panes"
+        );
+    }
+
+    #[test]
+    fn over_short_record_message_reports_field_counts_and_preview() {
+        let message = over_short_record_message("primary|@0|win|1");
+        assert!(
+            message.starts_with("list-panes: over-short record (4 fields, need "),
+            "message must name the field count: {message}"
+        );
+        assert!(
+            message.ends_with(": primary|@0|win|1"),
+            "message must carry the record preview: {message}"
+        );
+        // A long record is preview-truncated.
+        let long = "x|".repeat(200);
+        let message = over_short_record_message(&long);
+        assert!(
+            message.chars().count() < 400,
+            "preview must be truncated: {}",
+            message.chars().count()
         );
     }
 

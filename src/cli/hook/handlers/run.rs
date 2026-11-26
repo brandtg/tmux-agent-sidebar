@@ -22,17 +22,49 @@ pub(in crate::cli::hook) fn on_user_prompt_submit(
     prompt: &str,
 ) -> i32 {
     set_agent_meta(pane, ctx);
+    // One batched write for the notification stamp and the prompt
+    // preview; the run clock and wait-reason clear below join it when
+    // the state read succeeds (four separate spawns before, audit
+    // 2026-11-19 C2).
+    let run_id = now_epoch_millis().to_string();
+    let prompt_value = if !prompt.is_empty() && !is_system_message(prompt) {
+        Some(sanitize_tmux_value(prompt))
+    } else {
+        None
+    };
+    let mut writes = vec![tmux::PaneOptionWrite::Set {
+        key: tmux::PANE_NOTIFICATION_RUN_ID,
+        value: &run_id,
+    }];
+    if let Some(p) = &prompt_value {
+        writes.push(tmux::PaneOptionWrite::Set {
+            key: tmux::PANE_PROMPT,
+            value: p,
+        });
+        writes.push(tmux::PaneOptionWrite::Set {
+            key: tmux::PANE_PROMPT_SOURCE,
+            value: "user",
+        });
+    }
     // One batched read for the three options the promotion logic inspects
     // (audit 2026-11-19 C2): status, wait reason, and the run clock used
     // to be three separate spawns on the hottest hook event.
-    let reads = tmux::get_pane_options(
+    let Some(reads) = tmux::get_pane_options(
         pane,
         &[
             tmux::PANE_STATUS,
             tmux::PANE_WAIT_REASON,
             tmux::PANE_STARTED_AT,
         ],
-    );
+    ) else {
+        // A failed read must not read as an unclaimed pane (audit
+        // 2026-11-26 L-hook-3): skip the status promotion, the run-clock
+        // stamp, and the wait-reason clear — all three decide from prior
+        // pane state — and let the next event re-decide. The identity
+        // writes above are unconditional overwrites and still land.
+        tmux::apply_pane_options(pane, &writes);
+        return 0;
+    };
     let current_status = reads.first().map(String::as_str).unwrap_or_default();
     let wait_reason = reads.get(1).map(String::as_str).unwrap_or_default();
     let existing_started = reads.get(2).map(String::as_str).unwrap_or_default();
@@ -55,29 +87,6 @@ pub(in crate::cli::hook) fn on_user_prompt_submit(
         // the attention clear that used to precede it was the same write
         // twice (audit 2026-11-19 C2).
         set_status(pane, "running");
-    }
-    // One batched write for the notification stamp, the prompt, the run
-    // clock, and the wait-reason clear: four separate spawns before
-    // (audit 2026-11-19 C2).
-    let run_id = now_epoch_millis().to_string();
-    let prompt_value = if !prompt.is_empty() && !is_system_message(prompt) {
-        Some(sanitize_tmux_value(prompt))
-    } else {
-        None
-    };
-    let mut writes = vec![tmux::PaneOptionWrite::Set {
-        key: tmux::PANE_NOTIFICATION_RUN_ID,
-        value: &run_id,
-    }];
-    if let Some(p) = &prompt_value {
-        writes.push(tmux::PaneOptionWrite::Set {
-            key: tmux::PANE_PROMPT,
-            value: p,
-        });
-        writes.push(tmux::PaneOptionWrite::Set {
-            key: tmux::PANE_PROMPT_SOURCE,
-            value: "user",
-        });
     }
     // Only a real user turn restarts the run clock. Synthetic empty-prompt
     // submissions — OpenCode fires one per assistant response via
@@ -138,14 +147,20 @@ pub(in crate::cli::hook) fn on_tool_start(pane: &str, ctx: &AgentContext<'_>) ->
     }
     // One batched read for status, the run clock, and the session binding
     // the post-turn guard compares against (audit 2026-11-19 C2 pattern).
-    let reads = tmux::get_pane_options(
+    let Some(reads) = tmux::get_pane_options(
         pane,
         &[
             tmux::PANE_STATUS,
             tmux::PANE_STARTED_AT,
             tmux::PANE_SESSION_ID,
         ],
-    );
+    ) else {
+        // A failed read must not read as an unclaimed pane — an empty
+        // status is promotable, so one timed-out spawn used to flip the
+        // pane to `running` and restamp its run clock (audit 2026-11-26
+        // L-hook-3). The next event re-decides.
+        return 0;
+    };
     let current_status = reads.first().map(String::as_str).unwrap_or_default();
     // Mid-turn tool calls arrive with the pane already `running` — the
     // common case must stay a read-only probe, not a tmux write storm.
@@ -419,6 +434,50 @@ mod tests {
     }
 
     #[test]
+    fn on_user_prompt_submit_failed_read_skips_state_writes_keeps_identity() {
+        // L-hook-3: with the state read down, the empty-read fallback
+        // used to promote the pane, restamp its clock, and clear a
+        // pending wait. All three decide from prior pane state and must
+        // be skipped; the notification stamp and prompt preview are
+        // unconditional overwrites and stay.
+        let _guard = tmux::test_mock::install();
+        let pane = "%PROMPT_READ_FAIL";
+        tmux::test_mock::set(pane, tmux::PANE_WAIT_REASON, "permission");
+        let _fail = tmux::test_mock::fail_reads(pane);
+        let ctx = AgentContext {
+            agent: "claude",
+            cwd: "/repo",
+            permission_mode: "default",
+            worktree: &None,
+            session_id: &None,
+        };
+        let exit = on_user_prompt_submit(pane, &ctx, "fix the bug");
+        assert_eq!(exit, 0);
+        assert_eq!(
+            tmux::test_mock::get(pane, tmux::PANE_PROMPT).as_deref(),
+            Some("fix the bug"),
+            "the prompt preview is read-independent and must land"
+        );
+        assert!(
+            tmux::test_mock::contains(pane, tmux::PANE_NOTIFICATION_RUN_ID),
+            "the notification stamp is read-independent and must land"
+        );
+        assert!(
+            !tmux::test_mock::contains(pane, tmux::PANE_STATUS),
+            "a failed read must not promote the pane"
+        );
+        assert!(
+            !tmux::test_mock::contains(pane, tmux::PANE_STARTED_AT),
+            "a failed read must not restamp the run clock"
+        );
+        assert_eq!(
+            tmux::test_mock::get(pane, tmux::PANE_WAIT_REASON).as_deref(),
+            Some("permission"),
+            "a failed read must not clear a pending wait reason"
+        );
+    }
+
+    #[test]
     fn on_user_prompt_submit_ignores_system_messages() {
         let _guard = tmux::test_mock::install();
         let pane = "%SYS_PROMPT";
@@ -663,6 +722,34 @@ mod tests {
             "the stale denial reason must clear on the next tool attempt"
         );
         assert!(!tmux::test_mock::contains(pane, tmux::PANE_ATTENTION));
+    }
+
+    #[test]
+    fn on_tool_start_failed_read_does_not_promote() {
+        // L-hook-3: a transient tmux read failure must not read as an
+        // unclaimed pane — an empty status is promotable, so one
+        // timed-out spawn used to flip the pane to `running` and restamp
+        // its clock. The next event re-decides.
+        let _guard = tmux::test_mock::install();
+        let pane = "%TOOL_START_READ_FAIL";
+        let _fail = tmux::test_mock::fail_reads(pane);
+        let ctx = AgentContext {
+            agent: "claude",
+            cwd: "/repo",
+            permission_mode: "auto",
+            worktree: &None,
+            session_id: &None,
+        };
+        let exit = on_tool_start(pane, &ctx);
+        assert_eq!(exit, 0);
+        assert!(
+            !tmux::test_mock::contains(pane, tmux::PANE_STATUS),
+            "a failed read must not promote the pane"
+        );
+        assert!(
+            !tmux::test_mock::contains(pane, tmux::PANE_STARTED_AT),
+            "a failed read must not restamp the run clock"
+        );
     }
 
     #[test]

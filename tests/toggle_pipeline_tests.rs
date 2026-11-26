@@ -203,3 +203,65 @@ fn toggle_create_only_renders_without_opening() {
     );
     assert_ne!(sidebar, server.pane);
 }
+
+#[test]
+#[ignore = "requires local tmux; mutates process-global env (run via make test-ignored)"]
+fn auto_close_kills_sidebar_panes_individually_and_the_window_with_them() {
+    let server = ScopedServer::spawn();
+    let pane_path = Command::new("tmux")
+        .args([
+            "display-message",
+            "-p",
+            "-t",
+            &server.pane,
+            "#{pane_current_path}",
+        ])
+        .output()
+        .unwrap();
+    let pane_path = String::from_utf8_lossy(&pane_path.stdout)
+        .trim()
+        .to_string();
+
+    let code = run_toggle(&["toggle", &server.window, &pane_path, "200"]);
+    assert_eq!(code, 0, "toggle create must exit 0");
+    let sidebar = server
+        .sidebar_pane()
+        .expect("a pane tagged @pane_role=sidebar");
+
+    // Guard first: with the user's pane still alive, auto-close must
+    // leave the window (and the sidebar) untouched.
+    let code = run_toggle(&["auto-close", &server.window]);
+    assert_eq!(code, 0);
+    assert!(
+        window_exists(&server.window),
+        "auto-close must not kill a window with a non-sidebar pane"
+    );
+    assert_eq!(server.sidebar_pane().as_deref(), Some(sidebar.as_str()));
+
+    // Now only the role-tagged sidebar pane remains — the state the
+    // pane-exited hook hands auto-close. The kill must go to the pane
+    // itself; killing the last pane destroys the window exactly like
+    // `kill-window` did (M-cli-4: minus the raced-in-pane collateral).
+    let status = Command::new("tmux")
+        .args(["kill-pane", "-t", &server.pane])
+        .status()
+        .expect("kill base pane");
+    assert!(status.success(), "killing the base pane failed");
+
+    let code = run_toggle(&["auto-close", &server.window]);
+    assert_eq!(code, 0);
+    assert!(
+        !window_exists(&server.window),
+        "auto-close must remove the window once only sidebar panes remain"
+    );
+}
+
+fn window_exists(window_id: &str) -> bool {
+    let output = Command::new("tmux")
+        .args(["list-windows", "-a", "-F", "#{window_id}"])
+        .output()
+        .unwrap();
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .any(|line| line.trim() == window_id)
+}
