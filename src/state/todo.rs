@@ -92,6 +92,14 @@ pub struct TodoState {
     /// the undo window: `u` while this is `Some` and unexpired restores
     /// the items. A new destructive action replaces the stash.
     pub undo: Option<TodoUndo>,
+    /// True while a resume launch (`r`) runs on the popup-op worker:
+    /// the window burst lands a second or two later, so a second press
+    /// before the result arrives would launch a duplicate window
+    /// (audit 2026-11-25 M-state-2). Cleared in
+    /// `AppState::flash_resume_result`, which receives the result
+    /// whatever it is. Silent no-op while set, like the spawn/remove
+    /// working guards.
+    pub resume_in_flight: bool,
     /// Memoized flow-wrap of the visible items at the panel's text
     /// width, filled by the render pass and consumed by the height
     /// sizing on the next frame. Both used to wrap every item and run
@@ -915,16 +923,24 @@ impl AppState {
     /// and stay untouched; recognized items are never modified either
     /// way — the todo is a pointer, not a task.
     pub fn resume_todo_selected(&mut self) {
+        // One launch at a time: the result clears the latch in
+        // `flash_resume_result` (audit 2026-11-25 M-state-2). Silent,
+        // like the spawn/remove working guards. Checked before the
+        // recognition flash so a pressed-while-in-flight `r` neither
+        // flashes nor queues a second op.
+        if self.todos.resume_in_flight {
+            return;
+        }
         let Some(item) = self.todos.items.get(self.todos.selected) else {
             return;
         };
         let text = item.text.clone();
         let Some(reference) = crate::park::recognize_resume(&text) else {
-            self.set_flash("not a resume command");
+            self.set_flash_error("not a resume command");
             return;
         };
         let Some(session) = crate::tmux::pane_session_name(&self.tmux_pane) else {
-            self.set_flash("could not resolve tmux session");
+            self.set_flash_error("could not resolve tmux session");
             return;
         };
         let agent = reference.agent.clone();
@@ -937,12 +953,14 @@ impl AppState {
         // lands the same result one loop iteration later. The no-hint
         // path keeps its full resolve (parked sidecar, then the agent's
         // own store) on the worker — a wedged sqlite probe must not
-        // stall the render loop either way.
+        // stall the render loop either way. The latch is only armed
+        // when the dispatch actually happened (no channel → no result
+        // → nothing to clear it).
         match &reference.cwd_hint {
             Some(hint) => {
                 let home = std::env::var("HOME").ok();
                 let hint = hint.clone();
-                self.start_background_op(move || {
+                if self.start_background_op(move || {
                     PopupOpResult::Resume(match crate::park::expand_home(&hint, home.as_deref()) {
                         // Both outcomes are banner text: `resumed
                         // <agent> <id8>` or the failure.
@@ -951,11 +969,13 @@ impl AppState {
                         }
                         None => Err(crate::park::no_cwd_error(&id)),
                     })
-                });
+                }) {
+                    self.todos.resume_in_flight = true;
+                }
             }
             None => {
                 let dir = self.todos.dir.clone();
-                self.start_background_op(move || {
+                if self.start_background_op(move || {
                     PopupOpResult::Resume(crate::park::resolve_and_launch(
                         &session,
                         &text,
@@ -963,7 +983,9 @@ impl AppState {
                         &agent,
                         &id,
                     ))
-                });
+                }) {
+                    self.todos.resume_in_flight = true;
+                }
             }
         }
     }
@@ -971,12 +993,14 @@ impl AppState {
     /// Both resume outcomes are banner text — `resumed <agent> <id8>`
     /// on success, the failure message otherwise — so one sink takes
     /// them both. Used by the inline (hint) launch and by the worker
-    /// result's apply step.
+    /// result's apply step. Also clears the in-flight latch: whatever
+    /// the outcome, the launch is over (audit 2026-11-25 M-state-2).
     pub(super) fn flash_resume_result(&mut self, result: Result<String, String>) {
-        self.set_flash(match result {
-            Ok(flash) => flash,
-            Err(err) => err,
-        });
+        self.todos.resume_in_flight = false;
+        match result {
+            Ok(flash) => self.set_flash(flash),
+            Err(err) => self.set_flash_error(err),
+        }
     }
 
     /// Clear the completed section and offer the 4-second undo window
@@ -999,7 +1023,7 @@ impl AppState {
             TodosUndo::Restored => true,
             TodosUndo::NoStash => false,
             TodosUndo::Expired => {
-                self.set_flash("undo expired — list changed");
+                self.set_flash_error("undo expired — list changed");
                 false
             }
         }
@@ -1098,7 +1122,7 @@ impl AppState {
             .todos
             .set_text(edit.index, edit.input, &edit.original_text)
         {
-            self.set_flash("todo: item changed elsewhere — edit discarded");
+            self.set_flash_error("todo: item changed elsewhere — edit discarded");
         }
         self.todos.clamp_selection(self.global.todo_hide_completed);
     }
@@ -2243,7 +2267,10 @@ mod tests {
     fn a_successful_yank_flashes_copied() {
         let mut state = state_with(vec![]);
         assert!(state.record_todo_yank(true));
-        assert_eq!(state.take_flash().as_deref(), Some("copied"));
+        assert_eq!(
+            state.take_flash().map(|(_, text)| text).as_deref(),
+            Some("copied")
+        );
     }
 
     #[test]
@@ -2269,7 +2296,10 @@ mod tests {
         let mut state = state_with(vec![item("Buy milk", false), item("claude --plan", false)]);
         state.todos.selected = 0;
         state.resume_todo_selected();
-        assert_eq!(state.take_flash().as_deref(), Some("not a resume command"));
+        assert_eq!(
+            state.take_flash().map(|(_, text)| text).as_deref(),
+            Some("not a resume command")
+        );
         assert_eq!(
             state.todos.items[0].text, "Buy milk",
             "the item is never modified"
@@ -2278,7 +2308,10 @@ mod tests {
         // A wrong id is a non-recognition too — no half-matches.
         state.todos.selected = 1;
         state.resume_todo_selected();
-        assert_eq!(state.take_flash().as_deref(), Some("not a resume command"));
+        assert_eq!(
+            state.take_flash().map(|(_, text)| text).as_deref(),
+            Some("not a resume command")
+        );
     }
 
     #[test]
@@ -2306,14 +2339,14 @@ mod tests {
             "resumed claude f4ac0121".into()
         )));
         assert_eq!(
-            state.take_flash().as_deref(),
+            state.take_flash().map(|(_, text)| text).as_deref(),
             Some("resumed claude f4ac0121")
         );
 
         state.apply_popup_op_result(super::PopupOpResult::Resume(Err(
             "no cwd for f4ac0121 — append \"@ /path\" or park the pane".into(),
         )));
-        assert!(state.take_flash().unwrap().contains("no cwd"));
+        assert!(state.take_flash().unwrap().1.contains("no cwd"));
     }
 
     #[test]
@@ -2337,7 +2370,80 @@ mod tests {
             "resumed claude f4ac0121".into(),
         )));
         assert!(state.is_spawn_input_open());
-        assert_eq!(state.flash.as_ref().unwrap().0, "resumed claude f4ac0121");
+        assert_eq!(
+            state.flash.as_ref().unwrap().text,
+            "resumed claude f4ac0121"
+        );
+    }
+
+    #[test]
+    fn a_second_resume_press_while_in_flight_is_a_no_op() {
+        // Audit 2026-11-25 M-state-2: every press dispatched a fresh
+        // background op — a window burst a second later — so repeated
+        // presses launched duplicate agent windows. The latch holds
+        // until the result clears it: a press while it is armed must
+        // neither queue a second op nor flash. (The dispatch arm itself
+        // can't run under `cargo test` — session resolution needs real
+        // tmux — so the armed side is simulated at the same boundary
+        // the event loop sees.)
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let mut state = state_with(vec![item("claude --resume f4ac0121", false)]);
+        state.popup_op_tx = Some(tx);
+        state.todos.resume_in_flight = true;
+
+        state.resume_todo_selected();
+
+        assert!(
+            state.todos.resume_in_flight,
+            "the guard must not clear the latch early"
+        );
+        assert!(state.flash.is_none(), "the press stays silent");
+        assert!(
+            _rx.try_recv().is_err(),
+            "no second operation may be dispatched"
+        );
+    }
+
+    #[test]
+    fn the_resume_result_clears_the_latch_whatever_the_outcome() {
+        let mut state = state_with(vec![item("x", false)]);
+
+        state.todos.resume_in_flight = true;
+        state.apply_popup_op_result(super::PopupOpResult::Resume(Ok(
+            "resumed claude f4ac0121".into()
+        )));
+        assert!(!state.todos.resume_in_flight, "success releases the latch");
+        let (kind, text) = state.take_flash().expect("success is announced");
+        assert_eq!(kind, crate::state::FlashKind::Info);
+        assert_eq!(text, "resumed claude f4ac0121");
+
+        state.todos.resume_in_flight = true;
+        state.apply_popup_op_result(super::PopupOpResult::Resume(Err(
+            "no cwd for f4ac0121".into()
+        )));
+        assert!(!state.todos.resume_in_flight, "failure releases the latch");
+        let (kind, text) = state.take_flash().expect("failure is announced");
+        assert_eq!(kind, crate::state::FlashKind::Error);
+        assert_eq!(text, "no cwd for f4ac0121");
+    }
+
+    #[test]
+    fn the_resume_latch_stays_unarmed_when_nothing_dispatches() {
+        // No channel (test build): start_background_op reports the
+        // no-op, so the latch must stay clear — otherwise `r` would be
+        // permanently dead. In the test env the flow stops at session
+        // resolution first; what matters is that no path arms the
+        // latch without a dispatch behind it.
+        let mut state = state_with(vec![item(
+            "claude --resume f4ac0121-58e7-4d9c-a5c6-e0db65c6c49e",
+            false,
+        )]);
+        state.resume_todo_selected();
+        assert!(!state.todos.resume_in_flight);
+        assert!(
+            state.flash.is_some(),
+            "the failure that blocked the launch is announced"
+        );
     }
 
     // ─── undo (delete / clear-completed) ────────────────────────────
@@ -2463,7 +2569,7 @@ mod tests {
         state.clear_completed_todos();
 
         assert_eq!(
-            state.flash.as_ref().map(|(text, _)| text.as_str()),
+            state.flash.as_ref().map(|f| f.text.as_str()),
             Some("cleared 2 completed · u to undo")
         );
     }

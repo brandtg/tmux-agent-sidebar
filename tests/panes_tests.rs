@@ -477,6 +477,7 @@ fn repo_popup_closes_instead_of_rendering_invisible_on_a_tiny_viewport() {
     state.repo_groups = vec![make_repo_group("frontend", vec![pane])];
     state.rebuild_row_targets();
     state.popup = tmux_agent_sidebar::state::PopupState::Repo {
+        scroll: 0,
         repo_start: 0,
         selected: 0,
         area: None,
@@ -509,6 +510,7 @@ fn repo_popup_renders_repo_names_when_open() {
     ];
     state.rebuild_row_targets();
     state.popup = tmux_agent_sidebar::state::PopupState::Repo {
+        scroll: 0,
         repo_start: 0,
         selected: 0,
         area: None,
@@ -557,6 +559,7 @@ fn repo_popup_highlights_selected_entry_with_background() {
     state.rebuild_row_targets();
     state.focus_state.sidebar_focused = false; // surface raw colors instead of REVERSED
     state.popup = tmux_agent_sidebar::state::PopupState::Repo {
+        scroll: 0,
         repo_start: 0,
         selected: 2, // "backend" (0=All, 1=frontend, 2=backend)
         area: None,
@@ -577,6 +580,89 @@ fn repo_popup_highlights_selected_entry_with_background() {
                         │[fg:153] [fg:255,bg:239]b[fg:255,bg:239]a[fg:255,bg:239]c[fg:255,bg:239]k[fg:255,bg:239]e[fg:255,bg:239]n[fg:255,bg:239]d[fg:255,bg:239] [fg:255,bg:239] [fg:255,bg:239] [fg:255,bg:239] [fg:255,bg:239] [fg:255,bg:239] [fg:255,bg:239] [fg:255,bg:239] [fg:255,bg:239] [fg:255,bg:239] [fg:255,bg:239]│[fg:153]
                         └[fg:153]─[fg:153]─[fg:153]─[fg:153]─[fg:153]─[fg:153]─[fg:153]─[fg:153]─[fg:153]─[fg:153]─[fg:153]─[fg:153]─[fg:153]─[fg:153]─[fg:153]─[fg:153]─[fg:153]─[fg:153]─[fg:153]┘[fg:153]
     ");
+}
+
+// ─── Repo popup scrolling (audit 2026-11-25 M-UI-3) ─────────────────
+
+fn repo_popup_scroll_state() -> tmux_agent_sidebar::state::AppState {
+    let pane = make_pane(AgentType::Claude, PaneStatus::Idle);
+    let mut state = make_state(vec![SessionInfo {
+        session_name: "main".into(),
+        windows: vec![WindowInfo {
+            window_id: "@1".into(),
+            window_name: "work".into(),
+            window_active: true,
+            auto_rename: false,
+            panes: vec![pane.clone()],
+        }],
+    }]);
+    state.repo_groups = [
+        "alpha", "bravo", "charlie", "delta", "echo", "foxtrot", "golf", "hotel",
+    ]
+    .iter()
+    .map(|name| make_repo_group(name, vec![pane.clone()]))
+    .collect();
+    state.rebuild_row_targets();
+    state.popup = tmux_agent_sidebar::state::PopupState::Repo {
+        scroll: 0,
+        selected: 0,
+        area: None,
+        repo_start: 0,
+    };
+    state
+}
+
+#[test]
+fn repo_popup_scrolls_with_an_n_more_indicator_when_the_list_overflows() {
+    // A short sidebar clamps the popup; the last row becomes the
+    // `N more ↓` indicator instead of silently hiding the tail, and
+    // j/k can still reach every repo.
+    let mut state = repo_popup_scroll_state();
+
+    insta::assert_snapshot!(render_to_string(&mut state, 40, 12), @"
+    ☰                                    ⓘ ▾
+    ▾ alpha             ┌──────────────────┐
+    ┃ ○ claude          │   Missing hooks  │
+        Waiting for prom│     claude       │
+                        │     - Stop       │
+    ▾ bravo             │                  │
+    ┃ ○ claude          │ Repos            │
+        Waiting for prom│ All              │
+                        │ alpha            │
+    ▾ charlie           │ bravo            │
+    ┃ ○ claude          │ 6 more ↓         │
+        Waiting for prom└──────────────────┘
+    ");
+    // The renderer wrote the geometry back for click hit-testing.
+    assert_eq!(state.repo_popup_scroll(), 0);
+}
+
+#[test]
+fn repo_popup_scrolls_to_keep_the_selection_visible() {
+    // Opening the popup on a filtered repo deep in the list (or navving
+    // down to the tail) must land with the selection inside the window.
+    let mut state = repo_popup_scroll_state();
+    state.set_repo_popup_selected(8); // "hotel", past the window
+
+    insta::assert_snapshot!(render_to_string(&mut state, 40, 12), @"
+    ☰                                    ⓘ ▾
+    ▾ alpha             ┌──────────────────┐
+    ┃ ○ claude          │   Missing hooks  │
+        Waiting for prom│     claude       │
+                        │     - Stop       │
+    ▾ bravo             │                  │
+    ┃ ○ claude          │ Repos            │
+        Waiting for prom│ foxtrot          │
+                        │ golf             │
+    ▾ charlie           │ hotel            │
+    ┃ ○ claude          │ ↑6               │
+        Waiting for prom└──────────────────┘
+    ");
+    assert_eq!(
+        state.repo_popup_scroll(),
+        6,
+        "the window moved so the selection renders"
+    );
 }
 
 // ─── Agents: compact mode ───────────────────────────────────────────

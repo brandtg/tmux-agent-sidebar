@@ -325,7 +325,7 @@ pub(super) fn handle_key_event(key: KeyEvent, state: &mut AppState) -> bool {
         // popup's lifetime so the sidebar's event loop never blocks.
         KeyCode::Char('o') => {
             if let Err(e) = crate::cli::spawn_overview_popup_detached() {
-                state.set_flash(format!("overview: {e}"));
+                state.set_flash_error(format!("overview: {e}"));
             }
         }
         KeyCode::Char('?') => {
@@ -1168,7 +1168,10 @@ mod tests {
             area: None,
         };
         handle_key_event(key(KeyCode::Esc), &mut state);
-        state.apply_popup_op_result(PopupOpResult::Spawn(Err("boom".into())));
+        state.apply_popup_op_result(PopupOpResult::Spawn {
+            op: 1,
+            result: Err("boom".into()),
+        });
         assert!(!state.is_spawn_input_open());
     }
 
@@ -1474,7 +1477,10 @@ mod tests {
 
         handle_key_event(key(KeyCode::Char('r')), &mut state);
 
-        assert_eq!(state.take_flash().as_deref(), Some("not a resume command"));
+        assert_eq!(
+            state.take_flash().map(|(_, text)| text).as_deref(),
+            Some("not a resume command")
+        );
         assert!(state.todos.editing.is_none(), "r must not open the editor");
     }
 

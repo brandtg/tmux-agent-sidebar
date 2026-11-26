@@ -574,13 +574,29 @@ pub(super) fn render_repo_popup(frame: &mut Frame, state: &mut AppState, area: R
     // The repo list: selection index maps to `repo_start_row + i`.
     let repo_start = row as u16;
     state.popup.set_repo_start(repo_start);
-    let visible_repo_rows = inner.height.saturating_sub(repo_start);
-    for (i, name) in repos.iter().enumerate() {
-        if i >= visible_repo_rows as usize {
-            break;
-        }
-
-        let is_highlighted = i == state.repo_popup_selected();
+    let visible_repo_rows = inner.height.saturating_sub(repo_start) as usize;
+    // A list longer than the window scrolls todo-style: the last row
+    // then carries the `N more ↓` indicator instead of a repo, so every
+    // repo stays reachable on a short sidebar (audit 2026-11-25 M-UI-3).
+    let list_rows = if repos.len() > visible_repo_rows {
+        visible_repo_rows.saturating_sub(1)
+    } else {
+        visible_repo_rows
+    };
+    // The renderer owns the scroll: clamp it to the list and keep the
+    // selection inside the window, so a popup opened on a filtered repo
+    // deep in the list lands with the selection visible.
+    let selected = state.repo_popup_selected();
+    let max_scroll = repos.len().saturating_sub(list_rows);
+    let mut scroll = state.repo_popup_scroll().min(max_scroll);
+    if selected < scroll {
+        scroll = selected;
+    } else if list_rows > 0 && selected >= scroll + list_rows {
+        scroll = selected + 1 - list_rows;
+    }
+    state.popup.set_repo_scroll(scroll);
+    for (i, name) in repos.iter().enumerate().skip(scroll).take(list_rows) {
+        let is_highlighted = i == selected;
         let is_current = match &state.global.repo_filter {
             RepoFilter::All => i == 0,
             RepoFilter::Repo(n) => *n == *name,
@@ -601,11 +617,45 @@ pub(super) fn render_repo_popup(frame: &mut Frame, state: &mut AppState, area: R
             Style::default().fg(theme.text_muted)
         };
 
-        let line_rect = Rect::new(inner.x, inner.y + repo_start + i as u16, inner.width, 1);
+        let line_rect = Rect::new(
+            inner.x,
+            inner.y + repo_start + (i - scroll) as u16,
+            inner.width,
+            1,
+        );
         frame.render_widget(
             Paragraph::new(Line::from(Span::styled(
                 format!("{}{}", text, padding),
                 style,
+            ))),
+            line_rect,
+        );
+    }
+
+    // The scroll indicator, in the row the list gave up: what the
+    // window hides above and below (same convention as the TODO
+    // panel's `↑1 · 1 more ↓`). Shown whenever the list overflowed —
+    // including at the bottom, where only the hidden head remains.
+    if list_rows > 0 && repos.len() > visible_repo_rows {
+        let above = scroll;
+        let below = repos.len() - (scroll + list_rows);
+        let indicator = match (above > 0, below > 0) {
+            (true, true) => format!(" ↑{above} · {below} more ↓"),
+            (true, false) => format!(" ↑{above}"),
+            (false, true) => format!(" {below} more ↓"),
+            (false, false) => String::new(),
+        };
+        let truncated = truncate_to_width(&indicator, inner_width.saturating_sub(1));
+        let line_rect = Rect::new(
+            inner.x,
+            inner.y + repo_start + list_rows as u16,
+            inner.width,
+            1,
+        );
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                truncated,
+                Style::default().fg(theme.text_muted),
             ))),
             line_rect,
         );
@@ -707,7 +757,7 @@ fn render_pane_rows(
 fn render_flash_banner_into(frame: &mut Frame, state: &mut AppState, area: Rect) {
     // Render flash banner (spawn / remove feedback) before popups so
     // popups stay on top.
-    if let Some(text) = state.take_flash() {
+    if let Some((kind, text)) = state.take_flash() {
         let flash_y = area.y + area.height.saturating_sub(1);
         let flash_rect = Rect::new(area.x, flash_y, area.width, 1);
         // Record where the banner painted so click routing can keep the
@@ -717,10 +767,11 @@ fn render_flash_banner_into(frame: &mut Frame, state: &mut AppState, area: Rect)
         frame.render_widget(Clear, flash_rect);
         paint_background(frame, &state.theme, flash_rect);
         let theme = &state.theme;
-        let color = if text.contains("failed") {
-            theme.status_error
-        } else {
-            theme.accent
+        // Severity travels with the message from the reporter (audit
+        // 2026-11-25 L-UI-3) — no substring sniffing.
+        let color = match kind {
+            crate::state::FlashKind::Error => theme.status_error,
+            crate::state::FlashKind::Info => theme.accent,
         };
         frame.render_widget(
             Paragraph::new(Line::from(Span::styled(text, Style::default().fg(color)))),
