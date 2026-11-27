@@ -17,6 +17,11 @@
 //! an index would silently move it onto a different agent, the lesson the
 //! overview's grid learned first.
 //!
+//! The status icon reads like the sidebar's rows: a Running entry rides
+//! the spinner pulse and an attention flag (`@pane_attention`, the
+//! done/waiting state) overrides with its own ramp, so a finished turn
+//! flashes in the popup exactly as it does in the sidebar.
+//!
 //! Ordering is recency-first so `<key> <enter> <key> <enter>` bounces
 //! between the two agents you are working in, alt-tab style. Every jump
 //! is recorded in the `@sidebar_switch_mru` global option (most recent
@@ -51,8 +56,9 @@ use ratatui::{
     widgets::{Block, Paragraph},
 };
 
+use crate::SPINNER_PULSE;
 use crate::line_edit::LineEdit;
-use crate::tmux::{self, AgentType, PaneInfo, PaneStatus};
+use crate::tmux::{self, AgentType, PaneAttention, PaneInfo, PaneStatus};
 use crate::ui::colors::ColorTheme;
 use crate::ui::icons::StatusIcons;
 use crate::ui::text::display_width;
@@ -61,6 +67,13 @@ use crate::ui::text::display_width;
 /// quick switcher is a seconds-long interaction; one spawn a second keeps
 /// statuses and the agent set honest without the overview's drive cadence.
 const REFRESH: Duration = Duration::from_millis(1000);
+
+/// How often the frame redraws between snapshot rebuilds: the tick the
+/// attention pulse and the running spinner step on. Matches the sidebar's
+/// spinner interval (app.rs) so a Done flag flashes with the same rhythm
+/// in both surfaces. Redrawing is cheap — no tmux spawns in the draw
+/// path; the snapshot spawn keeps the [`REFRESH`] cadence.
+const PULSE_TICK: Duration = Duration::from_millis(200);
 
 /// Popup geometry defaults: compact and centered (tmux centers when -x/-y
 /// are omitted). A quick switcher is a dialog, not a dashboard — the
@@ -87,6 +100,9 @@ const MRU_MAX: usize = 32;
 struct SwitchEntry {
     pane_id: String,
     status: PaneStatus,
+    /// The `@pane_attention` flag from the snapshot — drives the icon's
+    /// done/waiting flash, exactly like the sidebar's rows.
+    attention: PaneAttention,
     agent: AgentType,
     /// Repo basename, plus the worktree name in parens when the pane has
     /// one — the same identity the sidebar's row leads with.
@@ -148,6 +164,7 @@ fn entry_from_info(info: &PaneInfo) -> SwitchEntry {
     SwitchEntry {
         pane_id: info.pane_id.clone(),
         status: info.status.clone(),
+        attention: info.attention,
         agent: info.agent.clone(),
         repo_label,
         title,
@@ -484,7 +501,13 @@ fn handle_key(state: &mut SwitchState, key: KeyEvent) -> KeyOutcome {
 
 // ─── Rendering ───────────────────────────────────────────────────────────────
 
-fn draw(f: &mut Frame, state: &SwitchState, theme: &ColorTheme, icons: &StatusIcons) {
+fn draw(
+    f: &mut Frame,
+    state: &SwitchState,
+    theme: &ColorTheme,
+    icons: &StatusIcons,
+    spinner_frame: usize,
+) {
     let area = f.area();
     if area.width < 8 || area.height < 4 {
         return;
@@ -506,7 +529,7 @@ fn draw(f: &mut Frame, state: &SwitchState, theme: &ColorTheme, icons: &StatusIc
         .split(inner);
 
     draw_input(f, state, rows[0], theme);
-    draw_results(f, state, rows[1], theme, icons);
+    draw_results(f, state, rows[1], theme, icons, spinner_frame);
     let hints = Paragraph::new("↑↓ select · enter switch · esc close")
         .style(Style::default().fg(theme.text_muted));
     f.render_widget(hints, rows[2]);
@@ -547,6 +570,7 @@ fn draw_results(
     area: Rect,
     theme: &ColorTheme,
     icons: &StatusIcons,
+    spinner_frame: usize,
 ) {
     if area.height == 0 {
         return;
@@ -572,7 +596,7 @@ fn draw_results(
         let entry = &state.entries[*entry_idx];
         let is_selected = row == selected;
         let bg = is_selected.then_some(theme.selection_bg);
-        let line = entry_line(entry, area.width as usize, theme, icons, bg);
+        let line = entry_line(entry, area.width as usize, theme, icons, bg, spinner_frame);
         f.render_widget(
             Paragraph::new(line),
             Rect {
@@ -595,11 +619,21 @@ fn entry_line(
     theme: &ColorTheme,
     icons: &StatusIcons,
     bg: Option<Color>,
+    spinner_frame: usize,
 ) -> Line<'static> {
+    // Icon color mirrors the sidebar's status row (ui::panes::row::status):
+    // a Running entry rides the spinner pulse, an attention flag overrides
+    // with its own ramp (Done breathes green, Notification holds the
+    // waiting color), and the plain status color is the fallback.
+    let running_pulse = (entry.status == PaneStatus::Running)
+        .then(|| Color::Indexed(SPINNER_PULSE[spinner_frame % SPINNER_PULSE.len()]));
+    let icon_color = running_pulse
+        .or_else(|| theme.attention_color(entry.attention, spinner_frame))
+        .unwrap_or_else(|| theme.status_color(&entry.status));
     let mut pieces: Vec<(String, Style)> = vec![
         (
             icons.status_icon(&entry.status).to_string(),
-            Style::default().fg(theme.status_color(&entry.status)),
+            Style::default().fg(icon_color),
         ),
         ("  ".to_string(), Style::default()),
         (
@@ -713,6 +747,7 @@ fn run_tui() -> io::Result<i32> {
             state.refresh(entries);
         }
         let mut last_refresh = Instant::now();
+        let started = Instant::now();
 
         loop {
             if last_refresh.elapsed() >= REFRESH {
@@ -724,10 +759,12 @@ fn run_tui() -> io::Result<i32> {
                 last_refresh = Instant::now();
             }
 
-            terminal.draw(|f| draw(f, &state, &theme, &icons))?;
+            // The pulse rides wall-clock time, so the ramp stays in phase
+            // no matter when a keystroke last woke the loop.
+            let spinner_frame = (started.elapsed().as_millis() / PULSE_TICK.as_millis()) as usize;
+            terminal.draw(|f| draw(f, &state, &theme, &icons, spinner_frame))?;
 
-            let timeout = REFRESH.saturating_sub(last_refresh.elapsed());
-            if event::poll(timeout)? {
+            if event::poll(PULSE_TICK)? {
                 match event::read()? {
                     Event::Key(key) if key.kind == KeyEventKind::Press => {
                         match handle_key(&mut state, key) {
@@ -946,12 +983,31 @@ mod tests {
     }
 
     fn render_frame(state: &SwitchState, w: u16, h: u16) -> String {
+        render_frame_at(state, w, h, 0)
+    }
+
+    fn render_frame_at(state: &SwitchState, w: u16, h: u16, frame: usize) -> String {
         let theme = ColorTheme::default();
         let icons = StatusIcons::default();
         let backend = TestBackend::new(w, h);
         let mut terminal = Terminal::new(backend).unwrap();
-        terminal.draw(|f| draw(f, state, &theme, &icons)).unwrap();
+        terminal
+            .draw(|f| draw(f, state, &theme, &icons, frame))
+            .unwrap();
         buffer_to_string(terminal.backend().buffer())
+    }
+
+    /// The fg of the first results-row cell — the status icon glyph (the
+    /// block border owns column 0, the query line row 1).
+    fn icon_fg(state: &SwitchState, frame: usize) -> Color {
+        let theme = ColorTheme::default();
+        let icons = StatusIcons::default();
+        let backend = TestBackend::new(80, 10);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|f| draw(f, state, &theme, &icons, frame))
+            .unwrap();
+        terminal.backend().buffer()[(1, 2)].fg
     }
 
     fn buffer_to_string(buf: &Buffer) -> String {
@@ -1463,6 +1519,76 @@ mod tests {
         │                                                          │
         │↑↓ select · enter switch · esc close                      │
         └──────────────────────────────────────────────────────────┘
+        ");
+    }
+
+    // ─── attention flash ─────────────────────────────────────────────
+
+    fn entry_with_attention(status: PaneStatus, attention: PaneAttention) -> SwitchEntry {
+        let mut info = make_info(AgentType::Claude, status, "%1");
+        info.attention = attention;
+        entry_from_info(&info)
+    }
+
+    #[test]
+    fn done_attention_flashes_on_the_pulse_ramp() {
+        let state = state(vec![entry_with_attention(
+            PaneStatus::Idle,
+            PaneAttention::Done,
+        )]);
+        // The icon steps through DONE_PULSE with the frame — the same
+        // breathing green the sidebar's rows flash.
+        assert_eq!(icon_fg(&state, 0), Color::Indexed(crate::DONE_PULSE[0]));
+        assert_eq!(icon_fg(&state, 3), Color::Indexed(crate::DONE_PULSE[3]));
+        assert_ne!(icon_fg(&state, 0), icon_fg(&state, 3));
+    }
+
+    #[test]
+    fn notification_attention_holds_the_waiting_color() {
+        let state = state(vec![entry_with_attention(
+            PaneStatus::Waiting,
+            PaneAttention::Notification,
+        )]);
+        assert_eq!(icon_fg(&state, 0), ColorTheme::default().status_waiting);
+    }
+
+    #[test]
+    fn plain_entries_keep_their_status_colors() {
+        // Running rides the spinner pulse (frame-varying), attention-free
+        // idle stays on the static idle color.
+        let running = state(vec![entry_with_attention(
+            PaneStatus::Running,
+            PaneAttention::None,
+        )]);
+        assert_eq!(icon_fg(&running, 0), Color::Indexed(SPINNER_PULSE[0]));
+        assert_eq!(icon_fg(&running, 1), Color::Indexed(SPINNER_PULSE[1]));
+        let idle = state(vec![entry_with_attention(
+            PaneStatus::Idle,
+            PaneAttention::None,
+        )]);
+        assert_eq!(icon_fg(&idle, 3), ColorTheme::default().status_idle);
+    }
+
+    #[test]
+    fn snapshot_attention_rows_look_like_the_sidebar() {
+        let mut done = make_info(AgentType::Claude, PaneStatus::Idle, "%1");
+        done.attention = PaneAttention::Done;
+        done.session_name = "wrote the docs".into();
+        let mut waiting = make_info(AgentType::Codex, PaneStatus::Waiting, "%2");
+        waiting.attention = PaneAttention::Notification;
+        waiting.session_name = "needs input".into();
+        let state = state(vec![entry_from_info(&done), entry_from_info(&waiting)]);
+        assert_snapshot!(render_frame(&state, 80, 10), @"
+        ┌ switch ──────────────────────────────────────────────────────────────────────┐
+        │>                                                                             │
+        │○  claude  project  wrote the docs                                            │
+        │◐  codex  project  needs input                                                │
+        │                                                                              │
+        │                                                                              │
+        │                                                                              │
+        │                                                                              │
+        │↑↓ select · enter switch · esc close                                          │
+        └──────────────────────────────────────────────────────────────────────────────┘
         ");
     }
 

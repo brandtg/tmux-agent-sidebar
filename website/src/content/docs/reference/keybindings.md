@@ -83,7 +83,10 @@ bindable by hand too:
 `tmux-agent-sidebar switch` full-screen from a shell. The list shows every
 agent pane with its status icon, agent, repo/worktree, session title, and
 last prompt; typing narrows it (fuzzy subsequence match, word-boundary and
-streak matches rank first). The list refreshes once a second while open.
+streak matches rank first). Status icons flash the same done/waiting
+attention colors as the sidebar rows — the frame redraws every 200ms so a
+finished turn reads as flashing, not static. The pane list itself still
+refreshes once a second while open.
 
 The list is ordered by jump recency, and with an empty query the selection
 starts on the first pane that is not the one you are on — so
