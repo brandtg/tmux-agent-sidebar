@@ -80,10 +80,16 @@ A fuzzy finder over live agent panes, opened from anywhere: set
 `set -g @sidebar_switch_key s` gives `prefix + s`. The underlying command is
 bindable by hand too:
 `tmux-agent-sidebar switch --popup --popup-client "#{client_name}"` — or run
-`tmux-agent-sidebar switch` full-screen from a shell. The list shows every
-agent pane with its status icon, agent, repo/worktree, session title, and
-last prompt; typing narrows it (fuzzy subsequence match, word-boundary and
-streak matches rank first). The list refreshes once a second while open.
+`tmux-agent-sidebar switch` full-screen from a shell. Each entry renders as
+an identity line (status icon, agent, repo/worktree, session title,
+right-aligned elapsed time) with the last prompt word-wrapped underneath it
+(capped at two detail lines). Status icons flash the same done/waiting
+attention colors as the sidebar rows — the frame redraws every 200ms so a
+finished turn reads as flashing, not static. The pane list itself still
+refreshes once a second while open. Typing narrows the list (fuzzy
+subsequence match, word-boundary and streak matches rank first); a left
+click on an entry jumps straight to its pane (the sidebar's one-click
+agent-row convention), and the wheel steps the selection.
 
 The list is ordered by jump recency, and with an empty query the selection
 starts on the first pane that is not the one you are on — so
