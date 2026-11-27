@@ -6,8 +6,21 @@
 //! so a smaller viewer resizes the real agent). Instead each cell mirrors a
 //! pane by polling `capture-pane -p -e` and painting the captured styled
 //! grid into a ratatui buffer, reusing the vte parser from the `capture`
-//! subcommand. The mirror itself is read-only; the only writes to a real
-//! pane are the explicit interaction actions below.
+//! subcommand. The mirror itself is read-only, with one documented,
+//! always-restored exception: entering focus mode (Enter from the grid, or
+//! a click-zoom) temporarily zooms the source pane's own window
+//! (`resize-pane -Z`), because `capture-pane` has no size override — while
+//! the pane shares its window with the 40-column sidebar, content at the
+//! popup's width does not exist until the pane itself is wider. The zoom
+//! rides a drop guard held by the run loop, so every exit path (Esc
+//! collapse, Enter/f into the real pane, q, Ctrl-C, the ✕ click, `?` error
+//! propagation) restores the pre-zoom layout; a window that arrived
+//! already zoomed is never touched (that zoom is the user's state), a pane
+//! alone in its window skips it (nothing to gain), and a restore whose
+//! pane or window died is a silent no-op plus a debug-trace line. A
+//! capture still narrower than the popup (a source that cannot reach the
+//! popup's width even zoomed — multi-client setups) centers so the
+//! residual margin splits evenly.
 //!
 //! Presentation rules that make the grid an instrument instead of a
 //! wallpaper:
@@ -22,7 +35,8 @@
 //!   status-first order: waiting/error cells lead, get loud borders and a
 //!   wait-reason strip; idle cells fade to grey. A header row summarizes
 //!   the counts.
-//! - Enter zooms the selected cell fullscreen (still a capture — read-only);
+//! - Enter zooms the selected cell fullscreen (still a capture; the one
+//!   write is the temporary window-zoom described above, always restored);
 //!   Esc collapses back to the grid.
 //! - Interaction ladder (docs/overview-grid-spike.md): `p` prompts the
 //!   target pane live — from the grid (selected cell) or zoomed, the zoom
@@ -303,6 +317,119 @@ fn target_pane<'a>(
     panes.iter().find(|p| p.info.pane_id == id)
 }
 
+/// Focus mode's temporary window-zoom (audit 2026-11-25 M-cli-5). The
+/// zoomed view mirrors the capture 1:1, and `capture-pane` has no size
+/// override — content at wider widths does not exist until the pane itself
+/// is wider. While the source pane shares its window with siblings (the
+/// plugin's standard layout: a 40-column sidebar beside the agent), the
+/// capture can never fill the popup. So entering focus mode zooms the
+/// pane's own window (`resize-pane -Z`): the pane and its pty grow to the
+/// window's full size, the agent reflows on the pty SIGWINCH, and the next
+/// capture fills the popup. The zoom is held as this guard and restored on
+/// drop, so every exit path — Esc collapse, Enter/f into the real pane, q,
+/// Ctrl-C, the ✕ click, `?` error propagation — puts the pre-zoom layout
+/// back.
+struct WindowZoom {
+    pane_id: String,
+}
+
+impl WindowZoom {
+    /// Take the temporary zoom for `pane_id`, given the
+    /// `#{window_panes}|#{window_zoomed_flag}` probe. `None` skips: a
+    /// window already zoomed on arrival is the user's state, never ours to
+    /// touch; a pane alone in its window has nothing to gain; a failed
+    /// probe (pane gone) has nothing to zoom.
+    fn take(pane_id: &str, probe: &str) -> Option<Self> {
+        if !may_take_window_zoom(probe) {
+            return None;
+        }
+        tmux::run_tmux_capture(&["resize-pane", "-Z", "-t", pane_id]).ok()?;
+        Some(Self {
+            pane_id: pane_id.to_string(),
+        })
+    }
+
+    /// Lift the temporary zoom — flag-gated, so a zoom someone else
+    /// already lifted is never re-toggled (`resize-pane -Z` would zoom
+    /// again) and a pane that died while zoomed degrades to a silent
+    /// no-op (the probe fails). A restore that still fails (the window
+    /// died) lands in the debug trace; a crash mid-zoom leaves the pane
+    /// zoomed exactly like a user zoom — recoverable with prefix-z, the
+    /// agent unaffected.
+    fn restore(&self) {
+        if !zoom_flag_set(&tmux::display_message(
+            &self.pane_id,
+            "#{window_zoomed_flag}",
+        )) {
+            return;
+        }
+        if tmux::run_tmux_capture(&["resize-pane", "-Z", "-t", &self.pane_id]).is_err() {
+            crate::debug::log(&format!(
+                "overview: window-zoom restore failed for {} (pane or window gone)",
+                self.pane_id
+            ));
+        }
+    }
+}
+
+impl Drop for WindowZoom {
+    fn drop(&mut self) {
+        self.restore();
+    }
+}
+
+/// Whether focus mode may take its temporary window-zoom, from a
+/// `#{window_panes}|#{window_zoomed_flag}` probe: only a window that
+/// shares the pane with siblings and arrived unzoomed.
+fn may_take_window_zoom(probe: &str) -> bool {
+    let Some((count, flag)) = probe.trim().split_once('|') else {
+        return false;
+    };
+    count.trim().parse::<u16>().is_ok_and(|n| n > 1) && flag.trim() == "0"
+}
+
+/// Whether a `#{window_zoomed_flag}` probe says the window is still
+/// zoomed. An empty probe (pane gone) reads as not zoomed.
+fn zoom_flag_set(probe: &str) -> bool {
+    probe.trim() == "1"
+}
+
+/// Enter focus mode's temporary window-zoom and re-capture immediately at
+/// the new geometry (audit 2026-11-25 M-cli-5). Returns the guard to hold
+/// for the zoom's lifetime; `None` when the ownership rules skipped the
+/// zoom (already-zoomed window, lone pane, dead pane) and the view stays
+/// the plain 1:1 mirror at the pane's own width.
+fn enter_focus_zoom(
+    pane: &mut OverviewPane,
+    last_dims: &mut HashMap<String, (u16, u16)>,
+) -> Option<WindowZoom> {
+    let probe = tmux::display_message(&pane.info.pane_id, "#{window_panes}|#{window_zoomed_flag}");
+    let zoom = WindowZoom::take(&pane.info.pane_id, &probe)?;
+    // The pane (and its pty) just grew to the window's full size — the
+    // agent reflows on the pty SIGWINCH and the next tick would pick the
+    // new geometry up, but the first frame should already be wide:
+    // re-capture now and record the dims so drive entry reads them too.
+    let dims = pane_dimensions_for(&pane.info.pane_id);
+    if let Ok(grid) = capture_grid(&pane.info, dims) {
+        pane.grid = Some(grid);
+        pane.err = None;
+    }
+    if let Some(dims) = dims {
+        last_dims.insert(pane.info.pane_id.clone(), dims);
+    }
+    Some(zoom)
+}
+
+/// One pane's geometry from one display-message — the focus path's
+/// targeted counterpart to [`pane_dimensions`], which rescans the whole
+/// server. `None` when the probe fails (pane gone between listing and
+/// capture; [`capture_grid`] falls back to a common size).
+fn pane_dimensions_for(pane_id: &str) -> Option<(u16, u16)> {
+    let out = tmux::display_message(pane_id, "#{pane_width}|#{pane_height}");
+    let (width, height) = out.trim().split_once('|')?;
+    Some((width.trim().parse().ok()?, height.trim().parse().ok()?))
+}
+
 pub fn cmd_overview(args: &[String]) -> i32 {
     let mut popup = false;
     let mut popup_client: Option<String> = None;
@@ -472,6 +599,12 @@ fn run_tui(interval: Duration) -> io::Result<i32> {
         // silently move the selection onto a different agent.
         let mut selected: Option<String> = None;
         let mut zoomed: Option<String> = None;
+        // Focus mode's temporary window-zoom (audit 2026-11-25 M-cli-5),
+        // held across the loop so every exit path restores the pre-zoom
+        // layout: Drop covers the returns and `?`s, while the Esc
+        // collapse, the vanished-pane tidy-up, and the step-into-the-pane
+        // paths restore eagerly.
+        let mut window_zoom: Option<WindowZoom> = None;
         // Grid order: the sidebar's own row order by default, `s` to
         // status-first. The git cache backs the sidebar grouping.
         let mut sort_mode = SortMode::Sidebar;
@@ -578,6 +711,13 @@ fn run_tui(interval: Duration) -> io::Result<i32> {
                         && !panes.iter().any(|p| p.info.pane_id == id)
                     {
                         zoomed = None;
+                        // The zoomed pane left the listing: lift the
+                        // temporary zoom — a no-op when the pane (and with
+                        // it tmux's own zoom) died, the point when
+                        // detection flickered while the pane lives.
+                        if let Some(zoom) = window_zoom.take() {
+                            zoom.restore();
+                        }
                     }
                     // A prompt whose pane is no longer drivable closes itself:
                     // it must not sit on a pane a shell now owns — the per-key
@@ -674,6 +814,14 @@ fn run_tui(interval: Duration) -> io::Result<i32> {
                                         if zoomed.take().is_none() {
                                             return Ok(0);
                                         }
+                                        // Collapsing to the grid ends focus
+                                        // mode: lift the temporary window-
+                                        // zoom now — browsing the grid must
+                                        // not keep the pane's window zoomed
+                                        // underneath the popup.
+                                        if let Some(zoom) = window_zoom.take() {
+                                            zoom.restore();
+                                        }
                                     }
                                     KeyCode::Enter => {
                                         // In the grid, Enter zooms. Already zoomed,
@@ -685,10 +833,24 @@ fn run_tui(interval: Duration) -> io::Result<i32> {
                                                 zoomed.as_deref(),
                                                 selected.as_deref(),
                                             ) {
+                                                // Landing in the real pane ends
+                                                // focus mode: lift the temporary
+                                                // zoom first, so the client
+                                                // arrives at the normal layout
+                                                // instead of watching it unzoom a
+                                                // beat later.
+                                                if let Some(zoom) = window_zoom.take() {
+                                                    zoom.restore();
+                                                }
                                                 tmux::select_pane(&pane.info.pane_id);
                                                 return Ok(0);
                                             }
                                         } else if let Some(idx) = selected_idx {
+                                            if let Some(zoom) =
+                                                enter_focus_zoom(&mut panes[idx], &mut last_dims)
+                                            {
+                                                window_zoom = Some(zoom);
+                                            }
                                             zoomed = Some(panes[idx].info.pane_id.clone());
                                         }
                                     }
@@ -736,6 +898,12 @@ fn run_tui(interval: Duration) -> io::Result<i32> {
                                             zoomed.as_deref(),
                                             selected.as_deref(),
                                         ) {
+                                            // Same as the Enter-go path: lift
+                                            // the temporary zoom before the
+                                            // client lands.
+                                            if let Some(zoom) = window_zoom.take() {
+                                                zoom.restore();
+                                            }
                                             tmux::select_pane(&pane.info.pane_id);
                                             return Ok(0);
                                         }
@@ -798,9 +966,16 @@ fn run_tui(interval: Duration) -> io::Result<i32> {
                             let area = Rect::new(0, 0, size.width, size.height);
                             let body = grid_body(area, false);
                             if let Some(idx) = cell_at(panes.len(), body, mouse.row, mouse.column) {
-                                if let Some(pane) = panes.get(idx) {
-                                    let id = pane.info.pane_id.clone();
+                                let id = panes.get(idx).map(|p| p.info.pane_id.clone());
+                                if let Some(id) = id {
                                     if selected.as_deref() == Some(id.as_str()) {
+                                        // Click-zoom takes the same temporary
+                                        // window-zoom as Enter.
+                                        if let Some(zoom) =
+                                            enter_focus_zoom(&mut panes[idx], &mut last_dims)
+                                        {
+                                            window_zoom = Some(zoom);
+                                        }
                                         zoomed = Some(id);
                                     } else {
                                         selected = Some(id);
@@ -1199,7 +1374,14 @@ fn draw_grid(
 
     let rects = cell_rects(panes.len(), chunks[1]);
     for (idx, cell_area) in rects.iter().enumerate() {
-        draw_cell(f, *cell_area, &panes[idx], selected_idx == Some(idx), theme);
+        draw_cell(
+            f,
+            *cell_area,
+            &panes[idx],
+            selected_idx == Some(idx),
+            theme,
+            false,
+        );
     }
     if let Some(input) = drive {
         f.render_widget(Paragraph::new(drive_line(input, theme)), chunks[2]);
@@ -1236,7 +1418,10 @@ fn draw_zoomed(
     };
     let counts = header_line(panes, theme, hints, drive.is_none(), width);
     f.render_widget(Paragraph::new(counts), chunks[0]);
-    draw_cell(f, chunks[1], &panes[idx], true, theme);
+    // The zoomed cell centers a source narrower than the area — the
+    // multi-client fallback where the pane's window cannot reach the
+    // popup's width even zoomed.
+    draw_cell(f, chunks[1], &panes[idx], true, theme, true);
     if let Some(input) = drive {
         f.render_widget(Paragraph::new(drive_line(input, theme)), chunks[2]);
     }
@@ -1256,7 +1441,14 @@ fn grid_dims(n: usize, area: Rect) -> (u16, u16) {
     (cols as u16, rows as u16)
 }
 
-fn draw_cell(f: &mut Frame, area: Rect, pane: &OverviewPane, selected: bool, theme: &ColorTheme) {
+fn draw_cell(
+    f: &mut Frame,
+    area: Rect,
+    pane: &OverviewPane,
+    selected: bool,
+    theme: &ColorTheme,
+    centered: bool,
+) {
     let status_color = theme.status_color(&pane.info.status);
     let mut border = match pane.info.status {
         // States that can demand the user's attention get the loud border;
@@ -1299,7 +1491,7 @@ fn draw_cell(f: &mut Frame, area: Rect, pane: &OverviewPane, selected: bool, the
     f.render_widget(Paragraph::new(activity), strip);
 
     match &pane.grid {
-        Some(grid) => paint_grid(f.buffer_mut(), content, grid),
+        Some(grid) => paint_grid(f.buffer_mut(), content, grid, centered),
         None => {
             let msg = pane.err.as_deref().unwrap_or("(pane gone)");
             let failed = Paragraph::new(msg).style(Style::default().fg(theme.border_inactive));
@@ -1514,18 +1706,29 @@ fn status_word(status: &PaneStatus) -> &'static str {
 /// and cropped: when the cell is shorter than the source pane, keep the LAST
 /// rows (agent TUIs draw current state at the bottom) and drop the top. The
 /// spike does not scale or pan; sources wider than the cell lose their right
-/// side.
-fn paint_grid(buf: &mut Buffer, area: Rect, grid: &[Vec<StyledCell>]) {
+/// side. `center` splits a source narrower than the area's residual margin
+/// evenly instead of hugging the left edge — focus mode's fallback for
+/// sources that cannot reach the popup's width even zoomed (multi-client
+/// setups); grid cells keep the left edge, mirroring the pane's own
+/// left-anchored geometry in its window.
+fn paint_grid(buf: &mut Buffer, area: Rect, grid: &[Vec<StyledCell>], center: bool) {
     let skip = grid.len().saturating_sub(area.height as usize);
     for (y, row) in grid.iter().skip(skip).enumerate() {
         if y as u16 >= area.height {
             break;
         }
+        // The parser pads every row to the source's width, so the offset
+        // is uniform across rows.
+        let x_off = if center {
+            area.width.saturating_sub(row.len() as u16) / 2
+        } else {
+            0
+        };
         for (x, cell) in row.iter().enumerate() {
-            if x as u16 >= area.width {
+            if x_off + x as u16 >= area.width {
                 break;
             }
-            let pos = Position::new(area.x + x as u16, area.y + y as u16);
+            let pos = Position::new(area.x + x_off + x as u16, area.y + y as u16);
             if let Some(target) = buf.cell_mut(pos) {
                 target.set_char(cell.ch);
                 target.set_style(sgr_style(cell));
@@ -2458,5 +2661,262 @@ mod tests {
         // Empty grid and degenerate sizes are inert.
         assert_eq!(cell_at(0, body, 1, 1), None);
         assert_eq!(cell_at(2, Rect::new(0, 1, 80, 0), 5, 5), None);
+    }
+
+    #[test]
+    fn window_zoom_probe_decides_eligibility() {
+        // Two panes, unzoomed: eligible.
+        assert!(may_take_window_zoom("2|0"));
+        assert!(may_take_window_zoom("3|0"));
+        // A pane alone in its window has nothing to gain.
+        assert!(!may_take_window_zoom("1|0"));
+        // A window already zoomed on arrival is the user's state.
+        assert!(!may_take_window_zoom("2|1"));
+        // A failed probe (pane gone) and garbage both skip.
+        assert!(!may_take_window_zoom(""));
+        assert!(!may_take_window_zoom("garbage"));
+        assert!(!may_take_window_zoom("2|"));
+    }
+
+    #[test]
+    fn zoom_flag_probe_gates_the_restore() {
+        assert!(zoom_flag_set("1"));
+        assert!(!zoom_flag_set("0"));
+        // An empty probe (pane gone while zoomed) reads as not zoomed:
+        // the restore degrades to a silent no-op instead of re-zooming.
+        assert!(!zoom_flag_set(""));
+    }
+
+    #[test]
+    fn paint_grid_centers_a_narrower_source_when_asked() {
+        let grid = ansi::parse_ansi(b"abcd", 4, 1);
+        let mut buf = Buffer::empty(Rect::new(0, 0, 10, 1));
+        paint_grid(&mut buf, Rect::new(0, 0, 10, 1), &grid, true);
+        let line: String = (0..10).map(|x| buf[(x, 0)].symbol().to_string()).collect();
+        assert_eq!(line, "   abcd   ");
+        // Grid cells keep the left edge: the pane sits left in its window
+        // and the cell mirrors that geometry.
+        let mut buf = Buffer::empty(Rect::new(0, 0, 10, 1));
+        paint_grid(&mut buf, Rect::new(0, 0, 10, 1), &grid, false);
+        let line: String = (0..10).map(|x| buf[(x, 0)].symbol().to_string()).collect();
+        assert_eq!(line, "abcd      ");
+    }
+
+    #[test]
+    fn snapshot_zoomed_centers_a_source_narrower_than_the_area() {
+        let mut info = make_pane(AgentType::Codex, PaneStatus::Running, "%1");
+        info.prompt = "Refactoring the export path".into();
+        let pane = OverviewPane {
+            info,
+            grid: Some(grid_padded("\x1b[34m[codex] waiting for input\x1b[0m")),
+            err: None,
+        };
+        // A 40-column source in a 60-column popup: the residual margin
+        // splits evenly instead of hugging the left edge — the fallback
+        // for sources that cannot reach the popup's width even zoomed
+        // (multi-client setups).
+        insta::assert_snapshot!(render_zoom(&[pane], 0, None, 60, 12), @"
+        «   ●1esc grid · enter go · p prompt · q quit              ✕
+        ┌ ● codex · project────────────────────────────────────────┐
+        │ Refactoring the export path …                            │
+        │                                                          │
+        │                                                          │
+        │                                                          │
+        │                                                          │
+        │                                                          │
+        │                                                          │
+        │                                                          │
+        │         [codex] waiting for input                        │
+        └──────────────────────────────────────────────────────────┘
+        ");
+    }
+
+    /// The zoom lifecycle against a throwaway server: a 60-column window
+    /// split 20/40 (the standard sidebar shape whose narrow pane is what
+    /// focus mode has to widen), exercising take/restore, the ownership
+    /// rules, and the dead-pane no-op.
+    #[test]
+    #[ignore = "requires local tmux"]
+    fn window_zoom_lifecycle_on_a_scoped_server() {
+        use std::process::Command;
+
+        // Isolation per the capture integration tests: a throwaway server,
+        // TMUX unset so every tmux invocation (ours and the binary's) lands
+        // there. Runs under `cargo test -- --ignored --test-threads=1`.
+        // `-f /dev/null` keeps the server config-clean: the user's plugin
+        // hooks would otherwise fire on the windows this test creates (the
+        // after-new-window hook would add a sidebar pane and change
+        // `window_panes` under the test's feet).
+        let tmux_root = tempfile::tempdir().unwrap();
+        // SAFETY: single-threaded ignored runs only (see the capture
+        // tests); no other test in this binary spawns tmux (the IPC gate
+        // is closed for them).
+        unsafe {
+            std::env::set_var("TMUX_TMPDIR", tmux_root.path());
+            std::env::remove_var("TMUX");
+            std::env::remove_var("TMUX_PANE");
+        }
+        crate::tmux::enable_tmux_ipc();
+
+        let run = |args: &[&str]| {
+            let out = Command::new("tmux").args(args).output().unwrap();
+            assert!(
+                out.status.success(),
+                "tmux {args:?} failed: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+            String::from_utf8_lossy(&out.stdout).trim().to_string()
+        };
+
+        run(&[
+            "-f",
+            "/dev/null",
+            "new-session",
+            "-d",
+            "-s",
+            "zoom-life",
+            "-x",
+            "60",
+            "-y",
+            "20",
+        ]);
+        let _cleanup = scopeguard::guard((), |_| {
+            let _ = Command::new("tmux").args(["kill-server"]).status();
+        });
+        // 66% to the new pane: an asymmetric 20/40 split, so restoring the
+        // exact layout is observable.
+        let agent = run(&[
+            "split-window",
+            "-h",
+            "-p",
+            "66",
+            "-d",
+            "-t",
+            "zoom-life:0.0",
+            "-P",
+            "-F",
+            "#{pane_id}",
+        ]);
+        let sibling = run(&["display-message", "-p", "-t", "zoom-life:0.0", "#{pane_id}"]);
+        std::thread::sleep(Duration::from_millis(100));
+
+        let widths = || -> HashMap<String, u16> {
+            run(&[
+                "list-panes",
+                "-t",
+                "zoom-life:0",
+                "-F",
+                "#{pane_id},#{pane_width}",
+            ])
+            .lines()
+            .filter_map(|l| {
+                let (id, w) = l.split_once(',')?;
+                Some((id.to_string(), w.parse().ok()?))
+            })
+            .collect()
+        };
+        let flag =
+            |pane: &str| run(&["display-message", "-p", "-t", pane, "#{window_zoomed_flag}"]);
+        let probe = |pane: &str| {
+            run(&[
+                "display-message",
+                "-p",
+                "-t",
+                pane,
+                "#{window_panes}|#{window_zoomed_flag}",
+            ])
+        };
+
+        let before = widths();
+        assert_eq!(before.len(), 2, "two siblings in the window");
+        assert_eq!(probe(&agent), "2|0");
+        let dims_before = pane_dimensions_for(&agent).expect("live pane has dims");
+
+        // Take: the pane (and its pty) grow to the full window width; the
+        // hidden sibling keeps its size under the zoom.
+        let guard = WindowZoom::take(&agent, &probe(&agent)).expect("eligible window takes");
+        assert_eq!(flag(&agent), "1");
+        assert_eq!(widths().get(&agent).copied(), Some(60));
+        assert_eq!(
+            widths().get(&sibling).copied(),
+            before.get(&sibling).copied()
+        );
+        // The focus path's targeted dims probe sees the new geometry.
+        assert_eq!(pane_dimensions_for(&agent), Some((60, 20)));
+
+        // Restore (the Drop every exit path rides): the exact pre-zoom
+        // layout comes back.
+        drop(guard);
+        assert_eq!(flag(&agent), "0");
+        assert_eq!(widths(), before);
+        assert_eq!(pane_dimensions_for(&agent), Some(dims_before));
+
+        // The focus path's entry helper: zoom and immediate re-capture in
+        // one call — the first frame is already wide, and the dims land in
+        // the map drive entry reads.
+        let mut pane = OverviewPane {
+            info: make_pane(AgentType::Claude, PaneStatus::Running, &agent),
+            grid: None,
+            err: None,
+        };
+        pane.grid = capture_grid(&pane.info, pane_dimensions_for(&agent)).ok();
+        let pre_w = pane.grid.as_ref().map(|g| g[0].len()).unwrap_or(0);
+        assert!(pre_w < 60, "pre-zoom capture mirrors the narrow pane");
+        let mut last_dims: HashMap<String, (u16, u16)> = HashMap::new();
+        let guard = enter_focus_zoom(&mut pane, &mut last_dims).expect("eligible window takes");
+        assert_eq!(flag(&agent), "1");
+        assert_eq!(
+            pane.grid.as_ref().map(|g| g[0].len()),
+            Some(60),
+            "the entry re-capture widens the cell in the same tick"
+        );
+        assert_eq!(last_dims.get(&agent).copied(), Some((60, 20)));
+        drop(guard);
+        assert_eq!(flag(&agent), "0");
+        assert_eq!(widths(), before);
+
+        // The flag gate: a zoom someone else already lifted must not be
+        // re-toggled by a late restore.
+        let guard = WindowZoom::take(&agent, &probe(&agent)).expect("re-take after restore");
+        run(&["resize-pane", "-Z", "-t", &agent]); // someone else lifts it
+        assert_eq!(flag(&agent), "0");
+        guard.restore();
+        assert_eq!(flag(&agent), "0", "restore must not re-zoom");
+
+        // Ownership rule: a window already zoomed on arrival is the
+        // user's state — never touched, left exactly as found.
+        run(&["resize-pane", "-Z", "-t", &sibling]);
+        assert_eq!(probe(&agent), "2|1");
+        assert!(WindowZoom::take(&agent, &probe(&agent)).is_none());
+        assert_eq!(flag(&sibling), "1", "the user's zoom survives");
+        assert_eq!(widths().get(&sibling).copied(), Some(60));
+        run(&["resize-pane", "-Z", "-t", &sibling]); // undo the user zoom
+        assert_eq!(flag(&sibling), "0");
+
+        // A pane alone in its window: nothing to gain, no churn.
+        run(&["new-window", "-t", "zoom-life"]);
+        let lone = run(&["display-message", "-p", "-t", "zoom-life", "#{pane_id}"]);
+        assert_eq!(probe(&lone), "1|0");
+        assert!(WindowZoom::take(&lone, &probe(&lone)).is_none());
+        assert_eq!(flag(&lone), "0");
+
+        // The dead-pane restore no-op: the zoomed pane dies mid-zoom, the
+        // probe fails, and the restore degrades silently (no re-zoom of a
+        // dead target, no panic, the surviving sibling untouched).
+        let guard = WindowZoom::take(&agent, &probe(&agent)).expect("take before the kill");
+        assert_eq!(flag(&agent), "1");
+        run(&["kill-pane", "-t", &agent]);
+        assert_eq!(
+            flag(&sibling),
+            "0",
+            "tmux unzooms when the zoomed pane dies"
+        );
+        guard.restore();
+        assert_eq!(flag(&sibling), "0");
+        assert_eq!(
+            run(&["list-panes", "-t", "zoom-life:0", "-F", "#{pane_id}"]),
+            sibling,
+            "the sibling survives the dead-pane restore"
+        );
     }
 }
