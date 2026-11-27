@@ -73,6 +73,37 @@ The underlying command is bindable by hand too:
 | `s`            | Toggle cell order: sidebar order (default) / status-first     |
 | `q` / `Esc`    | Quit (Esc collapses zoom first)                               |
 
+## Quick switcher
+
+A fuzzy finder over live agent panes, opened from anywhere: set
+`@sidebar_switch_key` in `tmux.conf` (before loading the plugin), e.g.
+`set -g @sidebar_switch_key s` gives `prefix + s`. The underlying command is
+bindable by hand too:
+`tmux-agent-sidebar switch --popup --popup-client "#{client_name}"` — or run
+`tmux-agent-sidebar switch` full-screen from a shell. The list shows every
+agent pane with its status icon, agent, repo/worktree, session title, and
+last prompt; typing narrows it (fuzzy subsequence match, word-boundary and
+streak matches rank first). The list refreshes once a second while open.
+
+The list is ordered by jump recency, and with an empty query the selection
+starts on the first pane that is not the one you are on — so
+`<key> <enter> <key> <enter>` bounces between the two agents you are
+working in, alt-tab style. Jump history persists across opens in the
+`@sidebar_switch_mru` option (recent first, 32 entries); typed queries
+rank by relevance instead, and clearing the query restores the recency
+default.
+
+The popup size is configurable with `@sidebar_switch_width` /
+`@sidebar_switch_height` (tmux popup size strings, default `80%` / `60%`).
+
+| Key                 | Action                                             |
+| ------------------- | -------------------------------------------------- |
+| type                | Filter the list (fuzzy match over all row fields)  |
+| `↑` / `↓` / `Ctrl-n` / `Ctrl-p` | Move the selection                      |
+| `Enter`             | Close the popup and jump to the selected pane      |
+| `Ctrl-u` / `Ctrl-w` | Clear the query / delete the word before cursor    |
+| `Esc` / `Ctrl-c`    | Close without jumping                              |
+
 ## Repo filter popup
 
 Opened with `r` or by clicking the menu button at the right edge of the

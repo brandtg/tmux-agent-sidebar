@@ -8,6 +8,7 @@ pub mod plugin_state;
 pub(crate) mod setup;
 pub(crate) mod shared_html;
 mod spawn;
+mod switch;
 mod todo;
 pub(crate) mod toggle;
 
@@ -37,6 +38,7 @@ pub fn run(args: &[String]) -> Option<i32> {
         "todo" => todo::cmd_todo(rest),
         "capture" => capture::cmd_capture(rest),
         "overview" => overview::cmd_overview(rest),
+        "switch" => switch::cmd_switch(rest),
         "notify-focus" => notify_focus::cmd_notify_focus(rest),
         "--version" | "version" => {
             println!("{}", crate::VERSION);
@@ -50,7 +52,7 @@ pub fn run(args: &[String]) -> Option<i32> {
             eprintln!(
                 "usage: tmux-agent-sidebar \
                  [setup|hook|toggle|toggle-all|auto-close|maintain-width|layouts|set-status|\
-                 spawn|todo|capture|overview|notify-focus|version]"
+                 spawn|todo|capture|overview|switch|notify-focus|version]"
             );
             2
         }
