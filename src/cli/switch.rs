@@ -315,7 +315,7 @@ impl SwitchState {
             .enumerate()
             .filter_map(|(i, e)| fuzzy_score(&query, &e.haystack).map(|score| (i, score)))
             .collect();
-        ranked.sort_by(|a, b| b.1.cmp(&a.1));
+        ranked.sort_by_key(|(_, score)| std::cmp::Reverse(*score));
         self.ranked = ranked;
     }
 
