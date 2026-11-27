@@ -101,6 +101,8 @@ export default defineConfig({
           label: 'Features',
           items: [
             { slug: 'features/agent-pane' },
+            { slug: 'features/overview' },
+            { slug: 'features/quick-switcher' },
             { slug: 'features/git-status' },
             { slug: 'features/worktree' },
             { slug: 'features/notifications' },

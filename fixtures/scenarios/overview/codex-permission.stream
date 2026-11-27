@@ -1,0 +1,16 @@
+\e[38;5;117m> deep-link query string dropped on redirect\e[0m
+
+\e[38;5;181m⏺ Read\e[0m (web/routes/login.ts, 84 lines)
+  \e[38;5;244m⎿  redirectTo is rebuilt from req.url after the\e[0m
+     \e[38;5;244mIdP callback — the original query is gone\e[0m
+
+\e[38;5;180m⏺ Edit\e[0m (web/routes/login.ts, +12 −4)
+  \e[38;5;244m⎿  Preserve the incoming query string through the\e[0m
+     \e[38;5;244mOAuth round-trip via a signed state param\e[0m
+
+\e[38;5;114m⏺ Bash\e[0m (pnpm test web/routes)
+  \e[38;5;244m⎿  27 passed\e[0m
+
+\e[38;5;179m● Fix ready: preserve the redirect query through the OAuth\e[0m
+\e[38;5;179m  round-trip (web/routes/login.ts). Apply this change?\e[0m
+\e[38;5;245m  ❯ 1. Yes      2. Yes, don't ask again      3. No\e[0m

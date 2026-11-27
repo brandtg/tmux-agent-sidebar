@@ -1,0 +1,17 @@
+\e[38;5;117m> port the remaining REST handlers to the typed client\e[0m
+
+\e[38;5;181m⏺ Edit\e[0m (src/api/routes.ts, +40 −12)
+  \e[38;5;244m⎿  listProjects → typedClient.get('/projects')\e[0m
+  \e[38;5;244m⎿  createDeploy → typedClient.post('/deploys')\e[0m
+
+\e[38;5;110m⏺ Read\e[0m (src/api/client.ts, 156 lines)
+  \e[38;5;244m⎿  Response envelopes already normalize error shapes\e[0m
+
+\e[38;5;181m⏺ Edit\e[0m (src/api/routes.ts, +22 −9)
+  \e[38;5;244m⎿  deleteWebhook → typedClient.delete(...) with retry\e[0m
+
+\e[38;5;114m⏺ Bash\e[0m (pnpm typecheck)
+  \e[38;5;244m⎿  0 errors · 3 files touched\e[0m
+
+Next: swap the last two hand-rolled fetch calls in
+src/api/webhooks.ts, then update the API migration notes.

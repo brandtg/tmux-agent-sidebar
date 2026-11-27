@@ -1,0 +1,30 @@
+---
+title: Quick switcher
+description: An alt-tab for agents — fuzzy-find any live pane and jump, recency-first.
+---
+
+import { Image } from 'astro:assets';
+import switcher from '../../../assets/captures/switcher.png';
+
+<Image src={switcher} alt="the quick switcher popup — a fuzzy list of agent panes with status icons, the selection resting on the most recently jumped agent" densities={[1.5, 2]} />
+
+The quick switcher is an alt-tab between agents. Open it from anywhere, type a few letters, `Enter` — and your tmux client lands on that pane. With no query the list is ordered by jump recency and the selection starts on the pane you were last on before this one, so `<key> <enter> <key> <enter>` bounces between the two agents you're working in.
+
+## Opening it
+
+Set `@sidebar_switch_key` in `tmux.conf` (before loading the plugin) — it's opt-in, no default key is claimed. `set -g @sidebar_switch_key s` gives `prefix + s`. The command is bindable by hand too:
+`tmux-agent-sidebar switch --popup --popup-client "#{client_name}"` — or run `tmux-agent-sidebar switch` full-screen from a shell.
+
+## Reading the list
+
+Each entry renders like a sidebar row: a status icon (running entries ride the spinner pulse; a finished or waiting agent flashes the sidebar's attention colors), the agent, repo/worktree and session title, right-aligned elapsed time, and the last prompt word-wrapped underneath (capped at two detail lines). The pane list refreshes once a second while open, so an agent that starts or dies mid-query still lands in — or leaves — the list, and the selection stays pinned to its pane across refreshes.
+
+## Jump history
+
+Every jump is recorded in the `@sidebar_switch_mru` tmux option (most recent first, 32 entries), so the recency ordering survives restarts. Typing a query switches ranking to relevance — recency is no opinion about what you're searching for — and clearing the query restores the recency default.
+
+## Popup size
+
+`@sidebar_switch_width` / `@sidebar_switch_height` take raw tmux popup size strings (default `80%` / `60%`).
+
+Full key reference: [Keybindings](/tmux-agent-sidebar/reference/keybindings/#quick-switcher).

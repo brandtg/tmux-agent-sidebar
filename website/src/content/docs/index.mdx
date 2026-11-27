@@ -1,6 +1,6 @@
 ---
 title: tmux-agent-sidebar
-description: tmux-agent-sidebar — one tmux sidebar that tracks every Claude Code, Codex, and OpenCode pane across every session and window. See status, background shells, prompts, Git state, activity, and worktrees without switching windows.
+description: tmux-agent-sidebar — one tmux sidebar that tracks every Claude Code, Codex, OpenCode, Hermes, and Antigravity pane across every session and window. See status, background shells, prompts, Git state, activity, and worktrees without switching windows.
 template: splash
 hero:
   tagline: 'Every <span class="hero-agent"><img src="/tmux-agent-sidebar/brands/claude.ico" alt="" aria-hidden="true" width="16" height="16" />Claude Code</span>, <span class="hero-agent"><img src="/tmux-agent-sidebar/brands/codex.png" alt="" aria-hidden="true" width="16" height="16" />Codex</span>, <span class="hero-agent"><img src="/tmux-agent-sidebar/brands/opencode.svg" alt="" aria-hidden="true" width="16" height="20" />OpenCode</span>, Hermes, and Antigravity pane across every tmux session and window — status, background shells, prompts, Git, and activity in one sidebar.'
@@ -31,6 +31,15 @@ import { Card, CardGrid } from '@astrojs/starlight/components';
   <Card title="Live status, prompts, responses" icon="comment-alt">
     Prompts, tool calls, response previews, background shell state, wait reasons,
     task progress, and subagent trees — all refreshing as the agents work.
+  </Card>
+  <Card title="Overview grid" icon="window">
+    `o` opens a fullscreen live grid of every pane — watch them all at once,
+    drive one with your keyboard (`p`), or zoom in and jump straight in.
+  </Card>
+  <Card title="Quick switcher" icon="magnifier">
+    An alt-tab for agents: fuzzy-find any live pane and jump, recency-first —
+    `<key> <enter> <key> <enter>` bounces between the two agents you're
+    working in.
   </Card>
   <Card title="Worktree-aware" icon="seti:folder">
     Spawn a fresh worktree + agent from the sidebar, and tear it down —
