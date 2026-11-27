@@ -1,5 +1,10 @@
 # State Management Architecture
 
+Note: the fullscreen overview grid and the quick switcher
+(src/cli/overview.rs, src/cli/switch.rs) are standalone popup processes
+outside `AppState` — they keep their own local state and are out of scope
+for this document.
+
 ## State Scope & Update Frequency
 
 Every piece of state belongs to one of three scopes: **Global** (shared across all sidebar instances via tmux variables), **Per-pane** (keyed by tmux pane ID), or **Local** (single sidebar process only). The table below shows where each field lives, how often it updates, and what triggers the update.
@@ -153,7 +158,7 @@ Per-pane file-based state:
 | `popup` | On user input / render | `PopupState` enum: `None` / `Repo` / `SpawnInput` / `Help` / `RemoveConfirm`. Enforces "at most one popup open" via the type system. `Repo` carries a `scroll` the renderer owns: it clamps the value and keeps the selection inside the window each frame, so the popup scrolls todo-style (`N more ↓` indicator) instead of clipping the tail |
 | `popup_op_seq` / `popup_op_active` | On popup-op dispatch / apply | Monotonic dispatch counter and the id whose result may still mutate the popup. `start_popup_op` stamps each worker result with the next id; `apply_popup_op_result` drops stale results (popup closed or replaced) and flashes a stale success instead of dropping it silently. Closing or reopening the modal invalidates the id |
 | `flash` | On user feedback, cleared by expiry | Transient banner (`Flash`: severity + text + expiry) for spawn / remove / copy / resume feedback. Severity travels with the message (`set_flash` = info, `set_flash_error` = error); the renderer colors by severity, never by substring-sniffing the text |
-| `layout` | Every frame (render) | `FrameLayout` sub-struct bundling the ephemeral fields the UI rewrites every frame for click hit-testing: `pane_row_targets`, `group_starts` (visible group headers and their first row, used by `[` / `]`), `line_to_row`, `toolbar_row`, `header_width`, `menu_button_col` (the merged `ⓘ` menu button in the header row), `repo_spawn_targets`, `spawn_remove_targets`, `group_header_targets` (fold toggles), `window_header_targets` (`index:name` rows jump the tmux client to that window), `todo_row_targets`, `todo_input_rect`, `todo_area`, `flash_rect` |
+| `layout` | Every frame (render) | `FrameLayout` sub-struct bundling the ephemeral fields the UI rewrites every frame for click hit-testing: `pane_row_targets`, `group_starts` (visible group headers and their first row, used by `[` / `]`), `line_to_row`, `toolbar_row`, `banner_width`, `menu_button_col` (the merged `ⓘ` menu button in the header row), `repo_spawn_targets`, `spawn_remove_targets`, `group_header_targets` (fold toggles), `window_header_targets` (`index:name` rows jump the tmux client to that window), `todo_row_targets`, `todo_input_rect`, `todo_area`, `flash_rect` |
 | `notices` | Once at startup / on copy | `NoticesState` sub-struct: `missing_hook_groups`, `claude_plugin_status`, `claude_settings_has_residual_hooks`, `claude_plugin_notice`, `enabled_agents`, `copy_targets`, `copied_at`. The menu button's column lives in `layout.menu_button_col` |
 | `timers` | Refresh cycle | `RefreshTimers` sub-struct gating periodic work: `last_port_refresh`, `port_scan_initialized`, `git_info_primed`, `last_bg_shell_sweep`, `last_approval_scan`, `approval_scan_initialized` |
 | `spinner_frame` | Every 200ms (animation) | Spinner animation frame counter |
@@ -281,7 +286,7 @@ enum PermissionMode { Default, Plan, AcceptEdits, Auto, DontAsk, BypassPermissio
 /// and its per-popup data so the invariant is checked by the type system.
 enum PopupState {
     None,
-    Repo { selected: usize, area: Option<Rect>, repo_start: u16 },
+    Repo { selected: usize, scroll: u16, area: Option<Rect>, repo_start: u16 },
     /// Modal text input shown when the user spawns a new agent (`n` / `+`).
     SpawnInput {
         input: String,
@@ -298,7 +303,7 @@ enum PopupState {
     },
     /// Scrollable keyboard reference (`?`); the renderer writes back
     /// content / viewport each frame for scroll clamping.
-    Help { area: Option<Rect>, scroll: u16, content: u16, viewport: u16 },
+    Help { area: Option<Rect>, scroll: u16, content: u16, viewport: u16, cache: Option<HelpLineCache> },
     /// Confirmation prompt shown when the user removes a spawn-created pane.
     RemoveConfirm {
         pane_id: String,
@@ -373,7 +378,7 @@ struct FrameLayout {
     line_to_row: Vec<Option<usize>>,
     menu_button_col: Option<u16>,
     toolbar_row: u16,
-    header_width: Option<u16>,
+    banner_width: Option<u16>,
     repo_spawn_targets: Vec<RepoSpawnTarget>,
     spawn_remove_targets: Vec<SpawnRemoveTarget>,
     group_header_targets: Vec<GroupHeaderTarget>,

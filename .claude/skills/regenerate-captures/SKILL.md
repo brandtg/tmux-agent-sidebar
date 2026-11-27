@@ -35,11 +35,22 @@ For `hero`, an additional `scripts/hero-compose.mjs` pass produces `og-image.png
 |---|---|---|
 | `hero` | `hero.png` (+ `og-image.png`) | full 140×46 canvas; v1.3 release-prep scene — 5 agents (HERMES=1), TODO panel open, Claude transcript filling the right pane |
 | `agent-pane-focus` | `agent-pane-focus.png` | rows 0..26, cols 0..46 (agent list) |
-| `activity-focus` | `activity-focus.png` | rows 26..46, cols 0..46 (Activity tab) |
-| `git-focus` | `git-focus.png` | rows 26..46, cols 0..46 (Git tab) |
 | `worktree-spawn` | `worktree-spawn.png` | rows 3..15, cols 0..32 (spawn popup) |
+| `switcher` | `switcher.png` | full 112×28 session — the `switch` TUI in a plain pane sized to the popup's default geometry (80%×60% of 140×46); 5 agents (HERMES=1), MRU seeded so the selection rests on the waiting codex |
+| `overview` | `overview.png` | full 140×46 session — the `overview` TUI in a plain pane (the fullscreen popup's render); 5 agents (HERMES=1), every pane painted with a stream so each cell shows transcript content |
 
-All scenarios share `build_layout` in `_lib.sh`, so a change to the seeded pane state can affect multiple outputs. Before regenerating, decide which PNGs are actually affected (e.g. a port change only shows in the agent list → `hero` + `agent-pane-focus` only; a bottom-tab change → `activity-focus` or `git-focus`).
+`activity-focus` / `git-focus` scenarios no longer exist; their PNGs were
+dropped from the site.
+
+Both popup subcommands render the identical frame inside a tmux popup (which
+`capture` cannot see) and inside a plain pane (which it can), so the
+scenarios run the bare `switch` / `overview` TUI in a dedicated
+`tmux new-session -d -s <name> -x … -y …` session on the scenario's isolated
+server and capture that. The switcher/overview sessions live on the same
+isolated server as the agent layout on purpose — the switcher lists agent
+panes server-wide.
+
+All scenarios share `build_layout` in `_lib.sh`, so a change to the seeded pane state can affect multiple outputs. Before regenerating, decide which PNGs are actually affected (e.g. a port change only shows in the agent list → `hero` + `agent-pane-focus` + `overview` + `switcher`; a bottom-tab change → none of the popup captures).
 
 ## Procedure
 

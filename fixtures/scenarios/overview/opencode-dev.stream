@@ -1,0 +1,17 @@
+\e[38;5;117m> boot the dev server while I review the router split\e[0m
+
+\e[38;5;114m⏺ Bash\e[0m (npm run dev)
+  \e[38;5;244m⎿  VITE v6.3.5  ready in 412 ms\e[0m
+     \e[38;5;244m➜  Local:   http://localhost:3456/\e[0m
+     \e[38;5;244m➜  Network: http://10.0.0.4:3456/\e[0m
+
+\e[38;5;244m  watching src/router, src/api for changes…\e[0m
+
+\e[38;5;244m  10:42:07 pm [vite] hmr update /src/router/index.ts\e[0m
+\e[38;5;244m  10:42:31 pm [vite] hmr update /src/router/guards.ts\e[0m
+\e[38;5;244m  10:44:02 pm [vite] page reload src/router/index.ts\e[0m
+\e[38;5;244m  10:44:02 pm [vite] hmr update /src/router/index.ts\e[0m
+\e[38;5;244m  10:47:19 pm [vite] hmr update /src/api/client.ts\e[0m
+\e[38;5;244m  10:47:20 pm [vite] hmr update /src/api/routes.ts\e[0m
+
+Server healthy — 0 errors since the router split.

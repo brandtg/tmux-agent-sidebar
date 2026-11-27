@@ -55,6 +55,8 @@ render_hero() {
 render_hero
 render_static agent-pane-focus
 render_static worktree-spawn
+render_static switcher
+render_static overview
 
 echo
 echo "==> done: $OUT"

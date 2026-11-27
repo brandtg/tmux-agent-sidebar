@@ -68,10 +68,15 @@ The underlying command is bindable by hand too:
 | `BackTab` / `←` / `k` | Select the previous cell                              |
 | Mouse click    | Select a cell; click the selected cell again to zoom it       |
 | `Enter`        | Zoom the selected cell; while zoomed, step into the real pane |
-| `p`            | Prompt bar: type a prompt, `Enter` sends it to that pane, `Esc` cancels (supports the TODO editor's keys — `Ctrl-w`, `Ctrl-arrows`, `Ctrl-a/e/u`) |
+| `p`            | Drive mode: every key press forwards to that pane's agent — type prompts, run slash commands, paste multi-line blocks (Enter debounced so a paste's line breaks submit as one block). `Ctrl-g` or a click leaves; `Esc` sends an interrupt to the agent |
 | `f`            | Close the popup and focus that agent's real pane              |
 | `s`            | Toggle cell order: sidebar order (default) / status-first     |
-| `q` / `Esc`    | Quit (Esc collapses zoom first)                               |
+| `q` / `Ctrl-c` | Quit (Esc collapses zoom first)                               |
+
+The selected cell is marked with a thick accent border (double-thick, so it
+reads at any palette). Stepping past either end of the grid deselects rather
+than wrapping around. The header's `«` collapses the grid to the header line
+and `✕` closes the popup — both clickable.
 
 ## Quick switcher
 
@@ -106,6 +111,7 @@ The popup size is configurable with `@sidebar_switch_width` /
 | ------------------- | -------------------------------------------------- |
 | type                | Filter the list (fuzzy match over all row fields)  |
 | `↑` / `↓` / `Ctrl-n` / `Ctrl-p` | Move the selection                      |
+| `←` / `→` / `Home` / `End` | Move the cursor within the query           |
 | `Enter`             | Close the popup and jump to the selected pane      |
 | `Ctrl-u` / `Ctrl-w` | Clear the query / delete the word before cursor    |
 | `Esc` / `Ctrl-c`    | Close without jumping                              |

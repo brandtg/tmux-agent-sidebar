@@ -8,11 +8,14 @@
 
 - Tracks Claude Code, Codex, OpenCode, Hermes, and Antigravity panes across all tmux sessions and windows
 - Live prompts, response previews, background shells, wait reasons, task progress, and subagent trees
-- A status chyron narrates each agent's latest move, group headers fold with a click, and `o` opens a fullscreen overview grid of every pane — `p` prompts one live from the grid (the agent's own slash menus and all), `f` jumps in
+- A status chyron narrates each agent's latest move, group headers fold with a click, and `o` opens a fullscreen overview grid of every pane — `p` drives one live from the grid (the agent's own slash menus and all), `f` jumps in
+- The quick switcher (`switch`) is an alt-tab for agents: a fuzzy finder over live panes with recency ordering — `<key> <enter> <key> <enter>` bounces between the two agents you're working in
 - Spawn an agent from the sidebar — in the repo folder or a fresh worktree; tear down window, worktree, and branch in one keystroke
 - Plain shell panes are tracked too — long-running commands pulse as tasks, and an optional shell-integration snippet captures real exit codes
 - Desktop notifications when an agent finishes, needs permission, or errors out
 - A manual TODO list (`t`), shared across every open sidebar and saved between restarts — edit in place, `y` yanks an item, and `r` relaunches a resume-shaped one in a new window
+
+<p align="center"><img src="website/src/assets/captures/switcher.png" width="720" alt="The quick switcher — alt-tab between agent panes" /></p>
 
 ## Quick start
 
@@ -50,6 +53,13 @@ Optional: to detect shell-task failures, source the exit-code snippet in `~/.zsh
 ### 3. Toggle the sidebar
 
 `prefix + e` toggles it in the current window, `prefix + E` everywhere.
+
+Optional: bind the quick switcher and the overview grid globally —
+
+```tmux
+set -g @sidebar_switch_key s    # prefix + s opens the switcher
+set -g @sidebar_overview_key O  # prefix + O opens the overview grid
+```
 
 ## Documentation
 

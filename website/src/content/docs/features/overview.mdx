@@ -1,0 +1,35 @@
+---
+title: Overview grid
+description: A fullscreen live grid of every agent pane — watch them all, drive one, jump in.
+---
+
+import { Image } from 'astro:assets';
+import overview from '../../../assets/captures/overview.png';
+
+<Image src={overview} alt="the fullscreen overview grid — five agent panes rendered side by side, the selected cell outlined with a thick accent border" densities={[1.5, 2]} />
+
+Open the overview with `o` inside the sidebar (or the header `☰` button) and every agent pane on the server becomes a cell in one fullscreen grid — each cell a live capture of that pane's screen, refreshed twice a second, with the agent, repo/worktree, and its latest move on the cell's title line and a one-row activity strip underneath.
+
+The selected cell is outlined with a thick accent border; waiting and error cells get loud borders so they compete for your eye, and finished ones fade back.
+
+## Entering and leaving
+
+From anywhere, `@sidebar_overview_key` in `tmux.conf` (before loading the plugin) binds it globally, e.g. `set -g @sidebar_overview_key O` gives `prefix + O`. The underlying command is bindable by hand too:
+`tmux-agent-sidebar overview --popup --popup-client "#{client_name}"`.
+
+`Esc` quits; the header's `«` collapses the grid to its header line and `✕` closes the popup.
+
+## Drive mode
+
+Press `p` on the selected (or zoomed) cell and your keyboard plugs straight into that agent: every key press forwards to the pane — prompts, slash menus, arrow keys, multi-line pastes (a paste's Enters are debounced so the whole block submits as one). The driven pane's capture refreshes every 60 ms, so you watch your typing land in real time.
+
+`Ctrl-g` or a click leaves drive mode. `Esc` sends an interrupt to the agent instead — the same key that means "stop" in the agent's own TUI.
+
+## Zooming and jumping
+
+- `Enter` zooms the selected cell fullscreen (temporarily zooming the source pane with `resize-pane -Z`, restored on exit); pressing `Enter` again — or `f` — closes the popup and lands you in the real pane
+- Arrow keys / `Tab` / `j` / `k` move the selection; stepping past either end deselects rather than wrapping
+- `s` toggles cell order: sidebar order (default) or status-first
+- The refresh cadence is tunable with `--interval-ms` (default 500 ms, minimum 100)
+
+Full key reference: [Keybindings](/tmux-agent-sidebar/reference/keybindings/#agent-overview-grid).
