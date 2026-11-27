@@ -75,7 +75,7 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Position, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Paragraph},
+    widgets::{Block, BorderType, Paragraph},
 };
 
 use crate::cli::capture::ansi::{self, StyledCell, palette_rgb};
@@ -1044,28 +1044,38 @@ fn header_close_hit(row: u16, col: u16, width: u16) -> bool {
 /// button — mirroring the sidebar header's `☰` zone.
 const COLLAPSE_BUTTON_WIDTH: u16 = 3;
 
-/// Move the selection `delta` cells with wraparound, over the status-sorted
-/// pane list. Pane ids keep the selection anchored across refreshes.
+/// Move the selection `delta` cells over the status-sorted pane list,
+/// cycling through the neutral state: stepping past either end deselects
+/// everything, so the borders go back to speaking for each agent — the
+/// accent never traps the selection. Pane ids keep the selection anchored
+/// across refreshes.
 fn step_selection(panes: &[OverviewPane], current: Option<String>, delta: i32) -> Option<String> {
     if panes.is_empty() {
         return None;
     }
     let n = panes.len() as i32;
-    let idx = match current
+    match current
         .as_ref()
         .and_then(|id| panes.iter().position(|p| &p.info.pane_id == id))
     {
-        Some(i) => (i as i32 + delta).rem_euclid(n) as usize,
+        Some(i) => {
+            let next = i as i32 + delta;
+            if next < 0 || next >= n {
+                // Off either end: the neutral state, not a wraparound jump.
+                None
+            } else {
+                Some(panes[next as usize].info.pane_id.clone())
+            }
+        }
         // Nothing selected yet: Right picks the first cell, Left the last.
         None => {
             if delta >= 0 {
-                0
+                Some(panes[0].info.pane_id.clone())
             } else {
-                n as usize - 1
+                Some(panes[n as usize - 1].info.pane_id.clone())
             }
         }
-    };
-    Some(panes[idx].info.pane_id.clone())
+    }
 }
 
 /// The raw outputs of one overview snapshot pass, produced on the worker
@@ -1512,9 +1522,17 @@ fn draw_cell(
             .fg(theme.accent)
             .add_modifier(Modifier::BOLD);
     }
+    // The accent hue alone was still easy to lose next to the loud running
+    // green, so the selected cell's outline also goes heavy (┏━┓): thickness
+    // marks the selection at any palette, not just this theme's.
     let block = Block::bordered()
         .title(title_line(&pane.info, theme))
-        .border_style(border);
+        .border_style(border)
+        .border_type(if selected {
+            BorderType::Thick
+        } else {
+            BorderType::Plain
+        });
     let inner = block.inner(area);
     f.render_widget(block, area);
 
@@ -1961,14 +1979,11 @@ mod tests {
             step_selection(&panes, Some("%9".into()), 1).as_deref(),
             Some("%1")
         );
-        assert_eq!(
-            step_selection(&panes, Some("%2".into()), 1).as_deref(),
-            Some("%9")
-        );
-        assert_eq!(
-            step_selection(&panes, Some("%9".into()), -1).as_deref(),
-            Some("%2")
-        );
+        // Off either end the selection clears — cycling through the neutral
+        // state, not jumping to the opposite edge (and re-entry from None
+        // at both edges is asserted above).
+        assert_eq!(step_selection(&panes, Some("%2".into()), 1), None);
+        assert_eq!(step_selection(&panes, Some("%9".into()), -1), None);
     }
 
     #[test]
@@ -2017,17 +2032,17 @@ mod tests {
         sort_for_grid(&mut panes);
         insta::assert_snapshot!(render_frame(&panes, Some(0), None, SortMode::Status, 80, 12), @"
         «   ◐1 ●1tab move · enter zoom · p prompt · f go · s sidebar · q quit          ✕
-        ┌ ◐ claude · project───────────────────┐┌ ● claude · project───────────────────┐
-        │ Waiting · permission                 ││ Reviewing the diff …                 │
-        │                                      ││                                      │
-        │                                      ││                                      │
-        │                                      ││                                      │
-        │                                      ││                                      │
-        │                                      ││                                      │
-        │                                      ││                                      │
-        │                                      ││                                      │
-        │[claude] approval prompt              ││[claude] editing src/main.rs          │
-        └──────────────────────────────────────┘└──────────────────────────────────────┘
+        ┏ ◐ claude · project━━━━━━━━━━━━━━━━━━━┓┌ ● claude · project───────────────────┐
+        ┃ Waiting · permission                 ┃│ Reviewing the diff …                 │
+        ┃                                      ┃│                                      │
+        ┃                                      ┃│                                      │
+        ┃                                      ┃│                                      │
+        ┃                                      ┃│                                      │
+        ┃                                      ┃│                                      │
+        ┃                                      ┃│                                      │
+        ┃                                      ┃│                                      │
+        ┃[claude] approval prompt              ┃│[claude] editing src/main.rs          │
+        ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛└──────────────────────────────────────┘
         ");
     }
 
@@ -2059,17 +2074,17 @@ mod tests {
         };
         insta::assert_snapshot!(render_zoom(&[pane], 0, None, 40, 12), @"
         «   ●1esc grid · enter go · q quit     ✕
-        ┌ ● codex · project────────────────────┐
-        │ Refactoring the export path …        │
-        │                                      │
-        │                                      │
-        │                                      │
-        │                                      │
-        │                                      │
-        │                                      │
-        │                                      │
-        │[codex] waiting for input             │
-        └──────────────────────────────────────┘
+        ┏ ● codex · project━━━━━━━━━━━━━━━━━━━━┓
+        ┃ Refactoring the export path …        ┃
+        ┃                                      ┃
+        ┃                                      ┃
+        ┃                                      ┃
+        ┃                                      ┃
+        ┃                                      ┃
+        ┃                                      ┃
+        ┃                                      ┃
+        ┃[codex] waiting for input             ┃
+        ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
         ");
     }
 
@@ -2225,13 +2240,16 @@ mod tests {
                 err: None,
             },
         ];
-        // Selected: the first cell's left border is the accent color, bold.
+        // Selected: the first cell's left border is the accent color, bold,
+        // and the heavy glyph set — thickness marks the selection too.
         let buf = render_grid_buffer(&panes, Some(0), 80, 12);
         assert_eq!(buf[(0, 2)].fg, theme.accent);
         assert!(buf[(0, 2)].modifier.contains(Modifier::BOLD));
-        // The unselected idle cell next to it keeps the grey border, so
-        // the two can never look alike.
+        assert_eq!(buf[(0, 2)].symbol(), "┃");
+        // The unselected idle cell next to it keeps the grey, light border,
+        // so the two can never look alike.
         assert_eq!(buf[(40, 2)].fg, theme.border_inactive);
+        assert_eq!(buf[(40, 2)].symbol(), "│");
         // Unselected running cells keep the status color, distinct from
         // the accent.
         let buf_unselected = render_grid_buffer(&panes, None, 80, 12);
@@ -2486,16 +2504,16 @@ mod tests {
             render_zoom(&[pane], 0, Some(&make_drive(None)), 40, 12),
             @"
         «   ●1ctrl-g leave                     ✕
-        ┌ ● claude · project───────────────────┐
-        │ Editing src/main.rs …                │
-        │                                      │
-        │                                      │
-        │                                      │
-        │                                      │
-        │                                      │
-        │                                      │
-        │[claude] line one                     │
-        └──────────────────────────────────────┘
+        ┏ ● claude · project━━━━━━━━━━━━━━━━━━━┓
+        ┃ Editing src/main.rs …                ┃
+        ┃                                      ┃
+        ┃                                      ┃
+        ┃                                      ┃
+        ┃                                      ┃
+        ┃                                      ┃
+        ┃                                      ┃
+        ┃[claude] line one                     ┃
+        ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
          ▶ PROMPT claude · project · ctrl-g leav
         "
         );
@@ -2513,11 +2531,11 @@ mod tests {
             render_zoom(&[pane], 0, Some(&drive), 100, 7),
             @"
         «   ◐1ctrl-g leave                                                                                 ✕
-        ┌ ◐ claude · project───────────────────────────────────────────────────────────────────────────────┐
-        │ Waiting · input                                                                                  │
-        │(pane gone)                                                                                       │
-        │                                                                                                  │
-        └──────────────────────────────────────────────────────────────────────────────────────────────────┘
+        ┏ ◐ claude · project━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
+        ┃ Waiting · input                                                                                  ┃
+        ┃(pane gone)                                                                                       ┃
+        ┃                                                                                                  ┃
+        ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
          ▶ PROMPT claude · project · ctrl-g leave  no agent in the foreground (zsh) — nothing sent
         "
         );
@@ -2762,17 +2780,17 @@ mod tests {
         // (multi-client setups).
         insta::assert_snapshot!(render_zoom(&[pane], 0, None, 60, 12), @"
         «   ●1esc grid · enter go · p prompt · q quit              ✕
-        ┌ ● codex · project────────────────────────────────────────┐
-        │ Refactoring the export path …                            │
-        │                                                          │
-        │                                                          │
-        │                                                          │
-        │                                                          │
-        │                                                          │
-        │                                                          │
-        │                                                          │
-        │         [codex] waiting for input                        │
-        └──────────────────────────────────────────────────────────┘
+        ┏ ● codex · project━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
+        ┃ Refactoring the export path …                            ┃
+        ┃                                                          ┃
+        ┃                                                          ┃
+        ┃                                                          ┃
+        ┃                                                          ┃
+        ┃                                                          ┃
+        ┃                                                          ┃
+        ┃                                                          ┃
+        ┃         [codex] waiting for input                        ┃
+        ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
         ");
     }
 

@@ -249,8 +249,10 @@ else (any `run-shell` gets `TMUX_PANE`, so `--popup-client` is optional
 there).
 
 Keys: nothing is selected until you move; arrows/tab (or j/k) select and
-move with wraparound, Enter zooms the selected cell fullscreen, Esc
-collapses zoom (and quits from the grid), q quits. Click a cell to select
+move, cycling through the unselected state — one more step past the last
+cell (or before the first) deselects everything, so the borders go back to
+communicating each agent's status. Enter zooms the selected cell fullscreen,
+Esc collapses zoom (and quits from the grid), q quits. Click a cell to select
 it; click the selected cell again to zoom it (the grid layout feeding the
 render also drives the click hit-test, so they cannot drift). `s` toggles
 the cell order between the sidebar's row order (default) and status-first.
