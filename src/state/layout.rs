@@ -86,15 +86,6 @@ pub struct TodoRowTarget {
     pub index: usize,
 }
 
-/// Screen-positioned hyperlink overlay for OSC 8 terminal hyperlinks.
-#[derive(Debug, Clone)]
-pub struct HyperlinkOverlay {
-    pub x: u16,
-    pub y: u16,
-    pub text: String,
-    pub url: String,
-}
-
 /// Ephemeral render output cached for click hit-testing.
 ///
 /// Every field here is **rewritten on every frame** by the UI layer and
@@ -122,10 +113,14 @@ pub struct FrameLayout {
     /// while it overlays the toolbar). Defaults to 0 for callers that
     /// have not rendered a frame yet.
     pub toolbar_row: u16,
-    /// Width of the header row as of the last render. The chyron's
-    /// ticker math needs it (the display window depends on how much
-    /// room the banner has); `None` before the first frame.
-    pub header_width: Option<u16>,
+    /// Width the chyron banner may occupy as of the last render: the
+    /// header row minus the overview button's and the menu button's
+    /// columns. The chyron's ticker math (display window, scroll
+    /// target) must use exactly the width the renderer scrolls the
+    /// banner against — measuring against the full row closed the
+    /// display window before an overflowing banner finished scrolling
+    /// (audit 2026-11-25 H-UI-1). `None` before the first frame.
+    pub banner_width: Option<u16>,
     /// Click regions for the `[+]` spawn button rendered at the right
     /// edge of each repo-group header. One entry per visible repo group.
     pub repo_spawn_targets: Vec<RepoSpawnTarget>,
@@ -140,9 +135,6 @@ pub struct FrameLayout {
     /// group title): clicking anywhere on one switches the tmux client
     /// to that window. One entry per rendered header.
     pub window_header_targets: Vec<WindowHeaderTarget>,
-    /// OSC 8 hyperlink overlays the main loop writes after each frame so
-    /// terminals can recognise PR numbers as clickable links.
-    pub hyperlink_overlays: Vec<HyperlinkOverlay>,
     /// Click regions for rendered TODO items, one per visible item.
     pub todo_row_targets: Vec<TodoRowTarget>,
     /// Click region for the inline "add TODO" input line, when open.
@@ -584,6 +576,18 @@ impl AppState {
     /// otherwise each notch skips three panes. When the pointer sits over
     /// the TODO panel, the same delta scrolls that panel instead.
     pub fn handle_mouse_scroll(&mut self, delta: isize, row: u16) {
+        // A modal owns the screen while it is open: wheel events must
+        // not move the hidden background list — the viewport would drift
+        // with no visible cause and stay wrong after the popup closes
+        // (audit 2026-11-25 M-inp-1). The help overlay is the one modal
+        // with scrollable content, so the wheel scrolls it like j/k.
+        if self.is_help_open() {
+            self.scroll_help(delta);
+            return;
+        }
+        if self.is_popup_open() {
+            return;
+        }
         if self.todos.visible && point_in_rect(row, self.layout.todo_area.x, self.layout.todo_area)
         {
             self.scrolls.todos.scroll(delta);
@@ -638,7 +642,7 @@ impl AppState {
     /// the flash banner.
     pub fn spawn_overview_popup(&mut self) {
         if let Err(e) = crate::cli::spawn_overview_popup_detached() {
-            self.set_flash(format!("overview: {e}"));
+            self.set_flash_error(format!("overview: {e}"));
         }
     }
 
@@ -664,9 +668,25 @@ impl AppState {
                     let inner_row = (row - area.y - 1) as usize;
                     if inner_row >= repo_start {
                         let item_index = inner_row - repo_start;
-                        if item_index < self.repo_names().len() {
-                            self.set_repo_popup_selected(item_index);
-                            self.confirm_repo_popup();
+                        // Rows the renderer reserved for the `N more ↓`
+                        // scroll indicator are not repo rows (audit
+                        // 2026-11-25 M-UI-3); the mapping must mirror
+                        // the render geometry exactly.
+                        let visible_rows = (area.height as usize)
+                            .saturating_sub(2)
+                            .saturating_sub(repo_start);
+                        let overflowing = self.repo_names().len() > visible_rows;
+                        let repo_rows = if overflowing {
+                            visible_rows.saturating_sub(1)
+                        } else {
+                            visible_rows
+                        };
+                        if item_index < repo_rows {
+                            let absolute = self.repo_popup_scroll() + item_index;
+                            if absolute < self.repo_names().len() {
+                                self.set_repo_popup_selected(absolute);
+                                self.confirm_repo_popup();
+                            }
                         }
                     }
                 }
@@ -830,6 +850,13 @@ impl AppState {
         // open input line re-opens insert mode, and header/empty space is
         // inert.
         if self.todos.visible && point_in_rect(row, col, self.layout.todo_area) {
+            // A click that hands the keyboard to the TODO panel must
+            // first close the `/` input line: the panel would otherwise
+            // own the keystrokes while the header still renders a
+            // live-looking search box (audit 2026-11-25 M-inp-2). The
+            // query stays applied — the click is a focus change, not a
+            // filter change.
+            self.finish_search();
             if let Some(rect) = self.layout.todo_input_rect
                 && point_in_rect(row, col, rect)
             {
@@ -871,8 +898,14 @@ impl AppState {
             return;
         }
 
-        // The list starts below the single header row.
-        let line_index = row.saturating_sub(1) as usize + self.scrolls.panes.offset;
+        // The list starts below the single header row. The header's
+        // screen row is `layout.toolbar_row` — 0 today only because the
+        // panel always occupies the whole terminal; deriving the offset
+        // keeps every click landing on its row if the panel ever gains a
+        // top offset (audit 2026-11-25 L-state-3, which hardcoded the
+        // `saturating_sub(1)`).
+        let header_rows = self.layout.toolbar_row.saturating_add(1);
+        let line_index = row.saturating_sub(header_rows) as usize + self.scrolls.panes.offset;
         if let Some(Some(agent_row)) = self.layout.line_to_row.get(line_index) {
             self.global.selected_pane_row = *agent_row;
             self.global.queue_cursor_save();
@@ -885,6 +918,7 @@ impl AppState {
 mod tests {
     use super::*;
     use crate::group::{PaneGitInfo, RepoGroup};
+    use crate::state::PopupState;
     use crate::tmux::{
         AgentType, PaneAttention, PaneInfo, PaneStatus, PermissionMode, WorktreeMetadata,
     };
@@ -1346,5 +1380,197 @@ mod tests {
             state.todos.adding.is_none(),
             "the input must not open underneath the edit"
         );
+    }
+
+    // ─── Wheel over popups (audit 2026-11-25 M-inp-1) ─────────────────
+
+    #[test]
+    fn wheel_over_an_open_modal_does_not_scroll_the_hidden_list() {
+        // The spawn modal covers the screen; wheel events behind it
+        // moved scrolls.panes with no visible cause, and the viewport
+        // stayed wrong after the popup closed.
+        let mut state = todo_click_state();
+        state.open_spawn_input_for_repo("alpha".into(), "/tmp/alpha".into(), "sess".into(), None);
+        state.scrolls.panes.offset = 4;
+
+        state.handle_mouse_scroll(3, 0);
+        state.handle_mouse_scroll(-3, 0);
+
+        assert_eq!(
+            state.scrolls.panes.offset, 4,
+            "the background list must not move under a modal"
+        );
+    }
+
+    #[test]
+    fn wheel_scrolls_the_help_overlay_while_it_is_open() {
+        let mut state = todo_click_state();
+        state.toggle_help_popup();
+        state.set_help_metrics(30, 10);
+
+        state.handle_mouse_scroll(3, 0);
+
+        assert_eq!(state.help_scroll(), 3, "one notch scrolls like j ×3");
+        state.handle_mouse_scroll(-3, 0);
+        assert_eq!(state.help_scroll(), 0, "clamped at the top");
+    }
+
+    #[test]
+    fn wheel_still_scrolls_the_todo_panel_without_a_popup() {
+        // The modal guard must not eat the pre-existing wheel target.
+        let mut state = todo_click_state();
+        state.scrolls.todos.visible_height = 2;
+        state.scrolls.todos.total_lines = 10;
+
+        state.handle_mouse_scroll(3, 3);
+
+        assert_eq!(state.scrolls.todos.offset, 3);
+    }
+
+    // ─── Search vs. click focus changes (audit 2026-11-25 M-inp-2) ────
+
+    #[test]
+    fn clicking_a_todo_row_closes_the_live_search_input() {
+        // Search active + click a todo item used to leave the header
+        // rendering a live-looking `/query█` line while every keystroke
+        // actually edited the todo panel.
+        let mut state = todo_click_state();
+        state.open_search();
+        state.search_push_char('m');
+
+        state.handle_mouse_click(3, 5); // item 1's text
+
+        assert_eq!(state.focus_state.focus, Focus::Todos);
+        assert!(
+            !state.search.is_active(),
+            "the input line closes when the panel takes the keyboard"
+        );
+        assert!(
+            state.search.has_query(),
+            "the query stays applied — the click is a focus change, not a filter change"
+        );
+    }
+
+    #[test]
+    fn clicking_the_menu_button_closes_the_live_search_input() {
+        let mut state = todo_click_state();
+        state.open_search();
+        state.search_push_char('x');
+        state.layout.menu_button_col = Some(20);
+
+        state.handle_mouse_click(0, 20);
+
+        assert!(state.is_repo_popup_open());
+        assert!(
+            !state.search.is_active(),
+            "the dropdown must not open over a keyboard-dead search box"
+        );
+    }
+
+    #[test]
+    fn clicking_the_spawn_button_closes_the_live_search_input() {
+        let mut state = todo_click_state();
+        state.open_search();
+        state
+            .layout
+            .repo_spawn_targets
+            .push(crate::state::RepoSpawnTarget {
+                repo_name: "alpha".into(),
+                repo_root: "/tmp/alpha".into(),
+                session_name: "sess".into(),
+                rect: Rect::new(0, 1, 3, 1),
+            });
+
+        state.handle_mouse_click(1, 1);
+
+        assert!(state.is_spawn_input_open());
+        assert!(!state.search.is_active());
+    }
+
+    #[test]
+    fn clicking_the_remove_marker_closes_the_live_search_input() {
+        // The × target routes to open_remove_confirm_for_pane, which
+        // ends the search line before the dialog claims the keyboard.
+        // In the test env the dialog itself cannot open (spawn markers
+        // read through real tmux), so the routing is asserted by the
+        // refusal flash.
+        let mut state = todo_click_state();
+        state.open_search();
+        state
+            .layout
+            .spawn_remove_targets
+            .push(crate::state::SpawnRemoveTarget {
+                rect: Rect::new(0, 1, 3, 1),
+                pane_id: "%1".into(),
+            });
+
+        state.handle_mouse_click(1, 1);
+
+        assert!(
+            !state.is_remove_confirm_open(),
+            "no markers in the test env"
+        );
+        assert!(
+            state
+                .flash
+                .as_ref()
+                .is_some_and(|f| f.text.contains("not spawned")),
+            "the click routed to the remove-confirm flow"
+        );
+        assert!(!state.search.is_active());
+    }
+
+    // ─── Repo popup click mapping through the scroll window ──────────
+
+    fn repo_popup_click_state() -> AppState {
+        let mut state = AppState::new("%99".into());
+        state.repo_groups = [
+            "alpha", "bravo", "charlie", "delta", "echo", "foxtrot", "golf", "hotel",
+        ]
+        .iter()
+        .map(|name| RepoGroup {
+            name: (*name).into(),
+            has_focus: false,
+            panes: vec![],
+        })
+        .collect();
+        // A clamped popup: inner height 6, nine repos → the renderer
+        // would show five rows plus the indicator (M-UI-3 geometry).
+        state.popup = PopupState::Repo {
+            scroll: 2,
+            selected: 2,
+            area: Some(Rect::new(0, 1, 20, 8)),
+            repo_start: 0,
+        };
+        state
+    }
+
+    #[test]
+    fn repo_popup_click_maps_through_the_scroll_window() {
+        // Inner row 3 (item_index 3) with scroll 2 is absolute repo 5 —
+        // "echo" — not the item the unscrolled mapping would have
+        // picked.
+        let mut state = repo_popup_click_state();
+
+        state.handle_mouse_click(1 + 1 + 3, 5);
+
+        assert_eq!(
+            state.global.repo_filter,
+            crate::state::RepoFilter::Repo("echo".into()),
+            "the click selects the absolute repo behind the window"
+        );
+        assert!(!state.is_repo_popup_open(), "confirm applies and closes");
+    }
+
+    #[test]
+    fn clicking_the_scroll_indicator_row_is_inert() {
+        // The indicator row is not a repo row: selecting through it
+        // would apply a filter the user never saw highlighted.
+        let mut state = repo_popup_click_state();
+
+        state.handle_mouse_click(1 + 1 + 5, 5); // item_index 5 = the indicator row
+
+        assert!(state.is_repo_popup_open(), "nothing applied");
+        assert_eq!(state.global.repo_filter, crate::state::RepoFilter::All);
     }
 }

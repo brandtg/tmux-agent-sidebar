@@ -207,6 +207,12 @@ fn parse_args(args: &[String]) -> Result<Opts, String> {
                     .ok_or("--fps needs value")?
                     .parse()
                     .map_err(|e| format!("--fps: {e}"))?;
+                // Above ~1000 the frame interval truncates toward 0 and
+                // the loop busy-spins, filling the disk with HTML frames
+                // (audit 2026-11-25 L-cli-1). Nothing here needs more.
+                if fps > 1000 {
+                    return Err("--fps must be <= 1000".into());
+                }
                 i += 2;
             }
             "--crop-rows" => {
@@ -258,6 +264,20 @@ mod tests {
     fn parse_args_rejects_unknown_flag() {
         let err = parse_args(&["--session".into(), "x".into(), "--weird".into()]).unwrap_err();
         assert!(err.contains("unknown flag"));
+    }
+
+    #[test]
+    fn parse_args_rejects_absurd_fps() {
+        // Above 1000 the frame interval truncates to 0 and the capture
+        // loop busy-spins (audit 2026-11-25 L-cli-1).
+        let err = parse_args(&[
+            "--session".into(),
+            "x".into(),
+            "--fps".into(),
+            "3000000000".into(),
+        ])
+        .unwrap_err();
+        assert!(err.contains("--fps must be <= 1000"));
     }
 
     #[test]

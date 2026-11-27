@@ -48,11 +48,43 @@ impl SearchState {
 /// Case-insensitive substring match against a pre-lowered query (see
 /// [`SearchState::lowercased_query`]). Whitespace-only queries match
 /// everything, which is what an empty search box means.
+///
+/// Compares without allocating: the old `haystack.to_lowercase()`
+/// lowered every matched field of every row on both the rebuild and the
+/// render pass (audit 2026-11-25 L-inp-2). Folding is per char, which
+/// matches the old behavior for everything except the exotic
+/// multi-char-fold cases (`İ`-style) where a lowered haystack grows by a
+/// combining mark — the old code's substring match missed those too.
 fn query_matches_lower(query_lower: &str, haystack: &str) -> bool {
     if query_lower.is_empty() {
         return true;
     }
-    haystack.to_lowercase().contains(query_lower)
+    'starts: for (start, _) in haystack.char_indices() {
+        let mut hay = &haystack[start..];
+        for needle_char in query_lower.chars() {
+            let Some(hay_char) = hay.chars().next() else {
+                // Ran out of haystack mid-needle: no later start has
+                // more room either.
+                return false;
+            };
+            if !chars_eq_ignore_case(hay_char, needle_char) {
+                continue 'starts;
+            }
+            hay = &hay[hay_char.len_utf8()..];
+        }
+        return true;
+    }
+    false
+}
+
+fn chars_eq_ignore_case(a: char, b: char) -> bool {
+    if a == b {
+        return true;
+    }
+    if a.is_ascii() && b.is_ascii() {
+        return a.eq_ignore_ascii_case(&b);
+    }
+    a.to_lowercase().eq(b.to_lowercase())
 }
 
 impl AppState {

@@ -119,8 +119,24 @@ pub fn render_html(cells: &[Vec<StyledCell>]) -> String {
             if cell.bold {
                 styles.push("font-weight:700".into());
             }
+            if cell.italic {
+                styles.push("font-style:italic".into());
+            }
+            if cell.faint {
+                styles.push("opacity:0.6".into());
+            }
+            let mut decorations: Vec<&str> = Vec::new();
             if cell.underlined {
-                styles.push("text-decoration:underline".into());
+                decorations.push("underline");
+            }
+            if cell.strike {
+                decorations.push("line-through");
+            }
+            if cell.overline {
+                decorations.push("overline");
+            }
+            if !decorations.is_empty() {
+                styles.push(format!("text-decoration:{}", decorations.join(" ")));
             }
             if !styles.is_empty() {
                 out.push_str(" style=\"");

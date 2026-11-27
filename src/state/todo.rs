@@ -28,6 +28,17 @@ pub struct TodoUndo {
     pub landed: bool,
 }
 
+/// Outcome of an undo attempt. Only [`TodosUndo::NoStash`] stays silent
+/// (`u` outside an undo window is not an error); an expired or
+/// stale-stash refuse is surfaced so the key does not appear dead while
+/// the "u to undo" banner may still be on screen (audit 2026-11-25
+/// L-inp-1).
+pub(crate) enum TodosUndo {
+    Restored,
+    NoStash,
+    Expired,
+}
+
 /// In-progress text edit for one item, opened with `e`. The buffer is
 /// rendered in place of the item's own text; `cursor` is a char index
 /// into `input`. `original_text` is the item's text as of the moment
@@ -81,6 +92,14 @@ pub struct TodoState {
     /// the undo window: `u` while this is `Some` and unexpired restores
     /// the items. A new destructive action replaces the stash.
     pub undo: Option<TodoUndo>,
+    /// True while a resume launch (`r`) runs on the popup-op worker:
+    /// the window burst lands a second or two later, so a second press
+    /// before the result arrives would launch a duplicate window
+    /// (audit 2026-11-25 M-state-2). Cleared in
+    /// `AppState::flash_resume_result`, which receives the result
+    /// whatever it is. Silent no-op while set, like the spawn/remove
+    /// working guards.
+    pub resume_in_flight: bool,
     /// Memoized flow-wrap of the visible items at the panel's text
     /// width, filled by the render pass and consumed by the height
     /// sizing on the next frame. Both used to wrap every item and run
@@ -89,6 +108,12 @@ pub struct TodoState {
     /// Validated by comparing the cached source text, so no mutation
     /// site needs an explicit invalidation.
     wrap_cache: Option<TodoWrapCache>,
+    /// Same memo for the buffer being edited (audit 2026-11-25 L-UI-7):
+    /// the height sizing and the body render wrapped the same live
+    /// buffer twice per frame, on every keystroke. Keyed by index,
+    /// cursor, buffer, and both widths — compared at read time, so a
+    /// keystroke invalidates without any mutation-site plumbing.
+    edit_wrap_cache: Option<TodoEditWrapCache>,
 }
 
 /// One item's memoized wrap (see [`TodoState::wrap_cache`]).
@@ -96,6 +121,18 @@ pub struct TodoState {
 struct TodoWrapCache {
     text_width: usize,
     entries: Vec<TodoWrapEntry>,
+}
+
+/// The edited buffer's memoized `wrap_with_cursor` output (see
+/// [`TodoState::edit_wrap_cache`]).
+#[derive(Debug, Clone)]
+struct TodoEditWrapCache {
+    index: usize,
+    cursor: usize,
+    input: String,
+    text_width: usize,
+    row_width: usize,
+    lines: Vec<(String, Option<usize>)>,
 }
 
 #[derive(Debug, Clone)]
@@ -250,6 +287,49 @@ impl TodoState {
         self.wrap_cache = Some(TodoWrapCache {
             text_width,
             entries,
+        });
+    }
+
+    /// The edited buffer's cached wrap when the key matches; `None`
+    /// sends the caller to a fresh `wrap_with_cursor` (height sizing).
+    pub(crate) fn cached_edit_wrap(
+        &self,
+        index: usize,
+        cursor: usize,
+        input: &str,
+        text_width: usize,
+        row_width: usize,
+    ) -> Option<&[(String, Option<usize>)]> {
+        let cache = self.edit_wrap_cache.as_ref()?;
+        if cache.index != index
+            || cache.cursor != cursor
+            || cache.text_width != text_width
+            || cache.row_width != row_width
+            || cache.input != input
+        {
+            return None;
+        }
+        Some(cache.lines.as_slice())
+    }
+
+    /// Store the edited buffer's wrap the render pass just computed, so
+    /// the next frame's height sizing reuses it instead of re-wrapping.
+    pub(crate) fn fill_edit_wrap_cache(
+        &mut self,
+        index: usize,
+        cursor: usize,
+        input: &str,
+        text_width: usize,
+        row_width: usize,
+        lines: Vec<(String, Option<usize>)>,
+    ) {
+        self.edit_wrap_cache = Some(TodoEditWrapCache {
+            index,
+            cursor,
+            input: input.to_string(),
+            text_width,
+            row_width,
+            lines,
         });
     }
 
@@ -530,7 +610,9 @@ impl TodoState {
     /// deadline must not have passed and the file must not have changed
     /// since the deletion (a write by another instance would make the
     /// stashed indices stale — restoring over a newer state would
-    /// resurrect stale data). An invalid stash is dropped silently.
+    /// resurrect stale data). An invalid stash is refused with
+    /// [`TodosUndo::Expired`] so the caller can say why the key
+    /// no-oped; only the no-stash case stays silent.
     ///
     /// The freshness check stats the file fresh rather than trusting the
     /// per-tick `self.file_stamp` cache, which can lag the disk by up to
@@ -547,17 +629,17 @@ impl TodoState {
     /// error is surfaced in the panel. When the removal never reached
     /// the file (failed persistence) the restore is memory-only — the
     /// file still holds the items, and a write would duplicate them.
-    pub fn undo(&mut self, hide_completed: bool) -> bool {
+    pub(crate) fn undo(&mut self, hide_completed: bool) -> TodosUndo {
         let Some(undo) = self.undo.take() else {
-            return false;
+            return TodosUndo::NoStash;
         };
         if Instant::now() >= undo.deadline {
-            return false;
+            return TodosUndo::Expired;
         }
         if let Some(dir) = self.dir.clone()
             && crate::todo::stamp_in(&dir) != undo.file_stamp
         {
-            return false;
+            return TodosUndo::Expired;
         }
         let mut entries = undo.items;
         entries.sort_unstable_by_key(|(index, _)| *index);
@@ -594,7 +676,7 @@ impl TodoState {
             }
         }
         self.clamp_selection(hide_completed);
-        true
+        TodosUndo::Restored
     }
 
     /// The completed items with their indices into `items`.
@@ -672,53 +754,60 @@ impl TodoState {
 /// Char-level edits shared by the add line and an open edit. Cursors
 /// are char indices into the buffer (never byte offsets), clamped to
 /// the buffer's length before use.
+///
+/// The edits splice the String at a byte offset derived from the cursor
+/// instead of collecting the buffer into a `Vec<char>` and rebuilding it
+/// per keystroke (audit 2026-11-25 L-inp-2).
+fn char_index_to_byte(input: &str, index: usize) -> usize {
+    input
+        .char_indices()
+        .nth(index)
+        .map(|(byte, _)| byte)
+        .unwrap_or(input.len())
+}
+
 fn insert_char_at(input: &mut String, cursor: &mut usize, c: char) {
-    let mut chars: Vec<char> = input.chars().collect();
-    let at = (*cursor).min(chars.len());
-    chars.insert(at, c);
-    *input = chars.into_iter().collect();
-    *cursor = at + 1;
+    let at = char_index_to_byte(input, *cursor);
+    input.insert(at, c);
+    *cursor += 1;
 }
 
 fn pop_char_before(input: &mut String, cursor: &mut usize) {
-    let mut chars: Vec<char> = input.chars().collect();
-    let at = (*cursor).min(chars.len());
+    let at = char_index_to_byte(input, *cursor);
     if at > 0 {
-        chars.remove(at - 1);
-        *input = chars.into_iter().collect();
-        *cursor = at - 1;
+        let prev = input[..at]
+            .char_indices()
+            .next_back()
+            .map(|(byte, _)| byte)
+            .unwrap_or(0);
+        input.replace_range(prev..at, "");
+        *cursor -= 1;
     }
 }
 
 fn pop_char_at(input: &mut String, cursor: &mut usize) {
-    let mut chars: Vec<char> = input.chars().collect();
-    let at = (*cursor).min(chars.len());
-    if at < chars.len() {
-        chars.remove(at);
-        *input = chars.into_iter().collect();
+    let at = char_index_to_byte(input, *cursor);
+    if let Some(ch) = input[at..].chars().next() {
+        input.replace_range(at..at + ch.len_utf8(), "");
         // The cursor stays: the next char slides under it.
     }
 }
 
 fn pop_word_before(input: &mut String, cursor: &mut usize) {
-    let mut chars: Vec<char> = input.chars().collect();
-    let mut cut = (*cursor).min(chars.len());
-    while cut > 0 && chars[cut - 1].is_whitespace() {
-        cut -= 1;
-    }
-    while cut > 0 && !chars[cut - 1].is_whitespace() {
-        cut -= 1;
-    }
-    if cut < *cursor {
-        // Clamp the range end too: `cut` is safe but a `cursor` beyond
-        // the buffer would panic `drain`. Every mutator keeps the cursor
-        // in bounds today, so this is latent — but the stale-buffer class
-        // (an external reload landing under an open edit) is exactly what
-        // would trip it (audit 2026-11-19 B5).
-        let end = (*cursor).min(chars.len());
-        chars.drain(cut..end);
-        *input = chars.into_iter().collect();
-        *cursor = cut;
+    let end = char_index_to_byte(input, *cursor);
+    let prefix = &input[..end];
+    // Trim trailing whitespace, then the word before it — the same two
+    // scans the char-vector version did, over the prefix slice.
+    let trimmed = prefix.trim_end();
+    let cut_byte = trimmed
+        .char_indices()
+        .rev()
+        .find(|(_, c)| c.is_whitespace())
+        .map(|(byte, c)| byte + c.len_utf8())
+        .unwrap_or(0);
+    if cut_byte < end {
+        input.replace_range(cut_byte..end, "");
+        *cursor = input[..cut_byte].chars().count();
     }
 }
 
@@ -902,16 +991,24 @@ impl AppState {
     /// and stay untouched; recognized items are never modified either
     /// way — the todo is a pointer, not a task.
     pub fn resume_todo_selected(&mut self) {
+        // One launch at a time: the result clears the latch in
+        // `flash_resume_result` (audit 2026-11-25 M-state-2). Silent,
+        // like the spawn/remove working guards. Checked before the
+        // recognition flash so a pressed-while-in-flight `r` neither
+        // flashes nor queues a second op.
+        if self.todos.resume_in_flight {
+            return;
+        }
         let Some(item) = self.todos.items.get(self.todos.selected) else {
             return;
         };
         let text = item.text.clone();
         let Some(reference) = crate::park::recognize_resume(&text) else {
-            self.set_flash("not a resume command");
+            self.set_flash_error("not a resume command");
             return;
         };
         let Some(session) = crate::tmux::pane_session_name(&self.tmux_pane) else {
-            self.set_flash("could not resolve tmux session");
+            self.set_flash_error("could not resolve tmux session");
             return;
         };
         let agent = reference.agent.clone();
@@ -924,12 +1021,14 @@ impl AppState {
         // lands the same result one loop iteration later. The no-hint
         // path keeps its full resolve (parked sidecar, then the agent's
         // own store) on the worker — a wedged sqlite probe must not
-        // stall the render loop either way.
+        // stall the render loop either way. The latch is only armed
+        // when the dispatch actually happened (no channel → no result
+        // → nothing to clear it).
         match &reference.cwd_hint {
             Some(hint) => {
                 let home = std::env::var("HOME").ok();
                 let hint = hint.clone();
-                self.start_background_op(move || {
+                if self.start_background_op(move || {
                     PopupOpResult::Resume(match crate::park::expand_home(&hint, home.as_deref()) {
                         // Both outcomes are banner text: `resumed
                         // <agent> <id8>` or the failure.
@@ -938,11 +1037,13 @@ impl AppState {
                         }
                         None => Err(crate::park::no_cwd_error(&id)),
                     })
-                });
+                }) {
+                    self.todos.resume_in_flight = true;
+                }
             }
             None => {
                 let dir = self.todos.dir.clone();
-                self.start_background_op(move || {
+                if self.start_background_op(move || {
                     PopupOpResult::Resume(crate::park::resolve_and_launch(
                         &session,
                         &text,
@@ -950,7 +1051,9 @@ impl AppState {
                         &agent,
                         &id,
                     ))
-                });
+                }) {
+                    self.todos.resume_in_flight = true;
+                }
             }
         }
     }
@@ -958,12 +1061,14 @@ impl AppState {
     /// Both resume outcomes are banner text — `resumed <agent> <id8>`
     /// on success, the failure message otherwise — so one sink takes
     /// them both. Used by the inline (hint) launch and by the worker
-    /// result's apply step.
+    /// result's apply step. Also clears the in-flight latch: whatever
+    /// the outcome, the launch is over (audit 2026-11-25 M-state-2).
     pub(super) fn flash_resume_result(&mut self, result: Result<String, String>) {
-        self.set_flash(match result {
-            Ok(flash) => flash,
-            Err(err) => err,
-        });
+        self.todos.resume_in_flight = false;
+        match result {
+            Ok(flash) => self.set_flash(flash),
+            Err(err) => self.set_flash_error(err),
+        }
     }
 
     /// Clear the completed section and offer the 4-second undo window
@@ -977,10 +1082,19 @@ impl AppState {
     }
 
     /// Restore the last delete / clear-completed while its undo window
-    /// is open. A silent no-op once the window has passed, the file
-    /// changed since the deletion, or there is no pending stash.
+    /// is open. A silent no-op when there is no pending stash; an
+    /// expired window or a changed file flashes instead of silently
+    /// eating the key while the "u to undo" banner may still be on
+    /// screen (audit 2026-11-25 L-inp-1).
     pub fn undo_todo_last(&mut self) -> bool {
-        self.todos.undo(self.global.todo_hide_completed)
+        match self.todos.undo(self.global.todo_hide_completed) {
+            TodosUndo::Restored => true,
+            TodosUndo::NoStash => false,
+            TodosUndo::Expired => {
+                self.set_flash_error("undo expired — list changed");
+                false
+            }
+        }
     }
 
     /// Open the inline add line, focusing the panel first.
@@ -1076,7 +1190,7 @@ impl AppState {
             .todos
             .set_text(edit.index, edit.input, &edit.original_text)
         {
-            self.set_flash("todo: item changed elsewhere — edit discarded");
+            self.set_flash_error("todo: item changed elsewhere — edit discarded");
         }
         self.todos.clamp_selection(self.global.todo_hide_completed);
     }
@@ -2221,7 +2335,10 @@ mod tests {
     fn a_successful_yank_flashes_copied() {
         let mut state = state_with(vec![]);
         assert!(state.record_todo_yank(true));
-        assert_eq!(state.take_flash().as_deref(), Some("copied"));
+        assert_eq!(
+            state.take_flash().map(|(_, text)| text).as_deref(),
+            Some("copied")
+        );
     }
 
     #[test]
@@ -2247,7 +2364,10 @@ mod tests {
         let mut state = state_with(vec![item("Buy milk", false), item("claude --plan", false)]);
         state.todos.selected = 0;
         state.resume_todo_selected();
-        assert_eq!(state.take_flash().as_deref(), Some("not a resume command"));
+        assert_eq!(
+            state.take_flash().map(|(_, text)| text).as_deref(),
+            Some("not a resume command")
+        );
         assert_eq!(
             state.todos.items[0].text, "Buy milk",
             "the item is never modified"
@@ -2256,7 +2376,10 @@ mod tests {
         // A wrong id is a non-recognition too — no half-matches.
         state.todos.selected = 1;
         state.resume_todo_selected();
-        assert_eq!(state.take_flash().as_deref(), Some("not a resume command"));
+        assert_eq!(
+            state.take_flash().map(|(_, text)| text).as_deref(),
+            Some("not a resume command")
+        );
     }
 
     #[test]
@@ -2284,14 +2407,14 @@ mod tests {
             "resumed claude f4ac0121".into()
         )));
         assert_eq!(
-            state.take_flash().as_deref(),
+            state.take_flash().map(|(_, text)| text).as_deref(),
             Some("resumed claude f4ac0121")
         );
 
         state.apply_popup_op_result(super::PopupOpResult::Resume(Err(
             "no cwd for f4ac0121 — append \"@ /path\" or park the pane".into(),
         )));
-        assert!(state.take_flash().unwrap().contains("no cwd"));
+        assert!(state.take_flash().unwrap().1.contains("no cwd"));
     }
 
     #[test]
@@ -2315,7 +2438,80 @@ mod tests {
             "resumed claude f4ac0121".into(),
         )));
         assert!(state.is_spawn_input_open());
-        assert_eq!(state.flash.as_ref().unwrap().0, "resumed claude f4ac0121");
+        assert_eq!(
+            state.flash.as_ref().unwrap().text,
+            "resumed claude f4ac0121"
+        );
+    }
+
+    #[test]
+    fn a_second_resume_press_while_in_flight_is_a_no_op() {
+        // Audit 2026-11-25 M-state-2: every press dispatched a fresh
+        // background op — a window burst a second later — so repeated
+        // presses launched duplicate agent windows. The latch holds
+        // until the result clears it: a press while it is armed must
+        // neither queue a second op nor flash. (The dispatch arm itself
+        // can't run under `cargo test` — session resolution needs real
+        // tmux — so the armed side is simulated at the same boundary
+        // the event loop sees.)
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let mut state = state_with(vec![item("claude --resume f4ac0121", false)]);
+        state.popup_op_tx = Some(tx);
+        state.todos.resume_in_flight = true;
+
+        state.resume_todo_selected();
+
+        assert!(
+            state.todos.resume_in_flight,
+            "the guard must not clear the latch early"
+        );
+        assert!(state.flash.is_none(), "the press stays silent");
+        assert!(
+            _rx.try_recv().is_err(),
+            "no second operation may be dispatched"
+        );
+    }
+
+    #[test]
+    fn the_resume_result_clears_the_latch_whatever_the_outcome() {
+        let mut state = state_with(vec![item("x", false)]);
+
+        state.todos.resume_in_flight = true;
+        state.apply_popup_op_result(super::PopupOpResult::Resume(Ok(
+            "resumed claude f4ac0121".into()
+        )));
+        assert!(!state.todos.resume_in_flight, "success releases the latch");
+        let (kind, text) = state.take_flash().expect("success is announced");
+        assert_eq!(kind, crate::state::FlashKind::Info);
+        assert_eq!(text, "resumed claude f4ac0121");
+
+        state.todos.resume_in_flight = true;
+        state.apply_popup_op_result(super::PopupOpResult::Resume(Err(
+            "no cwd for f4ac0121".into()
+        )));
+        assert!(!state.todos.resume_in_flight, "failure releases the latch");
+        let (kind, text) = state.take_flash().expect("failure is announced");
+        assert_eq!(kind, crate::state::FlashKind::Error);
+        assert_eq!(text, "no cwd for f4ac0121");
+    }
+
+    #[test]
+    fn the_resume_latch_stays_unarmed_when_nothing_dispatches() {
+        // No channel (test build): start_background_op reports the
+        // no-op, so the latch must stay clear — otherwise `r` would be
+        // permanently dead. In the test env the flow stops at session
+        // resolution first; what matters is that no path arms the
+        // latch without a dispatch behind it.
+        let mut state = state_with(vec![item(
+            "claude --resume f4ac0121-58e7-4d9c-a5c6-e0db65c6c49e",
+            false,
+        )]);
+        state.resume_todo_selected();
+        assert!(!state.todos.resume_in_flight);
+        assert!(
+            state.flash.is_some(),
+            "the failure that blocked the launch is announced"
+        );
     }
 
     // ─── undo (delete / clear-completed) ────────────────────────────
@@ -2441,7 +2637,7 @@ mod tests {
         state.clear_completed_todos();
 
         assert_eq!(
-            state.flash.as_ref().map(|(text, _)| text.as_str()),
+            state.flash.as_ref().map(|f| f.text.as_str()),
             Some("cleared 2 completed · u to undo")
         );
     }

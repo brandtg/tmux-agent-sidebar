@@ -97,6 +97,46 @@ fn snapshot_secondary_header_without_notices() {
     ");
 }
 
+// The chyron overlaying the toolbar while an event is alive. The
+// banner renders between the overview button's left columns and the
+// menu button's right corner, pads its whole area (so stale toolbar
+// cells are cleared), and its display-window math must measure the
+// same banner width the renderer scrolls against (audit 2026-11-25
+// H-UI-1). The event's pane carries its Done flag so the banner is
+// not consumed, and the live session title names the event.
+#[test]
+fn snapshot_chyron_banner_overlays_toolbar() {
+    let mut pane = make_pane(AgentType::Claude, PaneStatus::Idle);
+    pane.attention = PaneAttention::Done;
+    pane.session_name = "fix-auth".into();
+    let mut state = make_state(vec![SessionInfo {
+        session_name: "main".into(),
+        windows: vec![WindowInfo {
+            window_id: "@1".into(),
+            window_name: "project".into(),
+            window_active: true,
+            auto_rename: false,
+            panes: vec![pane.clone()],
+        }],
+    }]);
+    state.repo_groups = vec![make_repo_group("project", vec![pane])];
+    state.rebuild_row_targets();
+    state.chyron.current = Some(tmux_agent_sidebar::state::ChyronEvent {
+        pane_id: "%1".into(),
+        kind: tmux_agent_sidebar::state::ChyronKind::Done,
+        label: "fix-auth".into(),
+        shown_at: std::time::Instant::now(),
+    });
+
+    let output = render_to_string(&mut state, 28, 25);
+    insta::assert_snapshot!(output, @"
+    ☰  ✓ fix-auth done       ⓘ ▾
+    ▾ project
+    ┃ ○ fix-auth
+        Waiting for prompt…
+    ");
+}
+
 #[test]
 fn snapshot_secondary_header_long_repo_filter_truncated() {
     let pane = make_pane(AgentType::Claude, PaneStatus::Idle);

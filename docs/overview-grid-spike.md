@@ -92,9 +92,23 @@ Rendering rules:
   idle fades to grey. A header row shows per-status counts either way.
   The overview must answer "does anything need me?" in one glance and
   "what is this one doing?" per cell.
-- Enter zooms the selected cell fullscreen (still a capture — read-only);
-  Esc collapses back to the grid. Without zoom, truncated cells are dead
+- Enter zooms the selected cell fullscreen (still a capture; the one
+  write is the temporary window-zoom below, always restored); Esc
+  collapses back to the grid. Without zoom, truncated cells are dead
   ends; with it, the grid is a scanner.
+- Focus mode briefly zooms the source pane's own window (`resize-pane
+  -Z`) so the capture exists at the popup's width — `capture-pane` has
+  no size override, and while the pane shares its window with the
+  40-column sidebar, content at the popup's width does not exist until
+  the pane itself is wider. The zoom rides a drop guard in the run
+  loop, so every exit path restores the pre-zoom layout; a window that
+  arrived already zoomed is never touched, a pane alone in its window
+  skips it, and a source that cannot reach the popup's width even
+  zoomed (multi-client setups) centers in the popup instead of hugging
+  the left edge. While zoomed the read pane captures at drive cadence
+  (same as a prompted pane): the agent's reflow after the resize lands
+  within a frame or two instead of waiting out the slow tick, and the
+  fullscreen view renders live.
 - Theme normalization: light-themed TUIs (opencode's pink panels,
   claude's white input bar) arrive as explicit light backgrounds with
   dark text — a clash on the dark canvas, and invisible text if the

@@ -28,6 +28,36 @@ pub(crate) fn cmd_toggle(args: &[String]) -> i32 {
     // toggle press and absent for `--create-only` hook callers.
     let client_width = positional.get(2).and_then(|s| s.trim().parse::<u32>().ok());
 
+    run_toggle(
+        window_id,
+        pane_path,
+        client_width,
+        create_only,
+        force_split,
+        None,
+    )
+}
+
+/// The toggle-all open sweep's hoisted state (audit 2026-11-25 M-cli-2):
+/// the `@sidebar_mode` read ran once for the whole sweep, and the
+/// has-sidebar check comes from the sweep's own server-wide listing —
+/// per window the sweep used to pay a mode read plus a `list-panes`
+/// probe.
+struct SweepContext<'a> {
+    mode: &'a str,
+    windows_with_sidebars: &'a HashSet<String>,
+}
+
+/// One window's toggle body, shared by the manual `toggle` command and
+/// the toggle-all open sweep (which passes a [`SweepContext`]).
+fn run_toggle(
+    window_id: &str,
+    pane_path: &str,
+    client_width: Option<u32>,
+    create_only: bool,
+    mut force_split: bool,
+    sweep: Option<&SweepContext<'_>>,
+) -> i32 {
     // One window-targeted probe replaces six serial `display-message`
     // spawns (audit 2026-11-16 J2): the jump path lands here right
     // after `select_pane`, and each probe was its own tmux client
@@ -72,7 +102,10 @@ pub(crate) fn cmd_toggle(args: &[String]) -> i32 {
     // per-window `toggle` presses (no `--create-only`) never consult
     // the mode.
     if create_only {
-        let mode = read_global_option(tmux::SIDEBAR_MODE);
+        let mode = match sweep {
+            Some(ctx) => ctx.mode.to_string(),
+            None => read_global_option(tmux::SIDEBAR_MODE),
+        };
         let decision = auto_create_decision(&mode, &auto_create);
         if create_only_skips(&decision, force_split) {
             return 0;
@@ -86,7 +119,18 @@ pub(crate) fn cmd_toggle(args: &[String]) -> i32 {
         !force_split && should_use_popup_for_client(&popup_max_width, window_width, client_width);
 
     // Check for existing sidebar
-    let existing_sidebar = find_window_sidebar(window_id);
+    let existing_sidebar = match sweep {
+        // The sweep's listing already knows which windows carry a
+        // sidebar, and `--create-only` never closes one — only the
+        // existence matters on this path. The set can be stale against
+        // concurrent activity; the end-of-sweep dedupe heals any second
+        // sidebar a race slips past it.
+        Some(ctx) => ctx
+            .windows_with_sidebars
+            .contains(window_id)
+            .then(String::new),
+        None => find_window_sidebar(window_id),
+    };
 
     if let Some(sidebar_pane) = existing_sidebar {
         if create_only {
@@ -118,6 +162,10 @@ pub(crate) fn cmd_toggle(args: &[String]) -> i32 {
         sidebar_position,
         &sidebar_width,
         window_width,
+        // The sweep defers its dedupe to the single end-of-sweep scan
+        // (audit 2026-11-25 M-cli-2); every other caller keeps the
+        // inline collapse that guards concurrent creates.
+        sweep.is_none(),
     )
 }
 
@@ -134,13 +182,8 @@ fn open_split_sidebar(
     sidebar_position: SidebarPosition,
     sidebar_width: &str,
     window_width: u32,
+    dedupe_duplicates: bool,
 ) -> i32 {
-    // A (re)open consumes any auto-hide marker on the window: the
-    // maintain-width restore calls this to complete its own inverse, and
-    // a manual open must not leave a marker a later upward crossing
-    // could act on.
-    clear_auto_hidden_marker(window_id);
-
     let pane_geometry_output = tmux::run_tmux(&[
         "list-panes",
         "-t",
@@ -157,17 +200,12 @@ fn open_split_sidebar(
     // Remember active pane
     let active_pane = tmux::display_message(window_id, "#{pane_id}");
 
-    // Snapshot the layout before splitting so the close path can put
-    // every pane back where it was (see restore_window_layout).
-    save_window_layout(window_id);
-
-    // Record the width the sidebar is created at BEFORE the split (which
-    // fires the maintain-width hook): with the recording already
-    // committed, the hook sees last == current and cannot insta-hide the
-    // pane this command is about to create — relevant for the toggle-all
-    // sweep, which force-splits windows a small client may already have
-    // shrunk.
-    record_last_window_width(window_id, window_width);
+    // The pre-split writes — auto-hide marker clear, width recording,
+    // layout snapshot — chain into one tmux client process (audit
+    // 2026-11-25 M-cli-2). See `chain_pre_split_writes` for why all
+    // three must precede the split.
+    let layout = tmux::display_message(window_id, "#{window_layout}");
+    chain_pre_split_writes(window_id, window_width, &layout);
 
     // Find our own binary path
     let self_bin = std::env::current_exe()
@@ -198,23 +236,119 @@ fn open_split_sidebar(
     .unwrap_or_default();
 
     if !sidebar_pane.is_empty() {
-        tmux::set_pane_option(&sidebar_pane, tmux::PANE_ROLE, "sidebar");
-        // The `@pane_role` tag only lands after `split-window` returns, so
-        // two concurrent creates (e.g. double-pressed keys, stacked hooks)
-        // can both pass the `find_window_sidebar` check above and split.
-        // Collapse any duplicate to the first-listed pane; a lone sidebar
-        // makes this a cheap no-op scan.
-        dedupe_window_sidebars();
-    }
-
-    // Restore focus
-    if !active_pane.is_empty() {
-        let _ = tmux::run_tmux(&["select-pane", "-t", &active_pane]);
+        // Role tag and focus restore chain into one tmux client process
+        // (the `select_pane` pattern — audit 2026-11-25 M-cli-2). The
+        // `@pane_role` tag only lands after `split-window` returns, so
+        // two concurrent creates (e.g. double-pressed keys, stacked
+        // hooks) can both pass the existing-sidebar check above and
+        // split; collapse any duplicate to the first-listed pane unless
+        // the caller defers to a sweep's own end-of-run dedupe.
+        let mut argv: Vec<&str> = vec![
+            "set",
+            "-t",
+            &sidebar_pane,
+            "-p",
+            "--",
+            tmux::PANE_ROLE,
+            "sidebar",
+            ";",
+        ];
+        if !active_pane.is_empty() {
+            argv.extend(["select-pane", "-t", &active_pane]);
+        } else {
+            argv.extend(["select-pane", "-t", window_id, "-l"]);
+        }
+        let _ = tmux::run_tmux(&argv);
+        if dedupe_duplicates {
+            dedupe_window_sidebars();
+        }
     } else {
-        let _ = tmux::run_tmux(&["select-pane", "-t", window_id, "-l"]);
+        // The split failed: the focus restore still runs, and the
+        // failure is no longer silent — the keybinding reports it and
+        // the sweep's window is honestly unserviced (audit 2026-11-25
+        // L-cli-2).
+        crate::debug::log(&format!(
+            "toggle: split-window failed for window {window_id}"
+        ));
+        if !active_pane.is_empty() {
+            let _ = tmux::run_tmux(&["select-pane", "-t", &active_pane]);
+        } else {
+            let _ = tmux::run_tmux(&["select-pane", "-t", window_id, "-l"]);
+        }
+        return 1;
     }
 
     0
+}
+
+/// Run several tmux commands as one client process, chaining them with
+/// tmux's `;` separator (the `select_pane` pattern): N round trips
+/// become one, in the same order.
+fn run_chained(commands: &[Vec<&str>]) {
+    let mut argv: Vec<&str> = Vec::new();
+    for (index, command) in commands.iter().enumerate() {
+        if index > 0 {
+            argv.push(";");
+        }
+        argv.extend(command.iter().copied());
+    }
+    let _ = tmux::run_tmux(&argv);
+}
+
+/// The pre-split window writes — auto-hide marker clear, width
+/// recording, layout snapshot — chained into one tmux client process
+/// (audit 2026-11-25 M-cli-2). All three must precede the split:
+///
+/// - the marker clear consumes any auto-hide marker on the window: the
+///   maintain-width restore calls this path to complete its own inverse,
+///   and a manual open must not leave a marker a later upward crossing
+///   could act on;
+/// - the width recording lands before the split (which fires the
+///   maintain-width hook) so the hook sees last == current and cannot
+///   insta-hide the pane this command is about to create — relevant for
+///   the toggle-all sweep, which force-splits windows a small client may
+///   already have shrunk. A failed `#{window_width}` query is not
+///   recorded: the next crossing would be measured from a phantom zero;
+/// - the layout snapshot lets the close path put every pane back where
+///   it was (see `restore_window_layout`): tmux redistributes a killed
+///   pane's space to its layout-tree neighbors rather than undoing the
+///   original split, so without it every toggle cycle shaves a few
+///   columns off the panes next to the sidebar. An empty read (tmux
+///   failed to answer) writes nothing, same as the old dedicated helper.
+fn chain_pre_split_writes(window_id: &str, window_width: u32, layout: &str) {
+    let width_value = tmux::sanitize_option_value(&window_width.to_string());
+    let layout_value = tmux::sanitize_option_value(layout);
+    let mut commands: Vec<Vec<&str>> = vec![vec![
+        "set",
+        "-wu",
+        "-t",
+        window_id,
+        "--",
+        tmux::SIDEBAR_AUTO_HIDDEN,
+    ]];
+    if window_width != 0 {
+        commands.push(vec![
+            "set",
+            "-w",
+            "-t",
+            window_id,
+            "--",
+            tmux::SIDEBAR_LAST_WINDOW_WIDTH,
+            &width_value,
+        ]);
+    }
+    if !layout_value.is_empty() {
+        commands.push(vec![
+            "set",
+            "-w",
+            "-t",
+            window_id,
+            "--",
+            tmux::SIDEBAR_SAVED_LAYOUT,
+            &layout_value,
+        ]);
+    }
+    run_chained(&commands);
 }
 
 /// First role-tagged sidebar pane in `window_id`, or `None`. Panes
@@ -283,21 +417,6 @@ fn auto_hidden_marker_set(window_id: &str) -> bool {
     tmux::display_message(window_id, &format!("#{{{}}}", tmux::SIDEBAR_AUTO_HIDDEN))
         .trim()
         .eq("1")
-}
-
-/// Store the window's current `#{window_layout}` in a window option so
-/// the close path can restore it. tmux redistributes a killed pane's
-/// space to its layout-tree neighbors rather than undoing the original
-/// split, so without this snapshot every toggle cycle shaves a few
-/// columns off the panes next to the sidebar. Resizes made while the
-/// sidebar is open are rolled back with the restore — the snapshot is
-/// the whole geometry, not just the sidebar's slice.
-fn save_window_layout(window_id: &str) {
-    let layout = tmux::display_message(window_id, "#{window_layout}");
-    if layout.is_empty() {
-        return;
-    }
-    let _ = tmux::set_window_option(window_id, tmux::SIDEBAR_SAVED_LAYOUT, &layout);
 }
 
 /// Apply the saved pre-sidebar layout, then clear the snapshot. A
@@ -516,28 +635,44 @@ pub(crate) fn cmd_toggle_all(_args: &[String]) -> i32 {
         close_all_sidebars();
     } else {
         let _ = tmux::run_tmux(&["set", "-g", tmux::SIDEBAR_MODE, "open"]);
+        // One server-wide listing drives the whole open sweep: the
+        // per-window paths, the hoisted `@sidebar_mode` read, and the
+        // has-sidebar set all come from here. The sweep used to pay a
+        // mode read plus a per-window `list-panes` probe on top of this
+        // listing for every window (audit 2026-11-25 M-cli-2).
         let all_windows = tmux::run_tmux(&[
             "list-panes",
             "-a",
             "-F",
-            "#{window_id}|#{pane_current_path}",
+            "#{window_id}|#{pane_current_path}|#{@pane_role}",
         ])
         .unwrap_or_default();
+        let mode = read_global_option(tmux::SIDEBAR_MODE);
+        let sidebars = windows_with_sidebars(&all_windows);
+        let sweep = SweepContext {
+            mode: &mode,
+            windows_with_sidebars: &sidebars,
+        };
         for (window_id, pane_path) in unique_window_paths(&all_windows) {
-            let args = vec![
-                "--create-only".to_string(),
-                "--force-split".to_string(),
-                window_id,
-                pane_path,
-            ];
-            cmd_toggle(&args);
+            run_toggle(
+                &window_id,
+                &pane_path,
+                None,
+                /* create_only */ true,
+                /* force_split */ true,
+                Some(&sweep),
+            );
         }
         // Two overlapping sweeps (e.g. a double-pressed key) both observe
         // "no sidebar" before either creates one and both split every
         // window, leaving two sidebar panes side by side. The create path
         // cannot distinguish its own pane from a concurrent one, so
         // collapse any duplicates afterwards; the kept pane is the first
-        // in tmux's own listing order.
+        // in tmux's own listing order. This is also the sweep's one
+        // dedupe scan: the per-create collapse inside
+        // `open_split_sidebar` is deferred here so the sweep pays a
+        // single server-wide scan instead of one per window (audit
+        // 2026-11-25 M-cli-2).
         dedupe_window_sidebars();
     }
 
@@ -741,6 +876,9 @@ pub(crate) fn cmd_maintain_width(args: &[String]) -> i32 {
             sidebar_position,
             &sidebar_width,
             current_width,
+            // Not the toggle-all sweep: keep the inline collapse that
+            // guards concurrent creates (audit 2026-11-25 M-cli-2).
+            true,
         );
     }
 
@@ -1030,15 +1168,40 @@ fn unique_window_paths(output: &str) -> Vec<(String, String)> {
     let mut windows = Vec::new();
 
     for line in output.lines() {
-        let Some((window_id, pane_path)) = line.split_once('|') else {
+        let mut parts = line.splitn(3, '|');
+        let Some(window_id) = parts.next() else {
             continue;
         };
+        let Some(pane_path) = parts.next() else {
+            continue;
+        };
+        // An optional third field (`#{@pane_role}`) rides along on the
+        // toggle-all listing; `windows_with_sidebars` consumes it.
         if seen.insert(window_id.to_string()) {
             windows.push((window_id.to_string(), pane_path.to_string()));
         }
     }
 
     windows
+}
+
+/// Windows that already carry a role-tagged sidebar pane, from the
+/// toggle-all sweep's one server-wide listing. The sweep's per-window
+/// toggle consults this set instead of spawning a `list-panes` probe per
+/// window (audit 2026-11-25 M-cli-2); the end-of-sweep dedupe heals any
+/// window a race slips past the stale set.
+fn windows_with_sidebars(output: &str) -> HashSet<String> {
+    output
+        .lines()
+        .filter_map(|line| {
+            let parts: Vec<&str> = line.splitn(3, '|').collect();
+            if parts.len() >= 3 && parts[2] == "sidebar" {
+                Some(parts[0].to_string())
+            } else {
+                None
+            }
+        })
+        .collect()
 }
 
 /// Which side of the window the sidebar pane is created on, driven by
@@ -1277,12 +1440,29 @@ fn open_popup(window_id: &str, start_directory: &str) -> i32 {
     if opened { 0 } else { 1 }
 }
 
-/// Decide whether `cmd_auto_close` should kill the window, given the raw
-/// outputs of the tmux queries it performs. Extracted as a pure function
-/// so the guard logic is directly unit-testable without a running tmux
-/// server.
+/// Parse the close-path `list-panes` output (`#{pane_id}|#{PANE_ROLE}`,
+/// see [`pane_id_role_format`]) into the role-tagged sidebar pane ids and
+/// the number of non-sidebar records. A record without the `|`
+/// separator is malformed (truncated output) and counts as non-sidebar —
+/// the kill guard must never act on a listing it cannot fully parse.
+fn parse_pane_role_records(output: &str) -> (Vec<&str>, usize) {
+    let mut sidebar = Vec::new();
+    let mut non_sidebar = 0;
+    for line in output.lines() {
+        match line.split_once('|') {
+            Some((pane_id, "sidebar")) => sidebar.push(pane_id),
+            _ => non_sidebar += 1,
+        }
+    }
+    (sidebar, non_sidebar)
+}
+
+/// Decide whether `cmd_auto_close` should kill the window's sidebar panes,
+/// given the raw outputs of the tmux queries it performs. Extracted as a
+/// pure function so the guard logic is directly unit-testable without a
+/// running tmux server.
 ///
-/// - `list_panes_output`: `Some(stdout)` from `list-panes -F <pane role format>`,
+/// - `list_panes_output`: `Some(stdout)` from `list-panes -F <pane id|role format>`,
 ///   or `None` if the tmux call failed.
 /// - `session_windows`: parsed value of `#{session_windows}`, or `None`
 ///   if the tmux call failed or the value was unparseable.
@@ -1300,12 +1480,8 @@ fn should_kill_window(
     let Some(output) = list_panes_output else {
         return false;
     };
-    if output.trim().is_empty() {
-        return false;
-    }
-
-    let non_sidebar = output.lines().filter(|line| *line != "sidebar").count();
-    if non_sidebar != 0 {
+    let (sidebar_panes, non_sidebar) = parse_pane_role_records(output);
+    if sidebar_panes.is_empty() || non_sidebar != 0 {
         return false;
     }
 
@@ -1333,9 +1509,9 @@ pub(crate) fn cmd_auto_close(args: &[String]) -> i32 {
         None => return 0,
     };
 
-    let pane_role_format = format!("#{{{}}}", tmux::PANE_ROLE);
+    let pane_id_role_format = pane_id_role_format();
     let list_panes_output =
-        tmux::run_tmux(&["list-panes", "-t", window_id, "-F", &pane_role_format]);
+        tmux::run_tmux(&["list-panes", "-t", window_id, "-F", &pane_id_role_format]);
 
     let session_windows = tmux::run_tmux(&[
         "display-message",
@@ -1360,7 +1536,19 @@ pub(crate) fn cmd_auto_close(args: &[String]) -> i32 {
         session_windows,
         session_attached,
     ) {
-        let _ = tmux::run_tmux(&["kill-window", "-t", window_id]);
+        // Kill each role-tagged sidebar pane individually instead of
+        // `kill-window` (audit 2026-11-26 M-cli-4): the listing proved
+        // only sidebar panes remained, but a pane created between the
+        // listing and the kill would be destroyed with the window.
+        // Killing the panes actually seen leaves a raced-in pane alive;
+        // when the last sidebar pane goes, tmux destroys the window —
+        // and the session with its last window — exactly as
+        // `kill-window` would.
+        if let Some(output) = list_panes_output.as_deref() {
+            for pane_id in parse_pane_role_records(output).0 {
+                let _ = tmux::run_tmux(&["kill-pane", "-t", pane_id]);
+            }
+        }
     }
 
     0
@@ -1412,6 +1600,30 @@ mod tests {
             unique_window_paths(output),
             vec![("%1".to_string(), "/tmp".to_string())]
         );
+    }
+
+    #[test]
+    fn unique_window_paths_tolerates_the_role_suffix() {
+        // The toggle-all listing carries `#{@pane_role}` as a third
+        // field; the path must not swallow it.
+        let output = "%1|/tmp/repo|sidebar\n%2|/tmp/other|";
+        assert_eq!(
+            unique_window_paths(output),
+            vec![
+                ("%1".to_string(), "/tmp/repo".to_string()),
+                ("%2".to_string(), "/tmp/other".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn windows_with_sidebars_picks_only_role_tagged_panes() {
+        // M-cli-2: the sweep's has-sidebar set comes from its own
+        // listing — only `sidebar`-tagged panes mark a window, and a
+        // window with several panes is marked once.
+        let output = "%1|/tmp/a|sidebar\n%2|/tmp/b|\n%1|/tmp/c|sidebar\n%3|/tmp/d|popup";
+        let windows = windows_with_sidebars(output);
+        assert_eq!(windows, HashSet::from(["%1".to_string()]));
     }
 
     // ─── sidebar placement ───────────────────────────────────────────
@@ -2097,7 +2309,24 @@ mod tests {
         assert!(!create_only_skips(&AutoCreateDecision::Default, true));
     }
 
-    // ─── should_kill_window ───────────────────────────────────────────
+    // ─── should_kill_window / parse_pane_role_records ─────────────────
+
+    #[test]
+    fn parse_pane_role_records_extracts_sidebar_ids_and_counts_others() {
+        let output = "%1|sidebar\n%2|pane\n%3|sidebar\n%4|";
+        let (sidebar, non_sidebar) = parse_pane_role_records(output);
+        assert_eq!(sidebar, vec!["%1", "%3"]);
+        assert_eq!(non_sidebar, 2);
+    }
+
+    #[test]
+    fn parse_pane_role_records_treats_separatorless_lines_as_non_sidebar() {
+        // A truncated record (no `|`) must count as non-sidebar: the kill
+        // guard never acts on a listing it cannot fully parse.
+        let (sidebar, non_sidebar) = parse_pane_role_records("sidebar");
+        assert!(sidebar.is_empty());
+        assert_eq!(non_sidebar, 1);
+    }
 
     #[test]
     fn should_kill_window_kills_when_only_sidebar_and_other_windows_exist() {
@@ -2105,23 +2334,32 @@ mod tests {
         // other windows to fall back on. Attached-client count is
         // irrelevant because killing this window does not end the
         // session.
-        assert!(should_kill_window(Some("sidebar"), Some(2), None));
-        assert!(should_kill_window(Some("sidebar"), Some(2), Some(0)));
-        assert!(should_kill_window(Some("sidebar"), Some(2), Some(5)));
+        assert!(should_kill_window(Some("%1|sidebar"), Some(2), None));
+        assert!(should_kill_window(Some("%1|sidebar"), Some(2), Some(0)));
+        assert!(should_kill_window(Some("%1|sidebar"), Some(2), Some(5)));
     }
 
     #[test]
     fn should_kill_window_skips_when_non_sidebar_pane_remains() {
         // Another pane with `@pane_role` explicitly set to something
         // non-sidebar (e.g. a spawn-marked pane) keeps the window alive.
-        assert!(!should_kill_window(Some("sidebar\npane"), Some(5), Some(1)));
-        // `@pane_role` unset renders as an empty line — that pane is
-        // a regular user pane, not a sidebar, so the window must stay.
-        // The real tmux output for [sidebar pane, regular pane] is
-        // "sidebar\n\n" (sidebar's role, then the regular pane's empty
-        // role followed by the final record separator).
-        assert!(!should_kill_window(Some("sidebar\n\n"), Some(5), Some(1)));
-        assert!(!should_kill_window(Some("\nsidebar\n"), Some(5), Some(1)));
+        assert!(!should_kill_window(
+            Some("%1|sidebar\n%2|pane"),
+            Some(5),
+            Some(1)
+        ));
+        // `@pane_role` unset renders as an empty role — that pane is a
+        // regular user pane, not a sidebar, so the window must stay.
+        assert!(!should_kill_window(
+            Some("%1|sidebar\n%2|"),
+            Some(5),
+            Some(1)
+        ));
+        assert!(!should_kill_window(
+            Some("%1|\n%2|sidebar"),
+            Some(5),
+            Some(1)
+        ));
     }
 
     #[test]
@@ -2145,14 +2383,14 @@ mod tests {
         // the session only detaches the same client that just kept the
         // session alive, which matches tmux's standard `exit` behaviour
         // on the last pane — the user expects the sidebar to go with it.
-        assert!(should_kill_window(Some("sidebar"), Some(1), Some(1)));
+        assert!(should_kill_window(Some("%1|sidebar"), Some(1), Some(1)));
     }
 
     #[test]
     fn should_kill_window_kills_last_window_when_detached() {
         // No clients attached: killing the session harms no one, and
         // a stranded sidebar in a detached session is pointless anyway.
-        assert!(should_kill_window(Some("sidebar"), Some(1), Some(0)));
+        assert!(should_kill_window(Some("%1|sidebar"), Some(1), Some(0)));
     }
 
     #[test]
@@ -2162,8 +2400,8 @@ mod tests {
         // tabs sharing a single `main` session, that manifested as every
         // tab dying at once. Keep the sidebar stranded rather than nuke
         // the session.
-        assert!(!should_kill_window(Some("sidebar"), Some(1), Some(2)));
-        assert!(!should_kill_window(Some("sidebar"), Some(1), Some(7)));
+        assert!(!should_kill_window(Some("%1|sidebar"), Some(1), Some(2)));
+        assert!(!should_kill_window(Some("%1|sidebar"), Some(1), Some(7)));
     }
 
     #[test]
@@ -2171,7 +2409,7 @@ mod tests {
         // Without knowing how many clients are attached we cannot prove
         // the kill is safe. Better a lingering sidebar pane than a
         // mass-disconnect.
-        assert!(!should_kill_window(Some("sidebar"), Some(1), None));
+        assert!(!should_kill_window(Some("%1|sidebar"), Some(1), None));
     }
 
     #[test]
@@ -2179,7 +2417,7 @@ mod tests {
         // If we cannot prove the session has other windows, err on the
         // side of preservation. Better to leave a lingering sidebar
         // pane than to destroy a live workspace.
-        assert!(!should_kill_window(Some("sidebar"), None, Some(1)));
-        assert!(!should_kill_window(Some("sidebar"), Some(0), Some(1)));
+        assert!(!should_kill_window(Some("%1|sidebar"), None, Some(1)));
+        assert!(!should_kill_window(Some("%1|sidebar"), Some(0), Some(1)));
     }
 }

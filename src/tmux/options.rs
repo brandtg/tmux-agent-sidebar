@@ -1,4 +1,4 @@
-use super::commands::{display_message, run_tmux};
+use super::commands::run_tmux;
 
 // ─── Pane-scoped option keys ─────────────────────────────────────────
 //
@@ -574,27 +574,38 @@ pub fn get_pane_option_value(pane: &str, key: &str) -> String {
 /// expansion always yields exactly one field per key. Hot-path callers
 /// (the hook handlers) used to pay one spawn per key (audit 2026-11-19
 /// C2).
-pub fn get_pane_options(pane: &str, keys: &[&str]) -> Vec<String> {
+///
+/// Returns `None` when the tmux read itself failed (spawn failure,
+/// timeout, non-zero exit). A failed read must not be mistaken for
+/// all-empty options: empty reads as "unclaimed pane" and lets the hook
+/// handlers promote the pane and restamp its run clock on garbage
+/// (audit 2026-11-26 L-hook-3). Callers skip their read-gated state
+/// transitions on `None` and let the next event re-decide.
+pub fn get_pane_options(pane: &str, keys: &[&str]) -> Option<Vec<String>> {
     #[cfg(test)]
     if test_mock::installed() {
+        if test_mock::reads_fail(pane) {
+            return None;
+        }
         // The IPC gate is off in test builds, so every real spawn fails:
         // resolving all keys from the mock store (missing → "") matches
         // the per-key read path exactly and keeps the pipeline tests
         // honest about batched reads.
-        return keys
-            .iter()
-            .map(|key| test_mock::intercept_get(pane, key).unwrap_or_default())
-            .collect();
+        return Some(
+            keys.iter()
+                .map(|key| test_mock::intercept_get(pane, key).unwrap_or_default())
+                .collect(),
+        );
     }
     let format = keys
         .iter()
         .map(|key| format!("#{{{key}}}"))
         .collect::<Vec<_>>()
         .join("|");
-    let out = display_message(pane, &format);
+    let out = run_tmux(&["display-message", "-t", pane, "-p", &format])?;
     let mut values: Vec<String> = out.split('|').map(str::to_string).collect();
     values.resize(keys.len(), String::new());
-    values
+    Some(values)
 }
 
 /// Per-thread in-memory tmux pane store used by tests. Activated by
@@ -665,6 +676,33 @@ pub mod test_mock {
     /// writes route through the interceptors when it is.
     pub(super) fn installed() -> bool {
         MOCK.with(|m| m.borrow().is_some())
+    }
+
+    thread_local! {
+        static FAIL_READS: RefCell<Option<String>> = const { RefCell::new(None) };
+    }
+
+    /// Make the batched read (`get_pane_options`) fail for `pane` until
+    /// the guard drops — models a transient tmux read failure (audit
+    /// 2026-11-26 L-hook-3) while writes still land, so tests can pin
+    /// both halves of the handler contract: the read-gated state
+    /// transition is skipped and the read-independent writes happen.
+    /// Only the batched read fails; single-key reads keep succeeding.
+    pub fn fail_reads(pane: &str) -> FailReadsGuard {
+        FAIL_READS.with(|f| *f.borrow_mut() = Some(pane.to_string()));
+        FailReadsGuard
+    }
+
+    pub struct FailReadsGuard;
+
+    impl Drop for FailReadsGuard {
+        fn drop(&mut self) {
+            FAIL_READS.with(|f| *f.borrow_mut() = None);
+        }
+    }
+
+    pub(super) fn reads_fail(pane: &str) -> bool {
+        FAIL_READS.with(|f| f.borrow().as_deref() == Some(pane))
     }
 
     pub(super) fn intercept_set(pane: &str, key: &str, value: &str) -> bool {
@@ -994,6 +1032,35 @@ mod tests {
         assert_eq!(
             get_pane_option_value("%1", PANE_SUBAGENTS),
             ",Explore:sub 1"
+        );
+    }
+
+    #[test]
+    fn get_pane_options_returns_one_field_per_key() {
+        let _guard = test_mock::install();
+        let pane = "%BATCH_READ";
+        test_mock::set(pane, PANE_STATUS, "running");
+        test_mock::set(pane, PANE_WAIT_REASON, "");
+        let values = get_pane_options(pane, &[PANE_STATUS, PANE_WAIT_REASON, PANE_STARTED_AT])
+            .expect("mock reads succeed");
+        assert_eq!(values, vec!["running", "", ""]);
+    }
+
+    #[test]
+    fn get_pane_options_reports_read_failure_as_none() {
+        // L-hook-3: a failed tmux read must surface as `None`, not as
+        // all-empty strings (which read as an unclaimed pane downstream).
+        let _guard = test_mock::install();
+        let pane = "%BATCH_READ_FAIL";
+        test_mock::set(pane, PANE_STATUS, "running");
+        let _fail = test_mock::fail_reads(pane);
+        assert!(get_pane_options(pane, &[PANE_STATUS]).is_none());
+        // Other panes are unaffected, and single-key reads still work.
+        assert!(get_pane_options("%OTHER", &[PANE_STATUS]).is_some());
+        assert_eq!(
+            get_pane_option_value(pane, PANE_STATUS),
+            "running",
+            "fail_reads must only gate the batched read"
         );
     }
 }

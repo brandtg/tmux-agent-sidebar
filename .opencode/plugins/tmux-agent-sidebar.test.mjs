@@ -34,11 +34,20 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 
 const PLUGIN_SRC = fileURLToPath(new URL("./tmux-agent-sidebar.js", import.meta.url));
 
-async function loadPlugin({ panes = "", titles = {}, failFirstLookups = 0 } = {}) {
+async function loadPlugin({
+  panes = "",
+  titles = {},
+  failFirstLookups = 0,
+  hangLookupsFor = [],
+  slowHookMarker = false,
+} = {}) {
   const root = mkdtempSync(join(tmpdir(), "oc-bridge-test-"));
   const deep = join(root, "a", "b", "plugins");
   mkdirSync(deep, { recursive: true });
   writeFileSync(join(deep, "tmux-agent-sidebar.js"), readFileSync(PLUGIN_SRC, "utf8"), { mode: 0o755 });
+  // With slowHookMarker, hook.sh stalls for 4s whenever the marker file
+  // exists — long enough for the spawn timeout to kill it (3s), which is
+  // what M-bridge-3 tests: a killed spawn must never write its late line.
   writeFileSync(
     join(root, "hook.sh"),
     `#!/usr/bin/env bash
@@ -51,6 +60,22 @@ fi
 `,
     { mode: 0o755 },
   );
+  if (slowHookMarker) {
+    const marker = join(root, "slow-marker");
+    writeFileSync(
+      join(root, "hook.sh"),
+      `#!/usr/bin/env bash
+payload=$(cat)
+if [ -f ${JSON.stringify(marker)} ]; then sleep 4; fi
+if [ "\${TMUX_RECORD_ENV-}" = "1" ]; then
+  printf '%s %s env=%s bind=%s\\n' "$2" "$payload" "\${TMUX_PANE-unset}" "\${TMUX_AGENT_SIDEBAR_BIND_SESSION-unset}" >> ${JSON.stringify(join(root, "events.log"))}
+else
+  printf '%s %s\\n' "$2" "$payload" >> ${JSON.stringify(join(root, "events.log"))}
+fi
+`,
+      { mode: 0o755 },
+    );
+  }
   // Shadow tmux with a script printing the canned pane snapshot, so the
   // bridge's pane resolution is exercised without a real tmux server. The
   // snapshot lives in a file so a test can land a binding write
@@ -67,17 +92,22 @@ fi
   const savedPath = process.env.PATH;
   process.env.PATH = `${bindir}:${savedPath ?? ""}`;
   let remainingLookupFails = failFirstLookups;
+  const hangLookups = new Set(hangLookupsFor);
 
   const mod = import(pathToFileURL(join(deep, "tmux-agent-sidebar.js")));
   // Setup's cleanup (set by init) aborts the bus subscription; without it
   // the fake subscribe's poll timer would keep the event loop alive.
   let cleanup = null;
+  let subscribeOptions = null;
   return {
+    slowMarker: join(root, "slow-marker"),
+    subscribeOptions: () => subscribeOptions,
     async init(directory, projectID, sessionDirectory) {
       const { default: definition } = await mod;
 
       // Fake plugin context: capture registered hooks, queue bus events.
       const promptHooks = [];
+      const idleHooks = [];
       const toolHooks = [];
       const queue = [];
       const ctx = {
@@ -87,13 +117,19 @@ fi
         session: {
           hook: async (name, cb) => {
             if (name === "prompt") promptHooks.push(cb);
+            if (name === "experimental.idle") idleHooks.push(cb);
           },
           // Server lookup for sessions this instance never saw created:
           // the test harness resolves them to `sessionDirectory` (or 404s)
           // and `titles[sessionID]` when a test needs a known title.
           // `failFirstLookups` makes the first N lookups throw, simulating
-          // a transient RPC failure right after a daemon restart.
+          // a transient RPC failure right after a daemon restart;
+          // `hangLookupsFor` makes lookups for the listed sessions never
+          // resolve, simulating a hung RPC (M-bridge-1).
           get: async ({ sessionID }) => {
+            if (hangLookups.has(sessionID)) {
+              return new Promise(() => {});
+            }
             if (remainingLookupFails > 0) {
               remainingLookupFails -= 1;
               throw new Error("transient lookup failure");
@@ -113,7 +149,9 @@ fi
           },
         },
         event: {
-          subscribe({ signal } = {}) {
+          subscribe(options = {}) {
+            subscribeOptions = options;
+            const signal = options.signal;
             let alive = true;
             signal?.addEventListener("abort", () => {
               alive = false;
@@ -139,8 +177,8 @@ fi
 
       cleanup = await definition.setup(ctx);
 
-      if (promptHooks.length !== 1 || toolHooks.length !== 1) {
-        throw new Error("plugin did not register the prompt/execute.after hooks");
+      if (promptHooks.length !== 1 || toolHooks.length !== 1 || idleHooks.length !== 1) {
+        throw new Error("plugin did not register the prompt/execute.after/experimental.idle hooks");
       }
 
       const pause = () => new Promise((resolve) => setTimeout(resolve, 120));
@@ -152,6 +190,10 @@ fi
           await promptHooks[0](event);
           await pause();
         },
+        async idle(event) {
+          await idleHooks[0](event);
+          await pause();
+        },
         async tool(event) {
           await toolHooks[0](event);
           await pause();
@@ -159,6 +201,11 @@ fi
         async event(event) {
           queue.push(event);
           await pause();
+        },
+        // Enqueue without the per-event pause (bulk setup, e.g. cache-cap
+        // tests); settle() afterwards.
+        raw(events) {
+          for (const event of events) queue.push(event);
         },
       };
     },
@@ -1000,8 +1047,8 @@ test("concurrent main sessions route their turns independently", async () => {
 test("a pane title pins the session's pane when no binding exists", async () => {
   const h = await loadPlugin({
     panes:
-      "%2\topencode\t/repo\tses_old\tOC | Old work\n" +
-      "%4\topencode\t/repo\tses_other\tOC | Converter fixes\n",
+      "%2\topencode\t/repo\tses_old\t\tOC | Old work\n" +
+      "%4\topencode\t/repo\tses_other\t\tOC | Converter fixes\n",
   });
   try {
     process.env.TMUX_RECORD_ENV = "1";
@@ -1027,8 +1074,8 @@ test("a pane title pins the session's pane when no binding exists", async () => 
 test("a truncated pane title prefix-matches the full session title", async () => {
   const h = await loadPlugin({
     panes:
-      "%2\topencode\t/repo\tses_a\tOC | Fix opencode session status swap in T…\n" +
-      "%4\topencode\t/repo\tses_b\tOC | Unrelated work\n",
+      "%2\topencode\t/repo\tses_a\t\tOC | Fix opencode session status swap in T…\n" +
+      "%4\topencode\t/repo\tses_b\t\tOC | Unrelated work\n",
     titles: { ses_new: "Fix opencode session status swap in Tmux sidebar" },
   });
   try {
@@ -1054,8 +1101,8 @@ test("a truncated pane title prefix-matches the full session title", async () =>
 test("a stale binding is reclaimed instead of collapsing onto the first pane", async () => {
   const h = await loadPlugin({
     panes:
-      "%2\topencode\t/repo\tses_dead\tOC | Fresh start\n" +
-      "%4\topencode\t/repo\tses_live\tOC | Live work\n",
+      "%2\topencode\t/repo\tses_dead\t\tOC | Fresh start\n" +
+      "%4\topencode\t/repo\tses_live\t\tOC | Live work\n",
     titles: { ses_dead: "Dead work", ses_live: "Live work" },
   });
   try {
@@ -1081,8 +1128,8 @@ test("a stale binding is reclaimed instead of collapsing onto the first pane", a
 test("a binding contradicted by the pane title loses to the title match", async () => {
   const h = await loadPlugin({
     panes:
-      "%2\topencode\t/repo\tses_convert\tOC | Expand Clocks tab columns to full width\n" +
-      "%4\topencode\t/repo\tses_live\tOC | Convert tab errors and style issues\n",
+      "%2\topencode\t/repo\tses_convert\t\tOC | Expand Clocks tab columns to full width\n" +
+      "%4\topencode\t/repo\tses_live\t\tOC | Convert tab errors and style issues\n",
     titles: {
       ses_convert: "Convert tab errors and style issues",
       ses_live: "Live work",
@@ -1135,7 +1182,7 @@ test("a last-resort guess routes the event but flags the binding as uncommitted"
 test("a stamp explained by the pane's own binding is not title evidence for another session", async () => {
   const h = await loadPlugin({
     panes:
-      "%2\topencode\t/repo\tses_a\tOC | Refactor the auth flow\n" +
+      "%2\topencode\t/repo\tses_a\t\tOC | Refactor the auth flow\n" +
       "%4\topencode\t/repo\t\n",
     titles: { ses_a: "Refactor the auth flow", ses_b: "Refactor the auth flow in the API" },
   });
@@ -1159,8 +1206,8 @@ test("a stamp explained by the pane's own binding is not title evidence for anot
 test("a prefix-hit title cannot re-point a binding the bound pane's own stamp confirms", async () => {
   const h = await loadPlugin({
     panes:
-      "%2\topencode\t/repo\tses_a\tOC | Refactor the auth flow\n" +
-      "%4\topencode\t/repo\tses_b\tOC | Refactor the auth flow in the API\n",
+      "%2\topencode\t/repo\tses_a\t\tOC | Refactor the auth flow\n" +
+      "%4\topencode\t/repo\tses_b\t\tOC | Refactor the auth flow in the API\n",
     titles: { ses_a: "Refactor the auth flow", ses_b: "Refactor the auth flow in the API" },
   });
   try {
@@ -1239,8 +1286,8 @@ test("a committed resolution invalidates cached resolutions of the same pane", a
 test("a truncated stamp still proves a binding live (no false reclaim)", async () => {
   const h = await loadPlugin({
     panes:
-      "%2\topencode\t/repo\tses_other\tOC | Something else entirely\n" +
-      "%4\topencode\t/repo\tses_live\tOC | Fix opencode session status swap in T…\n",
+      "%2\topencode\t/repo\tses_other\t\tOC | Something else entirely\n" +
+      "%4\topencode\t/repo\tses_live\t\tOC | Fix opencode session status swap in T…\n",
     titles: {
       ses_other: "Something else entirely",
       ses_live: "Fix opencode session status swap in Tmux sidebar",
@@ -1337,7 +1384,7 @@ test("a sibling-worktree session sharing the project is never forwarded", async 
 // misroute the session that actually lives here.
 test("a foreign event onto a single path match is routed uncommitted when the pane's stamp proves its own binding", async () => {
   const h = await loadPlugin({
-    panes: "%2\topencode\t/repo/.worktrees/a\tses_live\tOC | Live session title\n",
+    panes: "%2\topencode\t/repo/.worktrees/a\tses_live\t\tOC | Live session title\n",
     titles: { ses_live: "Live session title", ses_foreign: "Foreign work" },
   });
   try {
@@ -1351,6 +1398,406 @@ test("a foreign event onto a single path match is routed uncommitted when the pa
     assert.match(h.events()[0], / env=%2 bind=0$/);
   } finally {
     delete process.env.TMUX_RECORD_ENV;
+    h.dispose();
+  }
+});
+
+// ─── H-bridge-1: background subagents keep the pane lit ─────────────────
+
+// The reported bug: a background subagent keeps working after the main
+// turn's model work is done, but the pane flipped idle at the main stop
+// and stayed there — the child's events were all gated out. Now the
+// child's execution.started tracks its turn, the main stop is held while
+// it runs, its tool results keep flowing, and the last child's terminal
+// event is what finally stops the pane.
+test("a background subagent keeps the pane running until it drains (H-bridge-1)", async () => {
+  const h = await loadPlugin();
+  try {
+    const plugin = await h.init("/repo");
+    await plugin.event({ type: "session.created", data: { sessionID: MAIN, title: "Main" } });
+    await plugin.prompt({ sessionID: MAIN, prompt: { text: "run agents" } });
+    // Background subagent spins up while the main turn runs.
+    await plugin.event({ type: "session.created", data: { sessionID: CHILD, parentID: MAIN, title: "bg" } });
+    await plugin.event({ type: "session.execution.started", data: { sessionID: CHILD } });
+    // The main turn's model work finishes while the child still runs.
+    await plugin.event({ type: "session.execution.succeeded", data: { sessionID: MAIN } });
+    // The child keeps tooling; its results must keep flowing after the
+    // main turn is over.
+    await plugin.tool({ sessionID: CHILD, tool: "read", input: {}, status: "completed", result: { output: "o", metadata: null } });
+    // The child drains: only now does the pane stop.
+    await plugin.event({ type: "session.execution.succeeded", data: { sessionID: CHILD } });
+    await settle(h);
+
+    assert.deepEqual(h.events(), [
+      "session-start " + JSON.stringify({ cwd: "/repo", session_id: MAIN, source: "startup" }),
+      "session-title " + JSON.stringify({ cwd: "/repo", session_id: MAIN, title: "Main" }),
+      "user-prompt-submit " + JSON.stringify({ cwd: "/repo", session_id: MAIN, prompt: "run agents" }),
+      // The child's start lights the pane (activity forward, routed under
+      // the root main so it resolves against the pane's own binding).
+      "activity-log " + JSON.stringify({ cwd: "/repo", session_id: MAIN, tool_name: "Agent", tool_input: {}, tool_response: null }),
+      // NO stop after the main's succeeded — held while the child runs.
+      "activity-log " + JSON.stringify({ cwd: "/repo", session_id: MAIN, tool_name: "read", tool_input: {}, tool_response: { output: "o", metadata: null } }),
+      "stop " + JSON.stringify({ cwd: "/repo", session_id: MAIN, last_message: "" }),
+    ]);
+  } finally {
+    h.dispose();
+  }
+});
+
+test("two background subagents stop the pane only after the last one drains", async () => {
+  const h = await loadPlugin();
+  try {
+    const plugin = await h.init("/repo");
+    await plugin.prompt({ sessionID: MAIN, prompt: { text: "go" } });
+    await plugin.event({ type: "session.created", data: { sessionID: "ses_c1", parentID: MAIN, title: "c1" } });
+    await plugin.event({ type: "session.created", data: { sessionID: "ses_c2", parentID: MAIN, title: "c2" } });
+    await plugin.event({ type: "session.execution.started", data: { sessionID: "ses_c1" } });
+    await plugin.event({ type: "session.execution.started", data: { sessionID: "ses_c2" } });
+    await plugin.event({ type: "session.execution.succeeded", data: { sessionID: MAIN } });
+    // First child drains: a sibling is still running, no stop yet.
+    await plugin.event({ type: "session.execution.succeeded", data: { sessionID: "ses_c1" } });
+    await plugin.tool({ sessionID: "ses_c2", tool: "bash", input: {}, status: "completed", result: { output: "o", metadata: null } });
+    await plugin.event({ type: "session.execution.succeeded", data: { sessionID: "ses_c2" } });
+    await settle(h);
+
+    assert.deepEqual(h.events(), [
+      "user-prompt-submit " + JSON.stringify({ cwd: "/repo", session_id: MAIN, prompt: "go" }),
+      "activity-log " + JSON.stringify({ cwd: "/repo", session_id: MAIN, tool_name: "Agent", tool_input: {}, tool_response: null }),
+      "activity-log " + JSON.stringify({ cwd: "/repo", session_id: MAIN, tool_name: "Agent", tool_input: {}, tool_response: null }),
+      "activity-log " + JSON.stringify({ cwd: "/repo", session_id: MAIN, tool_name: "bash", tool_input: {}, tool_response: { output: "o", metadata: null } }),
+      "stop " + JSON.stringify({ cwd: "/repo", session_id: MAIN, last_message: "" }),
+    ]);
+  } finally {
+    h.dispose();
+  }
+});
+
+test("a mid-turn child finishing never stops the pane under a running main turn", async () => {
+  const h = await loadPlugin();
+  try {
+    const plugin = await h.init("/repo");
+    await plugin.prompt({ sessionID: MAIN, prompt: { text: "go" } });
+    await plugin.event({ type: "session.created", data: { sessionID: CHILD, parentID: MAIN, title: "sync" } });
+    await plugin.event({ type: "session.execution.started", data: { sessionID: CHILD } });
+    await plugin.event({ type: "session.execution.succeeded", data: { sessionID: CHILD } });
+    // The main turn keeps going and finishes normally.
+    await plugin.event({ type: "session.execution.succeeded", data: { sessionID: MAIN } });
+    await settle(h);
+
+    assert.deepEqual(h.events(), [
+      "user-prompt-submit " + JSON.stringify({ cwd: "/repo", session_id: MAIN, prompt: "go" }),
+      "activity-log " + JSON.stringify({ cwd: "/repo", session_id: MAIN, tool_name: "Agent", tool_input: {}, tool_response: null }),
+      // Exactly one stop, from the main turn's own terminal event.
+      "stop " + JSON.stringify({ cwd: "/repo", session_id: MAIN, last_message: "" }),
+    ]);
+  } finally {
+    h.dispose();
+  }
+});
+
+test("a child starting after the main stop flips the pane back via an activity forward", async () => {
+  const h = await loadPlugin();
+  try {
+    const plugin = await h.init("/repo");
+    await plugin.prompt({ sessionID: MAIN, prompt: { text: "go" } });
+    await plugin.event({ type: "session.execution.succeeded", data: { sessionID: MAIN } });
+    // A background task's child only starts now (its started event raced
+    // the main's terminal and lost): the pane already went idle, so the
+    // start must light it again — and the drain must stop it.
+    await plugin.event({ type: "session.created", data: { sessionID: CHILD, parentID: MAIN, title: "late" } });
+    await plugin.event({ type: "session.execution.started", data: { sessionID: CHILD } });
+    await plugin.event({ type: "session.execution.succeeded", data: { sessionID: CHILD } });
+    await settle(h);
+
+    assert.deepEqual(h.events(), [
+      "user-prompt-submit " + JSON.stringify({ cwd: "/repo", session_id: MAIN, prompt: "go" }),
+      "stop " + JSON.stringify({ cwd: "/repo", session_id: MAIN, last_message: "" }),
+      "activity-log " + JSON.stringify({ cwd: "/repo", session_id: MAIN, tool_name: "Agent", tool_input: {}, tool_response: null }),
+      "stop " + JSON.stringify({ cwd: "/repo", session_id: MAIN, last_message: "" }),
+    ]);
+  } finally {
+    h.dispose();
+  }
+});
+
+test("a failed child releases the turn and drains the pane with a plain stop", async () => {
+  const h = await loadPlugin();
+  try {
+    const plugin = await h.init("/repo");
+    await plugin.prompt({ sessionID: MAIN, prompt: { text: "go" } });
+    await plugin.event({ type: "session.created", data: { sessionID: CHILD, parentID: MAIN, title: "boom" } });
+    await plugin.event({ type: "session.execution.started", data: { sessionID: CHILD } });
+    await plugin.event({ type: "session.execution.succeeded", data: { sessionID: MAIN } });
+    await plugin.event({ type: "session.execution.failed", data: { sessionID: CHILD, error: { type: "provider", message: "boom" } } });
+    await settle(h);
+
+    assert.deepEqual(h.events(), [
+      "user-prompt-submit " + JSON.stringify({ cwd: "/repo", session_id: MAIN, prompt: "go" }),
+      "activity-log " + JSON.stringify({ cwd: "/repo", session_id: MAIN, tool_name: "Agent", tool_input: {}, tool_response: null }),
+      // The child's failure is the child's — the drain lands a plain stop,
+      // not the turn-level stop-failure.
+      "stop " + JSON.stringify({ cwd: "/repo", session_id: MAIN, last_message: "" }),
+    ]);
+  } finally {
+    h.dispose();
+  }
+});
+
+test("a shutdown interrupt always stops the pane even with children tracked", async () => {
+  const h = await loadPlugin();
+  try {
+    const plugin = await h.init("/repo");
+    await plugin.prompt({ sessionID: MAIN, prompt: { text: "go" } });
+    await plugin.event({ type: "session.created", data: { sessionID: CHILD, parentID: MAIN, title: "bg" } });
+    await plugin.event({ type: "session.execution.started", data: { sessionID: CHILD } });
+    // Daemon shutdown kills the children too — no drain stop would ever
+    // come, so the interrupt's stop must not be held.
+    await plugin.event({ type: "session.execution.interrupted", data: { sessionID: MAIN, reason: "shutdown" } });
+    await settle(h);
+
+    assert.deepEqual(h.events(), [
+      "user-prompt-submit " + JSON.stringify({ cwd: "/repo", session_id: MAIN, prompt: "go" }),
+      "activity-log " + JSON.stringify({ cwd: "/repo", session_id: MAIN, tool_name: "Agent", tool_input: {}, tool_response: null }),
+      "stop " + JSON.stringify({ cwd: "/repo", session_id: MAIN, last_message: "" }),
+    ]);
+  } finally {
+    h.dispose();
+  }
+});
+
+// The experimental.idle hook (opencode 2.2.1+) carries the authoritative
+// background list: a child whose started event was missed is recorded from
+// it, the held stop survives until the list drains, and a later idle fire
+// with an empty list releases the stop even when the child's terminal
+// event was lost.
+test("the experimental.idle background list holds and releases the stop", async () => {
+  const h = await loadPlugin();
+  try {
+    const plugin = await h.init("/repo");
+    await plugin.prompt({ sessionID: MAIN, prompt: { text: "go" } });
+    // No session.created for the child (its created event was missed); the
+    // idle hook's background entry is what teaches the bridge the lineage.
+    await plugin.idle({
+      sessionID: MAIN,
+      background: [{ kind: "subagent", sessionID: MAIN, childSessionID: CHILD, agent: "explore", description: "dig" }],
+    });
+    await plugin.event({ type: "session.execution.succeeded", data: { sessionID: MAIN } });
+    // The child's tool results flow while it runs.
+    await plugin.tool({ sessionID: CHILD, tool: "read", input: {}, status: "completed", result: { output: "o", metadata: null } });
+    // The child's terminal event is lost; the idle hook re-fires drained.
+    await plugin.idle({ sessionID: MAIN, background: [] });
+    await settle(h);
+
+    assert.deepEqual(h.events(), [
+      "user-prompt-submit " + JSON.stringify({ cwd: "/repo", session_id: MAIN, prompt: "go" }),
+      "activity-log " + JSON.stringify({ cwd: "/repo", session_id: MAIN, tool_name: "read", tool_input: {}, tool_response: { output: "o", metadata: null } }),
+      "stop " + JSON.stringify({ cwd: "/repo", session_id: MAIN, last_message: "" }),
+    ]);
+  } finally {
+    h.dispose();
+  }
+});
+
+test("a non-subagent background list never holds the stop", async () => {
+  const h = await loadPlugin();
+  try {
+    const plugin = await h.init("/repo");
+    await plugin.prompt({ sessionID: MAIN, prompt: { text: "go" } });
+    // A main-owned background shell keeps the daemon's list non-empty, but
+    // only subagent entries hold the pane (an abandoned dev server would
+    // otherwise glow forever).
+    await plugin.idle({
+      sessionID: MAIN,
+      background: [{ kind: "shell", sessionID: MAIN, shellID: "sh_1", command: "npm run dev" }],
+    });
+    await plugin.event({ type: "session.execution.succeeded", data: { sessionID: MAIN } });
+    await settle(h);
+
+    assert.deepEqual(h.events(), [
+      "user-prompt-submit " + JSON.stringify({ cwd: "/repo", session_id: MAIN, prompt: "go" }),
+      "stop " + JSON.stringify({ cwd: "/repo", session_id: MAIN, last_message: "" }),
+    ]);
+  } finally {
+    h.dispose();
+  }
+});
+
+test("the event pump subscribes with the handled-types filter", async () => {
+  const h = await loadPlugin();
+  try {
+    const plugin = await h.init("/repo");
+    await plugin.prompt({ sessionID: MAIN, prompt: { text: "go" } });
+    await settle(h);
+    const types = h.subscribeOptions()?.types;
+    assert.ok(Array.isArray(types), "subscribe must receive a types filter");
+    for (const expected of [
+      "session.created",
+      "session.renamed",
+      "session.status",
+      "session.idle",
+      "session.execution.started",
+      "session.execution.succeeded",
+      "session.execution.failed",
+      "session.execution.interrupted",
+      "permission.asked",
+      "permission.replied",
+      "form.created",
+      "form.replied",
+      "form.cancelled",
+    ]) {
+      assert.ok(types.includes(expected), `types filter must include ${expected}`);
+    }
+  } finally {
+    h.dispose();
+  }
+});
+
+// ─── M-bridge-1 / M-bridge-3: chain robustness ──────────────────────────
+
+// A wedged hook spawn used to hold its link for 3s and then silently keep
+// running — its late tmux writes raced the next link's writes. The spawn
+// is now killed at the timeout (its late line must never land) and the
+// chain moves on immediately.
+test("a wedged hook spawn is killed and cannot wedge the chain", { timeout: 20000 }, async () => {
+  const h = await loadPlugin({ slowHookMarker: true });
+  try {
+    const plugin = await h.init("/repo");
+    writeFileSync(h.slowMarker, "1");
+    await plugin.prompt({ sessionID: MAIN, prompt: { text: "go" } });
+    rmSync(h.slowMarker);
+    // The next link must not wait for the killed one beyond its timeout.
+    await plugin.event({ type: "session.execution.succeeded", data: { sessionID: MAIN } });
+    await settle(h, 10000);
+
+    const events = h.events();
+    assert.equal(
+      events.filter((line) => line.startsWith("user-prompt-submit")).length,
+      0,
+      "the killed spawn must never write its (late) line",
+    );
+    assert.ok(
+      events.some((line) => line.startsWith("stop ")),
+      "the chain must keep flowing after the killed spawn",
+    );
+  } finally {
+    h.dispose();
+  }
+});
+
+// A hung `ctx.session.get` (wedged daemon RPC) used to wedge the pump and
+// the hook chain forever. Lookups are now bounded; the flow continues.
+test("a hung session lookup times out and the pump keeps flowing", { timeout: 20000 }, async () => {
+  const h = await loadPlugin({ hangLookupsFor: ["ses_lost_child"] });
+  try {
+    const plugin = await h.init("/repo");
+    await plugin.event({ type: "session.created", data: { sessionID: MAIN, title: "Main" } });
+    await plugin.prompt({ sessionID: MAIN, prompt: { text: "go" } });
+    // An unknown child's started event triggers a lookup that hangs —
+    // bounded — then the pump continues with the next event.
+    await plugin.event({ type: "session.execution.started", data: { sessionID: "ses_lost_child" } });
+    await plugin.event({ type: "session.execution.succeeded", data: { sessionID: MAIN } });
+    // The hung lookup holds the pump for its bound; wait past it for the
+    // stop that proves the flow recovered.
+    const start = Date.now();
+    while (Date.now() - start < 9000) {
+      if (h.events().some((line) => line.startsWith("stop "))) break;
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+
+    assert.ok(
+      h.events().some((line) => line.startsWith("stop ")),
+      "the chain must keep flowing after a hung lookup",
+    );
+  } finally {
+    h.dispose();
+  }
+});
+
+// ─── L-bridge-1 / L-bridge-2: bounded caches and turn state ─────────────
+
+// The bus is server-global: every session ever created on the daemon
+// reaches the instance. The per-session caches must cap themselves without
+// disturbing a live turn.
+test("session caches cap themselves and live turns survive pruning", { timeout: 20000 }, async () => {
+  const h = await loadPlugin();
+  try {
+    const plugin = await h.init("/repo", "proj_mine");
+    const foreign = [];
+    for (let i = 0; i < 600; i += 1) {
+      foreign.push({
+        type: "session.created",
+        data: { sessionID: `ses_foreign_${i}`, info: { projectID: "proj_other", directory: `/other/${i}`, title: `F${i}` } },
+      });
+    }
+    plugin.raw(foreign);
+    // Live turn interleaved with the bulk (protected from pruning).
+    await plugin.event({ type: "session.created", data: { sessionID: MAIN, info: { projectID: "proj_mine", directory: "/repo", title: "Main" } } });
+    await plugin.prompt({ sessionID: MAIN, prompt: { text: "mine" } });
+    await settle(h, 10000);
+
+    const events = h.events();
+    assert.ok(events.some((line) => line.includes(`"session_id":"${MAIN}"`)), "the live session must keep working");
+    assert.ok(events.every((line) => !line.includes("ses_foreign_")), "foreign sessions must never forward");
+    // The cap held: foreign creations beyond the cap were evicted (not
+    // observable directly), but the instance still functions — and a
+    // foreign prompt after the prune is still gated by its project.
+    await plugin.event({ type: "session.created", data: { sessionID: "ses_foreign_late", info: { projectID: "proj_other", directory: "/other/late", title: "Late" } } });
+    await plugin.prompt({ sessionID: "ses_foreign_late", prompt: { text: "late" } });
+    await settle(h);
+    assert.deepEqual(
+      h.events().filter((line) => line.includes("ses_foreign_late")),
+      [],
+    );
+  } finally {
+    h.dispose();
+  }
+});
+
+// A terminal event lost entirely (stream hiccup, plugin reload) leaves the
+// turn active forever. The staleness bound drops the entry; when the pane
+// still shows running, the stop is forwarded so the elapsed timer finally
+// lands. A waiting pane is left alone (a pending permission is live state).
+test("a stale turn entry is dropped and a still-running pane is stopped (L-bridge-2)", { timeout: 20000 }, async () => {
+  process.env.TMUX_AGENT_SIDEBAR_TURN_STALE_MS = "50";
+  const h = await loadPlugin({ panes: "%2\topencode\t/repo\tses_main\trunning\n" });
+  try {
+    const plugin = await h.init("/repo");
+    await plugin.prompt({ sessionID: MAIN, prompt: { text: "go" } });
+    // No terminal event ever arrives. Any later bus event runs the sweep,
+    // which expires the turn and repairs the running pane.
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    await plugin.event({ type: "permission.asked", data: { sessionID: "ses_unrelated", id: "per_x" } });
+    await settle(h);
+
+    assert.deepEqual(h.events(), [
+      "user-prompt-submit " + JSON.stringify({ cwd: "/repo", session_id: MAIN, prompt: "go" }),
+      "stop " + JSON.stringify({ cwd: "/repo", session_id: MAIN, last_message: "" }),
+    ]);
+  } finally {
+    delete process.env.TMUX_AGENT_SIDEBAR_TURN_STALE_MS;
+    h.dispose();
+  }
+});
+
+test("a stale turn on a waiting pane is dropped without clobbering the prompt", { timeout: 20000 }, async () => {
+  process.env.TMUX_AGENT_SIDEBAR_TURN_STALE_MS = "50";
+  const h = await loadPlugin({ panes: "%2\topencode\t/repo\tses_main\twaiting\n" });
+  try {
+    const plugin = await h.init("/repo");
+    await plugin.prompt({ sessionID: MAIN, prompt: { text: "go" } });
+    await plugin.event({ type: "permission.asked", data: { sessionID: MAIN, id: "per_1" } });
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    // The ask's own event runs the sweep; the pane shows waiting, so the
+    // stale turn is dropped but no stop may fire over the live prompt.
+    await plugin.event({ type: "permission.asked", data: { sessionID: "ses_unrelated", id: "per_x" } });
+    await settle(h);
+
+    assert.deepEqual(h.events(), [
+      "user-prompt-submit " + JSON.stringify({ cwd: "/repo", session_id: MAIN, prompt: "go" }),
+      "notification " + JSON.stringify({ cwd: "/repo", session_id: MAIN, wait_reason: "permission" }),
+    ]);
+  } finally {
+    delete process.env.TMUX_AGENT_SIDEBAR_TURN_STALE_MS;
     h.dispose();
   }
 });

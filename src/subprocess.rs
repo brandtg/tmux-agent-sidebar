@@ -16,6 +16,14 @@ use std::time::{Duration, Instant};
 /// the timeout path anyway.
 const DRAIN_COLLECT_TIMEOUT: Duration = Duration::from_secs(5);
 
+/// Per-stream cap on what a drain thread keeps. Everything this module
+/// runs (tmux, git, ps) emits kilobytes; a wedged or chatty child could
+/// otherwise balloon a worker thread's RSS without bound — the drain
+/// keeps running to EOF regardless (a stalled pipe is the deadlock this
+/// exists to prevent), it just stops retaining beyond the cap (audit
+/// 2026-11-25 L-tmux-4).
+const MAX_DRAIN_BYTES: usize = 4 * 1024 * 1024;
+
 /// Run `command` to completion, killing it (and, on Unix, its whole process
 /// group) if it outlives `timeout`.
 ///
@@ -87,7 +95,23 @@ pub(crate) fn run_with_timeout(command: &mut Command, timeout: Duration) -> Resu
 fn spawn_drain<R: Read + Send + 'static>(mut pipe: R, tag: u8, tx: mpsc::Sender<(u8, Vec<u8>)>) {
     std::thread::spawn(move || {
         let mut buf = Vec::new();
-        let _ = pipe.read_to_end(&mut buf);
+        let mut chunk = [0u8; 64 * 1024];
+        loop {
+            match pipe.read(&mut chunk) {
+                Ok(0) => break,
+                Ok(n) => {
+                    // Retain only the first MAX_DRAIN_BYTES; past the
+                    // cap the chunks are dropped, but the read loop
+                    // continues to EOF so a chatty child cannot wedge
+                    // the pipe (audit 2026-11-25 L-tmux-4).
+                    if buf.len() < MAX_DRAIN_BYTES {
+                        let take = n.min(MAX_DRAIN_BYTES - buf.len());
+                        buf.extend_from_slice(&chunk[..take]);
+                    }
+                }
+                Err(_) => break,
+            }
+        }
         let _ = tx.send((tag, buf));
     });
 }

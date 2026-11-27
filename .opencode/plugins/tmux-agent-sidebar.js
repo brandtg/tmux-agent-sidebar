@@ -117,15 +117,44 @@ const HOOK_COMMAND = (() => {
 // tmux writes — e.g. a first prompt's session-start (idle + clock clear) and
 // user-prompt-submit (running + clock stamp) landing interleaved, or a
 // queued follow-up's prompt stamp landing after the previous turn's stop
-// cleared it. Each link resolves when the spawned hook exits (bounded by a
-// timeout so a wedged spawn cannot stall the chain), and OpenCode still
-// gets its fire-and-forget dispatch semantics — the chain drains in the
-// background.
+// cleared it. Each link resolves when the spawned hook exits, and the WHOLE
+// link body — session RPCs included — races a timeout so a wedged spawn or
+// a hung `ctx.session.get` cannot stall the chain for the daemon's
+// lifetime (audit 2026-11-25 M-bridge-1); a spawn that outlives its own
+// timeout is killed so its late tmux writes cannot race the next link
+// (M-bridge-3). OpenCode still gets its fire-and-forget dispatch semantics
+// — the chain drains in the background.
 let hookChain = Promise.resolve();
+
+// Bus subscription filter (opencode 2.2.0+): only the event types the
+// bridge handles, dropped at the bus so high-volume deltas (message parts,
+// tool input streams) never reach the pump on a busy daemon. Every type
+// here exists in the daemon's server manifest. `session.updated` and the
+// legacy `question.*` events are deliberately absent: they are not in the
+// 2.2+ server manifest and no longer exist as events there, and daemons
+// old enough to emit them predate the types option entirely — the
+// unfiltered delivery on those keeps the legacy handlers below working.
+const BUS_EVENT_TYPES = [
+  "session.created",
+  "session.renamed",
+  "session.status",
+  "session.idle",
+  "session.execution.started",
+  "session.execution.succeeded",
+  "session.execution.failed",
+  "session.execution.interrupted",
+  "permission.asked",
+  "permission.replied",
+  "form.created",
+  "form.replied",
+  "form.cancelled",
+];
 
 // One `tmux list-panes -a` snapshot, tab-separated so fields parse cleanly:
 // pane_id, pane_current_command, pane_current_path, @pane_session_id,
-// pane_title. Resolves with "" when tmux is unavailable; never rejects.
+// @pane_status, pane_title. Resolves with "" when tmux is unavailable;
+// never rejects. The status field feeds the staleness sweep's guarded stop
+// (a stale turn may only stop a pane that still shows running).
 function listPanes() {
   return new Promise((resolvePromise) => {
     let settled = false;
@@ -141,7 +170,7 @@ function listPanes() {
           "list-panes",
           "-a",
           "-F",
-          "#{pane_id}\t#{pane_current_command}\t#{pane_current_path}\t#{@pane_session_id}\t#{pane_title}",
+          "#{pane_id}\t#{pane_current_command}\t#{pane_current_path}\t#{@pane_session_id}\t#{@pane_status}\t#{pane_title}",
         ],
         { stdio: ["ignore", "pipe", "ignore"] },
       );
@@ -150,7 +179,11 @@ function listPanes() {
         out += chunk;
       });
       child.on("error", () => finish(""));
-      child.on("exit", () => finish(out));
+      // Resolve on `close`, not `exit`: exit can fire before the pipe's
+      // buffered data is delivered, truncating the pane table under load
+      // and sending resolution down fallback paths (audit 2026-11-25
+      // M-bridge-2). close fires after the stdio streams have flushed.
+      child.on("close", () => finish(out));
       // A wedged tmux client must not stall the serialized hook chain.
       setTimeout(() => {
         try {
@@ -162,6 +195,20 @@ function listPanes() {
       finish("");
     }
   });
+}
+
+// Parse one list-panes record. Titles may contain tabs; everything after
+// the fifth field is the title.
+function parsePaneLine(line) {
+  const [id, command, path, boundSession, status, ...rest] = line.split("\t");
+  return {
+    id,
+    command,
+    path: path ?? "",
+    sessionId: boundSession ?? "",
+    status: status ?? "",
+    title: rest.join("\t"),
+  };
 }
 
 // Map a hook payload (session location + session id) to the tmux pane that
@@ -269,18 +316,7 @@ async function resolvePaneId(cwd, sessionId) {
   const panes = out
     .split("\n")
     .filter((line) => line !== "")
-    .map((line) => {
-      // Titles may contain tabs; everything after the fourth field is
-      // the title.
-      const [id, command, path, boundSession, ...rest] = line.split("\t");
-      return {
-        id,
-        command,
-        path: path ?? "",
-        sessionId: boundSession ?? "",
-        title: rest.join("\t"),
-      };
-    });
+    .map(parsePaneLine);
   // opencode's bundled bun binary keeps an `.exe` suffix on every platform
   // (`@opencode/cli/bin/opencode.exe`), and tmux reports the pane's
   // foreground process name — so on macOS a live TUI pane reads
@@ -468,81 +504,158 @@ async function resolvePaneId(cwd, sessionId) {
   return { pane: chosen, committed };
 }
 
-const hook = (eventName, payload, opts = {}) => {
-  hookChain = hookChain.then(async () => {
-    // Child-session events ride under the parent's identity so they cannot
-    // rebind the pane or wipe its title (see routeSessionId). Unknown ids
-    // pass through unchanged.
-    if (
-      payload &&
-      typeof payload.session_id === "string" &&
-      payload.session_id !== "" &&
-      typeof routeSessionId === "function"
-    ) {
-      payload = { ...payload, session_id: await routeSessionId(payload.session_id) };
-    }
-    // The daemon has no trustworthy TMUX_PANE; inject the resolved one into
-    // the spawned hook's environment. With no match, inherit the inherited
-    // environment unchanged so non-daemon setups behave exactly as before.
-    // A guessed resolution (every candidate bound, none provably stale)
-    // flags the spawn so the CLI does not record the session binding on a
-    // pane that may belong to another live session. `opts.unbind` forces
-    // the same flag for payloads whose session id is not a real session
-    // (the form surface's "global" elicitation owner): resolution may pick
-    // the pane by cwd, but the CLI must never record that id as the pane's
-    // binding.
-    const resolved = await resolvePaneId(payload?.cwd, payload?.session_id ?? "");
-    // A committed resolution is about to write this session's binding on
-    // the pane: cached resolutions captured before that write are stale
-    // for every other session that resolved to the same pane — two
-    // same-directory sessions would otherwise both ride the 2s cache into
-    // claiming the first unbound pane. Drop them so the next event
-    // re-resolves against the fresh pane table; the chain is serialized,
-    // so the spawned hook — binding write included — has fully exited
-    // before the next link resolves.
-    if (
-      resolved.committed &&
-      resolved.pane !== "" &&
-      typeof payload?.cwd === "string" &&
-      payload.cwd !== ""
-    ) {
-      const ownKey = `${payload.cwd}|${payload.session_id ?? ""}`;
-      for (const [key, cached] of [...paneCache]) {
-        if (key !== ownKey && cached.pane === resolved.pane) {
-          paneCache.delete(key);
-        }
-      }
-    }
-    const env =
-      resolved.pane === ""
-        ? undefined
-        : {
-            ...process.env,
-            TMUX_PANE: resolved.pane,
-            ...(resolved.committed && !opts.unbind
-              ? {}
-              : { TMUX_AGENT_SIDEBAR_BIND_SESSION: "0" }),
-          };
-    await Promise.race([
-      new Promise((resolve) => {
-        try {
-          const child = spawn(HOOK_COMMAND.cmd, [...HOOK_COMMAND.prefix, eventName], {
-            stdio: ["pipe", "ignore", "ignore"],
-            env,
-          });
-          child.on("error", () => resolve());
-          child.on("exit", () => resolve());
-          child.stdin.on("error", () => {});
-          child.stdin.end(JSON.stringify(payload));
-        } catch {
-          // OpenCode should keep running even if the bridge is missing
-          // or the sidebar binary is unavailable.
-          resolve();
-        }
-      }),
-      new Promise((resolve) => setTimeout(resolve, 3000)),
-    ]);
+// Promise.race that never rejects: `run()` keeps running after the timeout
+// wins the race, but the caller moves on. `onTimeout` fires when the
+// timeout wins so the caller can clean up (kill a started spawn).
+function raceTimeout(ms, onTimeout, run) {
+  return new Promise((resolve) => {
+    let settled = false;
+    const settle = () => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve();
+    };
+    const timer = setTimeout(() => {
+      if (settled) return;
+      try {
+        onTimeout?.();
+      } catch {}
+      settle();
+    }, ms);
+    timer.unref?.();
+    run().then(settle, settle);
   });
+}
+
+const HOOK_SPAWN_TIMEOUT_MS = 3000;
+// The whole link body — session RPCs included — must stay bounded
+// (audit 2026-11-25 M-bridge-1); the spawn keeps its own tighter budget so
+// a slow-but-working resolution does not eat into it.
+const HOOK_LINK_TIMEOUT_MS = 5000;
+
+// One hook spawn, raced against its own timeout. The child is KILLED when
+// the timeout wins: a timed-out spawn left alive keeps running and its
+// late tmux writes would race the next link's writes, breaking the
+// serialized-ordering invariant the chain exists for (audit 2026-11-25
+// M-bridge-3).
+function runHookSpawn(eventName, payload, env) {
+  const state = { child: null };
+  let killer = null;
+  const done = new Promise((resolve) => {
+    let settled = false;
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      if (killer) clearTimeout(killer);
+      resolve();
+    };
+    killer = setTimeout(() => {
+      try {
+        state.child?.kill();
+      } catch {}
+      finish();
+    }, HOOK_SPAWN_TIMEOUT_MS);
+    killer.unref?.();
+    try {
+      state.child = spawn(HOOK_COMMAND.cmd, [...HOOK_COMMAND.prefix, eventName], {
+        stdio: ["pipe", "ignore", "ignore"],
+        env,
+      });
+      state.child.on("error", () => finish());
+      state.child.on("exit", () => finish());
+      state.child.stdin.on("error", () => {});
+      state.child.stdin.end(JSON.stringify(payload));
+    } catch {
+      // OpenCode should keep running even if the bridge is missing
+      // or the sidebar binary is unavailable.
+      finish();
+    }
+  });
+  return {
+    done,
+    kill: () => {
+      try {
+        state.child?.kill();
+      } catch {}
+    },
+  };
+}
+
+const hook = (eventName, payload, opts = {}) => {
+  const spawnRun = { kill: null };
+  hookChain = hookChain.then(() =>
+    // The WHOLE link body races a timeout — not just the final spawn. A
+    // hung `routeSessionId` → `lookupSessionInfo` → `ctx.session.get`
+    // (or a hung title lookup inside resolvePaneId) used to wedge the
+    // chain forever, stalling every subsequent opencode hook event for
+    // the daemon's lifetime (audit 2026-11-25 M-bridge-1). On expiry the
+    // link yields and any spawn it already started is killed, so late
+    // tmux writes cannot race the next link (M-bridge-3). The race never
+    // rejects, so a thrown body cannot leave the chain permanently dead.
+    raceTimeout(
+      HOOK_LINK_TIMEOUT_MS,
+      () => spawnRun.kill?.(),
+      async () => {
+        // Child-session events ride under the parent's identity so they cannot
+        // rebind the pane or wipe its title (see routeSessionId). Unknown ids
+        // pass through unchanged.
+        if (
+          payload &&
+          typeof payload.session_id === "string" &&
+          payload.session_id !== "" &&
+          typeof routeSessionId === "function"
+        ) {
+          payload = { ...payload, session_id: await routeSessionId(payload.session_id) };
+        }
+        // The daemon has no trustworthy TMUX_PANE; inject the resolved one into
+        // the spawned hook's environment. With no match, inherit the inherited
+        // environment unchanged so non-daemon setups behave exactly as before.
+        // A guessed resolution (every candidate bound, none provably stale)
+        // flags the spawn so the CLI does not record the session binding on a
+        // pane that may belong to another live session. `opts.unbind` forces
+        // the same flag for payloads whose session id is not a real session
+        // (the form surface's "global" elicitation owner): resolution may pick
+        // the pane by cwd, but the CLI must never record that id as the pane's
+        // binding.
+        const resolved = await resolvePaneId(payload?.cwd, payload?.session_id ?? "");
+        // A committed resolution is about to write this session's binding on
+        // the pane: cached resolutions captured before that write are stale
+        // for every other session that resolved to the same pane — two
+        // same-directory sessions would otherwise both ride the 2s cache into
+        // claiming the first unbound pane. Drop them so the next event
+        // re-resolves against the fresh pane table; the chain is serialized,
+        // so the spawned hook — binding write included — has fully exited
+        // before the next link resolves.
+        if (
+          resolved.committed &&
+          resolved.pane !== "" &&
+          typeof payload?.cwd === "string" &&
+          payload.cwd !== ""
+        ) {
+          const ownKey = `${payload.cwd}|${payload.session_id ?? ""}`;
+          for (const [key, cached] of [...paneCache]) {
+            if (key !== ownKey && cached.pane === resolved.pane) {
+              paneCache.delete(key);
+            }
+          }
+        }
+        const env =
+          resolved.pane === ""
+            ? undefined
+            : {
+                ...process.env,
+                TMUX_PANE: resolved.pane,
+                ...(resolved.committed && !opts.unbind
+                  ? {}
+                  : { TMUX_AGENT_SIDEBAR_BIND_SESSION: "0" }),
+              };
+        const run = runHookSpawn(eventName, payload, env);
+        spawnRun.kill = run.kill;
+        await run.done;
+      },
+    ),
+  );
 };
 
     const sessionIdOf = (value) => (typeof value === "string" && value ? value : "");
@@ -555,11 +668,13 @@ export default {
     // OpenCode runs every `task` subagent in a child session (its own
     // sessionID, `parentID` pointing at the main session) whose bus events
     // and prompt hook all reach this plugin instance. Only main-session
-    // lifecycle may drive a pane's run state: a child's session.idle would
-    // stop the clock mid-turn (and flag the pane done), a child's prompt /
-    // session.status busy would restart it, and a child's tool results
-    // arriving after the main turn's stop would re-arm a cleared clock —
-    // a timer that never stops.
+    // lifecycle may drive a pane's identity and adoption: a child's prompt
+    // must not adopt the main slot, and a child's events must not rebind
+    // `@pane_session_id` or wipe the pane's title (they ride under the
+    // parent's identity — see routeSessionId). Run state is different: a
+    // background subagent keeps working after the main turn's model work
+    // is done, and the pane must stay lit until the last child drains
+    // (H-bridge-1) — child turns are tracked in `activeChildTurns` below.
     //
     // One instance can host several concurrent main sessions (two TUIs in
     // one project share this plugin), so mains are tracked as a set and
@@ -575,11 +690,29 @@ export default {
     // holds the main sessions with a turn in flight: added by the turn's
     // prompt / busy / started signal, cleared by stop / error.
     const mainSessions = new Set();
-    const activeTurns = new Set();
+    // Main sessions with a turn in flight → last-activity epoch ms. The
+    // timestamp bounds stale entries (L-bridge-2): a terminal event lost
+    // to a stream hiccup or a plugin reload would otherwise keep the
+    // session "active" forever, forwarding child tool activity between
+    // turns — the timer-ticking-forever shape the execute.after gate
+    // exists to prevent.
+    const activeTurns = new Map();
+    // Child (subagent) sessions with a turn in flight →
+    // { parent, root, at }: the direct parent session, the main session
+    // the work belongs to (whose pane stays lit), and the last time the
+    // child showed activity (the same staleness bound as activeTurns).
+    // Fed by child session.execution.started / terminal events and —
+    // authoritatively — by the experimental.idle hook's background list
+    // (opencode 2.2.1+), which re-fires as each child drains.
+    const activeChildTurns = new Map();
     const childSessions = new Set();
     // child sessionID → parent sessionID, from session.created and the
     // prompt-time session.get lookup.
     const parents = new Map();
+
+    // One-time server lookups are bounded so a hung RPC cannot wedge the
+    // pump or the hook chain (audit 2026-11-25 M-bridge-1).
+    const LOOKUP_TIMEOUT_MS = 3000;
 
     // sessionID → { projectID, directory }, learned from session.created
     // and from a one-time `session.get` lookup for sessions this instance
@@ -617,23 +750,41 @@ export default {
       let info = null;
       let answered = false;
       try {
-        const session = await ctx.session.get({ sessionID: session_id });
-        answered = true;
-        if (session && typeof session === "object") {
-          // The session record carries `directory` flat (SessionV1.Info);
-          // some shapes wrap it in `location`. Read both.
-          const directory =
-            typeof session.directory === "string"
-              ? session.directory
-              : typeof session.location?.directory === "string"
-                ? session.location.directory
-                : "";
-          info = {
-            projectID: typeof session.projectID === "string" ? session.projectID : "",
-            directory,
-            parentID: sessionIdOf(session.parentID),
-            title: typeof session.title === "string" ? session.title : "",
-          };
+        // Bounded like every other RPC consumer (audit 2026-11-25
+        // M-bridge-1): a hung `session.get` must not wedge the pump (this
+        // gate) or the serialized hook chain (routeSessionId /
+        // resolveSessionTitle) for the daemon's lifetime. A timeout is
+        // treated exactly like a thrown lookup — retried on the next
+        // event, never cached as a miss.
+        const outcome = await Promise.race([
+          ctx.session.get({ sessionID: session_id }).then(
+            (value) => ({ settled: true, value }),
+            () => ({ settled: false }),
+          ),
+          new Promise((resolve) => {
+            const timer = setTimeout(() => resolve({ settled: false }), LOOKUP_TIMEOUT_MS);
+            timer.unref?.();
+          }),
+        ]);
+        if (outcome?.settled) {
+          answered = true;
+          const session = outcome.value;
+          if (session && typeof session === "object") {
+            // The session record carries `directory` flat (SessionV1.Info);
+            // some shapes wrap it in `location`. Read both.
+            const directory =
+              typeof session.directory === "string"
+                ? session.directory
+                : typeof session.location?.directory === "string"
+                  ? session.location.directory
+                  : "";
+            info = {
+              projectID: typeof session.projectID === "string" ? session.projectID : "",
+              directory,
+              parentID: sessionIdOf(session.parentID),
+              title: typeof session.title === "string" ? session.title : "",
+            };
+          }
         }
       } catch {}
       // Cache only answers the server actually gave: a real miss (a
@@ -689,6 +840,58 @@ export default {
       return info?.parentID || session_id;
     };
 
+    // The bus is server-global: every session ever created on the daemon
+    // (other projects included) reaches this instance, and nothing ever
+    // leaves these caches on its own. Cap them so a long-lived daemon
+    // cannot grow them without bound (audit 2026-11-25 L-bridge-1);
+    // entries a live turn still needs are never evicted.
+    const SESSION_CACHE_MAX = 512;
+    const pruneSessionCaches = () => {
+      const protectedIds = new Set();
+      for (const id of activeTurns.keys()) protectedIds.add(id);
+      for (const [child, entry] of activeChildTurns) {
+        protectedIds.add(child);
+        protectedIds.add(entry.parent);
+        protectedIds.add(entry.root);
+      }
+      const evictOldest = (collection) => {
+        while (collection.size > SESSION_CACHE_MAX) {
+          const oldest = collection.keys().next().value;
+          if (oldest === undefined) break;
+          collection.delete(oldest);
+        }
+      };
+      if (sessionProjects.size > SESSION_CACHE_MAX) {
+        for (const id of sessionProjects.keys()) {
+          if (sessionProjects.size <= SESSION_CACHE_MAX) break;
+          if (protectedIds.has(id)) continue;
+          sessionProjects.delete(id);
+        }
+        evictOldest(sessionProjects);
+      }
+      if (mainSessions.size > SESSION_CACHE_MAX) {
+        for (const id of mainSessions) {
+          if (mainSessions.size <= SESSION_CACHE_MAX) break;
+          if (protectedIds.has(id)) continue;
+          mainSessions.delete(id);
+        }
+        evictOldest(mainSessions);
+      }
+      if (childSessions.size > SESSION_CACHE_MAX) {
+        // parents is keyed by the same child ids; evict the pair together.
+        for (const id of childSessions) {
+          if (childSessions.size <= SESSION_CACHE_MAX) break;
+          if (protectedIds.has(id)) continue;
+          childSessions.delete(id);
+          parents.delete(id);
+        }
+        evictOldest(childSessions);
+        // Defensive: parents only grows paired with childSessions, but a
+        // cap violation there would leak just the same.
+        if (parents.size > SESSION_CACHE_MAX) evictOldest(parents);
+      }
+    };
+
     // While no main session is known every event passes through (the
     // pre-gating behavior); once one is learned, foreign sessions are
     // dropped. Concurrent mains all pass — each routes to its own pane.
@@ -696,12 +899,154 @@ export default {
       mainSessions.size === 0 ||
       (session_id !== "" && mainSessions.has(session_id));
 
-    // Whether a turn is active that this session's child activity belongs
-    // to: a known child tracks its own parent's turn; anything else falls
-    // back to "any main turn is active" (the pre-per-session behavior).
+    // ── Child-turn tracking (audit 2026-11-25 H-bridge-1) ───────────────
+    //
+    // A background subagent keeps working after the main turn's model work
+    // is done. Its lifecycle events used to be dropped outright (the
+    // !isMainSession gates), so the pane flipped idle at the main turn's
+    // stop and stayed there: no tool results, no permission asks, and no
+    // stop when the child finally drained. The tracker keeps the pane lit
+    // for the whole family:
+    //
+    //   - a child's execution.started records an active child turn and
+    //     forwards an activity event (the activity handler flips a
+    //     non-running pane back to running and stamps a missing run clock
+    //     — needed when the child starts after the main stop already
+    //     landed);
+    //   - the main turn's terminal event holds its stop while a child turn
+    //     is active for it, and the last child's terminal event forwards
+    //     the stop — only when the main turn is inactive and no sibling
+    //     child remains, so a mid-turn child finishing never stops the
+    //     clock under a running main turn;
+    //   - the experimental.idle hook (registered below) syncs the tracker
+    //     against the daemon's authoritative background list and forwards
+    //     the stop when a later idle fires with the list drained. It does
+    //     not fire after interruption or failure, so the terminal-event
+    //     handling stays as the fallback.
+
+    // The main session a session's work belongs to: walk the parent chain
+    // to the first known main. Unknown lineage maps to the session itself.
+    const rootMainOf = (session_id) => {
+      let current = session_id;
+      for (let i = 0; i < 8; i += 1) {
+        if (mainSessions.size === 0 || mainSessions.has(current)) return current;
+        const parent = parents.get(current);
+        if (!parent) return current;
+        current = parent;
+      }
+      return current;
+    };
+
+    const rootHasActiveChildren = (root) => {
+      for (const entry of activeChildTurns.values()) {
+        if (entry.root === root) return true;
+      }
+      return false;
+    };
+
+    // Refresh a turn's staleness timestamp. A live turn constantly
+    // produces events (tool results, asks, replies, busy transitions), so
+    // only a turn whose events were all lost ever reaches the bound.
+    const touchTurn = (session_id) => {
+      if (activeTurns.has(session_id)) activeTurns.set(session_id, Date.now());
+      const entry = activeChildTurns.get(session_id);
+      if (entry) entry.at = Date.now();
+    };
+
+    // A child turn started: record it and light the pane. The forwarded
+    // session is the root main so the routed payload resolves against the
+    // pane's own binding (the child never owns one).
+    const trackChildTurnStart = async (child) => {
+      let parent = parents.get(child);
+      if (!parent) {
+        // The created event was missed (daemon restart mid-turn): resolve
+        // parentage once via the server; lookupSessionInfo caches it.
+        const info = await lookupSessionInfo(child);
+        parent = info?.parentID || "";
+        if (!parent) return;
+        childSessions.add(child);
+        parents.set(child, parent);
+        pruneSessionCaches();
+      }
+      const root = rootMainOf(parent);
+      const existing = activeChildTurns.get(child);
+      if (existing) {
+        existing.at = Date.now();
+        return;
+      }
+      activeChildTurns.set(child, { parent, root, at: Date.now() });
+      hook("activity-log", {
+        cwd,
+        session_id: root,
+        tool_name: "Agent",
+        tool_input: {},
+        tool_response: null,
+      });
+    };
+
+    // A child turn ended: release it and forward the held stop when the
+    // whole family drained — root turn inactive, no sibling child left.
+    const trackChildTurnEnd = (child) => {
+      const entry = activeChildTurns.get(child);
+      if (!entry) return;
+      activeChildTurns.delete(child);
+      const root = entry.root;
+      if (activeTurns.has(root) || rootHasActiveChildren(root)) return;
+      hook("stop", { cwd, session_id: root, last_message: "" });
+    };
+
+    // Staleness bound for turn state (audit 2026-11-25 L-bridge-2). A turn
+    // whose every event was lost (stream hiccup, plugin reload) would stay
+    // active forever. The bound drops the entry; when the pane still shows
+    // `running` — the missed-stop shape — the stop is forwarded so the
+    // elapsed timer finally lands. A `waiting` pane is left alone: a
+    // permission ask pending past the bound is live state, and a stop
+    // would clobber the prompt the user is looking at.
+    const TURN_STALE_MS =
+      Number.parseInt(process.env?.TMUX_AGENT_SIDEBAR_TURN_STALE_MS ?? "", 10) ||
+      60 * 60 * 1000;
+    const stopIfPaneRunning = async (session_id) => {
+      const out = await listPanes();
+      const pane = out
+        .split("\n")
+        .filter((line) => line !== "")
+        .map(parsePaneLine)
+        .find((p) => p.sessionId === session_id);
+      if (!pane || pane.status !== "running") return;
+      hook("stop", { cwd, session_id, last_message: "" });
+    };
+    const sweepStaleTurns = async () => {
+      const now = Date.now();
+      for (const [child, entry] of [...activeChildTurns]) {
+        if (now - entry.at < TURN_STALE_MS) continue;
+        activeChildTurns.delete(child);
+        const root = entry.root;
+        if (activeTurns.has(root) || rootHasActiveChildren(root)) continue;
+        await stopIfPaneRunning(root);
+      }
+      for (const [id, at] of [...activeTurns]) {
+        if (now - at < TURN_STALE_MS) continue;
+        activeTurns.delete(id);
+        await stopIfPaneRunning(id);
+      }
+    };
+
+    // Whether a turn is active that this session's activity belongs to:
+    // the session's own tracked child turn counts (a background subagent's
+    // results and asks keep flowing after the main turn's model work is
+    // done — H-bridge-1), then the nearest main session's turn up the
+    // parent chain; unknown lineage falls back to "any main turn is
+    // active" (the pre-per-session behavior).
     const turnActiveFor = (session_id) => {
-      const parent = parents.get(session_id);
-      return parent ? activeTurns.has(parent) : activeTurns.size > 0;
+      let current = session_id;
+      for (let i = 0; i < 8; i += 1) {
+        if (activeChildTurns.has(current)) return true;
+        if (mainSessions.has(current)) return activeTurns.has(current);
+        const parent = parents.get(current);
+        if (!parent) break;
+        current = parent;
+      }
+      return activeTurns.size > 0;
     };
 
     // Prompts admitted in a main session start (or restart) that session's
@@ -726,6 +1071,7 @@ export default {
         } else if (belongsToInstance(info)) {
           mainSessions.add(session_id);
         }
+        pruneSessionCaches();
       }
       // Strict membership: unlike the bus gates (which pass everything
       // while no main is known), an admitted prompt must belong to a
@@ -733,7 +1079,7 @@ export default {
       if (!mainSessions.has(session_id)) {
         return;
       }
-      activeTurns.add(session_id);
+      activeTurns.set(session_id, Date.now());
       hook("user-prompt-submit", {
         cwd,
         session_id,
@@ -746,12 +1092,14 @@ export default {
     // `{ output, content, metadata }` shape the activity log's label
     // extractors read (`content[].text`).
     //
-    // Child-session tool activity is shown while the main turn is active
-    // (it is what the subagent is doing for the user), but dropped between
-    // turns: the activity-log handler flips a non-running pane back to
-    // running and stamps a missing run clock, so a background subagent's
-    // results landing after the main turn's stop would leave the elapsed
-    // timer ticking forever.
+    // Child-session tool activity is shown while it belongs to a live
+    // turn — the main session's own turn, or the child's own tracked turn
+    // (H-bridge-1: a background subagent's results keep flowing after the
+    // main turn's model work is done, until the child drains) — and
+    // dropped between turns: the activity-log handler flips a non-running
+    // pane back to running and stamps a missing run clock, so results
+    // landing with nothing alive would leave the elapsed timer ticking
+    // forever.
     await ctx.tool.hook("execute.after", async (event) => {
       const session_id = sessionIdOf(event?.sessionID);
       if (!(await knownSessionBelongs(session_id))) {
@@ -760,6 +1108,7 @@ export default {
       if (!isMainSession(session_id) && !turnActiveFor(session_id)) {
         return;
       }
+      touchTurn(session_id);
       hook("activity-log", {
         cwd,
         session_id,
@@ -769,267 +1118,406 @@ export default {
       });
     });
 
+    // Experimental idle hook (opencode 2.2.1+): fires when a session
+    // finishes model work, just before it would go idle, carrying the
+    // background work still running for the session or one of its
+    // descendants — and re-fires as each piece drains. That list is the
+    // authoritative "still working" signal for H-bridge-1: sync the child
+    // tracker against it, and forward the held stop once a later idle
+    // fires with the subagent entries drained. Observe only — admitting
+    // input here would continue the session's execution, so the handler
+    // returns nothing and never throws (a hook failure must not break the
+    // session runner). The hook does not fire after interruption or
+    // failure; the terminal-event handling above stays as the fallback.
+    // Older daemons never trigger the hook (registering an unknown name is
+    // inert there); the registration is guarded like the legacy question.*
+    // path regardless.
+    try {
+      await ctx.session.hook("experimental.idle", async (event) => {
+        try {
+          const session_id = sessionIdOf(event?.sessionID);
+          if (
+            session_id === "" ||
+            !(await knownSessionBelongs(session_id)) ||
+            !isMainSession(session_id)
+          ) {
+            return;
+          }
+          const background = Array.isArray(event?.background) ? event.background : [];
+          const listed = new Set();
+          for (const item of background) {
+            if (!item || item.kind !== "subagent") continue;
+            const child = sessionIdOf(item.childSessionID);
+            if (child === "") continue;
+            listed.add(child);
+            if (!parents.has(child)) {
+              parents.set(child, sessionIdOf(item.sessionID) || session_id);
+              childSessions.add(child);
+            }
+            const existing = activeChildTurns.get(child);
+            if (existing) {
+              existing.at = Date.now();
+            } else {
+              activeChildTurns.set(child, {
+                parent: parents.get(child) || session_id,
+                root: session_id,
+                at: Date.now(),
+              });
+            }
+          }
+          // The list is authoritative: a tracked child it no longer
+          // reports has drained, even if its terminal event was lost.
+          for (const [child, entry] of [...activeChildTurns]) {
+            if (entry.root === session_id && !listed.has(child)) {
+              activeChildTurns.delete(child);
+            }
+          }
+          pruneSessionCaches();
+          // Every background subagent drained and the main turn is over:
+          // forward the stop the terminal event held. (A second stop after
+          // the child-terminal drain is harmless — the notification dedups
+          // and the idle write is idempotent.) With the main turn still
+          // active, its own terminal event stops the pane.
+          if (
+            listed.size === 0 &&
+            !activeTurns.has(session_id) &&
+            !rootHasActiveChildren(session_id)
+          ) {
+            hook("stop", { cwd, session_id, last_message: "" });
+          }
+        } catch {}
+        return;
+      });
+    } catch {}
+
     // The bus is a plain subscription in OpenCode 2; abort it on unload.
     const controller = new AbortController();
     void (async () => {
-      for await (const event of ctx.event.subscribe({ signal: controller.signal })) {
-        if (!event || !event.type) continue;
-        const data = event.data ?? {};
-        const session_id = sessionIdOf(data.sessionID);
-
-        switch (event.type) {
-          // Child sessions must not claim the pane's identity or adopt
-          // the main-session slot. Remember them so a later prompt (a
-          // background subagent prompting between turns) cannot adopt
-          // the slot either. Every created session is recorded with its
-          // project so later lifecycle events can be attributed; only
-          // sessions belonging to this instance adopt/forward.
-          case "session.created": {
+      // The pump must never surface as an unhandled rejection: some
+      // transports throw from the iterator on abort (unload), and a dead
+      // pump is a daemon-log matter, not a plugin crash (audit 2026-11-25
+      // L-bridge-3). Per-event failures are contained the same way — one
+      // malformed event must not kill the pump.
+      try {
+        for await (const event of ctx.event.subscribe({
+          types: BUS_EVENT_TYPES,
+          signal: controller.signal,
+        })) {
+          if (!event || !event.type) continue;
+          try {
+            // Bounded cleanup pass for lost terminal events (L-bridge-2);
+            // a no-op while no turn is tracked.
+            if (activeTurns.size > 0 || activeChildTurns.size > 0) {
+              await sweepStaleTurns();
+            }
+            const data = event.data ?? {};
             const session_id = sessionIdOf(data.sessionID);
-            // The 2.0.x public bus nests the session record under `info`
-            // (`{ sessionID, info: { projectID, directory, parentID, ... } }`);
-            // flat fields on `data` were never present, so reading them there
-            // left every session's project unknown and the project gate
-            // default-allowing — foreign sessions adopted the main slot and
-            // the real session's lifecycle events were dropped. Older/internal
-            // shapes carry the fields flat; read both.
-            const info =
-              data?.info && typeof data.info === "object" ? data.info : data;
-            const parentID =
-              sessionIdOf(info?.parentID) || sessionIdOf(data.parentID);
-            sessionProjects.set(session_id, {
-              projectID: typeof info?.projectID === "string" ? info.projectID : "",
-              directory:
-                typeof info?.directory === "string"
-                  ? info.directory
-                  : typeof info?.location?.directory === "string"
-                    ? info.location.directory
-                    : "",
-              parentID,
-              title: typeof info?.title === "string" ? info.title : "",
-            });
-            if (parentID) {
-              if (session_id) {
-                childSessions.add(session_id);
-                parents.set(session_id, parentID);
+
+            switch (event.type) {
+              // Child sessions must not claim the pane's identity or adopt
+              // the main-session slot. Remember them so a later prompt (a
+              // background subagent prompting between turns) cannot adopt
+              // the slot either. Every created session is recorded with its
+              // project so later lifecycle events can be attributed; only
+              // sessions belonging to this instance adopt/forward.
+              case "session.created": {
+                const session_id = sessionIdOf(data.sessionID);
+                // The 2.0.x public bus nests the session record under `info`
+                // (`{ sessionID, info: { projectID, directory, parentID, ... } }`);
+                // flat fields on `data` were never present, so reading them there
+                // left every session's project unknown and the project gate
+                // default-allowing — foreign sessions adopted the main slot and
+                // the real session's lifecycle events were dropped. Older/internal
+                // shapes carry the fields flat; read both.
+                const info =
+                  data?.info && typeof data.info === "object" ? data.info : data;
+                const parentID =
+                  sessionIdOf(info?.parentID) || sessionIdOf(data.parentID);
+                sessionProjects.set(session_id, {
+                  projectID: typeof info?.projectID === "string" ? info.projectID : "",
+                  directory:
+                    typeof info?.directory === "string"
+                      ? info.directory
+                      : typeof info?.location?.directory === "string"
+                        ? info.location.directory
+                        : "",
+                  parentID,
+                  title: typeof info?.title === "string" ? info.title : "",
+                });
+                pruneSessionCaches();
+                if (parentID) {
+                  if (session_id) {
+                    childSessions.add(session_id);
+                    parents.set(session_id, parentID);
+                  }
+                  continue;
+                }
+                if (!belongsToInstance(sessionProjects.get(session_id))) {
+                  continue;
+                }
+                if (session_id) {
+                  mainSessions.add(session_id);
+                  pruneSessionCaches();
+                }
+                hook("session-start", { cwd, session_id, source: "startup" });
+                hook("session-title", {
+                  cwd,
+                  session_id,
+                  title: info?.title ?? "",
+                });
+                continue;
               }
-              continue;
+    
+              // The session doc's title changes via renames — opencode
+              // auto-titles from the first exchange and applies manual renames
+              // later. 2.0.32+ daemons emit `session.renamed` with a flat
+              // `data: { sessionID, title }` and no longer fire
+              // `session.updated` at all; older daemons carry the refreshed
+              // session info on `session.updated` (`data.info.title`). Handle
+              // both shapes so titles track across daemon upgrades. A
+              // subagent session's rename is dropped so it cannot take over
+              // the row.
+              case "session.renamed":
+              case "session.updated": {
+                if (!isMainSession(session_id)) {
+                  continue;
+                }
+                const title =
+                  event.type === "session.renamed"
+                    ? data.title
+                    : (data.info?.title ?? data.title);
+                // Track renames so pane-title matching in resolvePaneId stays
+                // current: the TUI restamps its pane title with the new title,
+                // and the cached session record must follow.
+                const cached = sessionProjects.get(session_id);
+                if (cached && typeof title === "string" && title !== "") {
+                  cached.title = title;
+                }
+                hook("session-title", {
+                  cwd,
+                  session_id,
+                  title: typeof title === "string" ? title : "",
+                });
+                continue;
+              }
+    
+              // Status is a union: { type: "idle" | "busy" | "retry", ... }.
+              // `busy` is a secondary status-transition signal — the real
+              // prompt text is written via the `prompt` hook, which fires with
+              // the admitted prompt text. Forward the empty-prompt submission
+              // only when a turn starts without a prompt (retry recovery), so
+              // a missing run clock still gets stamped without re-stamping one
+              // that already spans the turn. `idle` needs no mapping here:
+              // terminal turn state routes through the session.execution.*
+              // events below (and session.idle on older servers), and handling
+              // it too would fire the stop hook twice per turn end — harmless
+              // (the notification dedups) but pointless.
+              case "session.status": {
+                if (!(await knownSessionBelongs(session_id)) || !isMainSession(session_id)) {
+                  continue;
+                }
+                if (data.status?.type === "busy") {
+                  // busy fires per assistant response — refresh the turn's
+                  // staleness timestamp, and forward the empty-prompt
+                  // submission only when a turn starts without a prompt (retry
+                  // recovery), so a missing run clock still gets stamped
+                  // without re-stamping one that already spans the turn.
+                  const resume = !activeTurns.has(session_id);
+                  activeTurns.set(session_id, Date.now());
+                  if (resume) {
+                    hook("user-prompt-submit", { cwd, session_id, prompt: "" });
+                  }
+                }
+                continue;
+              }
+    
+              // Turn lifecycle on 2.0.x. `started` marks the run clock even
+              // when the prompt hook was missed (retry recovery); the
+              // terminal events clear it and stop the pane. `interrupted`
+              // covers user aborts and shutdowns — the turn is over either
+              // way. `session.idle` is kept below as a legacy fallback for
+              // servers that still publish it; a double stop dedups on the
+              // notification side. A child session's lifecycle events feed
+              // the child-turn tracker instead (H-bridge-1).
+              case "session.execution.started":
+                if (!(await knownSessionBelongs(session_id))) {
+                  continue;
+                }
+                if (isMainSession(session_id)) {
+                  activeTurns.set(session_id, Date.now());
+                  hook("user-prompt-submit", { cwd, session_id, prompt: "" });
+                  continue;
+                }
+                // A child turn started: track it and light the pane — the
+                // activity forward flips a pane the main stop already landed
+                // on back to running and stamps the missing clock.
+                await trackChildTurnStart(session_id);
+                continue;
+    
+              case "session.execution.succeeded":
+              case "session.execution.interrupted":
+              case "session.idle":
+                if (!(await knownSessionBelongs(session_id))) {
+                  continue;
+                }
+                if (isMainSession(session_id)) {
+                  activeTurns.delete(session_id);
+                  // Hold the stop while a child turn is still running for
+                  // this session's pane (H-bridge-1): the last child's
+                  // terminal event — or the idle hook's drained re-fire —
+                  // sends it. A shutdown interrupt kills the children with
+                  // the daemon, so no drain stop would ever come — that
+                  // one always lands.
+                  const shutdown =
+                    event.type === "session.execution.interrupted" &&
+                    data.reason === "shutdown";
+                  if (shutdown || !rootHasActiveChildren(session_id)) {
+                    hook("stop", { cwd, session_id, last_message: "" });
+                  }
+                  continue;
+                }
+                // A child's terminal event: release its turn and stop the
+                // pane once the whole family drained.
+                trackChildTurnEnd(session_id);
+                continue;
+    
+              // Turn-level failure (OpenCode 1's session.error). Step-level
+              // failures are not mapped: they may be retried within the turn.
+              case "session.execution.failed":
+                if (!(await knownSessionBelongs(session_id))) {
+                  continue;
+                }
+                if (isMainSession(session_id)) {
+                  activeTurns.delete(session_id);
+                  hook("stop-failure", {
+                    cwd,
+                    session_id,
+                    error:
+                      data.error?.message || data.error?.type || "session.execution.failed",
+                  });
+                  continue;
+                }
+                // A failed child releases its turn like any terminal event;
+                // the drain lands a plain stop — the failure is the child's,
+                // and the main turn already reported its own state.
+                trackChildTurnEnd(session_id);
+                continue;
+    
+              // Permission and question (form) asks never touch the run clock,
+              // so they pass more freely: a subagent asking mid-turn still
+              // flips the pane to waiting (the whole turn is blocked on the
+              // answer), while between turns only main-session asks are
+              // forwarded so a background subagent cannot yank an idle pane
+              // around.
+              case "permission.asked":
+                if (!(await knownSessionBelongs(session_id))) {
+                  continue;
+                }
+                if (!isMainSession(session_id) && !turnActiveFor(session_id)) {
+                  continue;
+                }
+                touchTurn(session_id);
+                hook("notification", { cwd, session_id, wait_reason: "permission" });
+                continue;
+    
+              // Blocking asks. 2.0.x dedicated question events (`question.asked`
+              // with a flat `data.sessionID`) are still handled below for older
+              // daemons; 2.1.x asks through the form surface instead —
+              // `form.created` nests the request under `data.form`, where the
+              // `question` tool sets `metadata.kind: "question"` and MCP
+              // elicitations arrive as `kind: "mcp"` owned by the non-session
+              // `"global"` sentinel. Both block the turn on the user exactly
+              // like a permission ask, so they map to the same waiting
+              // notification; a mid-turn subagent ask still flags the pane
+              // (the whole turn is blocked on the answer), while between turns
+              // only main-session asks are forwarded so a background subagent
+              // cannot yank an idle pane around.
+              case "form.created": {
+                const form =
+                  data.form && typeof data.form === "object" ? data.form : data;
+                const form_session = sessionIdOf(form?.sessionID);
+                if (!(await knownSessionBelongs(form_session))) {
+                  continue;
+                }
+                if (!isMainSession(form_session) && !turnActiveFor(form_session)) {
+                  continue;
+                }
+                touchTurn(form_session);
+                // The question tool's form is a question; every other form
+                // (MCP elicitation, provider auth) is a dialog waiting on a
+                // selection. The `"global"` owner is not a real session — the
+                // spawn is flagged unbind so resolution may still pick the pane
+                // by cwd, but the CLI never records that id as the pane's
+                // session binding.
+                hook(
+                  "notification",
+                  {
+                    cwd,
+                    session_id: form_session,
+                    wait_reason:
+                      form?.metadata?.kind === "question"
+                        ? "question"
+                        : "elicitation_dialog",
+                  },
+                  { unbind: form_session === "" || form_session === "global" },
+                );
+                continue;
+              }
+    
+              // OpenCode's `question` tool blocks the turn on a user answer
+              // the same way a permission prompt does (2.0.x wire shape; 2.1.x
+              // replaced it with `form.created` above). Without this the pane
+              // stayed `running` while the agent waited for the answer. The
+              // sessionID is flat on the event data.
+              case "question.asked": {
+                if (!(await knownSessionBelongs(session_id))) {
+                  continue;
+                }
+                if (!isMainSession(session_id) && !turnActiveFor(session_id)) {
+                  continue;
+                }
+                touchTurn(session_id);
+                hook("notification", {
+                  cwd,
+                  session_id,
+                  wait_reason: "question",
+                });
+                continue;
+              }
+    
+              // The user answered (or rejected / dismissed) a permission,
+              // question, or form ask. Re-submit an empty prompt to clear the
+              // wait and mark the pane running again — the same
+              // synthetic-resume signal the `busy` branch uses for retry
+              // recovery. The activity-log handler keeps a pending-action wait
+              // sticky, so a concurrent tool's result cannot clear it; this
+              // reply is what resumes the pane. A `"global"` form reply is not
+              // a real session's: flagged unbind like its ask above.
+              case "permission.replied":
+              case "question.replied":
+              case "question.rejected":
+              case "form.replied":
+              case "form.cancelled":
+                if (!(await knownSessionBelongs(session_id))) {
+                  continue;
+                }
+                if (!isMainSession(session_id) && !turnActiveFor(session_id)) {
+                  continue;
+                }
+                touchTurn(session_id);
+                hook(
+                  "user-prompt-submit",
+                  { cwd, session_id, prompt: "" },
+                  { unbind: session_id === "global" },
+                );
+                continue;
             }
-            if (!belongsToInstance(sessionProjects.get(session_id))) {
-              continue;
-            }
-            if (session_id) {
-              mainSessions.add(session_id);
-            }
-            hook("session-start", { cwd, session_id, source: "startup" });
-            hook("session-title", {
-              cwd,
-              session_id,
-              title: info?.title ?? "",
-            });
-            continue;
-          }
-
-          // The session doc's title changes via renames — opencode
-          // auto-titles from the first exchange and applies manual renames
-          // later. 2.0.32+ daemons emit `session.renamed` with a flat
-          // `data: { sessionID, title }` and no longer fire
-          // `session.updated` at all; older daemons carry the refreshed
-          // session info on `session.updated` (`data.info.title`). Handle
-          // both shapes so titles track across daemon upgrades. A
-          // subagent session's rename is dropped so it cannot take over
-          // the row.
-          case "session.renamed":
-          case "session.updated": {
-            if (!isMainSession(session_id)) {
-              continue;
-            }
-            const title =
-              event.type === "session.renamed"
-                ? data.title
-                : (data.info?.title ?? data.title);
-            // Track renames so pane-title matching in resolvePaneId stays
-            // current: the TUI restamps its pane title with the new title,
-            // and the cached session record must follow.
-            const cached = sessionProjects.get(session_id);
-            if (cached && typeof title === "string" && title !== "") {
-              cached.title = title;
-            }
-            hook("session-title", {
-              cwd,
-              session_id,
-              title: typeof title === "string" ? title : "",
-            });
-            continue;
-          }
-
-          // Status is a union: { type: "idle" | "busy" | "retry", ... }.
-          // `busy` is a secondary status-transition signal — the real
-          // prompt text is written via the `prompt` hook, which fires with
-          // the admitted prompt text. Forward the empty-prompt submission
-          // only when a turn starts without a prompt (retry recovery), so
-          // a missing run clock still gets stamped without re-stamping one
-          // that already spans the turn. `idle` needs no mapping here:
-          // terminal turn state routes through the session.execution.*
-          // events below (and session.idle on older servers), and handling
-          // it too would fire the stop hook twice per turn end — harmless
-          // (the notification dedups) but pointless.
-          case "session.status": {
-            if (!(await knownSessionBelongs(session_id)) || !isMainSession(session_id)) {
-              continue;
-            }
-            if (data.status?.type === "busy" && !activeTurns.has(session_id)) {
-              activeTurns.add(session_id);
-              hook("user-prompt-submit", { cwd, session_id, prompt: "" });
-            }
-            continue;
-          }
-
-          // Turn lifecycle on 2.0.x. `started` marks the run clock even
-          // when the prompt hook was missed (retry recovery); the
-          // terminal events clear it and stop the pane. `interrupted`
-          // covers user aborts and shutdowns — the turn is over either
-          // way. `session.idle` is kept below as a legacy fallback for
-          // servers that still publish it; a double stop dedups on the
-          // notification side.
-          case "session.execution.started":
-            if (!(await knownSessionBelongs(session_id)) || !isMainSession(session_id)) {
-              continue;
-            }
-            activeTurns.add(session_id);
-            hook("user-prompt-submit", { cwd, session_id, prompt: "" });
-            continue;
-
-          case "session.execution.succeeded":
-          case "session.execution.interrupted":
-          case "session.idle":
-            if (!(await knownSessionBelongs(session_id)) || !isMainSession(session_id)) {
-              continue;
-            }
-            activeTurns.delete(session_id);
-            hook("stop", { cwd, session_id, last_message: "" });
-            continue;
-
-          // Turn-level failure (OpenCode 1's session.error). Step-level
-          // failures are not mapped: they may be retried within the turn.
-          case "session.execution.failed":
-            if (!(await knownSessionBelongs(session_id)) || !isMainSession(session_id)) {
-              continue;
-            }
-            activeTurns.delete(session_id);
-            hook("stop-failure", {
-              cwd,
-              session_id,
-              error:
-                data.error?.message || data.error?.type || "session.execution.failed",
-            });
-            continue;
-
-          // Permission and question (form) asks never touch the run clock,
-          // so they pass more freely: a subagent asking mid-turn still
-          // flips the pane to waiting (the whole turn is blocked on the
-          // answer), while between turns only main-session asks are
-          // forwarded so a background subagent cannot yank an idle pane
-          // around.
-          case "permission.asked":
-            if (!(await knownSessionBelongs(session_id))) {
-              continue;
-            }
-            if (!isMainSession(session_id) && !turnActiveFor(session_id)) {
-              continue;
-            }
-            hook("notification", { cwd, session_id, wait_reason: "permission" });
-            continue;
-
-          // Blocking asks. 2.0.x dedicated question events (`question.asked`
-          // with a flat `data.sessionID`) are still handled below for older
-          // daemons; 2.1.x asks through the form surface instead —
-          // `form.created` nests the request under `data.form`, where the
-          // `question` tool sets `metadata.kind: "question"` and MCP
-          // elicitations arrive as `kind: "mcp"` owned by the non-session
-          // `"global"` sentinel. Both block the turn on the user exactly
-          // like a permission ask, so they map to the same waiting
-          // notification; a mid-turn subagent ask still flags the pane
-          // (the whole turn is blocked on the answer), while between turns
-          // only main-session asks are forwarded so a background subagent
-          // cannot yank an idle pane around.
-          case "form.created": {
-            const form =
-              data.form && typeof data.form === "object" ? data.form : data;
-            const form_session = sessionIdOf(form?.sessionID);
-            if (!(await knownSessionBelongs(form_session))) {
-              continue;
-            }
-            if (!isMainSession(form_session) && !turnActiveFor(form_session)) {
-              continue;
-            }
-            // The question tool's form is a question; every other form
-            // (MCP elicitation, provider auth) is a dialog waiting on a
-            // selection. The `"global"` owner is not a real session — the
-            // spawn is flagged unbind so resolution may still pick the pane
-            // by cwd, but the CLI never records that id as the pane's
-            // session binding.
-            hook(
-              "notification",
-              {
-                cwd,
-                session_id: form_session,
-                wait_reason:
-                  form?.metadata?.kind === "question"
-                    ? "question"
-                    : "elicitation_dialog",
-              },
-              { unbind: form_session === "" || form_session === "global" },
-            );
-            continue;
-          }
-
-          // OpenCode's `question` tool blocks the turn on a user answer
-          // the same way a permission prompt does (2.0.x wire shape; 2.1.x
-          // replaced it with `form.created` above). Without this the pane
-          // stayed `running` while the agent waited for the answer. The
-          // sessionID is flat on the event data.
-          case "question.asked": {
-            if (!(await knownSessionBelongs(session_id))) {
-              continue;
-            }
-            if (!isMainSession(session_id) && !turnActiveFor(session_id)) {
-              continue;
-            }
-            hook("notification", {
-              cwd,
-              session_id,
-              wait_reason: "question",
-            });
-            continue;
-          }
-
-          // The user answered (or rejected / dismissed) a permission,
-          // question, or form ask. Re-submit an empty prompt to clear the
-          // wait and mark the pane running again — the same
-          // synthetic-resume signal the `busy` branch uses for retry
-          // recovery. The activity-log handler keeps a pending-action wait
-          // sticky, so a concurrent tool's result cannot clear it; this
-          // reply is what resumes the pane. A `"global"` form reply is not
-          // a real session's: flagged unbind like its ask above.
-          case "permission.replied":
-          case "question.replied":
-          case "question.rejected":
-          case "form.replied":
-          case "form.cancelled":
-            if (!(await knownSessionBelongs(session_id))) {
-              continue;
-            }
-            if (!isMainSession(session_id) && !turnActiveFor(session_id)) {
-              continue;
-            }
-            hook(
-              "user-prompt-submit",
-              { cwd, session_id, prompt: "" },
-              { unbind: session_id === "global" },
-            );
-            continue;
+          } catch {}
         }
+      } catch {
+        // Abort on unload throws from the iterator on some transports;
+        // swallow it (and any transport death) here so unload never
+        // becomes an unhandled rejection (audit 2026-11-25 L-bridge-3).
       }
     })();
 

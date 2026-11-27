@@ -65,8 +65,8 @@ fn compare_versions(left: &str, right: &str) -> Ordering {
     let len = left_parts.len().max(right_parts.len());
 
     for idx in 0..len {
-        let left_part = *left_parts.get(idx).unwrap_or(&0);
-        let right_part = *right_parts.get(idx).unwrap_or(&0);
+        let left_part = *left_parts.get(idx).unwrap_or(&(0, true));
+        let right_part = *right_parts.get(idx).unwrap_or(&(0, true));
         match left_part.cmp(&right_part) {
             Ordering::Equal => continue,
             other => return other,
@@ -76,16 +76,21 @@ fn compare_versions(left: &str, right: &str) -> Ordering {
     Ordering::Equal
 }
 
-fn parse_version_parts(version: &str) -> Vec<u64> {
+/// One dotted segment as `(numeric value, is_final)`. A non-numeric
+/// suffix (`3-rc1`, `3a`) marks a pre-release segment, which compares
+/// *lower* than the same numeric segment without one — otherwise
+/// `1.2.3-rc1` vs `1.2.3` compared Equal and the rc→final transition
+/// showed no update notice (audit 2026-11-25 L-tmux-6). Suffix-vs-suffix
+/// detail (rc1 vs rc2) still compares Equal; out of scope.
+fn parse_version_parts(version: &str) -> Vec<(u64, bool)> {
     version
         .trim_start_matches('v')
         .split('.')
         .map(|part| {
-            part.chars()
-                .take_while(|ch| ch.is_ascii_digit())
-                .collect::<String>()
-                .parse::<u64>()
-                .unwrap_or(0)
+            let numeric: String = part.chars().take_while(|ch| ch.is_ascii_digit()).collect();
+            let is_final = numeric.len() == part.len();
+            let value = numeric.parse::<u64>().unwrap_or(0);
+            (value, is_final)
         })
         .collect()
 }
@@ -119,5 +124,18 @@ mod tests {
     #[test]
     fn normalize_version_strips_tag_prefix() {
         assert_eq!(normalize_version("v1.2.3"), Some("1.2.3".into()));
+    }
+
+    #[test]
+    fn compare_versions_ranks_pre_release_below_final() {
+        // The rc→final transition must fire the update notice: a
+        // non-numeric suffix compares lower than the same numeric version
+        // (audit 2026-11-25 L-tmux-6).
+        assert_eq!(compare_versions("1.2.3-rc1", "1.2.3"), Ordering::Less);
+        assert_eq!(compare_versions("1.2.3", "1.2.3-rc1"), Ordering::Greater);
+        assert_eq!(compare_versions("1.2.3-rc1", "1.2.3-rc1"), Ordering::Equal);
+        assert_eq!(compare_versions("1.2.3a", "1.2.3"), Ordering::Less);
+        // Pre-release of an older segment still loses to a newer final.
+        assert_eq!(compare_versions("1.2.3-rc1", "1.2.4"), Ordering::Less);
     }
 }

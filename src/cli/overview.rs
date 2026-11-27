@@ -6,8 +6,24 @@
 //! so a smaller viewer resizes the real agent). Instead each cell mirrors a
 //! pane by polling `capture-pane -p -e` and painting the captured styled
 //! grid into a ratatui buffer, reusing the vte parser from the `capture`
-//! subcommand. The mirror itself is read-only; the only writes to a real
-//! pane are the explicit interaction actions below.
+//! subcommand. The mirror itself is read-only, with one documented,
+//! always-restored exception: entering focus mode (Enter from the grid, or
+//! a click-zoom) temporarily zooms the source pane's own window
+//! (`resize-pane -Z`), because `capture-pane` has no size override — while
+//! the pane shares its window with the 40-column sidebar, content at the
+//! popup's width does not exist until the pane itself is wider. The zoom
+//! rides a drop guard held by the run loop, so every exit path (Esc
+//! collapse, Enter/f into the real pane, q, Ctrl-C, the ✕ click, `?` error
+//! propagation) restores the pre-zoom layout; a window that arrived
+//! already zoomed is never touched (that zoom is the user's state), a pane
+//! alone in its window skips it (nothing to gain), and a restore whose
+//! pane or window died is a silent no-op plus a debug-trace line. A
+//! capture still narrower than the popup (a source that cannot reach the
+//! popup's width even zoomed — multi-client setups) centers so the
+//! residual margin splits evenly. While zoomed, the read pane captures at
+//! drive cadence: the agent's reflow after the resize lands within a
+//! frame or two instead of waiting out the slow tick, and the fullscreen
+//! view renders live like a prompted pane.
 //!
 //! Presentation rules that make the grid an instrument instead of a
 //! wallpaper:
@@ -22,7 +38,8 @@
 //!   status-first order: waiting/error cells lead, get loud borders and a
 //!   wait-reason strip; idle cells fade to grey. A header row summarizes
 //!   the counts.
-//! - Enter zooms the selected cell fullscreen (still a capture — read-only);
+//! - Enter zooms the selected cell fullscreen (still a capture; the one
+//!   write is the temporary window-zoom described above, always restored);
 //!   Esc collapses back to the grid.
 //! - Interaction ladder (docs/overview-grid-spike.md): `p` prompts the
 //!   target pane live — from the grid (selected cell) or zoomed, the zoom
@@ -40,6 +57,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::io;
+use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 use crossterm::{
@@ -142,6 +160,36 @@ fn handle_drive_key(key: &KeyEvent) -> DriveAction {
     } else {
         DriveAction::Forward
     }
+}
+
+/// How long after a forwarded Enter a second Enter is treated as the
+/// same paste run's next line break rather than a deliberate submit.
+const PASTE_ENTER_DEBOUNCE: Duration = Duration::from_millis(20);
+
+/// Translate one key press into what drive mode sends, debouncing the
+/// paste-run Enters (audit 2026-11-25 L-cli-3). Without `Event::Paste`
+/// support in the terminal chain, a multi-line paste arrives as a key
+/// run and every Enter in it would submit a line into the agent —
+/// Enters closer together than any human repeats them are the paste
+/// run's line breaks, so the first is forwarded and the rest are
+/// dropped: the visible, recoverable failure (lines left unsubmitted
+/// in the agent's input) instead of one accidental send per line.
+/// `last_enter_forward` is the event loop's running state; any
+/// non-Enter key resets it, since typing between Enters is a human.
+fn forward_for_drive(
+    key: &KeyEvent,
+    last_enter_forward: &mut Option<Instant>,
+) -> Option<ForwardedKey> {
+    if key.code == KeyCode::Enter {
+        let paste_run = last_enter_forward.is_some_and(|at| at.elapsed() < PASTE_ENTER_DEBOUNCE);
+        *last_enter_forward = Some(Instant::now());
+        if paste_run {
+            return None;
+        }
+    } else {
+        *last_enter_forward = None;
+    }
+    forward_key_name(key)
 }
 
 /// One forwarded key press: a tmux key name (sent with key-name lookup,
@@ -272,6 +320,119 @@ fn target_pane<'a>(
     panes.iter().find(|p| p.info.pane_id == id)
 }
 
+/// Focus mode's temporary window-zoom (audit 2026-11-25 M-cli-5). The
+/// zoomed view mirrors the capture 1:1, and `capture-pane` has no size
+/// override — content at wider widths does not exist until the pane itself
+/// is wider. While the source pane shares its window with siblings (the
+/// plugin's standard layout: a 40-column sidebar beside the agent), the
+/// capture can never fill the popup. So entering focus mode zooms the
+/// pane's own window (`resize-pane -Z`): the pane and its pty grow to the
+/// window's full size, the agent reflows on the pty SIGWINCH, and the next
+/// capture fills the popup. The zoom is held as this guard and restored on
+/// drop, so every exit path — Esc collapse, Enter/f into the real pane, q,
+/// Ctrl-C, the ✕ click, `?` error propagation — puts the pre-zoom layout
+/// back.
+struct WindowZoom {
+    pane_id: String,
+}
+
+impl WindowZoom {
+    /// Take the temporary zoom for `pane_id`, given the
+    /// `#{window_panes}|#{window_zoomed_flag}` probe. `None` skips: a
+    /// window already zoomed on arrival is the user's state, never ours to
+    /// touch; a pane alone in its window has nothing to gain; a failed
+    /// probe (pane gone) has nothing to zoom.
+    fn take(pane_id: &str, probe: &str) -> Option<Self> {
+        if !may_take_window_zoom(probe) {
+            return None;
+        }
+        tmux::run_tmux_capture(&["resize-pane", "-Z", "-t", pane_id]).ok()?;
+        Some(Self {
+            pane_id: pane_id.to_string(),
+        })
+    }
+
+    /// Lift the temporary zoom — flag-gated, so a zoom someone else
+    /// already lifted is never re-toggled (`resize-pane -Z` would zoom
+    /// again) and a pane that died while zoomed degrades to a silent
+    /// no-op (the probe fails). A restore that still fails (the window
+    /// died) lands in the debug trace; a crash mid-zoom leaves the pane
+    /// zoomed exactly like a user zoom — recoverable with prefix-z, the
+    /// agent unaffected.
+    fn restore(&self) {
+        if !zoom_flag_set(&tmux::display_message(
+            &self.pane_id,
+            "#{window_zoomed_flag}",
+        )) {
+            return;
+        }
+        if tmux::run_tmux_capture(&["resize-pane", "-Z", "-t", &self.pane_id]).is_err() {
+            crate::debug::log(&format!(
+                "overview: window-zoom restore failed for {} (pane or window gone)",
+                self.pane_id
+            ));
+        }
+    }
+}
+
+impl Drop for WindowZoom {
+    fn drop(&mut self) {
+        self.restore();
+    }
+}
+
+/// Whether focus mode may take its temporary window-zoom, from a
+/// `#{window_panes}|#{window_zoomed_flag}` probe: only a window that
+/// shares the pane with siblings and arrived unzoomed.
+fn may_take_window_zoom(probe: &str) -> bool {
+    let Some((count, flag)) = probe.trim().split_once('|') else {
+        return false;
+    };
+    count.trim().parse::<u16>().is_ok_and(|n| n > 1) && flag.trim() == "0"
+}
+
+/// Whether a `#{window_zoomed_flag}` probe says the window is still
+/// zoomed. An empty probe (pane gone) reads as not zoomed.
+fn zoom_flag_set(probe: &str) -> bool {
+    probe.trim() == "1"
+}
+
+/// Enter focus mode's temporary window-zoom and re-capture immediately at
+/// the new geometry (audit 2026-11-25 M-cli-5). Returns the guard to hold
+/// for the zoom's lifetime; `None` when the ownership rules skipped the
+/// zoom (already-zoomed window, lone pane, dead pane) and the view stays
+/// the plain 1:1 mirror at the pane's own width.
+fn enter_focus_zoom(
+    pane: &mut OverviewPane,
+    last_dims: &mut HashMap<String, (u16, u16)>,
+) -> Option<WindowZoom> {
+    let probe = tmux::display_message(&pane.info.pane_id, "#{window_panes}|#{window_zoomed_flag}");
+    let zoom = WindowZoom::take(&pane.info.pane_id, &probe)?;
+    // The pane (and its pty) just grew to the window's full size — the
+    // agent reflows on the pty SIGWINCH and the next tick would pick the
+    // new geometry up, but the first frame should already be wide:
+    // re-capture now and record the dims so drive entry reads them too.
+    let dims = pane_dimensions_for(&pane.info.pane_id);
+    if let Ok(grid) = capture_grid(&pane.info, dims) {
+        pane.grid = Some(grid);
+        pane.err = None;
+    }
+    if let Some(dims) = dims {
+        last_dims.insert(pane.info.pane_id.clone(), dims);
+    }
+    Some(zoom)
+}
+
+/// One pane's geometry from one display-message — the focus path's
+/// targeted counterpart to [`pane_dimensions`], which rescans the whole
+/// server. `None` when the probe fails (pane gone between listing and
+/// capture; [`capture_grid`] falls back to a common size).
+fn pane_dimensions_for(pane_id: &str) -> Option<(u16, u16)> {
+    let out = tmux::display_message(pane_id, "#{pane_width}|#{pane_height}");
+    let (width, height) = out.trim().split_once('|')?;
+    Some((width.trim().parse().ok()?, height.trim().parse().ok()?))
+}
+
 pub fn cmd_overview(args: &[String]) -> i32 {
     let mut popup = false;
     let mut popup_client: Option<String> = None;
@@ -281,11 +442,17 @@ pub fn cmd_overview(args: &[String]) -> i32 {
         match arg.as_str() {
             "--popup" => popup = true,
             "--popup-client" => {
-                popup_client = Some(iter.next().map(|s| s.to_string()).unwrap_or_default());
-                if popup_client.as_deref() == Some("") {
+                let value = iter.next().map(|s| s.to_string()).unwrap_or_default();
+                // A missing value or a following flag (a value starting
+                // with `--`) is a caller mistake: silently consuming
+                // `--interval-ms 500` as the client name drops the flag
+                // and targets a client that does not exist (audit
+                // 2026-11-25 L-cli-4).
+                if value.is_empty() || value.starts_with("--") {
                     eprintln!("overview: --popup-client requires a client name");
                     return 2;
                 }
+                popup_client = Some(value);
             }
             "--interval-ms" => match iter.next().and_then(|v| v.parse::<u64>().ok()) {
                 Some(ms) if ms >= 100 => interval = Duration::from_millis(ms),
@@ -435,6 +602,12 @@ fn run_tui(interval: Duration) -> io::Result<i32> {
         // silently move the selection onto a different agent.
         let mut selected: Option<String> = None;
         let mut zoomed: Option<String> = None;
+        // Focus mode's temporary window-zoom (audit 2026-11-25 M-cli-5),
+        // held across the loop so every exit path restores the pre-zoom
+        // layout: Drop covers the returns and `?`s, while the Esc
+        // collapse, the vanished-pane tidy-up, and the step-into-the-pane
+        // paths restore eagerly.
+        let mut window_zoom: Option<WindowZoom> = None;
         // Grid order: the sidebar's own row order by default, `s` to
         // status-first. The git cache backs the sidebar grouping.
         let mut sort_mode = SortMode::Sidebar;
@@ -446,8 +619,46 @@ fn run_tui(interval: Duration) -> io::Result<i32> {
         // refreshes at DRIVE_INTERVAL while everything else paces to
         // `interval`.
         let mut last_drive_refresh = Instant::now();
+        // The zoomed view's own refresh clock: the read pane captures at
+        // DRIVE_INTERVAL while zoomed (see the fast-capture block below).
+        let mut last_zoom_refresh = Instant::now();
+        // Running state for the paste-Enter debounce (audit 2026-11-25
+        // L-cli-3): the instant the last Enter was forwarded, reset by
+        // any non-Enter key.
+        let mut last_enter_forward: Option<Instant> = None;
         // Refresh on the first iteration: the elapsed time starts "in the past".
         let mut last_refresh = Instant::now() - interval;
+        // The listing + process snapshot run on a worker thread, the same
+        // shape as the sidebar's snapshot worker: a full-system `ps` scan
+        // armed by the listing used to run inline on the UI thread every
+        // tick, and under ps contention it froze the grid for up to the
+        // subprocess timeout (audit 2026-11-25 M-cli-1). At most one
+        // request is outstanding; a failed listing keeps the previous
+        // frame.
+        let (snapshot_req_tx, snapshot_req_rx) = mpsc::channel::<()>();
+        let (snapshot_res_tx, snapshot_res_rx) = mpsc::channel::<OverviewSnapshotRaw>();
+        std::thread::spawn(move || {
+            while snapshot_req_rx.recv().is_ok() {
+                let panes_output = tmux::fetch_pane_listing();
+                let process_snapshot = panes_output
+                    .as_ref()
+                    .and_then(|output| tmux::process_snapshot_for_panes(output));
+                if snapshot_res_tx
+                    .send(OverviewSnapshotRaw {
+                        panes_output,
+                        process_snapshot,
+                    })
+                    .is_err()
+                {
+                    return;
+                }
+            }
+        });
+        let mut snapshot_in_flight = false;
+        // The pane geometry the last successful refresh captured at; the
+        // drive paths read their dims from here instead of re-scanning the
+        // whole server (audit 2026-11-25 M-cli-3).
+        let mut last_dims: HashMap<String, (u16, u16)> = HashMap::new();
 
         loop {
             // Prompt mode first: the prompted pane's capture refreshes at
@@ -457,61 +668,106 @@ fn run_tui(interval: Duration) -> io::Result<i32> {
             if let Some(input) = drive.as_ref()
                 && last_drive_refresh.elapsed() >= DRIVE_INTERVAL
             {
-                let (pane_id, dims) = (input.pane_id.clone(), input.dims);
-                if let Some(pane) = panes.iter_mut().find(|p| p.info.pane_id == pane_id)
-                    && let Ok(grid) = capture_grid(&pane.info, dims)
-                {
-                    pane.grid = Some(grid);
-                    pane.err = None;
-                }
+                refresh_capture(&mut panes, &input.pane_id, input.dims);
                 last_drive_refresh = Instant::now();
             }
 
+            // The zoomed view's live capture: the temporary window-zoom
+            // resizes the pty instantly, but the agent's reflow lands on
+            // its next repaint — at the slow tick's cadence the first
+            // zoomed frames kept showing the old narrow screen for up to a
+            // second (the user-reported lag). While zoomed, the read pane
+            // captures at drive cadence, so the reflow shows up within one
+            // or two fast frames and the fullscreen view renders live like
+            // a prompted pane. Prompting owns the clock while active (same
+            // pane, same cadence — no double capture).
+            if drive.is_none()
+                && let Some(id) = zoomed.as_ref()
+                && last_zoom_refresh.elapsed() >= DRIVE_INTERVAL
+            {
+                refresh_capture(&mut panes, id, last_dims.get(id).copied());
+                last_zoom_refresh = Instant::now();
+            }
+
             if last_refresh.elapsed() >= interval {
-                // A failed listing keeps the previous frame instead of
-                // blanking the grid on one transient tmux hiccup.
-                if let Some(next) = refresh_panes(sort_mode, &mut git_cache) {
-                    panes = next;
-                }
-                // A selection whose pane vanished clears entirely: the
-                // grid starts with nobody selected, and a selection only
-                // exists once the user moves.
-                if selected
-                    .as_ref()
-                    .is_some_and(|id| !panes.iter().any(|p| &p.info.pane_id == id))
-                {
-                    selected = None;
-                }
-                if let Some(id) = zoomed.clone()
-                    && !panes.iter().any(|p| p.info.pane_id == id)
-                {
-                    zoomed = None;
-                }
-                // A prompt whose pane is no longer drivable closes itself:
-                // it must not sit on a pane a shell now owns — the per-key
-                // gate below is the hard guarantee, this is the tidy-up
-                // (the listing field can be up to one refresh stale).
-                let stale_prompt = match drive.as_ref() {
-                    Some(input) => match panes.iter().find(|p| p.info.pane_id == input.pane_id) {
-                        None => true,
-                        Some(p) => tmux::is_shell_command(&p.info.current_command),
-                    },
-                    None => false,
-                };
-                if stale_prompt {
-                    drive = None;
-                }
-                // Refresh the prompted pane's cached dimensions so a
-                // resized pane parses correctly again within a second.
-                if let Some(input) = drive.as_mut() {
-                    input.dims = pane_dimensions().get(&input.pane_id).copied();
-                }
-                // The slow refresh re-captured every pane including the
-                // prompted one; its fast clock restarts from here.
-                if drive.is_some() {
-                    last_drive_refresh = Instant::now();
+                // Request a refresh; the apply happens below when the
+                // worker's raw listing lands. `last_refresh` advances at
+                // request time so the cadence is independent of the
+                // worker's latency.
+                if !snapshot_in_flight && snapshot_req_tx.send(()).is_ok() {
+                    snapshot_in_flight = true;
                 }
                 last_refresh = Instant::now();
+            }
+
+            // Apply a landed snapshot: parse, capture, sort — the same
+            // work the inline refresh used to do, minus the ps scan.
+            if let Ok(raw) = snapshot_res_rx.try_recv() {
+                snapshot_in_flight = false;
+                // A failed listing keeps the previous frame instead of
+                // blanking the grid on one transient tmux hiccup.
+                if let Some(listing) = &raw.panes_output {
+                    let (next, dims) = build_overview_panes(
+                        listing,
+                        raw.process_snapshot,
+                        sort_mode,
+                        &mut git_cache,
+                    );
+                    panes = next;
+                    last_dims = dims;
+                    // A selection whose pane vanished clears entirely: the
+                    // grid starts with nobody selected, and a selection only
+                    // exists once the user moves.
+                    if selected
+                        .as_ref()
+                        .is_some_and(|id| !panes.iter().any(|p| &p.info.pane_id == id))
+                    {
+                        selected = None;
+                    }
+                    if let Some(id) = zoomed.clone()
+                        && !panes.iter().any(|p| p.info.pane_id == id)
+                    {
+                        zoomed = None;
+                        // The zoomed pane left the listing: lift the
+                        // temporary zoom — a no-op when the pane (and with
+                        // it tmux's own zoom) died, the point when
+                        // detection flickered while the pane lives.
+                        if let Some(zoom) = window_zoom.take() {
+                            zoom.restore();
+                        }
+                    }
+                    // A prompt whose pane is no longer drivable closes itself:
+                    // it must not sit on a pane a shell now owns — the per-key
+                    // gate below is the hard guarantee, this is the tidy-up
+                    // (the listing field can be up to one refresh stale).
+                    let stale_prompt = match drive.as_ref() {
+                        Some(input) => match panes.iter().find(|p| p.info.pane_id == input.pane_id)
+                        {
+                            None => true,
+                            Some(p) => tmux::is_shell_command(&p.info.current_command),
+                        },
+                        None => false,
+                    };
+                    if stale_prompt {
+                        drive = None;
+                    }
+                    // Refresh the prompted pane's cached dimensions from the
+                    // geometry this refresh already collected, so a resized
+                    // pane parses correctly again within a second (audit
+                    // 2026-11-25 M-cli-3).
+                    if let Some(input) = drive.as_mut() {
+                        input.dims = last_dims.get(&input.pane_id).copied();
+                    }
+                    // The slow refresh re-captured every pane including the
+                    // prompted and zoomed ones; their fast clocks restart
+                    // from here.
+                    if drive.is_some() {
+                        last_drive_refresh = Instant::now();
+                    }
+                    if zoomed.is_some() {
+                        last_zoom_refresh = Instant::now();
+                    }
+                }
             }
 
             let selected_idx = selected
@@ -526,7 +782,10 @@ fn run_tui(interval: Duration) -> io::Result<i32> {
             })?;
 
             let driving = drive.is_some();
-            let budget = if driving {
+            // While zoomed, redraws pace to the read pane's fast capture
+            // too (see the zoom fast-capture block); keys wake the poll
+            // instantly either way.
+            let budget = if driving || zoomed.is_some() {
                 // Redraws pace to the drive capture; keys wake the poll
                 // instantly, so typing latency is unaffected.
                 DRIVE_INTERVAL
@@ -550,16 +809,19 @@ fn run_tui(interval: Duration) -> io::Result<i32> {
                                     input.err = None;
                                     if let Some(reason) = drive_refusal(&panes, &input.pane_id) {
                                         input.err = Some(reason);
-                                    } else if let Err(e) = match forward_key_name(&key) {
-                                        Some(ForwardedKey::Named(name)) => {
-                                            tmux::send_key(&input.pane_id, &name)
+                                    } else if let Some(forwarded) =
+                                        forward_for_drive(&key, &mut last_enter_forward)
+                                    {
+                                        if let Err(e) = match forwarded {
+                                            ForwardedKey::Named(name) => {
+                                                tmux::send_key(&input.pane_id, &name)
+                                            }
+                                            ForwardedKey::Text(text) => {
+                                                tmux::send_text(&input.pane_id, &text)
+                                            }
+                                        } {
+                                            input.err = Some(e);
                                         }
-                                        Some(ForwardedKey::Text(text)) => {
-                                            tmux::send_text(&input.pane_id, &text)
-                                        }
-                                        None => Ok(()),
-                                    } {
-                                        input.err = Some(e);
                                     }
                                 }
                             },
@@ -576,6 +838,14 @@ fn run_tui(interval: Duration) -> io::Result<i32> {
                                         if zoomed.take().is_none() {
                                             return Ok(0);
                                         }
+                                        // Collapsing to the grid ends focus
+                                        // mode: lift the temporary window-
+                                        // zoom now — browsing the grid must
+                                        // not keep the pane's window zoomed
+                                        // underneath the popup.
+                                        if let Some(zoom) = window_zoom.take() {
+                                            zoom.restore();
+                                        }
                                     }
                                     KeyCode::Enter => {
                                         // In the grid, Enter zooms. Already zoomed,
@@ -587,10 +857,29 @@ fn run_tui(interval: Duration) -> io::Result<i32> {
                                                 zoomed.as_deref(),
                                                 selected.as_deref(),
                                             ) {
+                                                // Landing in the real pane ends
+                                                // focus mode: lift the temporary
+                                                // zoom first, so the client
+                                                // arrives at the normal layout
+                                                // instead of watching it unzoom a
+                                                // beat later.
+                                                if let Some(zoom) = window_zoom.take() {
+                                                    zoom.restore();
+                                                }
                                                 tmux::select_pane(&pane.info.pane_id);
                                                 return Ok(0);
                                             }
                                         } else if let Some(idx) = selected_idx {
+                                            if let Some(zoom) =
+                                                enter_focus_zoom(&mut panes[idx], &mut last_dims)
+                                            {
+                                                window_zoom = Some(zoom);
+                                            }
+                                            // The entry capture just ran; the fast
+                                            // clock starts from it, so the agent's
+                                            // reflow lands within one or two fast
+                                            // frames.
+                                            last_zoom_refresh = Instant::now();
                                             zoomed = Some(panes[idx].info.pane_id.clone());
                                         }
                                     }
@@ -612,11 +901,18 @@ fn run_tui(interval: Duration) -> io::Result<i32> {
                                             drive = Some(DriveInput {
                                                 pane_id: pane.info.pane_id.clone(),
                                                 label: prompt_label(&pane.info),
-                                                dims: pane_dimensions()
-                                                    .get(&pane.info.pane_id)
-                                                    .copied(),
+                                                // From the geometry the last refresh
+                                                // collected — a full-server
+                                                // `list-panes` scan just to learn one
+                                                // pane's dims re-read data the retained
+                                                // map already had (audit 2026-11-25
+                                                // M-cli-3).
+                                                dims: last_dims.get(&pane.info.pane_id).copied(),
                                                 err: None,
                                             });
+                                            // Fresh session, fresh paste-run window
+                                            // (audit 2026-11-25 L-cli-3).
+                                            last_enter_forward = None;
                                             // Capture immediately: the view may
                                             // be a slow tick stale, and prompting
                                             // types into what it shows.
@@ -631,6 +927,12 @@ fn run_tui(interval: Duration) -> io::Result<i32> {
                                             zoomed.as_deref(),
                                             selected.as_deref(),
                                         ) {
+                                            // Same as the Enter-go path: lift
+                                            // the temporary zoom before the
+                                            // client lands.
+                                            if let Some(zoom) = window_zoom.take() {
+                                                zoom.restore();
+                                            }
                                             tmux::select_pane(&pane.info.pane_id);
                                             return Ok(0);
                                         }
@@ -693,9 +995,19 @@ fn run_tui(interval: Duration) -> io::Result<i32> {
                             let area = Rect::new(0, 0, size.width, size.height);
                             let body = grid_body(area, false);
                             if let Some(idx) = cell_at(panes.len(), body, mouse.row, mouse.column) {
-                                if let Some(pane) = panes.get(idx) {
-                                    let id = pane.info.pane_id.clone();
+                                let id = panes.get(idx).map(|p| p.info.pane_id.clone());
+                                if let Some(id) = id {
                                     if selected.as_deref() == Some(id.as_str()) {
+                                        // Click-zoom takes the same temporary
+                                        // window-zoom as Enter.
+                                        if let Some(zoom) =
+                                            enter_focus_zoom(&mut panes[idx], &mut last_dims)
+                                        {
+                                            window_zoom = Some(zoom);
+                                        }
+                                        // Same as the Enter path: the fast clock
+                                        // starts from the entry capture.
+                                        last_zoom_refresh = Instant::now();
                                         zoomed = Some(id);
                                     } else {
                                         selected = Some(id);
@@ -756,15 +1068,27 @@ fn step_selection(panes: &[OverviewPane], current: Option<String>, delta: i32) -
     Some(panes[idx].info.pane_id.clone())
 }
 
+/// The raw outputs of one overview snapshot pass, produced on the worker
+/// thread (see `run_tui`). `panes_output` is `None` when the `list-panes`
+/// spawn failed — the caller keeps its previous frame.
+struct OverviewSnapshotRaw {
+    panes_output: Option<String>,
+    process_snapshot: Option<crate::process::ProcessSnapshot>,
+}
+
 /// One refresh cycle: the standard single `list-panes -a` sync for the agent
-/// set, one geometry query, then one capture per agent pane. `None` when the
-/// listing itself failed (caller keeps the previous frame).
-fn refresh_panes(
+/// set, one geometry query, then one capture per agent pane. The listing and
+/// the armed `ps` scan arrive from the snapshot worker; everything here runs
+/// on the UI thread. Returns the built cells plus the pane-geometry map the
+/// captures used, so the drive paths can read dims without re-scanning the
+/// server (audit 2026-11-25 M-cli-3).
+fn build_overview_panes(
+    listing: &str,
+    process_snapshot: Option<crate::process::ProcessSnapshot>,
     sort_mode: SortMode,
     git_cache: &mut HashMap<String, PaneGitInfo>,
-) -> Option<Vec<OverviewPane>> {
-    let listing = tmux::fetch_pane_listing()?;
-    let snapshot = tmux::build_session_snapshot(&listing, "%overview-none");
+) -> (Vec<OverviewPane>, HashMap<String, (u16, u16)>) {
+    let snapshot = tmux::build_session_snapshot_with(listing, "%overview-none", process_snapshot);
     // Resolved per tick so flipping the sidebar's grouping mode (s in the
     // sidebar, or a tmux.conf change) lands on the next grid refresh.
     let group_by = GroupBy::from_label(
@@ -809,7 +1133,7 @@ fn refresh_panes(
         SortMode::Status => sort_for_grid(&mut panes),
         SortMode::Sidebar => sort_like_sidebar(&mut panes, &snapshot.sessions, group_by, git_cache),
     }
-    Some(panes)
+    (panes, dims)
 }
 
 /// Status-first cell order (see status_rank); stable within a class.
@@ -924,6 +1248,19 @@ fn capture_grid(info: &PaneInfo, dims: Option<(u16, u16)>) -> Result<Vec<Vec<Sty
     let mut grid = ansi::parse_ansi(&bytes, cols, rows);
     normalize_captured_grid(&mut grid);
     Ok(grid)
+}
+
+/// Fast-capture one pane in place, keeping the previous frame on failure —
+/// one tmux hiccup must not flash "(pane gone)" mid-keystroke or mid-read.
+/// The drive and zoom fast paths share this; a pane no longer in the
+/// listing is skipped entirely (its lifecycle belongs to the slow tick).
+fn refresh_capture(panes: &mut [OverviewPane], pane_id: &str, dims: Option<(u16, u16)>) {
+    if let Some(pane) = panes.iter_mut().find(|p| p.info.pane_id == pane_id)
+        && let Ok(grid) = capture_grid(&pane.info, dims)
+    {
+        pane.grid = Some(grid);
+        pane.err = None;
+    }
 }
 
 /// Strip light backgrounds and lift dark foregrounds so every captured
@@ -1082,7 +1419,14 @@ fn draw_grid(
 
     let rects = cell_rects(panes.len(), chunks[1]);
     for (idx, cell_area) in rects.iter().enumerate() {
-        draw_cell(f, *cell_area, &panes[idx], selected_idx == Some(idx), theme);
+        draw_cell(
+            f,
+            *cell_area,
+            &panes[idx],
+            selected_idx == Some(idx),
+            theme,
+            false,
+        );
     }
     if let Some(input) = drive {
         f.render_widget(Paragraph::new(drive_line(input, theme)), chunks[2]);
@@ -1119,7 +1463,10 @@ fn draw_zoomed(
     };
     let counts = header_line(panes, theme, hints, drive.is_none(), width);
     f.render_widget(Paragraph::new(counts), chunks[0]);
-    draw_cell(f, chunks[1], &panes[idx], true, theme);
+    // The zoomed cell centers a source narrower than the area — the
+    // multi-client fallback where the pane's window cannot reach the
+    // popup's width even zoomed.
+    draw_cell(f, chunks[1], &panes[idx], true, theme, true);
     if let Some(input) = drive {
         f.render_widget(Paragraph::new(drive_line(input, theme)), chunks[2]);
     }
@@ -1139,7 +1486,14 @@ fn grid_dims(n: usize, area: Rect) -> (u16, u16) {
     (cols as u16, rows as u16)
 }
 
-fn draw_cell(f: &mut Frame, area: Rect, pane: &OverviewPane, selected: bool, theme: &ColorTheme) {
+fn draw_cell(
+    f: &mut Frame,
+    area: Rect,
+    pane: &OverviewPane,
+    selected: bool,
+    theme: &ColorTheme,
+    centered: bool,
+) {
     let status_color = theme.status_color(&pane.info.status);
     let mut border = match pane.info.status {
         // States that can demand the user's attention get the loud border;
@@ -1182,7 +1536,7 @@ fn draw_cell(f: &mut Frame, area: Rect, pane: &OverviewPane, selected: bool, the
     f.render_widget(Paragraph::new(activity), strip);
 
     match &pane.grid {
-        Some(grid) => paint_grid(f.buffer_mut(), content, grid),
+        Some(grid) => paint_grid(f.buffer_mut(), content, grid, centered),
         None => {
             let msg = pane.err.as_deref().unwrap_or("(pane gone)");
             let failed = Paragraph::new(msg).style(Style::default().fg(theme.border_inactive));
@@ -1397,18 +1751,29 @@ fn status_word(status: &PaneStatus) -> &'static str {
 /// and cropped: when the cell is shorter than the source pane, keep the LAST
 /// rows (agent TUIs draw current state at the bottom) and drop the top. The
 /// spike does not scale or pan; sources wider than the cell lose their right
-/// side.
-fn paint_grid(buf: &mut Buffer, area: Rect, grid: &[Vec<StyledCell>]) {
+/// side. `center` splits a source narrower than the area's residual margin
+/// evenly instead of hugging the left edge — focus mode's fallback for
+/// sources that cannot reach the popup's width even zoomed (multi-client
+/// setups); grid cells keep the left edge, mirroring the pane's own
+/// left-anchored geometry in its window.
+fn paint_grid(buf: &mut Buffer, area: Rect, grid: &[Vec<StyledCell>], center: bool) {
     let skip = grid.len().saturating_sub(area.height as usize);
     for (y, row) in grid.iter().skip(skip).enumerate() {
         if y as u16 >= area.height {
             break;
         }
+        // The parser pads every row to the source's width, so the offset
+        // is uniform across rows.
+        let x_off = if center {
+            area.width.saturating_sub(row.len() as u16) / 2
+        } else {
+            0
+        };
         for (x, cell) in row.iter().enumerate() {
-            if x as u16 >= area.width {
+            if x_off + x as u16 >= area.width {
                 break;
             }
-            let pos = Position::new(area.x + x as u16, area.y + y as u16);
+            let pos = Position::new(area.x + x_off + x as u16, area.y + y as u16);
             if let Some(target) = buf.cell_mut(pos) {
                 target.set_char(cell.ch);
                 target.set_style(sgr_style(cell));
@@ -1429,12 +1794,23 @@ fn sgr_style(cell: &StyledCell) -> Style {
     if cell.bold {
         mods |= Modifier::BOLD;
     }
+    if cell.faint {
+        mods |= Modifier::DIM;
+    }
+    if cell.italic {
+        mods |= Modifier::ITALIC;
+    }
     if cell.reversed {
         mods |= Modifier::REVERSED;
     }
     if cell.underlined {
         mods |= Modifier::UNDERLINED;
     }
+    if cell.strike {
+        mods |= Modifier::CROSSED_OUT;
+    }
+    // SGR 53 (overline) has no ratatui modifier; only the HTML renderer
+    // shows it.
     style.add_modifier(mods)
 }
 
@@ -2330,5 +2706,281 @@ mod tests {
         // Empty grid and degenerate sizes are inert.
         assert_eq!(cell_at(0, body, 1, 1), None);
         assert_eq!(cell_at(2, Rect::new(0, 1, 80, 0), 5, 5), None);
+    }
+
+    #[test]
+    fn window_zoom_probe_decides_eligibility() {
+        // Two panes, unzoomed: eligible.
+        assert!(may_take_window_zoom("2|0"));
+        assert!(may_take_window_zoom("3|0"));
+        // A pane alone in its window has nothing to gain.
+        assert!(!may_take_window_zoom("1|0"));
+        // A window already zoomed on arrival is the user's state.
+        assert!(!may_take_window_zoom("2|1"));
+        // A failed probe (pane gone) and garbage both skip.
+        assert!(!may_take_window_zoom(""));
+        assert!(!may_take_window_zoom("garbage"));
+        assert!(!may_take_window_zoom("2|"));
+    }
+
+    #[test]
+    fn zoom_flag_probe_gates_the_restore() {
+        assert!(zoom_flag_set("1"));
+        assert!(!zoom_flag_set("0"));
+        // An empty probe (pane gone while zoomed) reads as not zoomed:
+        // the restore degrades to a silent no-op instead of re-zooming.
+        assert!(!zoom_flag_set(""));
+    }
+
+    #[test]
+    fn paint_grid_centers_a_narrower_source_when_asked() {
+        let grid = ansi::parse_ansi(b"abcd", 4, 1);
+        let mut buf = Buffer::empty(Rect::new(0, 0, 10, 1));
+        paint_grid(&mut buf, Rect::new(0, 0, 10, 1), &grid, true);
+        let line: String = (0..10).map(|x| buf[(x, 0)].symbol().to_string()).collect();
+        assert_eq!(line, "   abcd   ");
+        // Grid cells keep the left edge: the pane sits left in its window
+        // and the cell mirrors that geometry.
+        let mut buf = Buffer::empty(Rect::new(0, 0, 10, 1));
+        paint_grid(&mut buf, Rect::new(0, 0, 10, 1), &grid, false);
+        let line: String = (0..10).map(|x| buf[(x, 0)].symbol().to_string()).collect();
+        assert_eq!(line, "abcd      ");
+    }
+
+    #[test]
+    fn snapshot_zoomed_centers_a_source_narrower_than_the_area() {
+        let mut info = make_pane(AgentType::Codex, PaneStatus::Running, "%1");
+        info.prompt = "Refactoring the export path".into();
+        let pane = OverviewPane {
+            info,
+            grid: Some(grid_padded("\x1b[34m[codex] waiting for input\x1b[0m")),
+            err: None,
+        };
+        // A 40-column source in a 60-column popup: the residual margin
+        // splits evenly instead of hugging the left edge — the fallback
+        // for sources that cannot reach the popup's width even zoomed
+        // (multi-client setups).
+        insta::assert_snapshot!(render_zoom(&[pane], 0, None, 60, 12), @"
+        «   ●1esc grid · enter go · p prompt · q quit              ✕
+        ┌ ● codex · project────────────────────────────────────────┐
+        │ Refactoring the export path …                            │
+        │                                                          │
+        │                                                          │
+        │                                                          │
+        │                                                          │
+        │                                                          │
+        │                                                          │
+        │                                                          │
+        │         [codex] waiting for input                        │
+        └──────────────────────────────────────────────────────────┘
+        ");
+    }
+
+    #[test]
+    fn fast_capture_keeps_the_previous_frame_on_failure() {
+        let grid = grid_padded("\x1b[32m[claude] last good frame\x1b[0m");
+        let mut panes = vec![OverviewPane {
+            info: make_pane(AgentType::Claude, PaneStatus::Running, "%1"),
+            grid: Some(grid),
+            err: None,
+        }];
+        // Under cargo test the tmux IPC gate is closed, so the capture
+        // fails — the previous frame must survive untouched, never flash
+        // "(pane gone)" mid-keystroke or mid-read.
+        refresh_capture(&mut panes, "%1", Some((80, 24)));
+        assert!(panes[0].grid.is_some());
+        assert_eq!(panes[0].err, None);
+        // A pane no longer in the listing is skipped entirely.
+        refresh_capture(&mut panes, "%9", Some((80, 24)));
+        assert_eq!(panes.len(), 1);
+    }
+
+    /// The zoom lifecycle against a throwaway server: a 60-column window
+    /// split 20/40 (the standard sidebar shape whose narrow pane is what
+    /// focus mode has to widen), exercising take/restore, the ownership
+    /// rules, and the dead-pane no-op.
+    #[test]
+    #[ignore = "requires local tmux"]
+    fn window_zoom_lifecycle_on_a_scoped_server() {
+        use std::process::Command;
+
+        // Isolation per the capture integration tests: a throwaway server,
+        // TMUX unset so every tmux invocation (ours and the binary's) lands
+        // there. Runs under `cargo test -- --ignored --test-threads=1`.
+        // `-f /dev/null` keeps the server config-clean: the user's plugin
+        // hooks would otherwise fire on the windows this test creates (the
+        // after-new-window hook would add a sidebar pane and change
+        // `window_panes` under the test's feet).
+        let tmux_root = tempfile::tempdir().unwrap();
+        // SAFETY: single-threaded ignored runs only (see the capture
+        // tests); no other test in this binary spawns tmux (the IPC gate
+        // is closed for them).
+        unsafe {
+            std::env::set_var("TMUX_TMPDIR", tmux_root.path());
+            std::env::remove_var("TMUX");
+            std::env::remove_var("TMUX_PANE");
+        }
+        crate::tmux::enable_tmux_ipc();
+
+        let run = |args: &[&str]| {
+            let out = Command::new("tmux").args(args).output().unwrap();
+            assert!(
+                out.status.success(),
+                "tmux {args:?} failed: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+            String::from_utf8_lossy(&out.stdout).trim().to_string()
+        };
+
+        run(&[
+            "-f",
+            "/dev/null",
+            "new-session",
+            "-d",
+            "-s",
+            "zoom-life",
+            "-x",
+            "60",
+            "-y",
+            "20",
+        ]);
+        let _cleanup = scopeguard::guard((), |_| {
+            let _ = Command::new("tmux").args(["kill-server"]).status();
+        });
+        // 66% to the new pane: an asymmetric 20/40 split, so restoring the
+        // exact layout is observable.
+        let agent = run(&[
+            "split-window",
+            "-h",
+            "-p",
+            "66",
+            "-d",
+            "-t",
+            "zoom-life:0.0",
+            "-P",
+            "-F",
+            "#{pane_id}",
+        ]);
+        let sibling = run(&["display-message", "-p", "-t", "zoom-life:0.0", "#{pane_id}"]);
+        std::thread::sleep(Duration::from_millis(100));
+
+        let widths = || -> HashMap<String, u16> {
+            run(&[
+                "list-panes",
+                "-t",
+                "zoom-life:0",
+                "-F",
+                "#{pane_id},#{pane_width}",
+            ])
+            .lines()
+            .filter_map(|l| {
+                let (id, w) = l.split_once(',')?;
+                Some((id.to_string(), w.parse().ok()?))
+            })
+            .collect()
+        };
+        let flag =
+            |pane: &str| run(&["display-message", "-p", "-t", pane, "#{window_zoomed_flag}"]);
+        let probe = |pane: &str| {
+            run(&[
+                "display-message",
+                "-p",
+                "-t",
+                pane,
+                "#{window_panes}|#{window_zoomed_flag}",
+            ])
+        };
+
+        let before = widths();
+        assert_eq!(before.len(), 2, "two siblings in the window");
+        assert_eq!(probe(&agent), "2|0");
+        let dims_before = pane_dimensions_for(&agent).expect("live pane has dims");
+
+        // Take: the pane (and its pty) grow to the full window width; the
+        // hidden sibling keeps its size under the zoom.
+        let guard = WindowZoom::take(&agent, &probe(&agent)).expect("eligible window takes");
+        assert_eq!(flag(&agent), "1");
+        assert_eq!(widths().get(&agent).copied(), Some(60));
+        assert_eq!(
+            widths().get(&sibling).copied(),
+            before.get(&sibling).copied()
+        );
+        // The focus path's targeted dims probe sees the new geometry.
+        assert_eq!(pane_dimensions_for(&agent), Some((60, 20)));
+
+        // Restore (the Drop every exit path rides): the exact pre-zoom
+        // layout comes back.
+        drop(guard);
+        assert_eq!(flag(&agent), "0");
+        assert_eq!(widths(), before);
+        assert_eq!(pane_dimensions_for(&agent), Some(dims_before));
+
+        // The focus path's entry helper: zoom and immediate re-capture in
+        // one call — the first frame is already wide, and the dims land in
+        // the map drive entry reads.
+        let mut pane = OverviewPane {
+            info: make_pane(AgentType::Claude, PaneStatus::Running, &agent),
+            grid: None,
+            err: None,
+        };
+        pane.grid = capture_grid(&pane.info, pane_dimensions_for(&agent)).ok();
+        let pre_w = pane.grid.as_ref().map(|g| g[0].len()).unwrap_or(0);
+        assert!(pre_w < 60, "pre-zoom capture mirrors the narrow pane");
+        let mut last_dims: HashMap<String, (u16, u16)> = HashMap::new();
+        let guard = enter_focus_zoom(&mut pane, &mut last_dims).expect("eligible window takes");
+        assert_eq!(flag(&agent), "1");
+        assert_eq!(
+            pane.grid.as_ref().map(|g| g[0].len()),
+            Some(60),
+            "the entry re-capture widens the cell in the same tick"
+        );
+        assert_eq!(last_dims.get(&agent).copied(), Some((60, 20)));
+        drop(guard);
+        assert_eq!(flag(&agent), "0");
+        assert_eq!(widths(), before);
+
+        // The flag gate: a zoom someone else already lifted must not be
+        // re-toggled by a late restore.
+        let guard = WindowZoom::take(&agent, &probe(&agent)).expect("re-take after restore");
+        run(&["resize-pane", "-Z", "-t", &agent]); // someone else lifts it
+        assert_eq!(flag(&agent), "0");
+        guard.restore();
+        assert_eq!(flag(&agent), "0", "restore must not re-zoom");
+
+        // Ownership rule: a window already zoomed on arrival is the
+        // user's state — never touched, left exactly as found.
+        run(&["resize-pane", "-Z", "-t", &sibling]);
+        assert_eq!(probe(&agent), "2|1");
+        assert!(WindowZoom::take(&agent, &probe(&agent)).is_none());
+        assert_eq!(flag(&sibling), "1", "the user's zoom survives");
+        assert_eq!(widths().get(&sibling).copied(), Some(60));
+        run(&["resize-pane", "-Z", "-t", &sibling]); // undo the user zoom
+        assert_eq!(flag(&sibling), "0");
+
+        // A pane alone in its window: nothing to gain, no churn.
+        run(&["new-window", "-t", "zoom-life"]);
+        let lone = run(&["display-message", "-p", "-t", "zoom-life", "#{pane_id}"]);
+        assert_eq!(probe(&lone), "1|0");
+        assert!(WindowZoom::take(&lone, &probe(&lone)).is_none());
+        assert_eq!(flag(&lone), "0");
+
+        // The dead-pane restore no-op: the zoomed pane dies mid-zoom, the
+        // probe fails, and the restore degrades silently (no re-zoom of a
+        // dead target, no panic, the surviving sibling untouched).
+        let guard = WindowZoom::take(&agent, &probe(&agent)).expect("take before the kill");
+        assert_eq!(flag(&agent), "1");
+        run(&["kill-pane", "-t", &agent]);
+        assert_eq!(
+            flag(&sibling),
+            "0",
+            "tmux unzooms when the zoomed pane dies"
+        );
+        guard.restore();
+        assert_eq!(flag(&sibling), "0");
+        assert_eq!(
+            run(&["list-panes", "-t", "zoom-life:0", "-F", "#{pane_id}"]),
+            sibling,
+            "the sibling survives the dead-pane restore"
+        );
     }
 }

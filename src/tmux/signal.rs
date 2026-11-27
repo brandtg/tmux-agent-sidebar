@@ -10,7 +10,10 @@
 //! Every pid is identity-checked before signaling, exactly like the
 //! focus hook: `@sidebar_pid` outlives the process that wrote it, and a
 //! recycled pid would otherwise receive SIGUSR1 — whose default
-//! disposition is terminate.
+//! disposition is terminate. The check-then-kill gap is closed on Linux
+//! by pinning the target with a pidfd before the identity check (see
+//! [`signal_usr1`]); elsewhere the exe is re-verified immediately before
+//! the kill.
 
 use std::time::Duration;
 
@@ -53,9 +56,67 @@ pub(crate) fn is_sidebar_process(pid: u32) -> bool {
     name.starts_with(COMM_STEM)
 }
 
+/// Send SIGUSR1 to a pid that the caller has vetted with
+/// [`is_sidebar_process`].
+///
+/// That vetting is a point-in-time answer, and the pid can be recycled
+/// between the check and the kill — SIGUSR1's default disposition is
+/// terminate, so the new owner would die (audit 2026-11-26 L-tmux-2).
+/// On Linux the check and the kill are fused: `pidfd_open` pins the
+/// signal target first, the exe is verified while the pin holds, and
+/// the signal goes to the fd — a recycled pid can never receive it. On
+/// pre-5.3 kernels (ENOSYS) and off-Linux, the exe is re-verified
+/// immediately before the kill, shrinking the race window to the
+/// smallest the platform offers.
 pub(crate) fn signal_usr1(pid: u32) {
+    #[cfg(target_os = "linux")]
+    if signal_usr1_pidfd(pid) {
+        return;
+    }
+    if is_sidebar_process(pid) {
+        unsafe {
+            libc::kill(pid as libc::pid_t, libc::SIGUSR1);
+        }
+    }
+}
+
+/// Pin `pid` with a pidfd and send SIGUSR1 to the pinned process.
+///
+/// Ordering is load-bearing: the fd must be opened *before* the exe is
+/// verified. The pidfd forever refers to the process alive under that
+/// pid at open time, so whatever the exe check reads afterwards, the
+/// signal can only ever hit the pinned process — a pid that died after
+/// pinning makes the send fail with ESRCH (harmless), and a pid
+/// recycled after pinning is rejected by the exe check (or, if the
+/// recycler is itself a sidebar, hit by a benign refresh).
+///
+/// Returns `false` when the pidfd path is unavailable (ENOSYS on a
+/// pre-5.3 kernel) or the process is gone / no longer a sidebar, so the
+/// caller can fall back to re-verify + kill.
+#[cfg(target_os = "linux")]
+fn signal_usr1_pidfd(pid: u32) -> bool {
     unsafe {
-        libc::kill(pid as libc::pid_t, libc::SIGUSR1);
+        let fd = libc::syscall(libc::SYS_pidfd_open, pid as libc::pid_t, 0 as libc::c_uint);
+        if fd < 0 {
+            return false;
+        }
+        let fd = fd as libc::c_int;
+        let sent = if is_sidebar_process(pid) {
+            libc::syscall(
+                libc::SYS_pidfd_send_signal,
+                fd,
+                libc::SIGUSR1,
+                std::ptr::null::<libc::c_void>(),
+                0 as libc::c_uint,
+            ) == 0
+        } else {
+            // The pinned process is no longer a sidebar (exec'd away, or
+            // the exe check now resolves to a recycled pid's owner): do
+            // not signal.
+            false
+        };
+        libc::close(fd);
+        sent
     }
 }
 
@@ -103,5 +164,22 @@ mod tests {
         // Above every plausible pid_max; /proc/<pid>/exe cannot exist and
         // `ps` reports no such process.
         assert!(!is_sidebar_process(u32::MAX - 2));
+    }
+
+    #[test]
+    fn signaling_a_nonexistent_pid_is_a_noop() {
+        // pidfd_open fails with ESRCH (or ENOSYS), the fallback re-verify
+        // fails, and no signal leaves the process. Must not panic.
+        signal_usr1(u32::MAX - 2);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn pidfd_path_reports_unavailable_for_a_dead_pid() {
+        // No such process: pidfd_open fails and the caller falls back to
+        // re-verify + kill. The pinned-fd contract is exercised by
+        // signaling a dead pid rather than a real one — no live process
+        // is ever touched from a test.
+        assert!(!signal_usr1_pidfd(u32::MAX - 2));
     }
 }

@@ -33,7 +33,6 @@ pub fn paint_background(frame: &mut Frame, theme: &ColorTheme, area: Rect) {
 }
 
 pub fn draw(frame: &mut Frame, state: &mut AppState) {
-    state.layout.hyperlink_overlays.clear();
     let area = frame.area();
     let chunks = Layout::default()
         .direction(Direction::Vertical)

@@ -27,13 +27,14 @@ pub use filter::RepoFilter;
 pub use focus::{Focus, FocusState};
 pub use global::{GlobalState, GroupBy, TodoScope};
 pub use layout::{
-    FrameLayout, GroupHeaderTarget, GroupStart, HyperlinkOverlay, OVERVIEW_BUTTON_WIDTH,
-    RepoSpawnTarget, RowTarget, SpawnRemoveTarget, TodoRowTarget, WindowHeaderTarget,
+    FrameLayout, GroupHeaderTarget, GroupStart, OVERVIEW_BUTTON_WIDTH, RepoSpawnTarget, RowTarget,
+    SpawnRemoveTarget, TodoRowTarget, WindowHeaderTarget,
 };
 pub(crate) use notices::debug_forced_display;
 pub(crate) use notices::parse_enabled_agents;
 pub use notices::{ClaudePluginNotice, NoticesCopyTarget, NoticesMissingHookGroup, NoticesState};
 pub use pane_runtime::{PaneRuntimeMap, PaneRuntimeState, WindowFinished};
+pub(crate) use popup::HelpCachedLine;
 pub use popup::{PopupOpResult, PopupState, SpawnField};
 #[cfg(test)]
 pub(crate) use refresh::{TaskProgressDecision, classify_task_progress};
@@ -42,6 +43,27 @@ pub use search::SearchState;
 pub use session::SessionNamesState;
 pub use timers::RefreshTimers;
 pub use todo::{TodoEdit, TodoState};
+
+/// Severity of a flash banner message, chosen by the reporter at the
+/// call site. The renderer never re-derives it from the text (audit
+/// 2026-11-25 L-UI-3: substring sniffing painted a success message
+/// mentioning "failed" red).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FlashKind {
+    /// Neutral or positive feedback.
+    Info,
+    /// Failure feedback.
+    Error,
+}
+
+/// One flash banner entry: what to say, how to color it, and when it
+/// stops showing.
+#[derive(Debug, Clone)]
+pub struct Flash {
+    pub kind: FlashKind,
+    pub text: String,
+    pub expires: Instant,
+}
 
 pub struct AppState {
     pub now: u64,
@@ -52,12 +74,13 @@ pub struct AppState {
     /// Sidebar focus + pane focus tracking (sidebar_focused, focus,
     /// focused_pane_id, prev_focused_pane_id).
     pub focus_state: FocusState,
-    /// Transient one-line status banner (message + expiry) for spawn /
-    /// remove feedback. Cleared by `take_flash` once the deadline passes.
-    pub flash: Option<(String, Instant)>,
+    /// Transient one-line status banner for spawn / remove feedback,
+    /// with the severity the reporter picked. Cleared by `take_flash`
+    /// once the deadline passes.
+    pub flash: Option<Flash>,
     pub spinner_frame: usize,
     /// Frame-scoped render output (pane_row_targets, line_to_row,
-    /// menu_button_col, hyperlink_overlays). Rewritten every frame by
+    /// menu_button_col). Rewritten every frame by
     /// the UI layer; consumed by mouse/keyboard handlers before the
     /// next render.
     pub layout: FrameLayout,
@@ -76,7 +99,10 @@ pub struct AppState {
     pub pending_port_scan: Option<Vec<crate::port::PaneScanTarget>>,
     /// Antigravity pane ids (status `running`) queued for the approval-
     /// prompt capture scan. See [`AppState::queue_approval_scan_if_due`].
-    pub pending_approval_scan: Option<Vec<String>>,
+    /// Antigravity panes queued for the approval-prompt capture scan,
+    /// each with its snapshot-time status (`true` = was waiting — the
+    /// worker heals only these, audit 2026-11-25 M-state-4).
+    pub pending_approval_scan: Option<Vec<(String, bool)>>,
     pub pane_states: PaneRuntimeMap,
     /// Periodic-refresh clocks (port scan, session-name scan, filter
     /// debounce, port-scan first-run flag).
@@ -91,6 +117,15 @@ pub struct AppState {
     /// unit-test builds, where dispatch is a no-op so no real git/tmux
     /// side effects fire.
     pub popup_op_tx: Option<std::sync::mpsc::Sender<PopupOpResult>>,
+    /// Monotonic counter of dispatched popup ops. Each `start_popup_op`
+    /// stamps its worker's result with the next value so a late result
+    /// can be told apart from the op the popup is waiting for now
+    /// (audit 2026-11-25 M-state-1).
+    pub popup_op_seq: u64,
+    /// The op id whose result may still mutate the popup: set when an
+    /// op dispatches, cleared when its result applies or the popup is
+    /// closed / replaced. A result carrying any other id is stale.
+    pub popup_op_active: Option<u64>,
     /// All fields related to the ⓘ notices button and its popup — the button
     /// click region, cached hook/plugin diagnostics, per-agent copy targets,
     /// and the transient "copied" feedback label.
@@ -198,6 +233,8 @@ impl AppState {
             timers: RefreshTimers::default(),
             popup: PopupState::None,
             popup_op_tx: None,
+            popup_op_seq: 0,
+            popup_op_active: None,
             notices: NoticesState::default(),
             version_notice: None,
             global,
@@ -216,18 +253,34 @@ impl AppState {
 
     // ─── Flash banner ────────────────────────────────────────────────
 
+    /// Neutral or positive feedback.
     pub fn set_flash(&mut self, msg: impl Into<String>) {
-        self.flash = Some((
-            msg.into(),
-            std::time::Instant::now() + std::time::Duration::from_secs(4),
-        ));
+        self.set_flash_kind(FlashKind::Info, msg);
     }
 
-    /// Return the current flash text if still valid, clearing it once the
-    /// deadline passes. Called by the UI once per frame.
-    pub fn take_flash(&mut self) -> Option<String> {
+    /// Failure feedback. The severity travels with the message instead
+    /// of being sniffed out of the text at render time (audit
+    /// 2026-11-25 L-UI-3).
+    pub fn set_flash_error(&mut self, msg: impl Into<String>) {
+        self.set_flash_kind(FlashKind::Error, msg);
+    }
+
+    fn set_flash_kind(&mut self, kind: FlashKind, msg: impl Into<String>) {
+        self.flash = Some(Flash {
+            kind,
+            text: msg.into(),
+            expires: std::time::Instant::now() + std::time::Duration::from_secs(4),
+        });
+    }
+
+    /// Return the current flash (severity + text) if still valid,
+    /// clearing it once the deadline passes. Called by the UI once per
+    /// frame.
+    pub fn take_flash(&mut self) -> Option<(FlashKind, String)> {
         match &self.flash {
-            Some((text, exp)) if std::time::Instant::now() < *exp => Some(text.clone()),
+            Some(flash) if std::time::Instant::now() < flash.expires => {
+                Some((flash.kind, flash.text.clone()))
+            }
             Some(_) => {
                 self.flash = None;
                 None
@@ -242,10 +295,7 @@ impl AppState {
     /// `FrameLayout::flash_rect`); `take_flash` only reports the text and
     /// must not consume the banner.
     pub fn flash_showing(&self) -> bool {
-        matches!(
-            &self.flash,
-            Some((_, exp)) if std::time::Instant::now() < *exp
-        )
+        matches!(&self.flash, Some(flash) if std::time::Instant::now() < flash.expires)
     }
 }
 
@@ -1400,6 +1450,7 @@ mod tests {
         ];
         state.global.repo_filter = RepoFilter::Repo("beta".into());
         state.popup = PopupState::Repo {
+            scroll: 0,
             selected: 2,
             area: Some(ratatui::layout::Rect::new(0, 3, 20, 5)),
             repo_start: 0,
@@ -1437,6 +1488,7 @@ mod tests {
             },
         ];
         state.popup = PopupState::Repo {
+            scroll: 0,
             selected: 0,
             area: Some(ratatui::layout::Rect::new(0, 3, 20, 5)),
             repo_start: 0,

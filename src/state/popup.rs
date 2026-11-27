@@ -1,5 +1,30 @@
 use super::AppState;
 
+/// One memoized help-overlay line (see [`PopupState::Help::cache`]).
+/// Style-free: the renderer applies the theme when it materializes the
+/// ratatui lines.
+#[derive(Debug, Clone)]
+pub enum HelpCachedLine {
+    Blank,
+    /// A section title (`list`, `group`, …).
+    Header(String),
+    /// One key row: the padded ` key  ` prefix and one wrapped chunk of
+    /// the description (continuation lines carry an all-space prefix).
+    Entry {
+        prefix: String,
+        chunk: String,
+    },
+}
+
+/// The help overlay's wrapped content for one geometry (audit
+/// 2026-11-25 L-UI-7).
+#[derive(Debug, Clone)]
+pub struct HelpLineCache {
+    pub key_col: usize,
+    pub action_width: usize,
+    pub lines: Vec<HelpCachedLine>,
+}
+
 /// Placeholder warning lines shown in the remove-confirm dialog for
 /// worktree spawns while its pre-flight git probes run on a worker
 /// thread (see [`AppState::open_remove_confirm_for_pane`]).
@@ -54,6 +79,12 @@ pub enum PopupState {
     None,
     Repo {
         selected: usize,
+        /// First repo index shown at the top of the list window. The
+        /// renderer owns it: it clamps the value to the list and keeps
+        /// `selected` inside the window every frame (todo-style
+        /// scrolling; audit 2026-11-25 M-UI-3). Navigation only moves
+        /// `selected`.
+        scroll: usize,
         area: Option<ratatui::layout::Rect>,
         /// First inner row of the selectable repo list. Rows above it
         /// are the notices section (click-to-copy, not selectable).
@@ -105,6 +136,11 @@ pub enum PopupState {
         content: u16,
         /// Visible inner height, as of the last render.
         viewport: u16,
+        /// The wrapped help content, memoized per (key column, action
+        /// width): the old render re-wrapped every description every
+        /// frame the overlay stayed open (audit 2026-11-25 L-UI-7).
+        /// Style-free strings — the theme is applied at render time.
+        cache: Option<HelpLineCache>,
     },
     /// Confirmation prompt shown when the user presses `x` on a
     /// spawn-created pane. `pane_id` feeds `worktree::remove`; `label`
@@ -133,10 +169,17 @@ pub enum PopupState {
 /// (`app::run`), which hands it to [`AppState::apply_popup_op_result`].
 #[derive(Debug)]
 pub enum PopupOpResult {
-    /// `worktree::spawn` finished: the new branch name or the error.
-    Spawn(Result<String, String>),
-    /// `worktree::remove` finished.
-    Remove(Result<(), String>),
+    /// `worktree::spawn` finished: the new branch/window name or the
+    /// error. `op` is the dispatch id stamped by
+    /// [`AppState::start_popup_op`]; hand-built results (tests) carry 0,
+    /// which never matches an active op and is therefore treated as
+    /// stale by [`AppState::apply_popup_op_result`].
+    Spawn {
+        op: u64,
+        result: Result<String, String>,
+    },
+    /// `worktree::remove` finished. Same `op` contract as [`Self::Spawn`].
+    Remove { op: u64, result: Result<(), String> },
     /// A resume launch (`r` on a resume-shaped todo) finished: the
     /// flash banner text on success, the failure text on error.
     Resume(Result<String, String>),
@@ -164,6 +207,14 @@ impl PopupState {
         }
     }
 
+    /// Write back the clamped scroll the renderer just used. No-op on
+    /// other variants.
+    pub fn set_repo_scroll(&mut self, scroll: usize) {
+        if let Self::Repo { scroll: s, .. } = self {
+            *s = scroll;
+        }
+    }
+
     pub fn set_help_area(&mut self, rect: Option<ratatui::layout::Rect>) {
         if let Self::Help { area, .. } = self {
             *area = rect;
@@ -186,6 +237,13 @@ impl PopupState {
 impl AppState {
     // ─── Repo popup ──────────────────────────────────────────────────────
 
+    /// Whether any popup/modal is open. The mouse-scroll handler uses
+    /// this to keep wheel events from moving the hidden background list
+    /// under a modal (audit 2026-11-25 M-inp-1).
+    pub fn is_popup_open(&self) -> bool {
+        !matches!(self.popup, PopupState::None)
+    }
+
     pub fn is_repo_popup_open(&self) -> bool {
         matches!(self.popup, PopupState::Repo { .. })
     }
@@ -200,6 +258,13 @@ impl AppState {
     pub fn set_repo_popup_selected(&mut self, n: usize) {
         if let PopupState::Repo { selected, .. } = &mut self.popup {
             *selected = n;
+        }
+    }
+
+    pub fn repo_popup_scroll(&self) -> usize {
+        match &self.popup {
+            PopupState::Repo { scroll, .. } => *scroll,
+            _ => 0,
         }
     }
 
@@ -222,6 +287,13 @@ impl AppState {
             self.close_repo_popup();
             return;
         }
+        // The popup claims the header row like the chyron below, and the
+        // `/` input line lives on that same row: a click on the menu
+        // button with the input line live would open the dropdown over a
+        // still-rendered, keyboard-dead search box (audit 2026-11-25
+        // M-inp-2). Close the input line first — the query stays applied;
+        // the click is a focus change, not a filter change.
+        self.finish_search();
         // Set selected to current filter position
         let names = self.repo_names();
         let selected = match &self.global.repo_filter {
@@ -229,6 +301,7 @@ impl AppState {
             super::RepoFilter::Repo(name) => names.iter().position(|n| n == name).unwrap_or(0),
         };
         self.popup = PopupState::Repo {
+            scroll: 0,
             selected,
             area: None,
             repo_start: 0,
@@ -241,14 +314,21 @@ impl AppState {
     pub fn confirm_repo_popup(&mut self) {
         let selected = self.repo_popup_selected();
         let names = self.repo_names();
-        if let Some(name) = names.get(selected) {
-            self.global.repo_filter = if selected == 0 {
+        let new_filter = names.get(selected).map(|name| {
+            if selected == 0 {
                 super::RepoFilter::All
             } else {
                 super::RepoFilter::Repo(name.clone())
-            };
-        }
+            }
+        });
         self.popup = PopupState::None;
+        // Re-confirming the active filter is a no-op: skip the `set -g` +
+        // SIGUSR1 broadcast + rebuild it would otherwise fire at every
+        // open sidebar (audit 2026-11-25 L-state-5).
+        let Some(filter) = new_filter.filter(|f| *f != self.global.repo_filter) else {
+            return;
+        };
+        self.global.repo_filter = filter;
         self.global.save_repo_filter();
         self.rebuild_row_targets();
         // The rebuild can and routinely does move the cursor: the list
@@ -296,8 +376,61 @@ impl AppState {
                 scroll: 0,
                 content: 0,
                 viewport: 0,
+                cache: None,
             };
         }
+    }
+
+    /// Whether the help cache matches this geometry. `false` sends the
+    /// renderer to a fresh wrap.
+    pub fn help_cache_matches(&self, key_col: usize, action_width: usize) -> bool {
+        matches!(
+            &self.popup,
+            PopupState::Help {
+                cache: Some(cache),
+                ..
+            } if cache.key_col == key_col && cache.action_width == action_width
+        )
+    }
+
+    /// Store the freshly wrapped help content for this geometry.
+    pub fn store_help_cache(
+        &mut self,
+        key_col: usize,
+        action_width: usize,
+        lines: Vec<HelpCachedLine>,
+    ) {
+        if let PopupState::Help { cache, .. } = &mut self.popup {
+            *cache = Some(HelpLineCache {
+                key_col,
+                action_width,
+                lines,
+            });
+        }
+    }
+
+    /// The cached help content, when the geometry matches.
+    pub fn help_cache(&self, key_col: usize, action_width: usize) -> Option<&[HelpCachedLine]> {
+        match &self.popup {
+            PopupState::Help {
+                cache:
+                    Some(HelpLineCache {
+                        key_col: k,
+                        action_width: a,
+                        lines,
+                    }),
+                ..
+            } if *k == key_col && *a == action_width => Some(lines),
+            _ => None,
+        }
+    }
+
+    /// The cached content's line count, when the geometry matches; 0
+    /// otherwise (the renderer stores the cache before measuring).
+    pub fn help_cache_len(&self, key_col: usize, action_width: usize) -> u16 {
+        self.help_cache(key_col, action_width)
+            .map(|lines| lines.len() as u16)
+            .unwrap_or(0)
     }
 
     /// Record the content/viewport heights the renderer just laid out,
@@ -368,6 +501,13 @@ impl AppState {
         target_session: String,
         anchor_y: Option<u16>,
     ) {
+        // The modal claims the keyboard; a live `/` input line under it
+        // would render as editable while every key goes to the modal
+        // (audit 2026-11-25 M-inp-2). The query stays applied.
+        self.finish_search();
+        // A fresh modal must never be clobbered by an older op's late
+        // result (audit 2026-11-25 M-state-1).
+        self.popup_op_active = None;
         self.popup = PopupState::SpawnInput {
             input: String::new(),
             target_repo: repo_name,
@@ -389,7 +529,7 @@ impl AppState {
             .pane_row_targets
             .get(self.global.selected_pane_row)
         else {
-            self.set_flash("spawn: no pane selected");
+            self.set_flash_error("spawn: no pane selected");
             return;
         };
         if target.is_window {
@@ -403,7 +543,7 @@ impl AppState {
             .iter()
             .find(|g| g.panes.iter().any(|(p, _)| p.pane_id == pane_id))
         else {
-            self.set_flash("spawn: could not find repo group for selection");
+            self.set_flash_error("spawn: could not find repo group for selection");
             return;
         };
         // The spawn targets the selected pane's tmux session — `n` on
@@ -412,11 +552,11 @@ impl AppState {
         let Some((root, session)) = group.panes.iter().find_map(|(p, git)| {
             (p.pane_id == pane_id).then(|| (git.repo_root.clone(), p.tmux_session.clone()))
         }) else {
-            self.set_flash("spawn: could not find repo group for selection");
+            self.set_flash_error("spawn: could not find repo group for selection");
             return;
         };
         let Some(root) = root else {
-            self.set_flash("spawn: selected pane is not in a git repo");
+            self.set_flash_error("spawn: selected pane is not in a git repo");
             return;
         };
         let name = group.name.clone();
@@ -446,11 +586,11 @@ impl AppState {
                     .map(|w| (repo_key.clone(), w.git_info.clone(), w.session_name.clone()))
             })
         else {
-            self.set_flash("spawn: could not find repo group for selection");
+            self.set_flash_error("spawn: could not find repo group for selection");
             return;
         };
         let Some(root) = git.repo_root.clone() else {
-            self.set_flash("spawn: selected pane is not in a git repo");
+            self.set_flash_error("spawn: selected pane is not in a git repo");
             return;
         };
         let name = self
@@ -471,6 +611,12 @@ impl AppState {
     pub fn close_spawn_input(&mut self) {
         if matches!(self.popup, PopupState::SpawnInput { .. }) {
             self.popup = PopupState::None;
+            // A dismissed modal's op can no longer land anywhere: drop
+            // its identity so the late result takes the stale path —
+            // a success still flashes (the work happened; audit
+            // 2026-11-25 L-inp-3), an error is dropped — instead of
+            // closing whatever popup replaced it (M-state-1).
+            self.popup_op_active = None;
         }
     }
 
@@ -611,8 +757,18 @@ impl AppState {
             }
             _ => return,
         }
+        // Stamp the dispatch: the result only lands while no newer
+        // dispatch or close replaced this popup (audit 2026-11-25
+        // M-state-1).
+        self.popup_op_seq += 1;
+        let op_id = self.popup_op_seq;
+        self.popup_op_active = Some(op_id);
         std::thread::spawn(move || {
-            let result = op();
+            let result = match op() {
+                PopupOpResult::Spawn { result, .. } => PopupOpResult::Spawn { op: op_id, result },
+                PopupOpResult::Remove { result, .. } => PopupOpResult::Remove { op: op_id, result },
+                other => other,
+            };
             let _ = tx.send(result);
         });
     }
@@ -622,45 +778,77 @@ impl AppState {
     /// banner instead of a modal. Same no-channel (unit-test build)
     /// no-op policy as [`Self::start_popup_op`]: without the channel
     /// nothing spawns, so tests never touch real tmux or agent stores.
+    /// Returns whether the op was dispatched, so the caller can latch
+    /// its in-flight guard only when a result will actually come back.
     pub(super) fn start_background_op(
         &mut self,
         op: impl FnOnce() -> PopupOpResult + Send + 'static,
-    ) {
+    ) -> bool {
         let Some(tx) = self.popup_op_tx.clone() else {
-            return;
+            return false;
         };
         std::thread::spawn(move || {
             let _ = tx.send(op());
         });
+        true
     }
 
     /// Apply a finished popup operation delivered by its worker thread.
-    /// Success closes the popup exactly as the synchronous path did;
-    /// failure returns the popup to its editable state with the error
-    /// surfaced inline. No-ops if the popup moved on meanwhile. Resume
+    /// The result only lands when it is still the op the popup is
+    /// waiting for: closing the popup with Esc or opening a fresh one
+    /// invalidates the id, so a late result can never close or clobber
+    /// an unrelated popup (audit 2026-11-25 M-state-1 — previously a
+    /// late Ok matched *any* open SpawnInput and silently closed it,
+    /// and a late Err injected another op's error into it). A stale
+    /// success still flashes — the work happened (a worktree + window
+    /// can appear seconds after the modal was dismissed) and silence
+    /// would hide it (L-inp-3); a stale error is dropped, since the
+    /// dialog it belonged to is gone and the user has moved on. Resume
     /// results carry no popup: both outcomes land in the flash banner.
     pub fn apply_popup_op_result(&mut self, result: PopupOpResult) {
         match result {
-            PopupOpResult::Spawn(Ok(_)) => {
-                if matches!(self.popup, PopupState::SpawnInput { .. }) {
-                    self.popup = PopupState::None;
+            PopupOpResult::Spawn { op, result } => {
+                if self.popup_op_active != Some(op) {
+                    if let Ok(name) = result {
+                        self.set_flash(format!("spawned {name}"));
+                    }
+                    return;
+                }
+                self.popup_op_active = None;
+                match result {
+                    Ok(_) => {
+                        if matches!(self.popup, PopupState::SpawnInput { .. }) {
+                            self.popup = PopupState::None;
+                        }
+                    }
+                    Err(e) => {
+                        if let PopupState::SpawnInput { working, error, .. } = &mut self.popup {
+                            *working = None;
+                            *error = Some(e);
+                        }
+                    }
                 }
             }
-            PopupOpResult::Remove(Ok(())) => {
-                if matches!(self.popup, PopupState::RemoveConfirm { .. }) {
-                    self.popup = PopupState::None;
+            PopupOpResult::Remove { op, result } => {
+                if self.popup_op_active != Some(op) {
+                    if result.is_ok() {
+                        self.set_flash("removed");
+                    }
+                    return;
                 }
-            }
-            PopupOpResult::Spawn(Err(e)) => {
-                if let PopupState::SpawnInput { working, error, .. } = &mut self.popup {
-                    *working = None;
-                    *error = Some(e);
-                }
-            }
-            PopupOpResult::Remove(Err(e)) => {
-                if let PopupState::RemoveConfirm { working, error, .. } = &mut self.popup {
-                    *working = None;
-                    *error = Some(e);
+                self.popup_op_active = None;
+                match result {
+                    Ok(()) => {
+                        if matches!(self.popup, PopupState::RemoveConfirm { .. }) {
+                            self.popup = PopupState::None;
+                        }
+                    }
+                    Err(e) => {
+                        if let PopupState::RemoveConfirm { working, error, .. } = &mut self.popup {
+                            *working = None;
+                            *error = Some(e);
+                        }
+                    }
                 }
             }
             PopupOpResult::RemoveWarnings { pane_id, warnings } => {
@@ -744,7 +932,12 @@ impl AppState {
             crate::worktree::SpawnKind::Worktree => "creating worktree…",
         };
         self.start_popup_op(working_label, move || {
-            PopupOpResult::Spawn(crate::worktree::spawn(&req))
+            // The op id is stamped by start_popup_op; 0 marks a
+            // hand-built result as not-yet-stamped.
+            PopupOpResult::Spawn {
+                op: 0,
+                result: crate::worktree::spawn(&req),
+            }
         });
     }
 
@@ -764,6 +957,9 @@ impl AppState {
     pub fn close_remove_confirm(&mut self) {
         if matches!(self.popup, PopupState::RemoveConfirm { .. }) {
             self.popup = PopupState::None;
+            // Same identity drop as close_spawn_input (audit
+            // 2026-11-25 M-state-1 / L-inp-3).
+            self.popup_op_active = None;
         }
     }
 
@@ -772,16 +968,24 @@ impl AppState {
     /// flashes an error so the user knows nothing happened.
     pub fn open_remove_confirm(&mut self) {
         let Some(pane) = self.selected_pane() else {
-            self.set_flash("remove: no pane selected");
+            self.set_flash_error("remove: no pane selected");
             return;
         };
         self.open_remove_confirm_for_pane(pane.pane_id.clone());
     }
 
     pub fn open_remove_confirm_for_pane(&mut self, pane_id: String) {
+        // The dialog claims the keyboard when it opens; close a live
+        // `/` input line under it first (audit 2026-11-25 M-inp-2), and
+        // drop any older op's identity so its late result cannot
+        // clobber this dialog (audit 2026-11-25 M-state-1). Done before
+        // the spawn-marker check so even a refused × click ends the
+        // search line — the click is an explicit list interaction.
+        self.finish_search();
+        self.popup_op_active = None;
         let markers = crate::worktree::read_spawn_markers(&pane_id);
         if !markers.is_spawned() {
-            self.set_flash("remove: selected pane was not spawned by sidebar");
+            self.set_flash_error("remove: selected pane was not spawned by sidebar");
             return;
         }
         // Folder spawns carry no worktree path: the dialog becomes a
@@ -859,8 +1063,9 @@ impl AppState {
             crate::worktree::RemoveMode::WindowOnly => "closing window…",
             crate::worktree::RemoveMode::WindowAndWorktree => "removing worktree…",
         };
-        self.start_popup_op(status, move || {
-            PopupOpResult::Remove(crate::worktree::remove(&pane_id, mode))
+        self.start_popup_op(status, move || PopupOpResult::Remove {
+            op: 0,
+            result: crate::worktree::remove(&pane_id, mode),
         });
     }
 }
@@ -933,6 +1138,7 @@ mod tests {
     #[test]
     fn set_area_updates_only_matching_variant() {
         let mut popup = PopupState::Repo {
+            scroll: 0,
             selected: 0,
             area: None,
             repo_start: 0,
@@ -991,6 +1197,7 @@ mod tests {
             },
         ];
         state.popup = PopupState::Repo {
+            scroll: 0,
             selected: 2,
             area: None,
             repo_start: 0,
@@ -1026,6 +1233,7 @@ mod tests {
         state.global.selected_pane_row = 1; // on beta's row
 
         state.popup = PopupState::Repo {
+            scroll: 0,
             selected: 1,
             area: None,
             repo_start: 0,
@@ -1053,6 +1261,7 @@ mod tests {
         }];
         state.global.repo_filter = RepoFilter::Repo("app".into());
         state.popup = PopupState::Repo {
+            scroll: 0,
             selected: 0,
             area: None,
             repo_start: 0,
@@ -1066,6 +1275,7 @@ mod tests {
     fn close_repo_popup_resets_popup_state() {
         let mut state = AppState::new("%99".into());
         state.popup = PopupState::Repo {
+            scroll: 0,
             selected: 5,
             area: Some(ratatui::layout::Rect::new(0, 0, 10, 5)),
             repo_start: 0,
@@ -1093,6 +1303,7 @@ mod tests {
             scroll: 0,
             content: 0,
             viewport: 0,
+            cache: None,
         };
         state.set_repo_popup_selected(9);
         // Repo accessor returns default when not in the Repo variant.
@@ -1114,6 +1325,7 @@ mod tests {
     fn close_help_popup_only_closes_the_help_popup() {
         let mut state = AppState::new("%99".into());
         state.popup = PopupState::Repo {
+            scroll: 0,
             selected: 0,
             area: None,
             repo_start: 0,
@@ -1129,6 +1341,7 @@ mod tests {
             scroll: 0,
             content: 0,
             viewport: 0,
+            cache: None,
         };
         state.close_help_popup();
         assert!(matches!(state.popup, PopupState::None));
@@ -1207,6 +1420,7 @@ mod tests {
     fn close_spawn_input_noop_when_not_open() {
         let mut state = AppState::new("%99".into());
         state.popup = PopupState::Repo {
+            scroll: 0,
             selected: 0,
             area: None,
             repo_start: 0,
@@ -1457,9 +1671,15 @@ mod tests {
             working: None,
             area: None,
         };
-        state.start_popup_op("removing worktree…", || PopupOpResult::Remove(Ok(())));
+        state.start_popup_op("removing worktree…", || PopupOpResult::Remove {
+            op: 0,
+            result: Ok(()),
+        });
         assert!(!state.is_remove_confirm_working());
         assert!(state.is_remove_confirm_open());
+        // The no-op path must not consume an op id either: no stale
+        // identity is left behind for a later result to match.
+        assert_eq!(state.popup_op_active, None);
     }
 
     #[test]
@@ -1545,7 +1765,12 @@ mod tests {
         assert_eq!(results.len(), 1, "exactly one operation must be dispatched");
 
         match results.remove(0) {
-            PopupOpResult::Remove(Err(_)) => {}
+            PopupOpResult::Remove { op, result: Err(_) } => {
+                // The dispatch stamped its id and parked it as the one
+                // result the dialog will accept.
+                assert_eq!(op, 1);
+                assert_eq!(state.popup_op_active, Some(1));
+            }
             other => panic!("expected a failed remove for an unknown pane, got {other:?}"),
         }
 
@@ -1561,9 +1786,10 @@ mod tests {
             working: Some("closing window…"),
             area: None,
         };
-        state.apply_popup_op_result(PopupOpResult::Remove(Err(
-            "pane was not created by sidebar spawn".into(),
-        )));
+        state.apply_popup_op_result(PopupOpResult::Remove {
+            op: 1,
+            result: Err("pane was not created by sidebar spawn".into()),
+        });
         assert!(!state.is_remove_confirm_working());
         assert_eq!(
             popup_error(&state).as_deref(),
@@ -1587,7 +1813,11 @@ mod tests {
             working: Some("creating worktree…"),
             area: None,
         };
-        state.apply_popup_op_result(PopupOpResult::Spawn(Ok("agent/task".into())));
+        state.popup_op_active = Some(7);
+        state.apply_popup_op_result(PopupOpResult::Spawn {
+            op: 7,
+            result: Ok("agent/task".into()),
+        });
         assert!(!state.is_spawn_input_open(), "success must close the popup");
 
         state.popup = PopupState::RemoveConfirm {
@@ -1599,7 +1829,11 @@ mod tests {
             working: Some("removing worktree…"),
             area: None,
         };
-        state.apply_popup_op_result(PopupOpResult::Remove(Ok(())));
+        state.popup_op_active = Some(8);
+        state.apply_popup_op_result(PopupOpResult::Remove {
+            op: 8,
+            result: Ok(()),
+        });
         assert!(
             !state.is_remove_confirm_open(),
             "success must close the popup"
@@ -1613,14 +1847,89 @@ mod tests {
         // application must not resurrect or mutate the wrong popup).
         let mut state = AppState::new("%99".into());
         state.popup = PopupState::Repo {
+            scroll: 0,
             selected: 0,
             area: None,
             repo_start: 0,
         };
-        state.apply_popup_op_result(PopupOpResult::Spawn(Err("boom".into())));
+        state.popup_op_active = Some(2);
+        state.apply_popup_op_result(PopupOpResult::Spawn {
+            op: 2,
+            result: Err("boom".into()),
+        });
         assert!(matches!(state.popup, PopupState::Repo { .. }));
-        state.apply_popup_op_result(PopupOpResult::Spawn(Ok("agent/task".into())));
+        state.apply_popup_op_result(PopupOpResult::Spawn {
+            op: 2,
+            result: Ok("agent/task".into()),
+        });
         assert!(matches!(state.popup, PopupState::Repo { .. }));
+    }
+
+    #[test]
+    fn a_result_for_a_replaced_op_cannot_close_the_new_popup() {
+        // Audit 2026-11-25 M-state-1: confirm spawn A, Esc while it
+        // works, reopen the modal as op B — A's late Ok used to match
+        // any open SpawnInput and silently close B. Dispatch-side
+        // stamping is covered by
+        // `confirm_remove_dispatches_once_and_applies_result`; here the
+        // two ops are simulated at the same boundary the event loop
+        // sees.
+        let mut state = AppState::new("%99".into());
+        // Op A dispatched: id 1, modal parked in working state.
+        state.open_spawn_input_for_repo("alpha".into(), "/tmp/alpha".into(), "sess".into(), None);
+        state.popup_op_active = Some(1);
+        // Esc while working is explicitly allowed; the close drops the
+        // op's identity.
+        state.close_spawn_input();
+        assert_eq!(state.popup_op_active, None);
+
+        // Reopen: a fresh modal for op B.
+        state.open_spawn_input_for_repo("beta".into(), "/tmp/beta".into(), "sess".into(), None);
+        state.popup_op_active = Some(2);
+
+        // A's result lands late: it must not close B's modal. Its
+        // success is real work though — it flashes instead of dying
+        // silently (audit 2026-11-25 L-inp-3).
+        state.apply_popup_op_result(PopupOpResult::Spawn {
+            op: 1,
+            result: Ok("agent/task-a".into()),
+        });
+        assert!(state.is_spawn_input_open(), "B's modal stays open");
+        assert_eq!(
+            state.take_flash().map(|(_, text)| text).as_deref(),
+            Some("spawned agent/task-a"),
+            "the late success is announced, not dropped"
+        );
+
+        // B's result then closes B's modal as usual.
+        state.apply_popup_op_result(PopupOpResult::Spawn {
+            op: 2,
+            result: Ok("agent/task-b".into()),
+        });
+        assert!(!state.is_spawn_input_open());
+        // B's success is silent (the popup closing is the feedback,
+        // same as the on-time path) and must not resurrect or replace
+        // the stale banner.
+        assert_eq!(
+            state.flash.map(|f| f.text).as_deref(),
+            Some("spawned agent/task-a")
+        );
+    }
+
+    #[test]
+    fn a_stale_error_is_dropped_without_flashing() {
+        // The user Esc'd the modal; the failure belongs to a dialog
+        // that is gone. No popup resurrection, no banner.
+        let mut state = AppState::new("%99".into());
+        state.open_spawn_input_for_repo("alpha".into(), "/tmp/alpha".into(), "sess".into(), None);
+        state.popup_op_active = Some(1);
+        state.close_spawn_input();
+        state.apply_popup_op_result(PopupOpResult::Spawn {
+            op: 1,
+            result: Err("boom".into()),
+        });
+        assert!(!state.is_spawn_input_open());
+        assert!(state.flash.is_none());
     }
 
     // ─── Remove confirm popup ────────────────────────────────────────
@@ -1654,6 +1963,7 @@ mod tests {
         // variant is preserved.
         let mut state = AppState::new("%99".into());
         state.popup = PopupState::Repo {
+            scroll: 0,
             selected: 0,
             area: None,
             repo_start: 0,

@@ -31,8 +31,26 @@ pub(super) struct NotifyPayload<'a> {
 
 /// Fire a lifecycle desktop notification (`Notification`,
 /// `PermissionDenied`, `Stop`, `StopFailure`, `TaskCompleted`,
-/// `SessionEnd`). Resolves labels, computes the run-scoped fingerprint,
-/// and delegates to [`notify_desktop`].
+/// `SessionEnd`). Resolves settings, gates on them, then resolves
+/// labels, computes the run-scoped fingerprint, and delegates to
+/// [`notify_desktop`].
+///
+/// `settings: None` resolves them here, on demand: `handle_event` used
+/// to resolve them eagerly for every lifecycle event — a
+/// `tmux show -g` plus (when on) the backend-probe spawn paid even when
+/// the handler bailed before any notify could fire (audit 2026-11-25
+/// M-hook-3). Tests pass a resolved value to stay deterministic (under
+/// `cargo test` the tmux IPC gate is closed, so a lazy resolve would
+/// read defaults and nondeterministically probe the real notification
+/// backend).
+///
+/// The enabled/event gate runs BEFORE the label resolution: both label
+/// sources spend subprocesses (FromCtx's branch label is a
+/// `git rev-parse` spawn, FromPane reads pane options), and the gate
+/// below used to discard them when notifications were off (audit
+/// 2026-11-25 M-hook-3). `notify_if_allowed` re-checks the same gate —
+/// cheap, in-memory — so this is purely about not paying for labels
+/// that would be dropped.
 ///
 /// `run_id: None` triggers a fresh `notification_run_id(pane)` lookup;
 /// `Some(id)` reuses a caller-cached value (on_stop already fetches it
@@ -41,10 +59,14 @@ pub(super) struct NotifyPayload<'a> {
 pub(super) fn notify_lifecycle(
     pane: &str,
     labels: NotifyLabels<'_>,
-    settings: &desktop_notification::DesktopNotificationSettings,
+    settings: Option<desktop_notification::DesktopNotificationSettings>,
     run_id: Option<u64>,
     payload: NotifyPayload<'_>,
 ) -> bool {
+    let settings = settings.unwrap_or_else(notification_settings);
+    if !settings.enabled || !settings.event_enabled(payload.event) {
+        return false;
+    }
     let (repo, branch, agent) = match labels {
         NotifyLabels::FromCtx(ctx) => (
             repo_label_from_ctx(ctx),
@@ -64,7 +86,7 @@ pub(super) fn notify_lifecycle(
         pane,
         payload.kind,
         payload.event,
-        settings,
+        &settings,
         &fingerprint,
         &desktop_notification::format_title(repo.as_deref(), branch.as_deref(), agent),
         payload.body,
@@ -167,7 +189,10 @@ pub(super) fn stop_failure_body(error: &str) -> String {
     if error.is_empty() {
         "Task failed".to_string()
     } else {
-        format!("Task failed: {error}")
+        // Truncate the error like the Stop path does: a multi-KB upstream
+        // error otherwise becomes a giant notification body (audit
+        // 2026-11-25 L-hook-4).
+        format!("Task failed: {}", truncate_body(error))
     }
 }
 

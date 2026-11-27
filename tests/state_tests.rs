@@ -1217,15 +1217,37 @@ fn close_spawn_input_resets_popup() {
 fn set_flash_and_take_flash_returns_then_clears_after_deadline() {
     let mut state = make_state(vec![]);
     state.set_flash("hello");
-    assert_eq!(state.take_flash().as_deref(), Some("hello"));
+    assert_eq!(
+        state.take_flash().map(|(_, text)| text).as_deref(),
+        Some("hello")
+    );
     // Flash is still valid because expiry is 4s in the future.
-    assert_eq!(state.take_flash().as_deref(), Some("hello"));
+    assert_eq!(
+        state.take_flash().map(|(_, text)| text).as_deref(),
+        Some("hello")
+    );
     // Expire manually and verify take_flash clears it.
-    if let Some((_, exp)) = state.flash.as_mut() {
-        *exp = std::time::Instant::now() - std::time::Duration::from_secs(1);
+    if let Some(flash) = state.flash.as_mut() {
+        flash.expires = std::time::Instant::now() - std::time::Duration::from_secs(1);
     }
     assert_eq!(state.take_flash(), None);
     assert!(state.flash.is_none());
+}
+
+#[test]
+fn flash_severity_travels_with_the_message() {
+    // Audit 2026-11-25 L-UI-3: the renderer colors the banner by the
+    // reporter's severity, never by substring-sniffing the text — a
+    // success message mentioning "failed" used to paint red.
+    let mut state = make_state(vec![]);
+    state.set_flash("branch is 0 failed ahead");
+    let (kind, _) = state.take_flash().expect("info flash present");
+    assert_eq!(kind, tmux_agent_sidebar::state::FlashKind::Info);
+
+    state.set_flash_error("spawn: no pane selected");
+    let (kind, text) = state.take_flash().expect("error flash present");
+    assert_eq!(kind, tmux_agent_sidebar::state::FlashKind::Error);
+    assert_eq!(text, "spawn: no pane selected");
 }
 
 #[test]
@@ -1256,9 +1278,9 @@ fn open_remove_confirm_for_unknown_pane_sets_flash_and_keeps_popup_closed() {
     assert!(matches!(state.popup, PopupState::None));
     let flash = state.flash.as_ref().expect("flash must be set");
     assert!(
-        flash.0.contains("not spawned"),
+        flash.text.contains("not spawned"),
         "flash should mention the unspawned pane: {:?}",
-        flash.0
+        flash.text
     );
 }
 
@@ -1278,8 +1300,8 @@ fn handle_mouse_click_routes_spawn_remove_targets_to_open_remove_confirm() {
     state.handle_mouse_click(5, 5);
     let flash = state.flash.as_ref().expect("click should have fired");
     assert!(
-        flash.0.contains("not spawned"),
+        flash.text.contains("not spawned"),
         "click on × target should call open_remove_confirm_for_pane: {:?}",
-        flash.0
+        flash.text
     );
 }

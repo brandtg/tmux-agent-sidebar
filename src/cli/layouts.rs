@@ -907,8 +907,7 @@ fn cmd_apply(name: &str, window_id: Option<&str>) -> i32 {
         return 0;
     };
     if !json_layouts_supported() {
-        passthrough_select_layout(window_id, name);
-        return 0;
+        return passthrough_select_layout(window_id, name);
     }
     let Some(probe) = probe_window(window_id) else {
         return 0;
@@ -932,8 +931,7 @@ fn cmd_apply(name: &str, window_id: Option<&str>) -> i32 {
         // Duplicate sidebar panes (a lost dedupe race) cannot be given
         // distinct cells without rearranging them; leave the window to
         // the stock command until the next toggle collapses them.
-        passthrough_select_layout(window_id, name);
-        return 0;
+        return passthrough_select_layout(window_id, name);
     }
     let base_ids: Vec<String> = probe
         .panes
@@ -962,8 +960,7 @@ fn cmd_apply(name: &str, window_id: Option<&str>) -> i32 {
             // Degenerate geometry (window too small for the pane count,
             // unknown builtin name): the stock command is the honest
             // fallback.
-            passthrough_select_layout(window_id, name);
-            0
+            passthrough_select_layout(window_id, name)
         }
     }
 }
@@ -976,6 +973,15 @@ fn cmd_keep(window_id: Option<&str>) -> i32 {
     let Some(window_id) = window_id.filter(|w| !w.is_empty()) else {
         return 0;
     };
+    // Cheap first gate (audit 2026-11-25 L-tmux-7): most firings are
+    // windows that never had a sidebar-aware builtin, and the recorded
+    // base is one display-message away. The full probe costs three
+    // spawns (list-panes, display-message, show-window-options) — pay
+    // it only for windows that could actually need a re-pin.
+    let base_hint = tmux::display_message(window_id, "#{@sidebar_layout_base}");
+    if base_hint.trim().is_empty() {
+        return 0;
+    }
     let Some(probe) = probe_window(window_id) else {
         return 0;
     };
@@ -1116,9 +1122,18 @@ fn resolve_sidebar_target(probe: &WindowProbe) -> Option<u32> {
 
 /// tmux < 3.8 (no JSON layout parsing) and degenerate geometries fall
 /// back to the plain stock command, so the key never does less than
-/// tmux's own `select-layout <name>`.
-fn passthrough_select_layout(window_id: &str, name: &str) {
-    let _ = tmux::run_tmux(&["select-layout", "-t", window_id, name]);
+/// tmux's own `select-layout <name>`. A failed command is no longer
+/// silent: it traces and reports 1 (audit 2026-11-25 L-cli-2).
+fn passthrough_select_layout(window_id: &str, name: &str) -> i32 {
+    match tmux::run_tmux(&["select-layout", "-t", window_id, name]) {
+        Some(_) => 0,
+        None => {
+            crate::debug::log(&format!(
+                "layouts: select-layout {name} failed for window {window_id}"
+            ));
+            1
+        }
+    }
 }
 
 #[cfg(test)]

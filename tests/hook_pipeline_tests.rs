@@ -548,3 +548,65 @@ fn hook_sh_rejects_continuation_chain_from_a_foreign_socket() {
         "a foreign-socket chain must not touch the scoped pane"
     );
 }
+
+#[test]
+#[ignore = "requires local tmux; mutates process-global env (run via make test-ignored)"]
+fn set_buffer_takes_dash_payload_verbatim_after_double_dash() {
+    // H-tmux-1 (audit 2026-11-25): pin the tmux behavior the clipboard
+    // shim relies on. Without `--`, a payload starting with `-` is
+    // parsed as a flag (`tmux set-buffer -w '-w hello'` → `invalid
+    // flag -`), the copy silently fails, and the first failure pins
+    // W_SUPPORTED=false for the process lifetime. All four argv shapes
+    // `copy_via_tmux_buffer` builds must store the payload verbatim.
+    let _server = ScopedServer::spawn();
+    for payload in ["-w hello", "- fix the login bug"] {
+        for with_clipboard in [true, false] {
+            let mut args: Vec<&str> = vec!["set-buffer"];
+            if with_clipboard {
+                args.push("-w");
+            }
+            args.push("--");
+            args.push(payload);
+            let status = Command::new("tmux")
+                .args(&args)
+                .status()
+                .expect("tmux set-buffer");
+            assert!(status.success(), "tmux {args:?} failed");
+            let out = Command::new("tmux")
+                .args(["show-buffer"])
+                .output()
+                .expect("tmux show-buffer");
+            assert_eq!(
+                String::from_utf8_lossy(&out.stdout).trim_end_matches('\n'),
+                payload,
+                "tmux {args:?} stored the wrong buffer"
+            );
+        }
+    }
+}
+
+#[test]
+#[ignore = "requires local tmux; mutates process-global env (run via make test-ignored)"]
+fn hook_sh_agy_alias_routes_to_the_bound_pane_without_tmux_pane() {
+    // M-hook-4 (audit 2026-11-25): a hand-wired `hook agy <event>` must
+    // resolve like `hook antigravity <event>`. @pane_agent is always
+    // written canonically, so pane resolution compares against
+    // "antigravity" — the raw alias used to match nothing and drop.
+    let server = ScopedServer::spawn();
+    let plugin = stage_plugin_dir();
+    set_pane_option(&server.pane, "@pane_agent", "antigravity");
+    set_pane_option(&server.pane, "@pane_session_id", "e2e-agy-session");
+
+    let (code, out) = run_hook_paneless(
+        plugin.path(),
+        "agy",
+        "activity-log",
+        r#"{"session_id":"e2e-agy-session","toolCall":{"name":"run_command","args":{"command":"ls"}}}"#,
+    );
+    assert_eq!(code, 0, "{out}");
+    assert_eq!(
+        pane_option(&server.pane, "@pane_status"),
+        "running",
+        "the agy alias must route the paneless event onto the bound pane"
+    );
+}

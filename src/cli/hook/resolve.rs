@@ -90,6 +90,13 @@ struct PaneRow {
 /// empty return means "drop the event" — either no session id to match
 /// on or no unambiguous pane.
 pub(crate) fn resolve_hook_pane(agent: &str, session_id: Option<&str>) -> (String, PaneRoute) {
+    // Normalize the alias (`agy` → `antigravity`) before the comparisons
+    // below: `pick_bound`/`pick_subagent` compare against `@pane_agent`,
+    // which is always written canonically, so a hand-wired
+    // `hook agy <event>` without `$TMUX_PANE` could otherwise never match
+    // a bound pane or a route entry (audit 2026-11-25 M-hook-4; the same
+    // fix `handle_activity_log` got per audit 2026-11-16 #6).
+    let agent = crate::event::canonical_agent_name(agent).unwrap_or(agent);
     if let Ok(pane) = std::env::var("TMUX_PANE")
         && !pane.is_empty()
     {
@@ -193,7 +200,15 @@ fn walk_to_pane(start_pid: u32, own_socket: &str) -> Option<String> {
         if current <= 1 {
             return None;
         }
-        let env = proc_environ(current)?;
+        let Some(env) = proc_environ(current) else {
+            // The process vanished or its environ is unreadable: fall
+            // through to the parent instead of aborting the walk — a
+            // vanished intermediate shim level must not end it when
+            // `proc_parent` can still reach the pane (audit 2026-11-25
+            // L-hook-6).
+            pid = proc_parent(current);
+            continue;
+        };
         let pane = env_value(&env, "TMUX_PANE").filter(|pane| !pane.is_empty());
         let matched = match pane {
             // `TMUX_PANE` without a `TMUX` socket cannot be validated —

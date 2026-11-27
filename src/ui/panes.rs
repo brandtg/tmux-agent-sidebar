@@ -95,10 +95,14 @@ impl PaneLayout {
 }
 
 /// Minimum agents-panel height the expanded Vercel-style spawn modal
-/// needs. Below this the popup falls back to a compact label-less
-/// layout to avoid clipping rows (the default 20-row bottom panel can
-/// leave only ~10 rows for the agents panel on short terminals).
-const SPAWN_MODAL_EXPANDED_MIN_HEIGHT: u16 = 12;
+/// needs: the content runs through the error/status row at inner
+/// offset 10, so the inner area needs 11 rows and the popup 13 total.
+/// Height 12 used to pick the expanded layout and then clamp the popup
+/// to an inner height of 10 — where the reserved error/status row never
+/// rendered, exactly where inline feedback matters most on a short
+/// terminal (audit 2026-11-25 L-UI-1) — so 12 now falls back to the
+/// compact layout.
+const SPAWN_MODAL_EXPANDED_MIN_HEIGHT: u16 = 13;
 
 /// Border rows contributed to the total popup height (top + bottom).
 const POPUP_BORDER_ROWS: u16 = 2;
@@ -574,13 +578,29 @@ pub(super) fn render_repo_popup(frame: &mut Frame, state: &mut AppState, area: R
     // The repo list: selection index maps to `repo_start_row + i`.
     let repo_start = row as u16;
     state.popup.set_repo_start(repo_start);
-    let visible_repo_rows = inner.height.saturating_sub(repo_start);
-    for (i, name) in repos.iter().enumerate() {
-        if i >= visible_repo_rows as usize {
-            break;
-        }
-
-        let is_highlighted = i == state.repo_popup_selected();
+    let visible_repo_rows = inner.height.saturating_sub(repo_start) as usize;
+    // A list longer than the window scrolls todo-style: the last row
+    // then carries the `N more ↓` indicator instead of a repo, so every
+    // repo stays reachable on a short sidebar (audit 2026-11-25 M-UI-3).
+    let list_rows = if repos.len() > visible_repo_rows {
+        visible_repo_rows.saturating_sub(1)
+    } else {
+        visible_repo_rows
+    };
+    // The renderer owns the scroll: clamp it to the list and keep the
+    // selection inside the window, so a popup opened on a filtered repo
+    // deep in the list lands with the selection visible.
+    let selected = state.repo_popup_selected();
+    let max_scroll = repos.len().saturating_sub(list_rows);
+    let mut scroll = state.repo_popup_scroll().min(max_scroll);
+    if selected < scroll {
+        scroll = selected;
+    } else if list_rows > 0 && selected >= scroll + list_rows {
+        scroll = selected + 1 - list_rows;
+    }
+    state.popup.set_repo_scroll(scroll);
+    for (i, name) in repos.iter().enumerate().skip(scroll).take(list_rows) {
+        let is_highlighted = i == selected;
         let is_current = match &state.global.repo_filter {
             RepoFilter::All => i == 0,
             RepoFilter::Repo(n) => *n == *name,
@@ -601,11 +621,45 @@ pub(super) fn render_repo_popup(frame: &mut Frame, state: &mut AppState, area: R
             Style::default().fg(theme.text_muted)
         };
 
-        let line_rect = Rect::new(inner.x, inner.y + repo_start + i as u16, inner.width, 1);
+        let line_rect = Rect::new(
+            inner.x,
+            inner.y + repo_start + (i - scroll) as u16,
+            inner.width,
+            1,
+        );
         frame.render_widget(
             Paragraph::new(Line::from(Span::styled(
                 format!("{}{}", text, padding),
                 style,
+            ))),
+            line_rect,
+        );
+    }
+
+    // The scroll indicator, in the row the list gave up: what the
+    // window hides above and below (same convention as the TODO
+    // panel's `↑1 · 1 more ↓`). Shown whenever the list overflowed —
+    // including at the bottom, where only the hidden head remains.
+    if list_rows > 0 && repos.len() > visible_repo_rows {
+        let above = scroll;
+        let below = repos.len() - (scroll + list_rows);
+        let indicator = match (above > 0, below > 0) {
+            (true, true) => format!(" ↑{above} · {below} more ↓"),
+            (true, false) => format!(" ↑{above}"),
+            (false, true) => format!(" {below} more ↓"),
+            (false, false) => String::new(),
+        };
+        let truncated = truncate_to_width(&indicator, inner_width.saturating_sub(1));
+        let line_rect = Rect::new(
+            inner.x,
+            inner.y + repo_start + list_rows as u16,
+            inner.width,
+            1,
+        );
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                truncated,
+                Style::default().fg(theme.text_muted),
             ))),
             line_rect,
         );
@@ -616,16 +670,25 @@ fn render_header_into(frame: &mut Frame, state: &mut AppState, area: Rect) {
     // The chyron overlays the toolbar while an event is alive; the
     // toolbar owns the row the rest of the time. Either way the row is
     // reserved, so the list never shifts.
+    //
+    // Both branches share the row geometry: the overview button owns
+    // the left columns and the menu button the right ones, so the
+    // banner's room is the row minus both. It is stamped every frame
+    // so the chyron's display-window math (state/chyron.rs) measures
+    // the width the banner actually renders at — measuring against the
+    // full row width closed the window before an overflowing banner
+    // finished scrolling (audit 2026-11-25 H-UI-1).
+    let button_w = (chyron::BUTTON_WIDTH as u16).min(area.width);
+    let overview_w = crate::state::OVERVIEW_BUTTON_WIDTH.min(area.width);
+    let banner_w = area
+        .width
+        .saturating_sub(button_w)
+        .saturating_sub(overview_w);
+    state.layout.banner_width = Some(banner_w);
     if let Some((banner_text, banner_kind)) = state.chyron.visible_banner(state) {
         // The banner leaves the overview button's left columns and the
         // menu button's corner free, so both stay visible — and
         // clickable — over it.
-        let button_w = (chyron::BUTTON_WIDTH as u16).min(area.width);
-        let overview_w = crate::state::OVERVIEW_BUTTON_WIDTH.min(area.width);
-        let banner_w = area
-            .width
-            .saturating_sub(button_w)
-            .saturating_sub(overview_w);
         if banner_w > 0
             && let Some(line) = chyron::render_chyron(state, &banner_text, banner_kind, banner_w)
         {
@@ -641,15 +704,11 @@ fn render_header_into(frame: &mut Frame, state: &mut AppState, area: Rect) {
         frame.render_widget(Paragraph::new(vec![button_line]), button_area);
         // Same contract as the toolbar branch: the click column is
         // width - button width. Written on chyron frames too so a
-        // first-frame banner still leaves the button clickable. The
-        // width feeds the ticker's display-window math (the scroll
-        // must finish before the close).
+        // first-frame banner still leaves the button clickable.
         state.layout.menu_button_col = Some(area.width.saturating_sub(button_w));
-        state.layout.header_width = Some(area.width);
     } else {
         let (line, menu_btn_col) = chyron::render_secondary_header(state, area.width);
         state.layout.menu_button_col = menu_btn_col;
-        state.layout.header_width = Some(area.width);
         frame.render_widget(Paragraph::new(vec![line]), area);
     }
 }
@@ -678,7 +737,19 @@ fn compute_scroll_offset(state: &mut AppState, total_lines: usize, list_area: Re
         if let (Some(first), Some(last)) = (first_line, last_line) {
             let visible_h = list_area.height as usize;
             let offset = state.scrolls.panes.offset;
-            if first < offset {
+            let row_height = last - first + 1;
+            if row_height > visible_h {
+                // A row taller than the viewport cannot satisfy both
+                // anchors: the old two-branch logic alternated top- and
+                // bottom-anchoring every frame — the viewport ping-ponged
+                // at ~5 Hz while the cursor rested on the tall row (audit
+                // 2026-11-25 M-UI-1). Bring the row in from whichever
+                // side it is fully off-screen, then leave the user's
+                // wheel alone while any part of it is visible.
+                if last < offset || first >= offset + visible_h {
+                    state.scrolls.panes.offset = first.saturating_sub(1);
+                }
+            } else if first < offset {
                 state.scrolls.panes.offset = first.saturating_sub(1);
             } else if last >= offset + visible_h {
                 state.scrolls.panes.offset = (last + 1).saturating_sub(visible_h);
@@ -702,7 +773,7 @@ fn render_pane_rows(
 fn render_flash_banner_into(frame: &mut Frame, state: &mut AppState, area: Rect) {
     // Render flash banner (spawn / remove feedback) before popups so
     // popups stay on top.
-    if let Some(text) = state.take_flash() {
+    if let Some((kind, text)) = state.take_flash() {
         let flash_y = area.y + area.height.saturating_sub(1);
         let flash_rect = Rect::new(area.x, flash_y, area.width, 1);
         // Record where the banner painted so click routing can keep the
@@ -712,10 +783,11 @@ fn render_flash_banner_into(frame: &mut Frame, state: &mut AppState, area: Rect)
         frame.render_widget(Clear, flash_rect);
         paint_background(frame, &state.theme, flash_rect);
         let theme = &state.theme;
-        let color = if text.contains("failed") {
-            theme.status_error
-        } else {
-            theme.accent
+        // Severity travels with the message from the reporter (audit
+        // 2026-11-25 L-UI-3) — no substring sniffing.
+        let color = match kind {
+            crate::state::FlashKind::Error => theme.status_error,
+            crate::state::FlashKind::Info => theme.accent,
         };
         frame.render_widget(
             Paragraph::new(Line::from(Span::styled(text, Style::default().fg(color)))),
