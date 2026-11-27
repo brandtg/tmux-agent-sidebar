@@ -22,6 +22,13 @@
 //! done/waiting state) overrides with its own ramp, so a finished turn
 //! flashes in the popup exactly as it does in the sidebar.
 //!
+//! Rows are two-level like the sidebar's: the identity line (status
+//! icon, agent, repo/worktree, session title, right-aligned elapsed)
+//! plus the last prompt word-wrapped underneath it. A left click on a
+//! row jumps straight to its pane — the sidebar's one-click agent-row
+//! convention (click = activate; the popup closes either way) — and the
+//! wheel steps the selection like the arrows.
+//!
 //! Ordering is recency-first so `<key> <enter> <key> <enter>` bounces
 //! between the two agents you are working in, alt-tab style. Every jump
 //! is recorded in the `@sidebar_switch_mru` global option (most recent
@@ -40,17 +47,20 @@
 
 use std::collections::HashSet;
 use std::io;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crossterm::{
-    event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers},
+    event::{
+        self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEvent, KeyEventKind,
+        KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
+    },
     execute,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
 use ratatui::{
     Frame, Terminal,
     backend::CrosstermBackend,
-    layout::{Constraint, Direction, Layout, Position, Rect},
+    layout::{Position, Rect},
     style::{Color, Style},
     text::{Line, Span},
     widgets::{Block, Paragraph},
@@ -61,7 +71,7 @@ use crate::line_edit::LineEdit;
 use crate::tmux::{self, AgentType, PaneAttention, PaneInfo, PaneStatus};
 use crate::ui::colors::ColorTheme;
 use crate::ui::icons::StatusIcons;
-use crate::ui::text::display_width;
+use crate::ui::text::{display_width, elapsed_label, wrap_text};
 
 /// How often the pane snapshot rebuilds while the switcher is open. A
 /// quick switcher is a seconds-long interaction; one spawn a second keeps
@@ -74,6 +84,15 @@ const REFRESH: Duration = Duration::from_millis(1000);
 /// in both surfaces. Redrawing is cheap — no tmux spawns in the draw
 /// path; the snapshot spawn keeps the [`REFRESH`] cadence.
 const PULSE_TICK: Duration = Duration::from_millis(200);
+
+/// Detail-line indent: the wrapped prompt lines align under the agent
+/// label, one icon + gap in (`●  `).
+const PROMPT_INDENT: usize = 3;
+/// Wrapped prompt lines per entry past the identity line. A cap keeps
+/// one chatty prompt from pushing every other agent off the popup —
+/// "a little bit" of wrap, not the whole transcript; the shared
+/// [`wrap_text`] puts its ellipsis on the cut line.
+const PROMPT_MAX_LINES: usize = 2;
 
 /// Popup geometry defaults: compact and centered (tmux centers when -x/-y
 /// are omitted). A quick switcher is a dialog, not a dashboard — the
@@ -104,6 +123,9 @@ struct SwitchEntry {
     /// done/waiting flash, exactly like the sidebar's rows.
     attention: PaneAttention,
     agent: AgentType,
+    /// Turn start epoch seconds, for the identity line's right-aligned
+    /// elapsed label (the sidebar status row's shape).
+    started_at: Option<u64>,
     /// Repo basename, plus the worktree name in parens when the pane has
     /// one — the same identity the sidebar's row leads with.
     repo_label: String,
@@ -166,6 +188,7 @@ fn entry_from_info(info: &PaneInfo) -> SwitchEntry {
         status: info.status.clone(),
         attention: info.attention,
         agent: info.agent.clone(),
+        started_at: info.started_at,
         repo_label,
         title,
         prompt,
@@ -499,6 +522,64 @@ fn handle_key(state: &mut SwitchState, key: KeyEvent) -> KeyOutcome {
     }
 }
 
+// ─── Mouse ───────────────────────────────────────────────────────────────────
+
+/// A left click on a results row jumps straight to its pane — the
+/// sidebar's one-click agent-row convention (layout.rs routes a pane-row
+/// click to activate_selected_pane), not the overview's two-step
+/// select-then-activate: the popup closes on jump either way, so a
+/// stray click costs no more than a stray Enter. Clicks anywhere else
+/// (query line, hints, border) are inert.
+fn handle_click(
+    state: &mut SwitchState,
+    term_w: u16,
+    term_h: u16,
+    column: u16,
+    row: u16,
+) -> KeyOutcome {
+    let area = results_area(Rect::new(0, 0, term_w, term_h));
+    if area.width == 0
+        || area.height == 0
+        || column < area.x
+        || column >= area.x + area.width
+        || row < area.y
+        || row >= area.y + area.height
+    {
+        return KeyOutcome::Continue;
+    }
+    let y = (row - area.y) as usize;
+    for (pos, y0, h) in visible_layout(state, area.width as usize, area.height as usize) {
+        if y >= y0 && y < y0 + h {
+            return KeyOutcome::Jump(state.entries[state.ranked[pos].0].pane_id.clone());
+        }
+    }
+    KeyOutcome::Continue
+}
+
+/// Mouse events: left click jumps, the wheel steps the selection — the
+/// same ±1 move the arrow keys write, clamped at the ends.
+fn handle_mouse(
+    state: &mut SwitchState,
+    mouse: MouseEvent,
+    term_w: u16,
+    term_h: u16,
+) -> KeyOutcome {
+    match mouse.kind {
+        MouseEventKind::Down(MouseButton::Left) => {
+            handle_click(state, term_w, term_h, mouse.column, mouse.row)
+        }
+        MouseEventKind::ScrollUp => {
+            state.move_selection(-1);
+            KeyOutcome::Continue
+        }
+        MouseEventKind::ScrollDown => {
+            state.move_selection(1);
+            KeyOutcome::Continue
+        }
+        _ => KeyOutcome::Continue,
+    }
+}
+
 // ─── Rendering ───────────────────────────────────────────────────────────────
 
 fn draw(
@@ -507,6 +588,7 @@ fn draw(
     theme: &ColorTheme,
     icons: &StatusIcons,
     spinner_frame: usize,
+    now: u64,
 ) {
     let area = f.area();
     if area.width < 8 || area.height < 4 {
@@ -519,20 +601,51 @@ fn draw(
     let inner = block.inner(area);
     f.render_widget(block, area);
 
-    let rows = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(1), // query line
-            Constraint::Fill(1),   // results
-            Constraint::Length(1), // key hints
-        ])
-        .split(inner);
+    let query_area = Rect {
+        x: inner.x,
+        y: inner.y,
+        width: inner.width,
+        height: 1,
+    };
+    let hints_area = Rect {
+        x: inner.x,
+        y: inner.y + inner.height.saturating_sub(1),
+        width: inner.width,
+        height: 1,
+    };
 
-    draw_input(f, state, rows[0], theme);
-    draw_results(f, state, rows[1], theme, icons, spinner_frame);
-    let hints = Paragraph::new("↑↓ select · enter switch · esc close")
+    draw_input(f, state, query_area, theme);
+    draw_results(
+        f,
+        state,
+        results_area(area),
+        theme,
+        icons,
+        spinner_frame,
+        now,
+    );
+    let hints = Paragraph::new("↑↓ select · click/enter jump · esc close")
         .style(Style::default().fg(theme.text_muted));
-    f.render_widget(hints, rows[2]);
+    f.render_widget(hints, hints_area);
+}
+
+/// The results window inside the popup frame: the bordered block minus
+/// the query line (top) and the hints row (bottom). Shared by the draw
+/// path and the mouse handler so a click maps onto exactly what was
+/// rendered — the same geometry draw's block + hand-split rows produce.
+fn results_area(term: Rect) -> Rect {
+    let inner = Rect {
+        x: term.x + 1,
+        y: term.y + 1,
+        width: term.width.saturating_sub(2),
+        height: term.height.saturating_sub(2),
+    };
+    Rect {
+        x: inner.x,
+        y: inner.y + 1,
+        width: inner.width,
+        height: inner.height.saturating_sub(2),
+    }
 }
 
 /// The query line: a muted `> ` prompt glyph, the query text, and the
@@ -571,6 +684,7 @@ fn draw_results(
     theme: &ColorTheme,
     icons: &StatusIcons,
     spinner_frame: usize,
+    now: u64,
 ) {
     if area.height == 0 {
         return;
@@ -587,40 +701,105 @@ fn draw_results(
         );
         return;
     }
-    // Stateless scroll window: slide only when the selection leaves the
-    // visible rows, so ordinary ↑/↓ moves never shift the whole list.
+    let width = area.width as usize;
     let height = area.height as usize;
-    let selected = state.selected;
-    let offset = selected.saturating_sub(height.saturating_sub(1));
-    for (row, (entry_idx, _)) in state.ranked.iter().enumerate().skip(offset).take(height) {
-        let entry = &state.entries[*entry_idx];
-        let is_selected = row == selected;
+    for (pos, y, h) in visible_layout(state, width, height) {
+        let entry = &state.entries[state.ranked[pos].0];
+        let is_selected = pos == state.selected;
         let bg = is_selected.then_some(theme.selection_bg);
-        let line = entry_line(entry, area.width as usize, theme, icons, bg, spinner_frame);
-        f.render_widget(
-            Paragraph::new(line),
-            Rect {
-                x: area.x,
-                y: area.y + (row - offset) as u16,
-                width: area.width,
-                height: 1,
-            },
-        );
+        for (li, line) in entry_lines(entry, width, theme, icons, bg, spinner_frame, now)
+            .into_iter()
+            .enumerate()
+        {
+            if li >= h {
+                break;
+            }
+            let row_y = y + li;
+            if row_y >= height {
+                break;
+            }
+            f.render_widget(
+                Paragraph::new(line),
+                Rect {
+                    x: area.x,
+                    y: area.y + row_y as u16,
+                    width: area.width,
+                    height: 1,
+                },
+            );
+        }
     }
 }
 
-/// One result row: status icon, agent, repo (with worktree), session
-/// title, prompt excerpt — left to right, truncated at the row edge with
-/// an ellipsis on the field that crosses it. The selection bar is a row-
-/// wide background, so the line pads out to the full width.
-fn entry_line(
+/// The entries visible in the results window: (ranked position, y
+/// offset, height) from the scroll offset down. The offset is the
+/// stateless minimum that keeps the selection fully inside the window —
+/// the list stays anchored at the top until the selection would run off
+/// the bottom (the same convention the one-line list used). An entry
+/// taller than the window still starts at the offset and clips below.
+fn visible_layout(state: &SwitchState, width: usize, height: usize) -> Vec<(usize, usize, usize)> {
+    if state.ranked.is_empty() {
+        return Vec::new();
+    }
+    let heights: Vec<usize> = state
+        .ranked
+        .iter()
+        .map(|(i, _)| entry_height(&state.entries[*i], width))
+        .collect();
+    let mut prefix = vec![0usize; heights.len() + 1];
+    for (i, h) in heights.iter().enumerate() {
+        prefix[i + 1] = prefix[i] + h;
+    }
+    let sel_end = prefix[state.selected + 1];
+    let mut offset = 0usize;
+    while offset < state.selected && sel_end - prefix[offset] > height {
+        offset += 1;
+    }
+    let mut layout = Vec::new();
+    let mut y = 0usize;
+    for (pos, h) in heights.iter().enumerate().skip(offset) {
+        if y >= height {
+            break;
+        }
+        layout.push((pos, y, *h));
+        y += h;
+    }
+    layout
+}
+
+/// Wrapped prompt detail pieces for one entry: the last prompt/response
+/// (whitespace-collapsed at snapshot time) word-wrapped to the indented
+/// width, capped at [`PROMPT_MAX_LINES`] with wrap_text's ellipsis on
+/// the cut. Empty when the entry has no captured text or the popup is
+/// too narrow to indent into.
+fn detail_pieces(entry: &SwitchEntry, width: usize) -> Vec<String> {
+    let wrap_width = width.saturating_sub(PROMPT_INDENT);
+    if entry.prompt.is_empty() || wrap_width == 0 {
+        return Vec::new();
+    }
+    wrap_text(&entry.prompt, wrap_width, PROMPT_MAX_LINES)
+}
+
+/// Rendered height of one entry: the identity line plus its wrapped
+/// detail lines. Drives the scroll window and the click mapping — it
+/// must agree with [`entry_lines`] line for line.
+fn entry_height(entry: &SwitchEntry, width: usize) -> usize {
+    1 + detail_pieces(entry, width).len()
+}
+
+/// One entry's rendered lines: the identity row (status icon, agent,
+/// repo/worktree, session title, right-aligned elapsed) plus the
+/// wrapped prompt detail rows. The selection bar is a row-wide
+/// background, so every line pads out to the full width.
+fn entry_lines(
     entry: &SwitchEntry,
     width: usize,
     theme: &ColorTheme,
     icons: &StatusIcons,
     bg: Option<Color>,
     spinner_frame: usize,
-) -> Line<'static> {
+    now: u64,
+) -> Vec<Line<'static>> {
     // Icon color mirrors the sidebar's status row (ui::panes::row::status):
     // a Running entry rides the spinner pulse, an attention flag overrides
     // with its own ramp (Done breathes green, Notification holds the
@@ -650,10 +829,6 @@ fn entry_line(
         pieces.push(("  ".to_string(), Style::default()));
         pieces.push((entry.title.clone(), Style::default().fg(theme.text_active)));
     }
-    if !entry.prompt.is_empty() {
-        pieces.push(("  ".to_string(), Style::default()));
-        pieces.push((entry.prompt.clone(), Style::default().fg(theme.text_muted)));
-    }
 
     let mut used = 0usize;
     let mut spans = Vec::new();
@@ -674,6 +849,26 @@ fn entry_line(
             used = width;
         }
     }
+    // Right-aligned elapsed label, the sidebar status row's shape:
+    // active statuses bright, the rest muted. Dropped when the identity
+    // fields ran to the edge or no one-column gap can separate them.
+    if used < width {
+        let elapsed = elapsed_label(entry.started_at, now);
+        let elapsed_w = display_width(&elapsed);
+        if elapsed_w > 0 && elapsed_w < width - used {
+            let fg = if entry.status.is_active() {
+                theme.text_active
+            } else {
+                theme.text_muted
+            };
+            spans.push(Span::styled(
+                " ".repeat(width - used - elapsed_w),
+                Style::default(),
+            ));
+            spans.push(Span::styled(elapsed, Style::default().fg(fg)));
+            used = width;
+        }
+    }
     if used < width {
         spans.push(Span::styled(" ".repeat(width - used), Style::default()));
     }
@@ -681,7 +876,27 @@ fn entry_line(
     if let Some(bg) = bg {
         style = style.bg(bg);
     }
-    Line::from(spans).style(style)
+    let mut lines = vec![Line::from(spans).style(style)];
+
+    // The wrapped prompt underneath, indented to the agent column. The
+    // indent span carries the selection bg too, so the bar stays solid
+    // across the detail rows.
+    for piece in detail_pieces(entry, width) {
+        let text_w = PROMPT_INDENT + display_width(&piece);
+        let mut spans = vec![
+            Span::styled(" ".repeat(PROMPT_INDENT), Style::default()),
+            Span::styled(piece, Style::default().fg(theme.text_muted)),
+        ];
+        if text_w < width {
+            spans.push(Span::styled(" ".repeat(width - text_w), Style::default()));
+        }
+        let mut style = Style::default();
+        if let Some(bg) = bg {
+            style = style.bg(bg);
+        }
+        lines.push(Line::from(spans).style(style));
+    }
+    lines
 }
 
 /// Cut `text` to at most `room` display columns, ending in an ellipsis,
@@ -729,7 +944,7 @@ fn run_tui() -> io::Result<i32> {
     let icons = StatusIcons::from_tmux();
     enable_raw_mode()?;
     let result = (|| -> io::Result<i32> {
-        execute!(io::stdout(), EnterAlternateScreen)?;
+        execute!(io::stdout(), EnterAlternateScreen, EnableMouseCapture)?;
         let backend = CrosstermBackend::new(io::stdout());
         let mut terminal = Terminal::new(backend)?;
 
@@ -762,33 +977,41 @@ fn run_tui() -> io::Result<i32> {
             // The pulse rides wall-clock time, so the ramp stays in phase
             // no matter when a keystroke last woke the loop.
             let spinner_frame = (started.elapsed().as_millis() / PULSE_TICK.as_millis()) as usize;
-            terminal.draw(|f| draw(f, &state, &theme, &icons, spinner_frame))?;
+            let now = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0);
+            terminal.draw(|f| draw(f, &state, &theme, &icons, spinner_frame, now))?;
 
             if event::poll(PULSE_TICK)? {
-                match event::read()? {
+                let outcome = match event::read()? {
                     Event::Key(key) if key.kind == KeyEventKind::Press => {
-                        match handle_key(&mut state, key) {
-                            KeyOutcome::Continue => {}
-                            KeyOutcome::Quit => return Ok(0),
-                            KeyOutcome::Jump(pane_id) => {
-                                // Recency first (best-effort write), then
-                                // the jump: the popup closes as this
-                                // process exits (`-E`) and the invoking
-                                // client lands on the pane — the
-                                // overview's `f` path does the same.
-                                state.record_jump(&pane_id);
-                                tmux::select_pane(&pane_id);
-                                return Ok(0);
-                            }
-                        }
+                        handle_key(&mut state, key)
                     }
-                    _ => {}
+                    Event::Mouse(mouse) => {
+                        let size = terminal.size()?;
+                        handle_mouse(&mut state, mouse, size.width, size.height)
+                    }
+                    _ => KeyOutcome::Continue,
+                };
+                match outcome {
+                    KeyOutcome::Continue => {}
+                    KeyOutcome::Quit => return Ok(0),
+                    KeyOutcome::Jump(pane_id) => {
+                        // Recency first (best-effort write), then the
+                        // jump: the popup closes as this process exits
+                        // (`-E`) and the invoking client lands on the
+                        // pane — the overview's `f` path does the same.
+                        state.record_jump(&pane_id);
+                        tmux::select_pane(&pane_id);
+                        return Ok(0);
+                    }
                 }
             }
         }
     })();
 
-    execute!(io::stdout(), LeaveAlternateScreen)?;
+    execute!(io::stdout(), LeaveAlternateScreen, DisableMouseCapture)?;
     disable_raw_mode()?;
     result
 }
@@ -992,7 +1215,7 @@ mod tests {
         let backend = TestBackend::new(w, h);
         let mut terminal = Terminal::new(backend).unwrap();
         terminal
-            .draw(|f| draw(f, state, &theme, &icons, frame))
+            .draw(|f| draw(f, state, &theme, &icons, frame, 0))
             .unwrap();
         buffer_to_string(terminal.backend().buffer())
     }
@@ -1005,7 +1228,7 @@ mod tests {
         let backend = TestBackend::new(80, 10);
         let mut terminal = Terminal::new(backend).unwrap();
         terminal
-            .draw(|f| draw(f, state, &theme, &icons, frame))
+            .draw(|f| draw(f, state, &theme, &icons, frame, 0))
             .unwrap();
         terminal.backend().buffer()[(1, 2)].fg
     }
@@ -1444,13 +1667,13 @@ mod tests {
         assert_snapshot!(render_frame(&state, 80, 10), @"
         ┌ switch ──────────────────────────────────────────────────────────────────────┐
         │>                                                                             │
-        │●  claude  project  fix the switcher  add a quick switcher                    │
+        │●  claude  project  fix the switcher                                          │
+        │   add a quick switcher                                                       │
         │○  codex  other-repo (wt)  build                                              │
         │                                                                              │
         │                                                                              │
         │                                                                              │
-        │                                                                              │
-        │↑↓ select · enter switch · esc close                                          │
+        │↑↓ select · click/enter jump · esc close                                      │
         └──────────────────────────────────────────────────────────────────────────────┘
         ");
     }
@@ -1473,7 +1696,7 @@ mod tests {
         │                                                                              │
         │                                                                              │
         │                                                                              │
-        │↑↓ select · enter switch · esc close                                          │
+        │↑↓ select · click/enter jump · esc close                                      │
         └──────────────────────────────────────────────────────────────────────────────┘
         ");
     }
@@ -1488,7 +1711,7 @@ mod tests {
         │> zzzz                                │
         │no match                              │
         │                                      │
-        │↑↓ select · enter switch · esc close  │
+        │↑↓ select · click/enter jump · esc clo│
         └──────────────────────────────────────┘
         ");
     }
@@ -1501,7 +1724,7 @@ mod tests {
         │>                                     │
         │no agent panes                        │
         │                                      │
-        │↑↓ select · enter switch · esc close  │
+        │↑↓ select · click/enter jump · esc clo│
         └──────────────────────────────────────┘
         ");
     }
@@ -1516,8 +1739,8 @@ mod tests {
         ┌ switch ──────────────────────────────────────────────────┐
         │>                                                         │
         │●  claude  project  a very long session title that keeps… │
-        │                                                          │
-        │↑↓ select · enter switch · esc close                      │
+        │   and a long prompt after it too                         │
+        │↑↓ select · click/enter jump · esc close                  │
         └──────────────────────────────────────────────────────────┘
         ");
     }
@@ -1587,8 +1810,132 @@ mod tests {
         │                                                                              │
         │                                                                              │
         │                                                                              │
-        │↑↓ select · enter switch · esc close                                          │
+        │↑↓ select · click/enter jump · esc close                                      │
         └──────────────────────────────────────────────────────────────────────────────┘
+        ");
+    }
+
+    // ─── two-line rows ───────────────────────────────────────────────
+
+    #[test]
+    fn entry_height_counts_detail_lines() {
+        // No prompt: identity line only.
+        assert_eq!(entry_height(&entry("%1"), 80), 1);
+        // A short prompt wraps to one detail line.
+        let mut info = make_info(AgentType::Claude, PaneStatus::Running, "%1");
+        info.prompt = "short prompt".into();
+        assert_eq!(entry_height(&entry_from_info(&info), 80), 2);
+        // A long one caps at PROMPT_MAX_LINES detail rows.
+        info.prompt = "word ".repeat(60);
+        assert_eq!(
+            entry_height(&entry_from_info(&info), 80),
+            1 + PROMPT_MAX_LINES
+        );
+    }
+
+    #[test]
+    fn results_area_matches_the_frame_geometry() {
+        // draw's block + query/hints rows: the results window starts two
+        // rows down and ends two above the bottom — the icon cell the
+        // color helpers read is (1, 2).
+        assert_eq!(
+            results_area(Rect::new(0, 0, 80, 10)),
+            Rect {
+                x: 1,
+                y: 2,
+                width: 78,
+                height: 6
+            }
+        );
+    }
+
+    // ─── mouse ───────────────────────────────────────────────────────
+
+    #[test]
+    fn click_maps_a_row_to_its_pane() {
+        let mut a = make_info(AgentType::Claude, PaneStatus::Running, "%1");
+        a.prompt = "first prompt".into();
+        let mut b = make_info(AgentType::Codex, PaneStatus::Idle, "%2");
+        b.prompt = "second prompt".into();
+        let mut s = state(vec![entry_from_info(&a), entry_from_info(&b)]);
+        // At 80x10 the results window is rows 2..8; %1 spans rows 2-3
+        // (identity + detail), %2 rows 4-5. Any line of an entry jumps
+        // to it.
+        assert_eq!(
+            handle_click(&mut s, 80, 10, 5, 2),
+            KeyOutcome::Jump("%1".into())
+        );
+        assert_eq!(
+            handle_click(&mut s, 80, 10, 5, 3),
+            KeyOutcome::Jump("%1".into())
+        );
+        assert_eq!(
+            handle_click(&mut s, 80, 10, 5, 4),
+            KeyOutcome::Jump("%2".into())
+        );
+        // Query line, hints row, and the border column are inert.
+        assert_eq!(handle_click(&mut s, 80, 10, 5, 1), KeyOutcome::Continue);
+        assert_eq!(handle_click(&mut s, 80, 10, 5, 8), KeyOutcome::Continue);
+        assert_eq!(handle_click(&mut s, 80, 10, 0, 2), KeyOutcome::Continue);
+    }
+
+    #[test]
+    fn wheel_steps_the_selection() {
+        let mut s = state(vec![entry("%1"), entry("%2")]);
+        let ev = |kind| MouseEvent {
+            kind,
+            column: 0,
+            row: 0,
+            modifiers: KeyModifiers::NONE,
+        };
+        handle_mouse(&mut s, ev(MouseEventKind::ScrollDown), 80, 10);
+        assert_eq!(s.selected, 1);
+        handle_mouse(&mut s, ev(MouseEventKind::ScrollUp), 80, 10);
+        assert_eq!(s.selected, 0);
+        // Clamped at the top, like the arrow keys.
+        handle_mouse(&mut s, ev(MouseEventKind::ScrollUp), 80, 10);
+        assert_eq!(s.selected, 0);
+    }
+
+    // ─── scroll window ───────────────────────────────────────────────
+
+    #[test]
+    fn scroll_offset_keeps_the_selection_visible() {
+        // Heights 2 + 1 + 1 in a 3-line window: selecting %3 must scroll
+        // past %1 so %3 fits; %2 and %3 render at the top.
+        let mut a = make_info(AgentType::Claude, PaneStatus::Running, "%1");
+        a.prompt = "first prompt".into();
+        let mut s = SwitchState::new(
+            vec![entry_from_info(&a), entry("%2"), entry("%3")],
+            Vec::new(),
+            None,
+        );
+        s.move_selection(2);
+        let layout = visible_layout(&s, 80, 3);
+        let poss: Vec<usize> = layout.iter().map(|(p, _, _)| *p).collect();
+        assert_eq!(poss, vec![1, 2]);
+        assert_eq!(layout[0], (1, 0, 1));
+        assert_eq!(layout[1], (2, 1, 1));
+        // Selection inside the window from the top: no scrolling.
+        let s2 = SwitchState::new(vec![entry_from_info(&a), entry("%2")], Vec::new(), None);
+        assert_eq!(visible_layout(&s2, 80, 10), vec![(0, 0, 2), (1, 2, 1)]);
+    }
+
+    #[test]
+    fn snapshot_wrapped_prompt_shows_two_detail_lines() {
+        let mut claude = make_info(AgentType::Claude, PaneStatus::Running, "%1");
+        claude.session_name = "long turn".into();
+        claude.prompt = "alpha beta gamma delta epsilon zeta eta theta iota kappa".into();
+        let state = state(vec![entry_from_info(&claude)]);
+        assert_snapshot!(render_frame(&state, 40, 8), @"
+        ┌ switch ──────────────────────────────┐
+        │>                                     │
+        │●  claude  project  long turn         │
+        │   alpha beta gamma delta epsilon     │
+        │   zeta eta theta iota kappa          │
+        │                                      │
+        │↑↓ select · click/enter jump · esc clo│
+        └──────────────────────────────────────┘
         ");
     }
 
