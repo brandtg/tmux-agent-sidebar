@@ -1,6 +1,6 @@
 [package]
 name = "tmux-agent-sidebar"
-version = "1.5.3"
+version = "1.6.0"
 edition = "2024"
 rust-version = "1.85"
 license = "MIT"
