@@ -17,6 +17,16 @@
 //! an index would silently move it onto a different agent, the lesson the
 //! overview's grid learned first.
 //!
+//! Ordering is recency-first so `<key> <enter> <key> <enter>` bounces
+//! between the two agents you are working in, alt-tab style. Every jump
+//! is recorded in the `@sidebar_switch_mru` global option (most recent
+//! first, capped); on open the list sorts by that recency (never-jumped
+//! panes keep tmux order behind them) and the default selection is the
+//! first entry that is not the pane you are on — the "last agent". With
+//! a query typed, ranking is relevance instead (recency is no opinion
+//! about what you are searching for), and clearing the query falls back
+//! to the recency default.
+//!
 //! Keys: type to filter, ↑/↓ (or Ctrl-N/Ctrl-P) to move, Enter to jump —
 //! the popup closes and the invoking client lands on the pane — Esc or
 //! Ctrl-C to leave without jumping. Line editing is the shared
@@ -52,11 +62,25 @@ use crate::ui::text::display_width;
 /// statuses and the agent set honest without the overview's drive cadence.
 const REFRESH: Duration = Duration::from_millis(1000);
 
-/// Popup geometry: compact and centered (tmux centers when -x/-y are
-/// omitted). A quick switcher is a dialog, not a dashboard — the overview
-/// owns the fullscreen end of the spectrum.
-const POPUP_WIDTH: &str = "80%";
-const POPUP_HEIGHT: &str = "60%";
+/// Popup geometry defaults: compact and centered (tmux centers when -x/-y
+/// are omitted). A quick switcher is a dialog, not a dashboard — the
+/// overview owns the fullscreen end of the spectrum. Overridable with the
+/// `@sidebar_switch_width` / `@sidebar_switch_height` global options
+/// (tmux popup size strings: percentages or column/row counts).
+const POPUP_WIDTH_DEFAULT: &str = "80%";
+const POPUP_HEIGHT_DEFAULT: &str = "60%";
+const SWITCH_WIDTH_OPTION: &str = "@sidebar_switch_width";
+const SWITCH_HEIGHT_OPTION: &str = "@sidebar_switch_height";
+
+/// The switcher's own recency memory: a global option holding the jumped-
+/// to pane ids, most recent first. Only switcher jumps write it — manual
+/// tmux movement is not tracked — but the alt-tab default selection reads
+/// the pane you are actually on from tmux, so the flow survives manual
+/// movement between switcher uses.
+const MRU_OPTION: &str = "@sidebar_switch_mru";
+/// Cap on stored recency entries: pane ids are a few bytes each; 32
+/// covers any real agent set and keeps the option trivially small.
+const MRU_MAX: usize = 32;
 
 /// One agent pane as the switcher sees it: the identity the jump needs
 /// (the pane id) plus the searchable and renderable text.
@@ -133,9 +157,9 @@ fn entry_from_info(info: &PaneInfo) -> SwitchEntry {
 }
 
 /// One fresh `list-panes -a` pass, flattened to agent entries in tmux's
-/// own session → window → pane order (the same order an empty query
-/// shows, so the list matches the sidebar's mental map). `None` when the
-/// listing spawn failed — the caller keeps its previous frame.
+/// own session → window → pane order (recency re-orders it in
+/// [`SwitchState::refresh`]). `None` when the listing spawn failed — the
+/// caller keeps its previous frame.
 fn collect_entries() -> Option<Vec<SwitchEntry>> {
     let listing = tmux::fetch_pane_listing()?;
     let process_snapshot = tmux::process_snapshot_for_panes(&listing);
@@ -157,6 +181,34 @@ fn collect_entries() -> Option<Vec<SwitchEntry>> {
         }
     }
     Some(entries)
+}
+
+// ─── Recency (MRU) memory ────────────────────────────────────────────────────
+
+/// Read the jump-recency list from the global option. Empty when unset —
+/// a fresh install, or any session the switcher has not jumped in yet.
+fn load_mru() -> Vec<String> {
+    tmux::run_tmux(&["show-options", "-gv", MRU_OPTION])
+        .map(|out| out.split_whitespace().map(str::to_string).collect())
+        .unwrap_or_default()
+}
+
+/// Persist the recency list, most recent first. Best-effort: a failed
+/// write only degrades the next open's default ordering.
+fn save_mru(mru: &[String]) {
+    if mru.is_empty() {
+        return;
+    }
+    let joined = mru.join(" ");
+    let _ = tmux::run_tmux(&["set", "-g", MRU_OPTION, &joined]);
+}
+
+/// Record a jump: the target moves to the front, duplicates collapse,
+/// and the list keeps its cap.
+fn push_mru(mru: &mut Vec<String>, pane_id: &str) {
+    mru.retain(|id| id != pane_id);
+    mru.insert(0, pane_id.to_string());
+    mru.truncate(MRU_MAX);
 }
 
 // ─── Fuzzy matching ──────────────────────────────────────────────────────────
@@ -220,27 +272,41 @@ fn fuzzy_score(query: &[char], target: &[char]) -> Option<i64> {
 /// Query, entries, and the ranked view between them. `ranked` holds
 /// `(entry index, score)` sorted score-descending; `selected` indexes
 /// into `ranked`.
+///
+/// `entries` is kept in recency order (see [`SwitchState::refresh`]), so
+/// an empty query — every entry matches at score 0 — displays the MRU
+/// order; a typed query re-ranks by relevance on top of it.
 struct SwitchState {
     query: LineEdit,
     entries: Vec<SwitchEntry>,
     ranked: Vec<(usize, i64)>,
     selected: usize,
+    /// The pane the user is on right now (resolved before the TUI
+    /// started). The empty-query default selection skips it — jumping
+    /// there would be a no-op — which is what makes `<key> <enter>`
+    /// mean "go to the last agent".
+    current_pane: Option<String>,
+    /// Jump recency, most recent first. Orders the list on open and is
+    /// rewritten on every jump.
+    mru: Vec<String>,
 }
 
 impl SwitchState {
-    fn new(entries: Vec<SwitchEntry>) -> Self {
+    fn new(entries: Vec<SwitchEntry>, mru: Vec<String>, current_pane: Option<String>) -> Self {
         let mut state = Self {
             query: LineEdit::new(),
-            entries,
+            entries: Vec::new(),
             ranked: Vec::new(),
             selected: 0,
+            current_pane,
+            mru,
         };
-        state.requery();
+        state.refresh(entries);
         state
     }
 
-    /// Re-rank against the current query. Ties keep collection order (the
-    /// sort is stable), so an empty query lists panes in tmux order.
+    /// Re-rank against the current query. Ties keep entry order (the
+    /// sort is stable), so an empty query displays the recency order.
     fn requery(&mut self) {
         let query: Vec<char> = self.query.chars().to_vec();
         let mut ranked: Vec<(usize, i64)> = self
@@ -253,11 +319,30 @@ impl SwitchState {
         self.ranked = ranked;
     }
 
-    /// The query changed: re-rank and reset the selection to the top —
-    /// the old selection has no meaning against a new result set.
+    /// The query changed: re-rank and reselect. A typed query selects
+    /// the top relevance match — recency says nothing about what the
+    /// user is searching for. An empty (or newly cleared) query falls
+    /// back to the alt-tab default.
     fn query_changed(&mut self) {
         self.requery();
-        self.selected = 0;
+        self.selected = if self.query.is_empty() {
+            self.default_selection()
+        } else {
+            0
+        };
+    }
+
+    /// The empty-query default: the first ranked entry that is not the
+    /// pane the user is on — "the last agent" for the
+    /// `<key> <enter> <key> <enter>` bounce. Falls back to the top when
+    /// every entry is the current pane (or nothing is ranked).
+    fn default_selection(&self) -> usize {
+        self.ranked
+            .iter()
+            .position(|(i, _)| {
+                Some(self.entries[*i].pane_id.as_str()) != self.current_pane.as_deref()
+            })
+            .unwrap_or(0)
     }
 
     /// The pane id behind the current selection, if any.
@@ -267,28 +352,42 @@ impl SwitchState {
             .map(|(i, _)| self.entries[*i].pane_id.as_str())
     }
 
-    /// Swap in a fresh snapshot with the selection pinned to its pane:
-    /// the refresh may reorder or drop entries under the cursor, and an
+    /// Swap in a fresh snapshot. Entries are (re-)ordered by jump
+    /// recency — never-jumped panes keep their tmux order behind the
+    /// jumped-to ones — then the selection stays pinned to its pane: the
+    /// refresh may reorder or drop entries under the cursor, and an
     /// index would silently move the selection onto a different agent.
-    /// A vanished pane falls back to the clamped previous position.
+    /// No pinned pane (first load, or the selection's pane died) falls
+    /// back to the alt-tab default.
     fn refresh(&mut self, entries: Vec<SwitchEntry>) {
         let pinned = self
             .ranked
             .get(self.selected)
             .map(|(i, _)| self.entries[*i].pane_id.clone());
-        let previous = self.selected;
-        self.entries = entries;
+        let mut ordered = entries;
+        ordered.sort_by_key(|e| {
+            self.mru
+                .iter()
+                .position(|id| id == &e.pane_id)
+                .unwrap_or(usize::MAX)
+        });
+        self.entries = ordered;
         self.requery();
-        if let Some(id) = pinned
-            && let Some(pos) = self
-                .ranked
+        self.selected = match pinned.as_deref().and_then(|id| {
+            self.ranked
                 .iter()
                 .position(|(i, _)| self.entries[*i].pane_id == id)
-        {
-            self.selected = pos;
-        } else {
-            self.selected = previous.min(self.ranked.len().saturating_sub(1));
-        }
+        }) {
+            Some(pos) => pos,
+            None => self.default_selection(),
+        };
+    }
+
+    /// Record a jump: recency moves the target to the front and the
+    /// list persists for the next open.
+    fn record_jump(&mut self, pane_id: &str) {
+        push_mru(&mut self.mru, pane_id);
+        save_mru(&self.mru);
     }
 
     /// Move the selection, clamping at both ends — off either edge is the
@@ -600,7 +699,16 @@ fn run_tui() -> io::Result<i32> {
         let backend = CrosstermBackend::new(io::stdout());
         let mut terminal = Terminal::new(backend)?;
 
-        let mut state = SwitchState::new(Vec::new());
+        // The pane the user is on: TMUX_PANE when running inside a pane
+        // (bare TUI mode), or passed through the popup's environment by
+        // spawn_popup — tmux does not set TMUX_PANE for popup children,
+        // so spawn_popup resolves it (from the invoking shell's own env,
+        // or a probe of the pressing client) and hands it over with -e.
+        // The empty-query default selection skips this pane, so it must
+        // be known for the alt-tab flow.
+        let current_pane = std::env::var("TMUX_PANE").ok().filter(|p| !p.is_empty());
+
+        let mut state = SwitchState::new(Vec::new(), load_mru(), current_pane);
         if let Some(entries) = collect_entries() {
             state.refresh(entries);
         }
@@ -626,11 +734,12 @@ fn run_tui() -> io::Result<i32> {
                             KeyOutcome::Continue => {}
                             KeyOutcome::Quit => return Ok(0),
                             KeyOutcome::Jump(pane_id) => {
-                                // The jump runs before teardown so tmux
-                                // applies it while this process still
-                                // owns the popup; `-E` closes the popup
-                                // as the process exits (the overview's
-                                // `f` path does the same).
+                                // Recency first (best-effort write), then
+                                // the jump: the popup closes as this
+                                // process exits (`-E`) and the invoking
+                                // client lands on the pane — the
+                                // overview's `f` path does the same.
+                                state.record_jump(&pane_id);
                                 tmux::select_pane(&pane_id);
                                 return Ok(0);
                             }
@@ -647,6 +756,40 @@ fn run_tui() -> io::Result<i32> {
     result
 }
 
+/// Popup geometry from the global options, falling back to the defaults
+/// when unset or empty. Values pass through raw — tmux popup size strings
+/// (percentages or column/row counts); a bogus value fails display-popup,
+/// which surfaces as the command's error message.
+fn popup_geometry() -> (String, String) {
+    let read = |option: &str, default: &str| {
+        tmux::run_tmux(&["show-options", "-gv", option])
+            .map(|v| v.trim().to_string())
+            .filter(|v| !v.is_empty())
+            .unwrap_or_else(|| default.to_string())
+    };
+    (
+        read(SWITCH_WIDTH_OPTION, POPUP_WIDTH_DEFAULT),
+        read(SWITCH_HEIGHT_OPTION, POPUP_HEIGHT_DEFAULT),
+    )
+}
+
+/// The pane the popup child should consider "current": the invoking
+/// shell's TMUX_PANE when present (a manual invocation from a pane), else
+/// a probe of the pressing client (the keybinding path — a run-shell
+/// child has no pane env of its own). `None` when neither answers; the
+/// switcher then falls back to plain top-of-list selection.
+fn resolve_current_pane(client: Option<&str>) -> Option<String> {
+    if let Ok(pane) = std::env::var("TMUX_PANE")
+        && !pane.is_empty()
+    {
+        return Some(pane);
+    }
+    client.and_then(|client| {
+        let pane = tmux::display_message(client, "#{pane_id}");
+        (!pane.is_empty()).then_some(pane)
+    })
+}
+
 /// Open the switcher in a tmux popup. With `-E` the popup closes as soon
 /// as the TUI exits, so Enter (jump) and Esc (leave) both tear the whole
 /// container down. `client` targets the popup at a specific tmux client —
@@ -658,6 +801,7 @@ fn spawn_popup(client: Option<String>) -> Result<(), String> {
     if client.is_none() && std::env::var("TMUX_PANE").unwrap_or_default().is_empty() {
         return Err("--popup must be run from inside tmux".into());
     }
+    let (width, height) = popup_geometry();
     let exe = std::env::current_exe().map_err(|e| format!("resolve current exe: {e}"))?;
     let cwd = std::env::current_dir().map_err(|e| format!("resolve cwd: {e}"))?;
     // Through the shared exec path so the IPC gate applies (audit
@@ -668,12 +812,20 @@ fn spawn_popup(client: Option<String>) -> Result<(), String> {
         "display-popup".into(),
         "-E".into(),
         "-w".into(),
-        POPUP_WIDTH.into(),
+        width,
         "-h".into(),
-        POPUP_HEIGHT.into(),
+        height,
         "-d".into(),
         cwd.to_string_lossy().to_string(),
     ];
+    // tmux does not set TMUX_PANE for popup children at all — pin the
+    // resolved current pane explicitly (same pattern as the detached
+    // overview popup), so the child's alt-tab default knows where the
+    // user is.
+    if let Some(pane) = resolve_current_pane(client.as_deref()) {
+        args.push("-e".into());
+        args.push(format!("TMUX_PANE={pane}"));
+    }
     if let Some(client) = client {
         args.push("-t".into());
         args.push(client);
@@ -780,6 +932,11 @@ mod tests {
         entry_from_info(&make_info(AgentType::Claude, PaneStatus::Running, pane_id))
     }
 
+    /// A state with no recency history and no known current pane.
+    fn state(entries: Vec<SwitchEntry>) -> SwitchState {
+        SwitchState::new(entries, Vec::new(), None)
+    }
+
     fn key(code: KeyCode) -> KeyEvent {
         KeyEvent::new(code, KeyModifiers::NONE)
     }
@@ -874,18 +1031,22 @@ mod tests {
     }
 
     #[test]
-    fn ranking_orders_by_score_then_collection_order() {
+    fn ranking_orders_by_score_then_entry_order() {
         // Titles only — the agent label ("claude") must not win the match
         // for every entry and flatten the ranking to a tie.
-        let mut state = SwitchState::new(vec![
-            info_with_haystack("%1", AgentType::Claude, "xwombat"),
-            info_with_haystack("%2", AgentType::Codex, "wombat"),
-            info_with_haystack("%3", AgentType::Hermes, "wombat"),
-        ]);
+        let mut state = SwitchState::new(
+            vec![
+                info_with_haystack("%1", AgentType::Claude, "xwombat"),
+                info_with_haystack("%2", AgentType::Codex, "wombat"),
+                info_with_haystack("%3", AgentType::Hermes, "wombat"),
+            ],
+            Vec::new(),
+            None,
+        );
         state.query.set("wom");
         state.query_changed();
         // "%2" and "%3" score the same (boundary + consecutive); "%1"
-        // scores lower (buried 'cl'). Ties keep collection order.
+        // scores lower (buried 'cl'). Ties keep entry order.
         let ids: Vec<&str> = state
             .ranked
             .iter()
@@ -895,8 +1056,8 @@ mod tests {
     }
 
     #[test]
-    fn empty_query_lists_everything_in_collection_order() {
-        let state = SwitchState::new(vec![entry("%1"), entry("%2"), entry("%3")]);
+    fn empty_query_lists_everything_in_entry_order() {
+        let state = state(vec![entry("%1"), entry("%2"), entry("%3")]);
         let ids: Vec<&str> = state
             .ranked
             .iter()
@@ -907,14 +1068,136 @@ mod tests {
 
     #[test]
     fn query_filters_non_matching_entries() {
-        let mut state = SwitchState::new(vec![
-            info_with_haystack("%1", AgentType::Claude, "alpha"),
-            info_with_haystack("%2", AgentType::Codex, "beta"),
-        ]);
+        let mut state = SwitchState::new(
+            vec![
+                info_with_haystack("%1", AgentType::Claude, "alpha"),
+                info_with_haystack("%2", AgentType::Codex, "beta"),
+            ],
+            Vec::new(),
+            None,
+        );
         state.query.set("alp");
         state.query_changed();
         assert_eq!(state.ranked.len(), 1);
         assert_eq!(state.selected_pane_id(), Some("%1"));
+    }
+
+    // ─── recency ordering & the alt-tab flow ─────────────────────────
+
+    #[test]
+    fn mru_orders_the_list_most_recent_first() {
+        let state = SwitchState::new(
+            vec![entry("%1"), entry("%2"), entry("%3")],
+            vec!["%3".into(), "%1".into()],
+            None,
+        );
+        let ids: Vec<&str> = state
+            .ranked
+            .iter()
+            .map(|(i, _)| state.entries[*i].pane_id.as_str())
+            .collect();
+        // Jumped-to panes lead in recency order; never-jumped keep
+        // tmux order behind them.
+        assert_eq!(ids, vec!["%3", "%1", "%2"]);
+    }
+
+    #[test]
+    fn default_selection_skips_the_current_pane() {
+        // On %1 with no history: the alt-tab default is the next entry —
+        // Enter means "go to the other agent", not "stay here".
+        let state = SwitchState::new(
+            vec![entry("%1"), entry("%2")],
+            Vec::new(),
+            Some("%1".into()),
+        );
+        assert_eq!(state.selected_pane_id(), Some("%2"));
+    }
+
+    #[test]
+    fn default_selection_falls_back_to_top_without_a_current_pane() {
+        let state = state(vec![entry("%1"), entry("%2")]);
+        assert_eq!(state.selected_pane_id(), Some("%1"));
+    }
+
+    #[test]
+    fn default_selection_prefers_recency_over_tmux_order() {
+        // On %2, having jumped %1 last and %3 before that: the "last
+        // agent" is %1, not %3 and not the tmux-order neighbor.
+        let state = SwitchState::new(
+            vec![entry("%1"), entry("%2"), entry("%3")],
+            vec!["%1".into(), "%3".into()],
+            Some("%2".into()),
+        );
+        assert_eq!(state.selected_pane_id(), Some("%1"));
+    }
+
+    #[test]
+    fn alt_tab_flow_bounces_between_two_agents() {
+        // Open 1: on %1, no history — selection is %2, Enter jumps there.
+        let mut state = SwitchState::new(
+            vec![entry("%1"), entry("%2")],
+            Vec::new(),
+            Some("%1".into()),
+        );
+        assert_eq!(state.selected_pane_id(), Some("%2"));
+        let target = state.selected_pane_id().unwrap().to_string();
+        state.record_jump(&target);
+
+        // Open 2 (a fresh process, the persisted recency): on %2 now —
+        // selection is %1, the bounce target.
+        let mut state = SwitchState::new(
+            vec![entry("%1"), entry("%2")],
+            state.mru.clone(),
+            Some("%2".into()),
+        );
+        assert_eq!(state.selected_pane_id(), Some("%1"));
+        let target = state.selected_pane_id().unwrap().to_string();
+        state.record_jump(&target);
+
+        // Open 3: on %1 again — selection is %2. <key> <enter> toggles.
+        let state = SwitchState::new(
+            vec![entry("%1"), entry("%2")],
+            state.mru.clone(),
+            Some("%1".into()),
+        );
+        assert_eq!(state.selected_pane_id(), Some("%2"));
+    }
+
+    #[test]
+    fn typed_query_selects_top_and_clearing_restores_alt_tab() {
+        let mut state = SwitchState::new(
+            vec![
+                info_with_haystack("%1", AgentType::Claude, "alpha"),
+                info_with_haystack("%2", AgentType::Codex, "beta"),
+            ],
+            Vec::new(),
+            Some("%1".into()),
+        );
+        // Empty query: the alt-tab default skips the current pane.
+        assert_eq!(state.selected_pane_id(), Some("%2"));
+        // Typing switches to relevance ranking: top match.
+        state.query.set("alp");
+        state.query_changed();
+        assert_eq!(state.selected_pane_id(), Some("%1"));
+        // Clearing falls back to the alt-tab default again.
+        state.query.clear();
+        state.query_changed();
+        assert_eq!(state.selected_pane_id(), Some("%2"));
+    }
+
+    #[test]
+    fn push_mru_moves_to_front_dedups_and_caps() {
+        let mut mru: Vec<String> = vec!["%1".into(), "%2".into()];
+        push_mru(&mut mru, "%3");
+        assert_eq!(mru, vec!["%3", "%1", "%2"]);
+        push_mru(&mut mru, "%1");
+        assert_eq!(mru, vec!["%1", "%3", "%2"]);
+        let last = format!("%dup{}", MRU_MAX + 4);
+        for i in 0..(MRU_MAX + 5) {
+            push_mru(&mut mru, &format!("%dup{i}"));
+        }
+        assert_eq!(mru.len(), MRU_MAX);
+        assert_eq!(mru[0], last);
     }
 
     // ─── entry fields ────────────────────────────────────────────────
@@ -984,7 +1267,7 @@ mod tests {
 
     #[test]
     fn enter_jumps_to_the_selected_pane() {
-        let mut state = SwitchState::new(vec![entry("%1"), entry("%2")]);
+        let mut state = state(vec![entry("%1"), entry("%2")]);
         state.move_selection(1);
         assert_eq!(
             handle_key(&mut state, key(KeyCode::Enter)),
@@ -994,7 +1277,7 @@ mod tests {
 
     #[test]
     fn enter_without_results_is_inert() {
-        let mut state = SwitchState::new(vec![entry("%1")]);
+        let mut state = state(vec![entry("%1")]);
         state.query.set("zzzz");
         state.query_changed();
         assert_eq!(
@@ -1005,7 +1288,7 @@ mod tests {
 
     #[test]
     fn esc_and_ctrl_c_quit_without_jumping() {
-        let mut state = SwitchState::new(vec![entry("%1")]);
+        let mut state = state(vec![entry("%1")]);
         assert_eq!(handle_key(&mut state, key(KeyCode::Esc)), KeyOutcome::Quit);
         assert_eq!(
             handle_key(&mut state, ctrl(KeyCode::Char('c'))),
@@ -1015,7 +1298,7 @@ mod tests {
 
     #[test]
     fn typing_lands_in_the_query_and_resets_the_selection() {
-        let mut state = SwitchState::new(vec![entry("%1"), entry("%2")]);
+        let mut state = state(vec![entry("%1"), entry("%2")]);
         state.move_selection(1);
         assert_eq!(
             handle_key(&mut state, key(KeyCode::Char('a'))),
@@ -1027,7 +1310,7 @@ mod tests {
 
     #[test]
     fn arrow_keys_move_and_clamp() {
-        let mut state = SwitchState::new(vec![entry("%1"), entry("%2")]);
+        let mut state = state(vec![entry("%1"), entry("%2")]);
         handle_key(&mut state, key(KeyCode::Down));
         assert_eq!(state.selected, 1);
         // Off the end: the neutral state, not a wraparound jump.
@@ -1045,7 +1328,7 @@ mod tests {
 
     #[test]
     fn ctrl_u_clears_and_ctrl_w_kills_a_word() {
-        let mut state = SwitchState::new(vec![entry("%1")]);
+        let mut state = state(vec![entry("%1")]);
         for c in "one two".chars() {
             state.query.push(c);
         }
@@ -1058,7 +1341,7 @@ mod tests {
 
     #[test]
     fn shift_modified_chars_still_type() {
-        let mut state = SwitchState::new(vec![entry("%1")]);
+        let mut state = state(vec![entry("%1")]);
         let key = KeyEvent::new(KeyCode::Char('A'), KeyModifiers::SHIFT);
         handle_key(&mut state, key);
         assert_eq!(state.query.content(), "A");
@@ -1068,7 +1351,7 @@ mod tests {
 
     #[test]
     fn refresh_keeps_the_selection_on_the_same_pane() {
-        let mut state = SwitchState::new(vec![entry("%1"), entry("%2"), entry("%3")]);
+        let mut state = state(vec![entry("%1"), entry("%2"), entry("%3")]);
         state.move_selection(2);
         // The refresh reorders and drops a pane; the selection follows
         // its pane id, not its index.
@@ -1077,9 +1360,11 @@ mod tests {
     }
 
     #[test]
-    fn refresh_after_a_vanished_selection_clamps() {
-        let mut state = SwitchState::new(vec![entry("%1"), entry("%2")]);
+    fn refresh_after_a_vanished_selection_falls_back_to_default() {
+        let mut state = state(vec![entry("%1"), entry("%2")]);
         state.move_selection(1);
+        // The selected pane dies: the selection lands on the alt-tab
+        // default (first non-current; no current known → the top).
         state.refresh(vec![entry("%1")]);
         assert_eq!(state.selected, 0);
         assert_eq!(state.selected_pane_id(), Some("%1"));
@@ -1099,7 +1384,7 @@ mod tests {
             branch: "feat/wt".into(),
         };
         codex.session_name = "build".into();
-        let state = SwitchState::new(vec![entry_from_info(&claude), entry_from_info(&codex)]);
+        let state = state(vec![entry_from_info(&claude), entry_from_info(&codex)]);
         assert_snapshot!(render_frame(&state, 80, 10), @"
         ┌ switch ──────────────────────────────────────────────────────────────────────┐
         │>                                                                             │
@@ -1120,7 +1405,7 @@ mod tests {
         claude.session_name = "fix the switcher".into();
         let mut codex = make_info(AgentType::Codex, PaneStatus::Idle, "%2");
         codex.session_name = "build".into();
-        let mut state = SwitchState::new(vec![entry_from_info(&claude), entry_from_info(&codex)]);
+        let mut state = state(vec![entry_from_info(&claude), entry_from_info(&codex)]);
         state.query.set("swi");
         state.query_changed();
         assert_snapshot!(render_frame(&state, 80, 10), @"
@@ -1139,7 +1424,7 @@ mod tests {
 
     #[test]
     fn snapshot_no_match_message() {
-        let mut state = SwitchState::new(vec![entry("%1")]);
+        let mut state = state(vec![entry("%1")]);
         state.query.set("zzzz");
         state.query_changed();
         assert_snapshot!(render_frame(&state, 40, 6), @"
@@ -1154,7 +1439,7 @@ mod tests {
 
     #[test]
     fn snapshot_empty_state() {
-        let state = SwitchState::new(Vec::new());
+        let state = state(Vec::new());
         assert_snapshot!(render_frame(&state, 40, 6), @"
         ┌ switch ──────────────────────────────┐
         │>                                     │
@@ -1170,7 +1455,7 @@ mod tests {
         let mut claude = make_info(AgentType::Claude, PaneStatus::Running, "%1");
         claude.session_name = "a very long session title that keeps going".into();
         claude.prompt = "and a long prompt after it too".into();
-        let state = SwitchState::new(vec![entry_from_info(&claude)]);
+        let state = state(vec![entry_from_info(&claude)]);
         assert_snapshot!(render_frame(&state, 60, 6), @"
         ┌ switch ──────────────────────────────────────────────────┐
         │>                                                         │

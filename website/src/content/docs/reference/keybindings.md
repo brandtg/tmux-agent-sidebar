@@ -85,6 +85,17 @@ agent pane with its status icon, agent, repo/worktree, session title, and
 last prompt; typing narrows it (fuzzy subsequence match, word-boundary and
 streak matches rank first). The list refreshes once a second while open.
 
+The list is ordered by jump recency, and with an empty query the selection
+starts on the first pane that is not the one you are on — so
+`<key> <enter> <key> <enter>` bounces between the two agents you are
+working in, alt-tab style. Jump history persists across opens in the
+`@sidebar_switch_mru` option (recent first, 32 entries); typed queries
+rank by relevance instead, and clearing the query restores the recency
+default.
+
+The popup size is configurable with `@sidebar_switch_width` /
+`@sidebar_switch_height` (tmux popup size strings, default `80%` / `60%`).
+
 | Key                 | Action                                             |
 | ------------------- | -------------------------------------------------- |
 | type                | Filter the list (fuzzy match over all row fields)  |
