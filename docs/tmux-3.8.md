@@ -7,7 +7,11 @@ machine already runs 3.8, so this work can be developed and verified locally.
 Origin: 2026-11-18 review of the 3.8 CHANGES against the codebase's tmux
 integration inventory. Every claim below was checked against current source.
 
-Status: **not started** — the spike (batch T0) gates everything else.
+Status: **partially shipped** — the sidebar-aware builtin layouts
+(src/cli/layouts.rs, agent-sidebar.conf:341-373) already emit 3.8's JSON
+layout trees behind a version gate, and the overview/switcher popups rely
+on 3.8's two-positional `display-popup` exec. Batches T1-T5 below remain
+open.
 
 ## What the codebase already handles passively
 

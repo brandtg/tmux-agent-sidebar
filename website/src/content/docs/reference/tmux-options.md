@@ -165,6 +165,9 @@ Written and maintained by the plugin itself; no need to touch them.
 | `@sidebar_collapsed_groups`     | global  | JSON array of collapsed group keys written by `z` / `Z` |
 | `@sidebar_todo_visible`         | global  | Shared TODO-panel visibility written by the `t` toggle (`@sidebar_todo_scope global` only) |
 | `@sidebar_todo_hide_completed`  | global  | Shared hide-completed value written by the `H` toggle |
+| `@sidebar_switch_mru`           | global  | Quick-switcher jump history, most recent first (32 entries) — drives the alt-tab recency ordering |
+| `@sidebar_layout_base`          | global  | Root directory the sidebar-aware builtin layouts (`prefix` + `M-1`…`M-5`) resolve repo paths against |
+| `@agent_sidebar_dir`            | global  | Install directory of the plugin binary, recorded at load time so keybindings and hooks can call it by absolute path |
 
 ## Example config
 

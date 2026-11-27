@@ -162,8 +162,13 @@ Interaction ladder:
 
 ## Spike scope
 
+Historical (as spiked); everything below has since shipped — the overview
+is registered in agent-sidebar.conf (opt-in `@sidebar_overview_key`), the
+capture worker runs off the UI thread, and the keybinding/`o` entry points
+are live.
+
 - New `overview` subcommand (src/cli/overview.rs), dispatch from
-  src/cli/mod.rs. Not registered in agent-sidebar.conf yet — run manually.
+  src/cli/mod.rs. ~~Not registered in agent-sidebar.conf yet — run manually.~~
 - Single-threaded refresh inside the event loop (listing + captures every
   500ms); v1 moves captures to a worker thread following the
   src/app/workers.rs pattern.

@@ -61,6 +61,8 @@ subcommands for scripted control:
 | `spawn <name>` | Spawn a worktree window for the current pane's repo |
 | `capture --session <name> [--window <name>] (--frame-out <file> \| --frames-out <dir>) [--duration-ms <ms>] [--fps <n>] [--crop-rows START:END] [--crop-cols START:END]` | Capture a pane as ANSI frames — the engine behind the overview grid |
 | `overview [--popup] [--popup-client <client>] [--interval-ms <ms>]` | Render the live overview grid, optionally inside a tmux popup |
+| `switch [--popup] [--popup-client <client>]` | Open the quick switcher — a fuzzy finder over live agent panes with alt-tab recency ordering — optionally inside a tmux popup |
+| `layouts [list\|emit]` | Sidebar-aware builtin layouts (`prefix` + `M-1`…`M-5`); `emit` prints the tmux layout string the binding applies (tmux 3.8+) |
 | `setup [claude\|codex\|hermes\|antigravity]` | Print the hook-registration snippet for an agent |
 | `hook <agent> <event>` | Dispatch an agent hook payload read from stdin — what the registered hooks invoke |
 | `auto-close <window-id>` / `maintain-width <window-id> [client-width]` / `notify-focus <window-id>` | Internal helpers wired to tmux hooks |
