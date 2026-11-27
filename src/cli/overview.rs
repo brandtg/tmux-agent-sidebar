@@ -20,7 +20,10 @@
 //! pane or window died is a silent no-op plus a debug-trace line. A
 //! capture still narrower than the popup (a source that cannot reach the
 //! popup's width even zoomed — multi-client setups) centers so the
-//! residual margin splits evenly.
+//! residual margin splits evenly. While zoomed, the read pane captures at
+//! drive cadence: the agent's reflow after the resize lands within a
+//! frame or two instead of waiting out the slow tick, and the fullscreen
+//! view renders live like a prompted pane.
 //!
 //! Presentation rules that make the grid an instrument instead of a
 //! wallpaper:
@@ -616,6 +619,9 @@ fn run_tui(interval: Duration) -> io::Result<i32> {
         // refreshes at DRIVE_INTERVAL while everything else paces to
         // `interval`.
         let mut last_drive_refresh = Instant::now();
+        // The zoomed view's own refresh clock: the read pane captures at
+        // DRIVE_INTERVAL while zoomed (see the fast-capture block below).
+        let mut last_zoom_refresh = Instant::now();
         // Running state for the paste-Enter debounce (audit 2026-11-25
         // L-cli-3): the instant the last Enter was forwarded, reset by
         // any non-Enter key.
@@ -662,14 +668,25 @@ fn run_tui(interval: Duration) -> io::Result<i32> {
             if let Some(input) = drive.as_ref()
                 && last_drive_refresh.elapsed() >= DRIVE_INTERVAL
             {
-                let (pane_id, dims) = (input.pane_id.clone(), input.dims);
-                if let Some(pane) = panes.iter_mut().find(|p| p.info.pane_id == pane_id)
-                    && let Ok(grid) = capture_grid(&pane.info, dims)
-                {
-                    pane.grid = Some(grid);
-                    pane.err = None;
-                }
+                refresh_capture(&mut panes, &input.pane_id, input.dims);
                 last_drive_refresh = Instant::now();
+            }
+
+            // The zoomed view's live capture: the temporary window-zoom
+            // resizes the pty instantly, but the agent's reflow lands on
+            // its next repaint — at the slow tick's cadence the first
+            // zoomed frames kept showing the old narrow screen for up to a
+            // second (the user-reported lag). While zoomed, the read pane
+            // captures at drive cadence, so the reflow shows up within one
+            // or two fast frames and the fullscreen view renders live like
+            // a prompted pane. Prompting owns the clock while active (same
+            // pane, same cadence — no double capture).
+            if drive.is_none()
+                && let Some(id) = zoomed.as_ref()
+                && last_zoom_refresh.elapsed() >= DRIVE_INTERVAL
+            {
+                refresh_capture(&mut panes, id, last_dims.get(id).copied());
+                last_zoom_refresh = Instant::now();
             }
 
             if last_refresh.elapsed() >= interval {
@@ -742,9 +759,13 @@ fn run_tui(interval: Duration) -> io::Result<i32> {
                         input.dims = last_dims.get(&input.pane_id).copied();
                     }
                     // The slow refresh re-captured every pane including the
-                    // prompted one; its fast clock restarts from here.
+                    // prompted and zoomed ones; their fast clocks restart
+                    // from here.
                     if drive.is_some() {
                         last_drive_refresh = Instant::now();
+                    }
+                    if zoomed.is_some() {
+                        last_zoom_refresh = Instant::now();
                     }
                 }
             }
@@ -761,7 +782,10 @@ fn run_tui(interval: Duration) -> io::Result<i32> {
             })?;
 
             let driving = drive.is_some();
-            let budget = if driving {
+            // While zoomed, redraws pace to the read pane's fast capture
+            // too (see the zoom fast-capture block); keys wake the poll
+            // instantly either way.
+            let budget = if driving || zoomed.is_some() {
                 // Redraws pace to the drive capture; keys wake the poll
                 // instantly, so typing latency is unaffected.
                 DRIVE_INTERVAL
@@ -851,6 +875,11 @@ fn run_tui(interval: Duration) -> io::Result<i32> {
                                             {
                                                 window_zoom = Some(zoom);
                                             }
+                                            // The entry capture just ran; the fast
+                                            // clock starts from it, so the agent's
+                                            // reflow lands within one or two fast
+                                            // frames.
+                                            last_zoom_refresh = Instant::now();
                                             zoomed = Some(panes[idx].info.pane_id.clone());
                                         }
                                     }
@@ -976,6 +1005,9 @@ fn run_tui(interval: Duration) -> io::Result<i32> {
                                         {
                                             window_zoom = Some(zoom);
                                         }
+                                        // Same as the Enter path: the fast clock
+                                        // starts from the entry capture.
+                                        last_zoom_refresh = Instant::now();
                                         zoomed = Some(id);
                                     } else {
                                         selected = Some(id);
@@ -1216,6 +1248,19 @@ fn capture_grid(info: &PaneInfo, dims: Option<(u16, u16)>) -> Result<Vec<Vec<Sty
     let mut grid = ansi::parse_ansi(&bytes, cols, rows);
     normalize_captured_grid(&mut grid);
     Ok(grid)
+}
+
+/// Fast-capture one pane in place, keeping the previous frame on failure —
+/// one tmux hiccup must not flash "(pane gone)" mid-keystroke or mid-read.
+/// The drive and zoom fast paths share this; a pane no longer in the
+/// listing is skipped entirely (its lifecycle belongs to the slow tick).
+fn refresh_capture(panes: &mut [OverviewPane], pane_id: &str, dims: Option<(u16, u16)>) {
+    if let Some(pane) = panes.iter_mut().find(|p| p.info.pane_id == pane_id)
+        && let Ok(grid) = capture_grid(&pane.info, dims)
+    {
+        pane.grid = Some(grid);
+        pane.err = None;
+    }
 }
 
 /// Strip light backgrounds and lift dark foregrounds so every captured
@@ -2729,6 +2774,25 @@ mod tests {
         │         [codex] waiting for input                        │
         └──────────────────────────────────────────────────────────┘
         ");
+    }
+
+    #[test]
+    fn fast_capture_keeps_the_previous_frame_on_failure() {
+        let grid = grid_padded("\x1b[32m[claude] last good frame\x1b[0m");
+        let mut panes = vec![OverviewPane {
+            info: make_pane(AgentType::Claude, PaneStatus::Running, "%1"),
+            grid: Some(grid),
+            err: None,
+        }];
+        // Under cargo test the tmux IPC gate is closed, so the capture
+        // fails — the previous frame must survive untouched, never flash
+        // "(pane gone)" mid-keystroke or mid-read.
+        refresh_capture(&mut panes, "%1", Some((80, 24)));
+        assert!(panes[0].grid.is_some());
+        assert_eq!(panes[0].err, None);
+        // A pane no longer in the listing is skipped entirely.
+        refresh_capture(&mut panes, "%9", Some((80, 24)));
+        assert_eq!(panes.len(), 1);
     }
 
     /// The zoom lifecycle against a throwaway server: a 60-column window

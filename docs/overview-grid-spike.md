@@ -105,7 +105,10 @@ Rendering rules:
   arrived already zoomed is never touched, a pane alone in its window
   skips it, and a source that cannot reach the popup's width even
   zoomed (multi-client setups) centers in the popup instead of hugging
-  the left edge.
+  the left edge. While zoomed the read pane captures at drive cadence
+  (same as a prompted pane): the agent's reflow after the resize lands
+  within a frame or two instead of waiting out the slow tick, and the
+  fullscreen view renders live.
 - Theme normalization: light-themed TUIs (opencode's pink panels,
   claude's white input bar) arrive as explicit light backgrounds with
   dark text — a clash on the dark canvas, and invisible text if the
