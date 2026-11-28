@@ -183,7 +183,7 @@ Space completes; Esc backs out without creating anything.
 | `Ctrl-↓` / `Ctrl-j` | Move the selected item down within the open items        |
 | `Ctrl-↑` / `Ctrl-k` | Move the selected item up within the open items          |
 | `PageUp` / `PageDown` | Page the item list                                      |
-| `Enter` / `e`   | Edit the selected item's text; with no item selected, start a new one |
+| `Enter` / `e` / `F2` | Edit the selected item's text; with no item selected, start a new one |
 | `Enter` (while editing or adding) | Save and start the next item; on an empty line, finish entry |
 | `Space`         | Toggle the selected item's checkbox                           |
 | `y`             | Copy the selected item's text to the clipboard                |
