@@ -446,6 +446,10 @@ fn handle_todo_key(key: KeyEvent, state: &mut AppState) -> bool {
             state.page_todo_selection(-1);
         }
         KeyCode::Char('e') => state.begin_todo_edit(),
+        // F2: the spreadsheet reflex — edit the selected cell's contents.
+        // Same guard rails as `e`: a completed item (or an empty list)
+        // stays inert, and the editor opens with the cursor at the end.
+        KeyCode::F(2) => state.begin_todo_edit(),
         KeyCode::Char('a') => state.begin_todo_add(),
         // Yank: the selected item's text (checkbox stripped) to the
         // clipboard, flashing `copied` when a sink took it.
@@ -1438,6 +1442,38 @@ mod tests {
             "Enter opens the selected task for editing, Google Tasks style"
         );
         assert!(!state.todos.items[0].done);
+    }
+
+    #[test]
+    fn f2_edits_the_selected_todo() {
+        // The spreadsheet reflex: F2 puts the selected cell into edit
+        // mode, exactly like `e` / Enter.
+        let mut state = todo_fixture();
+        handle_key_event(key(KeyCode::Char('t')), &mut state);
+
+        handle_key_event(key(KeyCode::F(2)), &mut state);
+
+        assert_eq!(
+            state.todos.editing.as_ref().unwrap().index,
+            0,
+            "F2 opens the selected task for editing, Excel style"
+        );
+    }
+
+    #[test]
+    fn f2_on_an_empty_todo_list_is_inert() {
+        // No items → nothing to edit; the add line must not open (only
+        // Enter / `a` start a new task).
+        let mut state = state_with_three_panes();
+        handle_key_event(key(KeyCode::Char('t')), &mut state);
+
+        handle_key_event(key(KeyCode::F(2)), &mut state);
+
+        assert!(state.todos.editing.is_none());
+        assert!(
+            state.todos.adding.is_none(),
+            "F2 must not open the add line"
+        );
     }
 
     #[test]

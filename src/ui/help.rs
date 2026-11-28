@@ -39,7 +39,7 @@ const HELP_SECTIONS: &[(&str, &[(&str, &str)])] = &[
     (
         "todos",
         &[
-            ("Enter / e", "Edit the selected task"),
+            ("Enter / e / F2", "Edit the selected task"),
             ("Enter (editing)", "Save, then next task"),
             ("a", "New task (insert mode)"),
             ("Space", "Complete / uncomplete"),
@@ -251,7 +251,7 @@ mod tests {
         │                  (popup)                 │
         │                                          │
         │ todos                                    │
-        │ Enter / e        Edit the selected task  │
+        │ Enter / e / F2   Edit the selected task  │
         │ Enter (editing)  Save, then next task    │
         │ a                New task (insert mode)  │
         │ Space            Complete / uncomplete   │
